@@ -1,4 +1,6 @@
+use async_trait::async_trait;
 use std::io::{Read, Write};
+use tokio::{io::AsyncReadExt, net::TcpStream};
 
 const SEGMENT_BITS_U32: u32 = 0x7F;
 const SEGMENT_BITS_U64: u64 = 0x7F;
@@ -213,9 +215,44 @@ pub trait PacketDecode: Read {
 
 impl PacketDecode for &[u8] {}
 
+#[async_trait]
+pub trait AsyncPacketDecode: AsyncReadExt + Unpin {
+    async fn decode_vari32(&mut self) -> std::io::Result<i32> {
+        let mut value: u32 = 0;
+        let mut shift: u8 = 0;
+        let mut current_byte = [0u8; 1];
+
+        loop {
+            self.read_exact(&mut current_byte).await?;
+            let current_byte: u32 = current_byte[0].into();
+            value |= (current_byte & SEGMENT_BITS_U32) << shift;
+
+            if (current_byte & CONTINUE_BIT_U32) == 0 {
+                break;
+            }
+
+            shift += 7;
+            if shift >= 32 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "VarInt too big",
+                ));
+            }
+        }
+
+        Ok(value as i32)
+    }
+}
+
+#[async_trait]
+impl AsyncPacketDecode for TcpStream {}
+
 #[cfg(test)]
 mod tests {
-    use super::{PacketDecode, PacketEncode};
+    use super::{AsyncPacketDecode, PacketDecode, PacketEncode};
+    use tokio::io::BufReader;
+
+    impl AsyncPacketDecode for BufReader<&[u8]> {}
 
     #[test]
     fn test_encode_u8() {
@@ -414,6 +451,16 @@ mod tests {
     fn test_decode_vari32() {
         let mut buffer: &[u8] = &[0xf8, 0xac, 0xd1, 0x91, 0x01];
         assert_eq!(buffer.decode_vari32().expect("Decoding failed"), 0x12345678);
+    }
+
+    #[tokio::test]
+    async fn test_async_decode_vari32() {
+        let data: &[u8] = &[0xf8, 0xac, 0xd1, 0x91, 0x01];
+        let mut buffer = BufReader::new(data);
+        assert_eq!(
+            buffer.decode_vari32().await.expect("Decoding failed"),
+            0x12345678
+        );
     }
 
     #[test]
