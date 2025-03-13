@@ -198,6 +198,17 @@ pub trait PacketDecode: Read {
 
         Ok(value as i64)
     }
+
+    fn decode_str(&mut self) -> std::io::Result<String> {
+        let length: usize = self.decode_vari32()?.try_into().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid string length")
+        })?;
+        let mut buffer = vec![0; length];
+        self.read_exact(&mut buffer)?;
+        Ok(String::from_utf8(buffer).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 string")
+        })?)
+    }
 }
 
 impl PacketDecode for &[u8] {}
@@ -435,6 +446,17 @@ mod tests {
             vec![
                 0x0d, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x2c, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, 0x21
             ]
+        );
+    }
+
+    #[test]
+    fn test_decode_str() {
+        let mut buffer: &[u8] = &[
+            0x0d, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x2c, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, 0x21,
+        ];
+        assert_eq!(
+            buffer.decode_str().expect("Decoding failed"),
+            "Hello, World!"
         );
     }
 }
