@@ -146,6 +146,58 @@ pub trait PacketDecode: Read {
     fn decode_bool(&mut self) -> std::io::Result<bool> {
         Ok(self.decode_u8()? != 0)
     }
+
+    fn decode_vari32(&mut self) -> std::io::Result<i32> {
+        let mut value: u32 = 0;
+        let mut shift: u8 = 0;
+        let mut current_byte = [0u8; 1];
+
+        loop {
+            self.read_exact(&mut current_byte)?;
+            let current_byte: u32 = current_byte[0].into();
+            value |= (current_byte & SEGMENT_BITS_U32) << shift;
+
+            if (current_byte & CONTINUE_BIT_U32) == 0 {
+                break;
+            }
+
+            shift += 7;
+            if shift >= 32 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "VarInt too big",
+                ));
+            }
+        }
+
+        Ok(value as i32)
+    }
+
+    fn decode_vari64(&mut self) -> std::io::Result<i64> {
+        let mut value: u64 = 0;
+        let mut shift: u8 = 0;
+        let mut current_byte = [0u8; 1];
+
+        loop {
+            self.read_exact(&mut current_byte)?;
+            let current_byte: u64 = current_byte[0].into();
+            value |= (current_byte & SEGMENT_BITS_U64) << shift;
+
+            if (current_byte & CONTINUE_BIT_U64) == 0 {
+                break;
+            }
+
+            shift += 7;
+            if shift >= 64 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "VarInt too big",
+                ));
+            }
+        }
+
+        Ok(value as i64)
+    }
 }
 
 impl PacketDecode for &[u8] {}
@@ -348,6 +400,12 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_vari32() {
+        let mut buffer: &[u8] = &[0xf8, 0xac, 0xd1, 0x91, 0x01];
+        assert_eq!(buffer.decode_vari32().expect("Decoding failed"), 0x12345678);
+    }
+
+    #[test]
     fn test_encode_vari64() {
         let mut buffer = Vec::new();
         buffer
@@ -356,6 +414,15 @@ mod tests {
         assert_eq!(
             buffer,
             vec![0xef, 0x9b, 0xaf, 0x85, 0x89, 0xcf, 0x95, 0x9a, 0x12]
+        );
+    }
+
+    #[test]
+    fn test_decode_vari64() {
+        let mut buffer: &[u8] = &[0xef, 0x9b, 0xaf, 0x85, 0x89, 0xcf, 0x95, 0x9a, 0x12];
+        assert_eq!(
+            buffer.decode_vari64().expect("Decoding failed"),
+            0x1234567890abcdef
         );
     }
 
