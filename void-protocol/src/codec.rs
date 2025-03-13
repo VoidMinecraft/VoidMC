@@ -142,6 +142,10 @@ pub trait PacketDecode: Read {
         self.read_exact(&mut buffer)?;
         Ok(i128::from_be_bytes(buffer))
     }
+
+    fn decode_bool(&mut self) -> std::io::Result<bool> {
+        Ok(self.decode_u8()? != 0)
+    }
 }
 
 impl PacketDecode for &[u8] {}
@@ -326,6 +330,14 @@ mod tests {
         buffer.clear();
         buffer.encode_bool(false).expect("Encoding failed");
         assert_eq!(buffer, vec![0x00]);
+    }
+
+    #[test]
+    fn test_decode_bool() {
+        let mut buffer: &[u8] = &[0x01];
+        assert_eq!(buffer.decode_bool().expect("Decoding failed"), true);
+        buffer = &[0x00];
+        assert_eq!(buffer.decode_bool().expect("Decoding failed"), false);
     }
 
     #[test]
