@@ -1,3 +1,6 @@
+mod codec;
+pub use codec::PacketEncode;
+
 /// Represents the different connection states of a Minecraft client in the protocol lifecycle.
 ///
 /// Each state determines which packets are valid and how the server interacts with the client.
