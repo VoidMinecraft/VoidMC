@@ -73,6 +73,11 @@ pub trait PacketEncode: Write {
             value >>= 7;
         }
     }
+
+    fn encode_str(&mut self, value: &str) -> std::io::Result<()> {
+        self.encode_vari32(value.len() as i32)?;
+        self.write_all(value.as_bytes())
+    }
 }
 
 impl PacketEncode for Vec<u8> {}
@@ -197,6 +202,18 @@ mod tests {
         assert_eq!(
             buffer,
             vec![0xef, 0x9b, 0xaf, 0x85, 0x89, 0xcf, 0x95, 0x9a, 0x12]
+        );
+    }
+
+    #[test]
+    fn test_encode_str() {
+        let mut buffer = Vec::new();
+        buffer.encode_str("Hello, World!").expect("Encoding failed");
+        assert_eq!(
+            buffer,
+            vec![
+                0x0d, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x2c, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64, 0x21
+            ]
         );
     }
 }
