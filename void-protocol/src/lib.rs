@@ -1,5 +1,5 @@
 mod codec;
-pub use codec::PacketEncode;
+pub use codec::{PacketDecode, PacketEncode};
 
 /// Represents the different connection states of a Minecraft client in the protocol lifecycle.
 ///
