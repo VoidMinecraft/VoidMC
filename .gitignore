@@ -1,0 +1,9 @@
+# Rust
+/target
+
+# IDEs
+/.vscode
+/.idea
+
+# AI
+**/CLAUDE.md
