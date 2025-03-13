@@ -40,6 +40,10 @@ pub trait PacketEncode: Write {
     fn encode_i128(&mut self, value: i128) -> std::io::Result<()> {
         self.write_all(&value.to_be_bytes())
     }
+
+    fn encode_bool(&mut self, value: bool) -> std::io::Result<()> {
+        self.encode_u8(if value { 1 } else { 0 })
+    }
 }
 
 impl PacketEncode for Vec<u8> {}
@@ -136,5 +140,15 @@ mod tests {
                 0x32, 0x11,
             ]
         );
+    }
+
+    #[test]
+    fn test_encode_bool() {
+        let mut buffer = Vec::new();
+        buffer.encode_bool(true).expect("Encoding failed");
+        assert_eq!(buffer, vec![0x01]);
+        buffer.clear();
+        buffer.encode_bool(false).expect("Encoding failed");
+        assert_eq!(buffer, vec![0x00]);
     }
 }
