@@ -7,6 +7,11 @@ const SEGMENT_BITS_U64: u64 = 0x7F;
 const CONTINUE_BIT_U32: u32 = 0x80;
 const CONTINUE_BIT_U64: u64 = 0x80;
 
+/// A trait for encoding various data types into a byte stream.
+///
+/// This trait extends the `Write` trait and provides methods for encoding
+/// different primitive types and strings into a byte stream, according to
+/// the Minecraft protocol.
 pub trait PacketEncode: Write {
     fn encode_u8(&mut self, value: u8) -> std::io::Result<()> {
         self.write_all(&value.to_be_bytes())
@@ -84,6 +89,11 @@ pub trait PacketEncode: Write {
 
 impl PacketEncode for Vec<u8> {}
 
+/// A trait for decoding various data types from a byte stream.
+///
+/// This trait extends the `Read` trait and provides methods for decoding
+/// different primitive types and strings from a byte stream, according
+/// to the Minecraft protocol.
 pub trait PacketDecode: Read {
     fn decode_u8(&mut self) -> std::io::Result<u8> {
         let mut buffer = [0; 1];
@@ -215,6 +225,11 @@ pub trait PacketDecode: Read {
 
 impl PacketDecode for &[u8] {}
 
+/// A trait for decoding various data types from a byte stream asynchronously.
+///
+/// This trait extends the `AsyncReadExt` trait from the `tokio` crate and provides
+/// a method for decoding vari32 from a byte stream asynchronously, according to
+/// the Minecraft protocol.
 #[async_trait]
 pub trait AsyncPacketDecode: AsyncReadExt + Unpin {
     async fn decode_vari32(&mut self) -> std::io::Result<i32> {
