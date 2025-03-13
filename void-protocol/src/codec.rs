@@ -1,5 +1,10 @@
 use std::io::Write;
 
+const SEGMENT_BITS_U32: u32 = 0x7F;
+const SEGMENT_BITS_U64: u64 = 0x7F;
+const CONTINUE_BIT_U32: u32 = 0x80;
+const CONTINUE_BIT_U64: u64 = 0x80;
+
 pub trait PacketEncode: Write {
     fn encode_u8(&mut self, value: u8) -> std::io::Result<()> {
         self.write_all(&value.to_be_bytes())
@@ -43,6 +48,30 @@ pub trait PacketEncode: Write {
 
     fn encode_bool(&mut self, value: bool) -> std::io::Result<()> {
         self.encode_u8(if value { 1 } else { 0 })
+    }
+
+    fn encode_vari32(&mut self, value: i32) -> std::io::Result<()> {
+        let mut value = value as u32;
+
+        loop {
+            if (value & !SEGMENT_BITS_U32) == 0 {
+                return self.write_all(&[value as u8]);
+            }
+            self.write_all(&[((value & SEGMENT_BITS_U32) | CONTINUE_BIT_U32) as u8])?;
+            value >>= 7;
+        }
+    }
+
+    fn encode_vari64(&mut self, value: i64) -> std::io::Result<()> {
+        let mut value = value as u64;
+
+        loop {
+            if (value & !SEGMENT_BITS_U64) == 0 {
+                return self.write_all(&[value as u8]);
+            }
+            self.write_all(&[((value & SEGMENT_BITS_U64) | CONTINUE_BIT_U64) as u8])?;
+            value >>= 7;
+        }
     }
 }
 
@@ -150,5 +179,24 @@ mod tests {
         buffer.clear();
         buffer.encode_bool(false).expect("Encoding failed");
         assert_eq!(buffer, vec![0x00]);
+    }
+
+    #[test]
+    fn test_encode_vari32() {
+        let mut buffer = Vec::new();
+        buffer.encode_vari32(0x12345678).expect("Encoding failed");
+        assert_eq!(buffer, vec![0xf8, 0xac, 0xd1, 0x91, 0x01]);
+    }
+
+    #[test]
+    fn test_encode_vari64() {
+        let mut buffer = Vec::new();
+        buffer
+            .encode_vari64(0x1234567890abcdef)
+            .expect("Encoding failed");
+        assert_eq!(
+            buffer,
+            vec![0xef, 0x9b, 0xaf, 0x85, 0x89, 0xcf, 0x95, 0x9a, 0x12]
+        );
     }
 }
