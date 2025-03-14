@@ -1,10 +1,13 @@
 use num_enum::TryFromPrimitive;
 
 mod codec;
-pub use codec::{AsyncPacketDecode, PacketDecode, PacketEncode};
+pub use codec::{AsyncPacketDecode, AsyncPacketEncode, PacketDecode, PacketEncode};
 
 pub mod clientbound;
 pub mod serverbound;
+
+mod socket;
+pub use socket::{ClientSocket, ServerSocket};
 
 pub trait Packet: Sized {
     fn encode<E: PacketEncode>(&self, encoder: &mut E) -> std::io::Result<()>;

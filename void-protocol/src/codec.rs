@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use std::io::{Read, Write};
-use tokio::{io::AsyncReadExt, net::TcpStream};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
 
 const SEGMENT_BITS_U32: u32 = 0x7F;
 const SEGMENT_BITS_U64: u64 = 0x7F;
@@ -88,6 +91,29 @@ pub trait PacketEncode: Write {
 }
 
 impl PacketEncode for Vec<u8> {}
+
+/// A trait for encoding various data types into a byte stream asynchronously.
+///
+/// This trait extends the `AsyncWriteExt` trait and provides methods for
+/// encoding vari32 into a byte stream, according to the Minecraft protocol.
+#[async_trait]
+pub trait AsyncPacketEncode: AsyncWriteExt + Unpin {
+    async fn encode_vari32(&mut self, value: i32) -> std::io::Result<()> {
+        let mut value = value as u32;
+
+        loop {
+            if (value & !SEGMENT_BITS_U32) == 0 {
+                return self.write_all(&[value as u8]).await;
+            }
+            self.write_all(&[((value & SEGMENT_BITS_U32) | CONTINUE_BIT_U32) as u8])
+                .await?;
+            value >>= 7;
+        }
+    }
+}
+
+#[async_trait]
+impl AsyncPacketEncode for TcpStream {}
 
 /// A trait for decoding various data types from a byte stream.
 ///
@@ -264,10 +290,11 @@ impl AsyncPacketDecode for TcpStream {}
 
 #[cfg(test)]
 mod tests {
-    use super::{AsyncPacketDecode, PacketDecode, PacketEncode};
+    use super::{AsyncPacketDecode, AsyncPacketEncode, PacketDecode, PacketEncode};
     use tokio::io::BufReader;
 
     impl AsyncPacketDecode for BufReader<&[u8]> {}
+    impl AsyncPacketEncode for Vec<u8> {}
 
     #[test]
     fn test_encode_u8() {
@@ -458,7 +485,18 @@ mod tests {
     #[test]
     fn test_encode_vari32() {
         let mut buffer = Vec::new();
-        buffer.encode_vari32(0x12345678).expect("Encoding failed");
+        PacketEncode::encode_vari32(&mut buffer, 0x12345678).expect("Encoding failed");
+        assert_eq!(buffer, vec![0xf8, 0xac, 0xd1, 0x91, 0x01]);
+    }
+
+    #[tokio::test]
+    async fn test_async_encode_vari32() {
+        let mut buffer = Vec::new();
+
+        AsyncPacketEncode::encode_vari32(&mut buffer, 0x12345678)
+            .await
+            .expect("Encoding failed");
+
         assert_eq!(buffer, vec![0xf8, 0xac, 0xd1, 0x91, 0x01]);
     }
 
