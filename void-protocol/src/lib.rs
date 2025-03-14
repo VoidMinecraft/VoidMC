@@ -14,6 +14,8 @@ pub trait PacketId {
     const ID: i32;
 }
 
+pub trait StatePacket: Packet {}
+
 /// Represents the different connection states of a Minecraft client in the protocol lifecycle.
 ///
 /// Each state determines which packets are valid and how the server interacts with the client.

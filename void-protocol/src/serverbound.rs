@@ -1,5 +1,5 @@
 use crate::codec::{PacketDecode, PacketEncode};
-use crate::{Packet, PacketId, State};
+use crate::{Packet, PacketId, State, StatePacket};
 
 #[derive(Debug)]
 pub struct Handshake {
@@ -68,6 +68,8 @@ impl Packet for HandshakePacket {
         }
     }
 }
+
+impl StatePacket for HandshakePacket {}
 
 #[derive(Debug)]
 pub struct StatusRequest {}
@@ -140,3 +142,5 @@ impl Packet for StatusPacket {
         }
     }
 }
+
+impl StatePacket for StatusPacket {}
