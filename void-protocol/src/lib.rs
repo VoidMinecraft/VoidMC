@@ -3,6 +3,7 @@ use num_enum::TryFromPrimitive;
 mod codec;
 pub use codec::{AsyncPacketDecode, PacketDecode, PacketEncode};
 
+pub mod clientbound;
 pub mod serverbound;
 
 pub trait Packet: Sized {
