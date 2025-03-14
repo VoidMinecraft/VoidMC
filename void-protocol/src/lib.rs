@@ -1,10 +1,24 @@
+use num_enum::TryFromPrimitive;
+
 mod codec;
 pub use codec::{AsyncPacketDecode, PacketDecode, PacketEncode};
+
+pub mod serverbound;
+
+pub trait Packet: Sized {
+    fn encode<E: PacketEncode>(&self, encoder: &mut E) -> std::io::Result<()>;
+    fn decode<D: PacketDecode>(decoder: &mut D) -> std::io::Result<Self>;
+}
+
+pub trait PacketId {
+    const ID: i32;
+}
 
 /// Represents the different connection states of a Minecraft client in the protocol lifecycle.
 ///
 /// Each state determines which packets are valid and how the server interacts with the client.
-#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash, TryFromPrimitive)]
+#[repr(u8)]
 pub enum State {
     /// Initial state where the client sends a handshake packet to initiate a connection.
     Handshake = 0x0,
