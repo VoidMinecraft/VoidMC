@@ -38,7 +38,7 @@ impl<A: ToSocketAddrs> ServerBuilder<A> {
         Ok(Server {
             server: ServerSocket(listener),
             game: Arc::new(Mutex::new(Game {
-                motd: self.motd.unwrap_or("Tikkub server".to_string()),
+                motd: self.motd.unwrap_or("Void server".to_string()),
                 favicon: self.favicon.unwrap_or("".to_string()),
             })),
         })

@@ -1,11 +1,12 @@
 mod handshake;
+mod login;
 mod status;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::game::Game;
-use handshake::HanshakeClient;
+use handshake::{HandshakeClientNext, HanshakeClient};
 use void_net::ClientSocket;
 
 pub struct Client {
@@ -21,6 +22,10 @@ impl Client {
     pub async fn run(self) -> std::io::Result<()> {
         let client = HanshakeClient::new(self.client, self.game);
         let client = client.run().await?;
-        client.run().await
+
+        match client {
+            HandshakeClientNext::Login(client) => client.run().await,
+            HandshakeClientNext::Status(client) => client.run().await,
+        }
     }
 }
