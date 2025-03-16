@@ -14,7 +14,7 @@ impl Game {
                 protocol,
             },
             players: Players {
-                max: -1,
+                max: 100,
                 online: 0,
                 sample: vec![],
             },
