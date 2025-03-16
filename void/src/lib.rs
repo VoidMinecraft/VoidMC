@@ -2,4 +2,4 @@ mod client;
 mod game;
 mod server;
 
-pub use server::{Server, ServerBuilder};
+pub use server::ServerBuilder;
