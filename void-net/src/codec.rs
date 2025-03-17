@@ -60,6 +60,14 @@ pub trait PacketEncode: Write {
         self.encode_u8(if value { 1 } else { 0 })
     }
 
+    fn encode_f32(&mut self, value: f32) -> std::io::Result<()> {
+        self.write_all(&value.to_be_bytes())
+    }
+
+    fn encode_f64(&mut self, value: f64) -> std::io::Result<()> {
+        self.write_all(&value.to_be_bytes())
+    }
+
     fn encode_vari32(&mut self, value: i32) -> std::io::Result<()> {
         let mut value = value as u32;
 
@@ -179,6 +187,18 @@ pub trait PacketDecode: Read {
         let mut buffer = [0; 16];
         self.read_exact(&mut buffer)?;
         Ok(i128::from_be_bytes(buffer))
+    }
+
+    fn decode_f32(&mut self) -> std::io::Result<f32> {
+        let mut buffer = [0; 4];
+        self.read_exact(&mut buffer)?;
+        Ok(f32::from_be_bytes(buffer))
+    }
+
+    fn decode_f64(&mut self) -> std::io::Result<f64> {
+        let mut buffer = [0; 8];
+        self.read_exact(&mut buffer)?;
+        Ok(f64::from_be_bytes(buffer))
     }
 
     fn decode_bool(&mut self) -> std::io::Result<bool> {
@@ -462,6 +482,29 @@ mod tests {
             buffer.decode_i128().expect("Decoding failed"),
             -0x1234567890abcdef1234567890abcdef
         );
+    }
+
+    #[test]
+    fn test_encode_f32() {
+        let mut buffer = Vec::new();
+        buffer.encode_f32(3.14159).expect("Encoding failed");
+        assert_eq!(buffer, vec![0x40, 0x49, 0x0f, 0xd0]);
+    }
+
+    fn test_decode_f32(buffer: &[u8]) {
+        let mut buffer: &[u8] = &[0x40, 0x49, 0x0f, 0xd0];
+        assert_eq!(buffer.decode_f32().expect("Decoding failed"), 3.14159);
+    }
+
+    fn test_encode_f64() {
+        let mut buffer = Vec::new();
+        buffer.encode_f64(3.14159).expect("Encoding failed");
+        assert_eq!(buffer, vec![0x40, 0x09, 0x21, 0xf9, 0xf0, 0x1b, 0x86, 0x6e]);
+    }
+
+    fn test_decode_f64() {
+        let mut buffer: &[u8] = &[0x40, 0x09, 0x21, 0xf9, 0xf0, 0x1b, 0x86, 0x6e];
+        assert_eq!(buffer.decode_f64().expect("Decoding failed"), 3.14159);
     }
 
     #[test]
