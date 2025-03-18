@@ -4,6 +4,8 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
+use tokio::io::AsyncRead;
+use ussr_nbt::owned::*;
 
 const SEGMENT_BITS_U32: u32 = 0x7F;
 const SEGMENT_BITS_U64: u64 = 0x7F;
@@ -96,9 +98,20 @@ pub trait PacketEncode: Write {
         self.encode_vari32(value.len() as i32)?;
         self.write_all(value.as_bytes())
     }
+
+    fn encode_nbt(&mut self, mut value: Nbt) -> std::io::Result<()> {
+        let mut buffer = Vec::new();
+        value.write(&mut buffer)?;
+        self.write_all(&[0x0A])?;
+        if buffer.len() > 3 {
+            self.write_all(&buffer[3..])
+        } else {
+            Ok(())
+        }
+    }
 }
 
-impl PacketEncode for Vec<u8> {}
+impl<T: Write> PacketEncode for T {}
 
 /// A trait for encoding various data types into a byte stream asynchronously.
 ///
@@ -120,15 +133,47 @@ pub trait AsyncPacketEncode: AsyncWriteExt + Unpin {
     }
 }
 
+pub struct CustomReader<'a, T: Read>{
+    read_bytes: usize,
+    inner: &'a mut T,
+}
+
+impl<'a, T: Read> Read for CustomReader<'a, T> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let len = buf.len();
+        if len == 0 {
+            return Ok(0);
+        }
+        if self.read_bytes == 0 {
+            buf[0] = 0x0A;
+            self.read_bytes = 1;
+            return Ok(1);
+        }
+        if self.read_bytes == 1 {
+            buf[0] = 0x00;
+            self.read_bytes = 2;
+            return Ok(1);
+        }
+        if self.read_bytes == 2 {
+            buf[0] = 0x00;
+            self.read_bytes = 3;
+            self.inner.read(&mut [0])?;
+            return Ok(1);
+        } //TODO: make this better
+        self.inner.read(buf)
+    }
+}
+
+
 #[async_trait]
-impl AsyncPacketEncode for TcpStream {}
+impl<T: AsyncWriteExt + Unpin> AsyncPacketEncode for T {}
 
 /// A trait for decoding various data types from a byte stream.
 ///
 /// This trait extends the `Read` trait and provides methods for decoding
 /// different primitive types and strings from a byte stream, according
+pub trait PacketDecode: Read + Sized {
 /// to the Minecraft protocol.
-pub trait PacketDecode: Read {
     fn decode_u8(&mut self) -> std::io::Result<u8> {
         let mut buffer = [0; 1];
         self.read_exact(&mut buffer)?;
@@ -267,9 +312,19 @@ pub trait PacketDecode: Read {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid UTF-8 string")
         })?)
     }
-}
 
-impl PacketDecode for &[u8] {}
+    fn decode_nbt(&mut self) -> std::io::Result<Nbt>
+    {
+        match Nbt::read(&mut CustomReader {
+            read_bytes: 0,
+            inner: self
+        }) {
+            Ok(value) => Ok(value),
+            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid NBT data")),
+        }
+    }
+}
+impl<T: Read + Sized> PacketDecode for T {}
 
 /// A trait for decoding various data types from a byte stream asynchronously.
 ///
@@ -306,15 +361,13 @@ pub trait AsyncPacketDecode: AsyncReadExt + Unpin {
 }
 
 #[async_trait]
-impl AsyncPacketDecode for TcpStream {}
+impl<T: AsyncReadExt + Unpin> AsyncPacketDecode for T {}
 
 #[cfg(test)]
 mod tests {
     use super::{AsyncPacketDecode, AsyncPacketEncode, PacketDecode, PacketEncode};
     use tokio::io::BufReader;
-
-    impl AsyncPacketDecode for BufReader<&[u8]> {}
-    impl AsyncPacketEncode for Vec<u8> {}
+    use ussr_nbt::owned::{Nbt, Tag, List};
 
     #[test]
     fn test_encode_u8() {
@@ -491,7 +544,7 @@ mod tests {
         assert_eq!(buffer, vec![0x40, 0x49, 0x0f, 0xd0]);
     }
 
-    fn test_decode_f32(buffer: &[u8]) {
+    fn test_decode_f32() {
         let mut buffer: &[u8] = &[0x40, 0x49, 0x0f, 0xd0];
         assert_eq!(buffer.decode_f32().expect("Decoding failed"), 3.14159);
     }
@@ -546,7 +599,7 @@ mod tests {
     #[test]
     fn test_decode_vari32() {
         let mut buffer: &[u8] = &[0xf8, 0xac, 0xd1, 0x91, 0x01];
-        assert_eq!(buffer.decode_vari32().expect("Decoding failed"), 0x12345678);
+        assert_eq!(PacketDecode::decode_vari32(&mut buffer).expect("Decoding failed"), 0x12345678);
     }
 
     #[tokio::test]
@@ -602,4 +655,67 @@ mod tests {
             "Hello, World!"
         );
     }
+
+    #[test]
+    fn test_decode_nbt() {
+        let mut buf: &[u8] = &[
+            10, 1, 0, 9, 84, 101, 115, 116, 32, 98, 121, 116,
+            101, 123, 8, 0, 11, 84, 101, 115, 116, 32, 115, 116, 114, 105, 110, 103, 0, 11, 72, 101,
+            108, 108, 111, 44, 32, 78, 66, 84, 33, 9, 0, 9, 84, 101, 115, 116, 32, 108, 105, 115, 116,
+            5, 0, 0, 0, 3, 63, 128, 0, 0, 64, 0, 0, 0, 64, 64, 0, 0, 0,
+            0, 0 //added bytes to test read
+        ];
+
+        let nbt = buf.decode_nbt().expect("Decoding failed");
+        let to_compare_nbt = Nbt {
+            name: "".into(),
+            compound: vec![
+                ("Test byte".into(), 123u8.into()),
+                ("Test string".into(), "Hello, NBT!".into()),
+                ("Test list".into(), vec![1f32, 2f32, 3f32].into()),
+            ]
+            .into(),
+        };
+
+        assert_eq!(nbt.name.to_string(), "");
+        assert_eq!(nbt.compound.tags.len(), 3);
+        assert_eq!(nbt.compound.tags[0].0.to_string(), "Test byte");
+        assert_eq!(nbt.compound.tags[0].1, Tag::Byte(123));
+        assert_eq!(nbt.compound.tags[1].0.to_string(), "Test string");
+        assert_eq!(nbt.compound.tags[1].1, Tag::String("Hello, NBT!".into()));
+        assert_eq!(nbt.compound.tags[2].0.to_string(), "Test list");
+        if let Tag::List(List::Float(items)) = &nbt.compound.tags[2].1 {
+            let items = items.to_vec();
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0], 1.0);
+            assert_eq!(items[1], 2.0);
+            assert_eq!(items[2], 3.0);
+        } else {
+            assert!(false);
+        }
+        assert_eq!(buf.len(), 2);
+    }
+
+    #[test]
+    fn test_encode_nbt() {
+        let mut buffer = vec![];
+
+        buffer.encode_nbt(Nbt {
+            name: "".into(),
+            compound: vec![
+                ("Test byte".into(), 123u8.into()),
+                ("Test string".into(), "Hello, NBT!".into()),
+                ("Test list".into(), vec![1f32, 2f32, 3f32].into()),
+            ]
+                .into(),
+        }).expect("Encoding failed");
+
+        assert_eq!(buffer, &[
+            10, 1, 0, 9, 84, 101, 115, 116, 32, 98, 121, 116,
+            101, 123, 8, 0, 11, 84, 101, 115, 116, 32, 115, 116, 114, 105, 110, 103, 0, 11, 72, 101,
+            108, 108, 111, 44, 32, 78, 66, 84, 33, 9, 0, 9, 84, 101, 115, 116, 32, 108, 105, 115, 116,
+            5, 0, 0, 0, 3, 63, 128, 0, 0, 64, 0, 0, 0, 64, 64, 0, 0, 0
+        ]);
+    }
+
 }
