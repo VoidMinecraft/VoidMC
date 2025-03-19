@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 use std::io::{Read, Write};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
 use tokio::io::AsyncRead;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use ussr_nbt::owned::*;
+use uuid::Uuid;
 
 const SEGMENT_BITS_U32: u32 = 0x7F;
 const SEGMENT_BITS_U64: u64 = 0x7F;
@@ -108,6 +106,10 @@ pub trait PacketEncode: Write {
         } else {
             Ok(())
         }
+    }
+
+    fn encode_uuid(&mut self, value: Uuid) -> std::io::Result<()> {
+        self.write_all(value.as_bytes())
     }
 }
 
@@ -323,6 +325,12 @@ pub trait PacketDecode: Read + Sized {
             Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid NBT data")),
         }
     }
+
+    fn decode_uuid(&mut self) -> std::io::Result<Uuid> {
+        let mut buffer = [0; 16];
+        self.read_exact(&mut buffer)?;
+        Ok(Uuid::from_bytes(buffer))
+    }
 }
 impl<T: Read + Sized> PacketDecode for T {}
 
@@ -367,7 +375,8 @@ impl<T: AsyncReadExt + Unpin> AsyncPacketDecode for T {}
 mod tests {
     use super::{AsyncPacketDecode, AsyncPacketEncode, PacketDecode, PacketEncode};
     use tokio::io::BufReader;
-    use ussr_nbt::owned::{Nbt, Tag, List};
+    use ussr_nbt::owned::{List, Nbt, Tag};
+    use uuid::Uuid;
 
     #[test]
     fn test_encode_u8() {
@@ -716,6 +725,33 @@ mod tests {
             108, 108, 111, 44, 32, 78, 66, 84, 33, 9, 0, 9, 84, 101, 115, 116, 32, 108, 105, 115, 116,
             5, 0, 0, 0, 3, 63, 128, 0, 0, 64, 0, 0, 0, 64, 64, 0, 0, 0
         ]);
+    }
+
+    #[test]
+    fn test_encode_uuid() {
+        let mut buffer = Vec::new();
+        buffer
+            .encode_uuid(Uuid::parse_str("7fd2fd2c-b6d7-4ddf-b642-6c329296adf8").unwrap())
+            .expect("Encoding failed");
+        assert_eq!(
+            buffer,
+            vec![
+                0x7f, 0xd2, 0xfd, 0x2c, 0xb6, 0xd7, 0x4d, 0xdf, 0xb6, 0x42, 0x6c, 0x32, 0x92, 0x96,
+                0xad, 0xf8
+            ]
+        );
+    }
+
+    #[test]
+    fn test_decode_uuid() {
+        let mut buffer: &[u8] = &[
+            0x7f, 0xd2, 0xfd, 0x2c, 0xb6, 0xd7, 0x4d, 0xdf, 0xb6, 0x42, 0x6c, 0x32, 0x92, 0x96,
+            0xad, 0xf8
+        ];
+        assert_eq!(
+            buffer.decode_uuid().expect("Decoding failed"),
+            Uuid::parse_str("7fd2fd2c-b6d7-4ddf-b642-6c329296adf8").unwrap()
+        );
     }
 
 }
