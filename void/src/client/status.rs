@@ -29,14 +29,14 @@ impl StatusClient {
                 Ok(packet) => match packet {
                     serverbound::StatusPacket::StatusRequest(_) => {
                         self.client
-                            .send(&clientbound::PlayPacket::StatusResponse(StatusResponse {
+                            .send(&clientbound::StatusPacket::StatusResponse(StatusResponse {
                                 status: self.game.lock().await.status(self.protocol_version),
                             }))
                             .await?;
                     }
                     serverbound::StatusPacket::PingRequest(packet) => {
                         self.client
-                            .send(&clientbound::PlayPacket::PingResponse(PingResponse {
+                            .send(&clientbound::StatusPacket::PingResponse(PingResponse {
                                 timestamp: packet.timestamp,
                             }))
                             .await?;
