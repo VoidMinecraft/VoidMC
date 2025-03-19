@@ -1,3 +1,4 @@
+mod configuration;
 mod handshake;
 mod login;
 mod status;
@@ -24,7 +25,10 @@ impl Client {
         let client = client.run().await?;
 
         match client {
-            HandshakeClientNext::Login(client) => client.run().await,
+            HandshakeClientNext::Login(client) => {
+                let client = client.run().await?;
+                client.run().await
+            }
             HandshakeClientNext::Status(client) => client.run().await,
         }
     }

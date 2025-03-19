@@ -1,7 +1,9 @@
-use crate::game::Game;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+use super::configuration::ConfigurationClient;
+use crate::game::Game;
 use void_net::clientbound::{LoginSuccess, Property};
 use void_net::{ClientSocket, clientbound, serverbound};
 
@@ -25,7 +27,7 @@ impl LoginClient {
         }
     }
 
-    pub async fn run(mut self) -> std::io::Result<()> {
+    pub async fn run(mut self) -> std::io::Result<ConfigurationClient> {
         loop {
             match self.client.receive::<serverbound::LoginPacket>().await {
                 Ok(packet) => match packet {
@@ -50,25 +52,24 @@ impl LoginClient {
                             ],
                         })).await?;
                     }
-                    serverbound::LoginPacket::LoginAcknowledged(_) => {
-                        let client_identity;
-                        match self.client_identity {
-                            Some(ref identity) => {
-                                client_identity = identity;
-                            }
-                            None => {
-                                eprintln!("[Auth] Login acknowledged without identity");
-                                return Err(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "Login acknowledged without identity",
-                                ));
-                            }
+                    serverbound::LoginPacket::LoginAcknowledged(_) => match self.client_identity {
+                        Some(identity) => {
+                            println!(
+                                "[Auth] Login acknowledged for {} ({})",
+                                identity.uuid, identity.name
+                            );
+                            return Ok(
+                                ConfigurationClient::new(self.client, self.game, identity).await?
+                            );
                         }
-                        println!(
-                            "[Auth] Login acknowledged for {} ({})",
-                            &client_identity.uuid, &client_identity.name
-                        );
-                    }
+                        None => {
+                            eprintln!("[Auth] Login acknowledged without identity");
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Login acknowledged without identity",
+                            ));
+                        }
+                    },
                 },
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
