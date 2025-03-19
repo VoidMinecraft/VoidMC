@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
 void-net = { path = "../void-net" }
+uuid = { version = "1.16.0", features = ["v4"] }

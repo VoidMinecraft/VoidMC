@@ -1,6 +1,7 @@
 mod login_success;
 
 pub use login_success::LoginSuccess;
+pub use login_success::Property;
 
 use crate::{Packet, PacketDecode, PacketEncode, PacketId, StatePacket};
 
