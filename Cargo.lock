@@ -504,6 +504,7 @@ name = "void"
 version = "0.1.0"
 dependencies = [
  "tokio",
+ "ussr-nbt",
  "uuid",
  "void-net",
 ]

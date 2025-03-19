@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use std::io::{Read, Write};
-use tokio::io::AsyncRead;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use ussr_nbt::owned::*;
 use uuid::Uuid;
@@ -97,7 +96,7 @@ pub trait PacketEncode: Write {
         self.write_all(value.as_bytes())
     }
 
-    fn encode_nbt(&mut self, mut value: Nbt) -> std::io::Result<()> {
+    fn encode_nbt(&mut self, value: &Nbt) -> std::io::Result<()> {
         let mut buffer = Vec::new();
         value.write(&mut buffer)?;
         self.write_all(&[0x0A])?;
@@ -135,7 +134,7 @@ pub trait AsyncPacketEncode: AsyncWriteExt + Unpin {
     }
 }
 
-pub struct CustomReader<'a, T: Read>{
+pub struct CustomReader<'a, T: Read> {
     read_bytes: usize,
     inner: &'a mut T,
 }
@@ -166,7 +165,6 @@ impl<'a, T: Read> Read for CustomReader<'a, T> {
     }
 }
 
-
 #[async_trait]
 impl<T: AsyncWriteExt + Unpin> AsyncPacketEncode for T {}
 
@@ -175,7 +173,7 @@ impl<T: AsyncWriteExt + Unpin> AsyncPacketEncode for T {}
 /// This trait extends the `Read` trait and provides methods for decoding
 /// different primitive types and strings from a byte stream, according
 pub trait PacketDecode: Read + Sized {
-/// to the Minecraft protocol.
+    /// to the Minecraft protocol.
     fn decode_u8(&mut self) -> std::io::Result<u8> {
         let mut buffer = [0; 1];
         self.read_exact(&mut buffer)?;
@@ -315,14 +313,16 @@ pub trait PacketDecode: Read + Sized {
         })?)
     }
 
-    fn decode_nbt(&mut self) -> std::io::Result<Nbt>
-    {
+    fn decode_nbt(&mut self) -> std::io::Result<Nbt> {
         match Nbt::read(&mut CustomReader {
             read_bytes: 0,
-            inner: self
+            inner: self,
         }) {
             Ok(value) => Ok(value),
-            Err(_) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid NBT data")),
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid NBT data",
+            )),
         }
     }
 
@@ -553,17 +553,20 @@ mod tests {
         assert_eq!(buffer, vec![0x40, 0x49, 0x0f, 0xd0]);
     }
 
+    #[test]
     fn test_decode_f32() {
         let mut buffer: &[u8] = &[0x40, 0x49, 0x0f, 0xd0];
         assert_eq!(buffer.decode_f32().expect("Decoding failed"), 3.14159);
     }
 
+    #[test]
     fn test_encode_f64() {
         let mut buffer = Vec::new();
         buffer.encode_f64(3.14159).expect("Encoding failed");
         assert_eq!(buffer, vec![0x40, 0x09, 0x21, 0xf9, 0xf0, 0x1b, 0x86, 0x6e]);
     }
 
+    #[test]
     fn test_decode_f64() {
         let mut buffer: &[u8] = &[0x40, 0x09, 0x21, 0xf9, 0xf0, 0x1b, 0x86, 0x6e];
         assert_eq!(buffer.decode_f64().expect("Decoding failed"), 3.14159);
@@ -608,7 +611,10 @@ mod tests {
     #[test]
     fn test_decode_vari32() {
         let mut buffer: &[u8] = &[0xf8, 0xac, 0xd1, 0x91, 0x01];
-        assert_eq!(PacketDecode::decode_vari32(&mut buffer).expect("Decoding failed"), 0x12345678);
+        assert_eq!(
+            PacketDecode::decode_vari32(&mut buffer).expect("Decoding failed"),
+            0x12345678
+        );
     }
 
     #[tokio::test]
@@ -668,23 +674,13 @@ mod tests {
     #[test]
     fn test_decode_nbt() {
         let mut buf: &[u8] = &[
-            10, 1, 0, 9, 84, 101, 115, 116, 32, 98, 121, 116,
-            101, 123, 8, 0, 11, 84, 101, 115, 116, 32, 115, 116, 114, 105, 110, 103, 0, 11, 72, 101,
-            108, 108, 111, 44, 32, 78, 66, 84, 33, 9, 0, 9, 84, 101, 115, 116, 32, 108, 105, 115, 116,
-            5, 0, 0, 0, 3, 63, 128, 0, 0, 64, 0, 0, 0, 64, 64, 0, 0, 0,
-            0, 0 //added bytes to test read
+            10, 1, 0, 9, 84, 101, 115, 116, 32, 98, 121, 116, 101, 123, 8, 0, 11, 84, 101, 115,
+            116, 32, 115, 116, 114, 105, 110, 103, 0, 11, 72, 101, 108, 108, 111, 44, 32, 78, 66,
+            84, 33, 9, 0, 9, 84, 101, 115, 116, 32, 108, 105, 115, 116, 5, 0, 0, 0, 3, 63, 128, 0,
+            0, 64, 0, 0, 0, 64, 64, 0, 0, 0, 0, 0, //added bytes to test read
         ];
 
         let nbt = buf.decode_nbt().expect("Decoding failed");
-        let to_compare_nbt = Nbt {
-            name: "".into(),
-            compound: vec![
-                ("Test byte".into(), 123u8.into()),
-                ("Test string".into(), "Hello, NBT!".into()),
-                ("Test list".into(), vec![1f32, 2f32, 3f32].into()),
-            ]
-            .into(),
-        };
 
         assert_eq!(nbt.name.to_string(), "");
         assert_eq!(nbt.compound.tags.len(), 3);
@@ -709,22 +705,27 @@ mod tests {
     fn test_encode_nbt() {
         let mut buffer = vec![];
 
-        buffer.encode_nbt(Nbt {
-            name: "".into(),
-            compound: vec![
-                ("Test byte".into(), 123u8.into()),
-                ("Test string".into(), "Hello, NBT!".into()),
-                ("Test list".into(), vec![1f32, 2f32, 3f32].into()),
-            ]
+        buffer
+            .encode_nbt(&Nbt {
+                name: "".into(),
+                compound: vec![
+                    ("Test byte".into(), 123u8.into()),
+                    ("Test string".into(), "Hello, NBT!".into()),
+                    ("Test list".into(), vec![1f32, 2f32, 3f32].into()),
+                ]
                 .into(),
-        }).expect("Encoding failed");
+            })
+            .expect("Encoding failed");
 
-        assert_eq!(buffer, &[
-            10, 1, 0, 9, 84, 101, 115, 116, 32, 98, 121, 116,
-            101, 123, 8, 0, 11, 84, 101, 115, 116, 32, 115, 116, 114, 105, 110, 103, 0, 11, 72, 101,
-            108, 108, 111, 44, 32, 78, 66, 84, 33, 9, 0, 9, 84, 101, 115, 116, 32, 108, 105, 115, 116,
-            5, 0, 0, 0, 3, 63, 128, 0, 0, 64, 0, 0, 0, 64, 64, 0, 0, 0
-        ]);
+        assert_eq!(
+            buffer,
+            &[
+                10, 1, 0, 9, 84, 101, 115, 116, 32, 98, 121, 116, 101, 123, 8, 0, 11, 84, 101, 115,
+                116, 32, 115, 116, 114, 105, 110, 103, 0, 11, 72, 101, 108, 108, 111, 44, 32, 78,
+                66, 84, 33, 9, 0, 9, 84, 101, 115, 116, 32, 108, 105, 115, 116, 5, 0, 0, 0, 3, 63,
+                128, 0, 0, 64, 0, 0, 0, 64, 64, 0, 0, 0
+            ]
+        );
     }
 
     #[test]
@@ -746,12 +747,11 @@ mod tests {
     fn test_decode_uuid() {
         let mut buffer: &[u8] = &[
             0x7f, 0xd2, 0xfd, 0x2c, 0xb6, 0xd7, 0x4d, 0xdf, 0xb6, 0x42, 0x6c, 0x32, 0x92, 0x96,
-            0xad, 0xf8
+            0xad, 0xf8,
         ];
         assert_eq!(
             buffer.decode_uuid().expect("Decoding failed"),
             Uuid::parse_str("7fd2fd2c-b6d7-4ddf-b642-6c329296adf8").unwrap()
         );
     }
-
 }
