@@ -479,6 +479,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "uuid"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "458f7a779bf54acc9f347480ac654f68407d3aab21269a6e3c9f922acd9e2da9"
+
+[[package]]
 name = "void"
 version = "0.1.0"
 dependencies = [
@@ -496,6 +502,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "ussr-nbt",
+ "uuid",
 ]
 
 [[package]]
