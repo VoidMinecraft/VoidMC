@@ -3,6 +3,7 @@ use tokio::sync::Mutex;
 use ussr_nbt::owned::{Nbt, Tag};
 
 use super::login::ClientIdentity;
+use super::play::PlayClient;
 use crate::game::Game;
 use void_net::{
     ClientSocket,
@@ -274,7 +275,7 @@ impl ConfigurationClient {
         })
     }
 
-    pub async fn run(mut self) -> std::io::Result<()> {
+    pub async fn run(mut self) -> std::io::Result<PlayClient> {
         loop {
             match self
                 .socket
@@ -285,7 +286,7 @@ impl ConfigurationClient {
                     serverbound::ConfigurationPacket::ClientInformation(_) => {}
                     serverbound::ConfigurationPacket::KnownPacks(_) => {}
                     serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(_) => {
-                        println!("Configuration complete");
+                        return PlayClient::new(self.socket, self.game, self.identity).await;
                     }
                 },
                 Err(e) => {

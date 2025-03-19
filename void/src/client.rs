@@ -1,6 +1,7 @@
 mod configuration;
 mod handshake;
 mod login;
+mod play;
 mod status;
 
 use std::sync::Arc;
@@ -26,6 +27,7 @@ impl Client {
 
         match client {
             HandshakeClientNext::Login(client) => {
+                let client = client.run().await?;
                 let client = client.run().await?;
                 client.run().await
             }
