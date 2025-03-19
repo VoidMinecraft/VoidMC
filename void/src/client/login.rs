@@ -1,9 +1,9 @@
+use crate::game::Game;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use crate::game::Game;
-use void_net::{clientbound, serverbound, ClientSocket};
 use void_net::clientbound::{LoginSuccess, Property};
+use void_net::{ClientSocket, clientbound, serverbound};
 
 pub struct LoginClient {
     client: ClientSocket,
@@ -21,7 +21,7 @@ impl LoginClient {
         Self {
             client,
             game,
-            client_identity: None
+            client_identity: None,
         }
     }
 
@@ -50,7 +50,7 @@ impl LoginClient {
                             ],
                         })).await?;
                     }
-                    serverbound::LoginPacket::LoginAcknowledged(packet) => {
+                    serverbound::LoginPacket::LoginAcknowledged(_) => {
                         let client_identity;
                         match self.client_identity {
                             Some(ref identity) => {
@@ -58,12 +58,17 @@ impl LoginClient {
                             }
                             None => {
                                 eprintln!("[Auth] Login acknowledged without identity");
-                                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Login acknowledged without identity"));
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "Login acknowledged without identity",
+                                ));
                             }
                         }
-                        println!("[Auth] Login acknowledged for {} ({})", &client_identity.uuid, &client_identity.name);
+                        println!(
+                            "[Auth] Login acknowledged for {} ({})",
+                            &client_identity.uuid, &client_identity.name
+                        );
                     }
-                    _ => {}
                 },
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
