@@ -9,3 +9,4 @@ num_enum = "0.7.3"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tokio = { version = "1.44.1", features = ["full"] }
+ussr-nbt = { version = "0.2.1" }
