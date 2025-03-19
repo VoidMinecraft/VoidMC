@@ -1,10 +1,7 @@
 use async_trait::async_trait;
 use std::io::{Read, Write};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
 use tokio::io::AsyncRead;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use ussr_nbt::owned::*;
 use uuid::Uuid;
 
@@ -378,7 +375,7 @@ impl<T: AsyncReadExt + Unpin> AsyncPacketDecode for T {}
 mod tests {
     use super::{AsyncPacketDecode, AsyncPacketEncode, PacketDecode, PacketEncode};
     use tokio::io::BufReader;
-    use ussr_nbt::owned::{Nbt, Tag, List};
+    use ussr_nbt::owned::{List, Nbt, Tag};
     use uuid::Uuid;
 
     #[test]
