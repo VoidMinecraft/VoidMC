@@ -41,7 +41,7 @@ impl PlayClient {
                 previous_game_mode: -1,
                 is_debug: false,
                 is_flat: false,
-                has_death_location: false,
+                last_death_location: None,
                 portal_cooldown: 10,
                 sea_level: 63,
                 enforces_secure_chat: false,

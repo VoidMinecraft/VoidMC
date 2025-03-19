@@ -2,6 +2,12 @@ use crate::codec::{PacketDecode, PacketEncode};
 use crate::{Packet, PacketId};
 
 #[derive(Debug)]
+pub struct LastDeathLocation {
+    pub dimension: String,
+    pub position: u64,
+}
+
+#[derive(Debug)]
 pub struct Login {
     pub entity_id: i32,
     pub is_hardcore: bool,
@@ -19,10 +25,7 @@ pub struct Login {
     pub previous_game_mode: i8,
     pub is_debug: bool,
     pub is_flat: bool,
-    // TODO: Check in the minecraft source code
-    // for the following field because I think
-    // it was rather an Optional thing
-    pub has_death_location: bool,
+    pub last_death_location: Option<LastDeathLocation>,
     pub portal_cooldown: i32,
     pub sea_level: i32,
     pub enforces_secure_chat: bool,
@@ -49,7 +52,16 @@ impl Packet for Login {
         encoder.encode_i8(self.previous_game_mode)?;
         encoder.encode_bool(self.is_debug)?;
         encoder.encode_bool(self.is_flat)?;
-        encoder.encode_bool(self.has_death_location)?;
+        match &self.last_death_location {
+            Some(location) => {
+                encoder.encode_bool(true)?;
+                encoder.encode_str(&location.dimension)?;
+                encoder.encode_u64(location.position)?;
+            }
+            None => {
+                encoder.encode_bool(false)?;
+            }
+        }
         encoder.encode_vari32(self.portal_cooldown)?;
         encoder.encode_vari32(self.sea_level)?;
         encoder.encode_bool(self.enforces_secure_chat)
@@ -76,7 +88,14 @@ impl Packet for Login {
         let previous_game_mode = decoder.decode_i8()?;
         let is_debug = decoder.decode_bool()?;
         let is_flat = decoder.decode_bool()?;
-        let has_death_location = decoder.decode_bool()?;
+        let has_death_location = if decoder.decode_bool()? {
+            Some(LastDeathLocation {
+                dimension: decoder.decode_str()?,
+                position: decoder.decode_u64()?,
+            })
+        } else {
+            None
+        };
         let portal_cooldown = decoder.decode_vari32()?;
         let sea_level = decoder.decode_vari32()?;
         let enforces_secure_chat = decoder.decode_bool()?;
@@ -98,7 +117,7 @@ impl Packet for Login {
             previous_game_mode,
             is_debug,
             is_flat,
-            has_death_location,
+            last_death_location: has_death_location,
             portal_cooldown,
             sea_level,
             enforces_secure_chat,

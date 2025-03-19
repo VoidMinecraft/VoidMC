@@ -3,7 +3,7 @@ mod login;
 mod synchronize_player_position;
 
 pub use game_event::GameEvent;
-pub use login::Login;
+pub use login::{LastDeathLocation, Login};
 pub use synchronize_player_position::SynchronizePlayerPosition;
 
 use crate::codec::{PacketDecode, PacketEncode};
