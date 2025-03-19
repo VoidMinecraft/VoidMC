@@ -1,6 +1,7 @@
 mod login_success;
 
-use crate::clientbound::login::login_success::LoginSuccess;
+pub use login_success::LoginSuccess;
+
 use crate::{Packet, PacketDecode, PacketEncode, PacketId, StatePacket};
 
 #[derive(Debug)]
@@ -22,10 +23,7 @@ impl Packet for LoginPacket {
         let id = decoder.decode_vari32()?;
 
         match id {
-            LoginSuccess::ID => {
-                let packet = LoginSuccess::decode(decoder)?;
-                Ok(LoginPacket::LoginSuccess(packet))
-            }
+            LoginSuccess::ID => Ok(LoginPacket::LoginSuccess(LoginSuccess::decode(decoder)?)),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Invalid packet ID: {}", id),
