@@ -23,6 +23,7 @@ impl PlayClient {
         game: Arc<Mutex<Game>>,
         identity: ClientIdentity,
     ) -> std::io::Result<Self> {
+        println!("[{}] State is now Play", socket.1);
         socket
             .send(&clientbound::PlayPacket::Login(Login {
                 entity_id: 1,

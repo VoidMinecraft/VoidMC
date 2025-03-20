@@ -8,7 +8,7 @@ use void_net::clientbound::{LoginSuccess, Property};
 use void_net::{ClientSocket, clientbound, serverbound};
 
 pub struct LoginClient {
-    client: ClientSocket,
+    socket: ClientSocket,
     game: Arc<Mutex<Game>>,
     client_identity: Option<ClientIdentity>,
 }
@@ -19,9 +19,10 @@ pub struct ClientIdentity {
 }
 
 impl LoginClient {
-    pub fn new(client: ClientSocket, game: Arc<Mutex<Game>>) -> Self {
+    pub fn new(socket: ClientSocket, game: Arc<Mutex<Game>>) -> Self {
+        println!("[{}] State is now Login", socket.1);
         Self {
-            client,
+            socket,
             game,
             client_identity: None,
         }
@@ -29,10 +30,13 @@ impl LoginClient {
 
     pub async fn run(mut self) -> std::io::Result<ConfigurationClient> {
         loop {
-            match self.client.receive::<serverbound::LoginPacket>().await {
+            match self.socket.receive::<serverbound::LoginPacket>().await {
                 Ok(packet) => match packet {
                     serverbound::LoginPacket::LoginStart(packet) => {
-                        println!("[Auth] Login start for {} ({})", &packet.uuid, &packet.name);
+                        println!(
+                            "[{}] Login start for {} ({})",
+                            self.socket.1, &packet.uuid, &packet.name
+                        );
 
                         // Set identity
                         self.client_identity = Some(ClientIdentity {
@@ -40,7 +44,7 @@ impl LoginClient {
                             name: packet.name.clone(),
                         });
 
-                        self.client.send(&clientbound::LoginPacket::LoginSuccess(LoginSuccess {
+                        self.socket.send(&clientbound::LoginPacket::LoginSuccess(LoginSuccess {
                             uuid: packet.uuid,
                             username: packet.name,
                             properties: vec![
@@ -55,15 +59,15 @@ impl LoginClient {
                     serverbound::LoginPacket::LoginAcknowledged(_) => match self.client_identity {
                         Some(identity) => {
                             println!(
-                                "[Auth] Login acknowledged for {} ({})",
-                                identity.uuid, identity.name
+                                "[{}] Login acknowledged for {} ({})",
+                                self.socket.1, identity.uuid, identity.name
                             );
                             return Ok(
-                                ConfigurationClient::new(self.client, self.game, identity).await?
+                                ConfigurationClient::new(self.socket, self.game, identity).await?
                             );
                         }
                         None => {
-                            eprintln!("[Auth] Login acknowledged without identity");
+                            eprintln!("[{}] Login acknowledged without identity", self.socket.1);
                             return Err(std::io::Error::new(
                                 std::io::ErrorKind::Other,
                                 "Login acknowledged without identity",

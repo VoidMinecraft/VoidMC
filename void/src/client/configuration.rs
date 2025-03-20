@@ -75,6 +75,7 @@ impl ConfigurationClient {
         game: Arc<Mutex<Game>>,
         identity: ClientIdentity,
     ) -> std::io::Result<Self> {
+        println!("[{}] State is now Configuration", socket.1);
         socket
             .send(&clientbound::ConfigurationPacket::KnownPacks(KnownPacks {
                 known_packs: vec![KnownPack {
