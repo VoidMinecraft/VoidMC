@@ -9,15 +9,16 @@ use void_net::{
 };
 
 pub struct StatusClient {
-    client: ClientSocket,
+    socket: ClientSocket,
     game: Arc<Mutex<Game>>,
     protocol_version: i32,
 }
 
 impl StatusClient {
-    pub fn new(client: ClientSocket, game: Arc<Mutex<Game>>, protocol_version: i32) -> Self {
+    pub fn new(socket: ClientSocket, game: Arc<Mutex<Game>>, protocol_version: i32) -> Self {
+        println!("[{}] State is now Status", socket.1);
         Self {
-            client,
+            socket,
             game,
             protocol_version,
         }
@@ -25,17 +26,17 @@ impl StatusClient {
 
     pub async fn run(mut self) -> std::io::Result<()> {
         loop {
-            match self.client.receive::<serverbound::StatusPacket>().await {
+            match self.socket.receive::<serverbound::StatusPacket>().await {
                 Ok(packet) => match packet {
                     serverbound::StatusPacket::StatusRequest(_) => {
-                        self.client
+                        self.socket
                             .send(&clientbound::StatusPacket::StatusResponse(StatusResponse {
                                 status: self.game.lock().await.status(self.protocol_version),
                             }))
                             .await?;
                     }
                     serverbound::StatusPacket::PingRequest(packet) => {
-                        self.client
+                        self.socket
                             .send(&clientbound::StatusPacket::PingResponse(PingResponse {
                                 timestamp: packet.timestamp,
                             }))

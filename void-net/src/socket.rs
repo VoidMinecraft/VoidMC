@@ -1,11 +1,11 @@
+use std::net::SocketAddr;
 use std::usize;
-
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::{AsyncPacketDecode, AsyncPacketEncode, StatePacket};
 
-pub struct ClientSocket(TcpStream);
+pub struct ClientSocket(TcpStream, pub SocketAddr);
 
 impl ClientSocket {
     pub async fn receive<T: StatePacket>(&mut self) -> std::io::Result<T> {
@@ -38,7 +38,7 @@ pub struct ServerSocket(pub TcpListener);
 
 impl ServerSocket {
     pub async fn accept(&self) -> std::io::Result<ClientSocket> {
-        let (stream, _) = self.0.accept().await?;
-        Ok(ClientSocket(stream))
+        let (stream, addr) = self.0.accept().await?;
+        Ok(ClientSocket(stream, addr))
     }
 }

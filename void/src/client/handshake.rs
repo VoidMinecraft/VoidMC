@@ -7,7 +7,7 @@ use crate::game::Game;
 use void_net::{ClientSocket, State, serverbound};
 
 pub struct HanshakeClient {
-    client: ClientSocket,
+    socket: ClientSocket,
     game: Arc<Mutex<Game>>,
 }
 
@@ -17,25 +17,26 @@ pub enum HandshakeClientNext {
 }
 
 impl HanshakeClient {
-    pub fn new(client: ClientSocket, game: Arc<Mutex<Game>>) -> Self {
-        Self { client, game }
+    pub fn new(socket: ClientSocket, game: Arc<Mutex<Game>>) -> Self {
+        println!("[{}] State is now Handshake", socket.1);
+        Self { socket, game }
     }
 
     pub async fn run(mut self) -> std::io::Result<HandshakeClientNext> {
         loop {
-            match self.client.receive::<serverbound::HandshakePacket>().await {
+            match self.socket.receive::<serverbound::HandshakePacket>().await {
                 Ok(packet) => match packet {
                     serverbound::HandshakePacket::Handshake(packet) => match packet.next_state {
                         State::Status => {
                             return Ok(HandshakeClientNext::Status(StatusClient::new(
-                                self.client,
+                                self.socket,
                                 self.game,
                                 packet.protocol_version,
                             )));
                         }
                         State::Login => {
                             return Ok(HandshakeClientNext::Login(LoginClient::new(
-                                self.client,
+                                self.socket,
                                 self.game,
                             )));
                         }
