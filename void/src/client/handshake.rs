@@ -4,7 +4,8 @@ use tokio::sync::Mutex;
 use super::login::LoginClient;
 use super::status::StatusClient;
 use crate::game::Game;
-use void_net::{ClientSocket, State, serverbound};
+use void_net::ClientSocket;
+use void_protocol::{State, serverbound};
 
 pub struct HanshakeClient {
     socket: ClientSocket,

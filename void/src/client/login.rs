@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+use void_net::ClientSocket;
 
 use super::configuration::ConfigurationClient;
 use crate::game::Game;
-use void_net::clientbound::{LoginSuccess, Property};
-use void_net::{ClientSocket, clientbound, serverbound};
+use void_protocol::clientbound::{LoginSuccess, Property};
+use void_protocol::{clientbound, serverbound};
 
 pub struct LoginClient {
     socket: ClientSocket,

@@ -5,8 +5,8 @@ use ussr_nbt::owned::{Nbt, Tag};
 use super::login::ClientIdentity;
 use super::play::PlayClient;
 use crate::game::Game;
-use void_net::{
-    ClientSocket,
+use void_net::ClientSocket;
+use void_protocol::{
     clientbound::{self, FinishConfiguration, KnownPack, KnownPacks, RegistryData, RegistryEntry},
     serverbound,
 };
