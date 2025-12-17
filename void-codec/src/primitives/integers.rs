@@ -39,6 +39,24 @@ impl Decode for u8 {
     }
 }
 
+impl Encode for i8 {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push(*self as u8);
+    }
+}
+
+impl Decode for i8 {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        if buf.is_empty() {
+            return Err(DecodeError::UnexpectedEof);
+        }
+
+        let value = buf[0] as i8;
+        *buf = &buf[1..];
+        Ok(value)
+    }
+}
+
 impl Encode for i64 {
     fn encode(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&self.to_be_bytes());
@@ -229,6 +247,87 @@ mod tests {
             value.encode(&mut buf);
             assert_eq!(buf, vec![*value]);
         }
+    }
+
+    #[test]
+    fn test_i8_single_byte() {
+        let value = 42i8;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf.len(), 1);
+
+        let mut slice = buf.as_slice();
+        let decoded = i8::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_i8_negative() {
+        let value = -1i8;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0xFF]);
+
+        let mut slice = buf.as_slice();
+        let decoded = i8::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_i8_zero() {
+        let value = 0i8;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x00]);
+
+        let mut slice = buf.as_slice();
+        let decoded = i8::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_i8_max() {
+        let value = i8::MAX;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x7F]);
+
+        let mut slice = buf.as_slice();
+        let decoded = i8::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_i8_min() {
+        let value = i8::MIN;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x80]);
+
+        let mut slice = buf.as_slice();
+        let decoded = i8::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_i8_roundtrip() {
+        let values = [0i8, 1, -1, 127, -128, 42, -42];
+        for value in &values {
+            let mut buf = Vec::new();
+            value.encode(&mut buf);
+
+            let mut slice = buf.as_slice();
+            let decoded = i8::decode(&mut slice).unwrap();
+            assert_eq!(decoded, *value);
+        }
+    }
+
+    #[test]
+    fn test_i8_eof() {
+        let buf = Vec::new();
+        let mut slice = buf.as_slice();
+        let result = i8::decode(&mut slice);
+        assert!(result.is_err());
     }
 
     #[test]
