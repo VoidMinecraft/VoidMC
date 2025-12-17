@@ -1,0 +1,412 @@
+use crate::{Decode, DecodeError, Encode};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VarI32(pub i32);
+
+impl Encode for VarI32 {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        let mut value = self.0 as u32;
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+
+            if value != 0 {
+                byte |= 0x80;
+            }
+
+            buf.push(byte);
+
+            if value == 0 {
+                break;
+            }
+        }
+    }
+}
+
+impl Decode for VarI32 {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        let mut value: u32 = 0;
+        let mut shift = 0;
+
+        for _ in 0..5 {
+            if buf.is_empty() {
+                return Err(DecodeError::UnexpectedEof);
+            }
+
+            let byte = buf[0];
+            *buf = &buf[1..];
+
+            value |= ((byte & 0x7F) as u32) << shift;
+
+            if byte & 0x80 == 0 {
+                return Ok(VarI32(value as i32));
+            }
+
+            shift += 7;
+        }
+
+        Err(DecodeError::InvalidVarintLength)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vari32_zero() {
+        let value = VarI32(0);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x00]);
+
+        let mut slice = buf.as_slice();
+        let decoded = VarI32::decode(&mut slice).unwrap();
+        assert_eq!(decoded.0, 0);
+    }
+
+    #[test]
+    fn test_vari32_small_positive() {
+        let value = VarI32(127);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x7F]);
+
+        let mut slice = buf.as_slice();
+        let decoded = VarI32::decode(&mut slice).unwrap();
+        assert_eq!(decoded.0, 127);
+    }
+
+    #[test]
+    fn test_vari32_128() {
+        let value = VarI32(128);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x80, 0x01]);
+
+        let mut slice = buf.as_slice();
+        let decoded = VarI32::decode(&mut slice).unwrap();
+        assert_eq!(decoded.0, 128);
+    }
+
+    #[test]
+    fn test_vari32_negative() {
+        let value = VarI32(-1);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = VarI32::decode(&mut slice).unwrap();
+        assert_eq!(decoded.0, -1);
+    }
+
+    #[test]
+    fn test_vari32_max() {
+        let value = VarI32(i32::MAX);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = VarI32::decode(&mut slice).unwrap();
+        assert_eq!(decoded.0, i32::MAX);
+    }
+
+    #[test]
+    fn test_vari32_min() {
+        let value = VarI32(i32::MIN);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = VarI32::decode(&mut slice).unwrap();
+        assert_eq!(decoded.0, i32::MIN);
+    }
+
+    #[test]
+    fn test_vari32_truncated() {
+        let mut slice = &[0x80][..];
+        let result = VarI32::decode(&mut slice);
+        assert_eq!(result, Err(DecodeError::UnexpectedEof));
+    }
+
+    #[test]
+    fn test_vari32_too_long() {
+        let bytes = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        let mut slice = bytes.as_slice();
+        let result = VarI32::decode(&mut slice);
+        assert_eq!(result, Err(DecodeError::InvalidVarintLength));
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_zero() {
+        let value = VarI32(0);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x00]);
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_one() {
+        let value = VarI32(1);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x01]);
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_127() {
+        let value = VarI32(127);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x7F]);
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_128() {
+        let value = VarI32(128);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x80, 0x01]);
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_255() {
+        let value = VarI32(255);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0xFF, 0x01]);
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_256() {
+        let value = VarI32(256);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x80, 0x02]);
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_16383() {
+        let value = VarI32(16383);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0xFF, 0x7F]);
+    }
+
+    #[test]
+    fn test_vari32_exact_bytes_16384() {
+        let value = VarI32(16384);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x80, 0x80, 0x01]);
+    }
+
+    #[test]
+    fn test_vari32_negative_exact_bytes() {
+        let value = VarI32(-1);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0xFF, 0xFF, 0xFF, 0xFF, 0x0F]);
+    }
+
+    #[test]
+    fn test_vari32_negative_two() {
+        let value = VarI32(-2);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0xFE, 0xFF, 0xFF, 0xFF, 0x0F]);
+    }
+
+    #[test]
+    fn test_vari32_negative_128() {
+        let value = VarI32(-128);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x80, 0xFF, 0xFF, 0xFF, 0x0F]);
+    }
+
+    #[test]
+    fn test_vari32_100() {
+        let value = VarI32(100);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf, vec![100]);
+    }
+
+    #[test]
+    fn test_vari32_1000() {
+        let value = VarI32(1000);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf, vec![0xE8, 0x07]);
+    }
+
+    #[test]
+    fn test_vari32_serialization_efficiency() {
+        struct TestCase {
+            value: i32,
+            expected_len: usize,
+        }
+
+        let cases = [
+            TestCase {
+                value: 0,
+                expected_len: 1,
+            },
+            TestCase {
+                value: 127,
+                expected_len: 1,
+            },
+            TestCase {
+                value: 128,
+                expected_len: 2,
+            },
+            TestCase {
+                value: 16383,
+                expected_len: 2,
+            },
+            TestCase {
+                value: 16384,
+                expected_len: 3,
+            },
+            TestCase {
+                value: i32::MAX,
+                expected_len: 5,
+            },
+        ];
+
+        for case in &cases {
+            let mut buf = Vec::new();
+            VarI32(case.value).encode(&mut buf);
+            assert_eq!(
+                buf.len(),
+                case.expected_len,
+                "VarI32({}) should encode to {} bytes, got {}",
+                case.value,
+                case.expected_len,
+                buf.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_vari32_java_compliance_roundtrip() {
+        let test_values = [
+            0,
+            1,
+            127,
+            128,
+            255,
+            256,
+            16383,
+            16384,
+            -1,
+            -2,
+            -128,
+            -32768,
+            i32::MAX,
+            i32::MIN,
+        ];
+
+        for value in &test_values {
+            let vi32 = VarI32(*value);
+            let mut buf = Vec::new();
+            vi32.encode(&mut buf);
+
+            let mut slice = buf.as_slice();
+            let decoded = VarI32::decode(&mut slice).unwrap();
+            assert_eq!(
+                decoded.0, *value,
+                "VarI32 roundtrip failed for value {}",
+                value
+            );
+            assert_eq!(
+                slice.len(),
+                0,
+                "VarI32 decode didn't consume all bytes for value {}",
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn test_vari32_max_bytes_limit() {
+        let mut buf = Vec::new();
+        (i32::MAX).encode(&mut buf);
+        assert!(
+            buf.len() <= 5,
+            "VarI32 should encode to at most 5 bytes, got {}",
+            buf.len()
+        );
+    }
+
+    #[test]
+    fn test_vari32_more_than_five_bytes_rejected() {
+        let bytes = vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01];
+        let mut slice = bytes.as_slice();
+        let result = VarI32::decode(&mut slice);
+        assert!(
+            result.is_err(),
+            "VarI32 with 6 bytes should be rejected like Java's position >= 32 check"
+        );
+    }
+
+    #[test]
+    fn test_vari32_java_segment_and_continue_bits() {
+        let value = VarI32(300);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf[0] & 0x80, 0x80, "First byte should have continue bit");
+        assert_eq!(
+            buf[1] & 0x80,
+            0x00,
+            "Last byte should NOT have continue bit"
+        );
+
+        let segment_bits = 0x7F;
+
+        assert_eq!(
+            buf[0] & segment_bits,
+            300u32 as u8 & segment_bits,
+            "First byte segment bits should match"
+        );
+    }
+
+    #[test]
+    fn test_vari32_java_logic_equivalence() {
+        let test_values = [0, 1, 63, 64, 127, 128, 255, 256, 16383, 16384];
+
+        for &value in &test_values {
+            let vi32 = VarI32(value);
+            let mut buf = Vec::new();
+            vi32.encode(&mut buf);
+
+            assert!(buf.len() >= 1, "VarI32 should encode to at least 1 byte");
+            assert!(buf.len() <= 5, "VarI32 should encode to at most 5 bytes");
+
+            let mut decoded_value = 0u32;
+            for (i, &byte) in buf.iter().enumerate() {
+                decoded_value |= ((byte & 0x7F) as u32) << (i * 7);
+
+                if byte & 0x80 == 0 {
+                    assert_eq!(
+                        i + 1,
+                        buf.len(),
+                        "No-continue-bit should be on the last byte"
+                    );
+                    break;
+                }
+            }
+
+            assert_eq!(
+                decoded_value, value as u32,
+                "Manual decode should match encoded value for {}: bytes = {:?}",
+                value, buf
+            );
+        }
+    }
+}

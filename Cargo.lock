@@ -510,6 +510,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "void-codec"
+version = "0.1.0"
+dependencies = [
+ "ussr-nbt",
+ "uuid",
+ "void-codec-macros",
+]
+
+[[package]]
+name = "void-codec-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "void-net"
 version = "0.1.0"
 dependencies = [
