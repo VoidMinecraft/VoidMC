@@ -11,12 +11,10 @@ use void_protocol::{
 };
 
 /// Generates a chunk at the given coordinates.
-/// If the chunk is at (0, 0), it will have a stone layer at section 3.
+/// If the chunk is at (0, 0), it will have a single stone layer at Y=0.
 pub fn generate_chunk(chunk_x: i32, chunk_z: i32) -> Chunk {
-    let stone_section_index = 3;
-
     if chunk_x == 0 && chunk_z == 0 {
-        Chunk::flat_stone(chunk_x, chunk_z, stone_section_index)
+        Chunk::flat_stone(chunk_x, chunk_z)
     } else {
         Chunk::empty(chunk_x, chunk_z)
     }
@@ -101,14 +99,14 @@ impl PlayClient {
             }))
             .await?;
 
-        // 5. Player Position
+        // 5. Player Position (spawn above the stone layer at Y=0)
         println!("Sending player position");
         socket
             .send(&clientbound::PlayPacket::SynchronizePlayerPosition(
                 SynchronizePlayerPosition {
                     teleport_id: 0,
                     x: 8.5,
-                    y: 0.0,
+                    y: 1.0,
                     z: 8.5,
                     vx: 0.0,
                     vy: 0.0,
