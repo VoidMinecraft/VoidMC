@@ -51,6 +51,31 @@ impl Decode for String {
     }
 }
 
+impl<T: Encode> Encode for Option<T> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Some(value) => {
+                true.encode(buf);
+                value.encode(buf);
+            }
+            None => {
+                false.encode(buf);
+            }
+        }
+    }
+}
+
+impl<T: Decode> Decode for Option<T> {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        let present = bool::decode(buf)?;
+        if present {
+            T::decode(buf).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +351,113 @@ mod tests {
 
         let mut slice = buf.as_slice();
         let result = String::decode(&mut slice);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_option_some_i32() {
+        let value: Option<i32> = Some(42);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [true/0x01] + [42 as 4 bytes big-endian]
+        assert_eq!(buf.len(), 5);
+        assert_eq!(buf[0], 1); // true
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<i32> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(42));
+    }
+
+    #[test]
+    fn test_option_none_i32() {
+        let value: Option<i32> = None;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [false/0x00]
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 0); // false
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<i32> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, None);
+    }
+
+    #[test]
+    fn test_option_some_string() {
+        let value: Option<String> = Some(String::from("hello"));
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [true/0x01] + [VarI32(5)] + [hello as UTF-8]
+        assert!(buf.len() > 1);
+        assert_eq!(buf[0], 1); // true
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<String> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(String::from("hello")));
+    }
+
+    #[test]
+    fn test_option_some_vec() {
+        let value: Option<Vec<i32>> = Some(vec![1, 2, 3]);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [true/0x01] + [VarI32(3)] + [1, 2, 3 as 4-byte big-endian each]
+        assert!(buf.len() > 1);
+        assert_eq!(buf[0], 1); // true
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<Vec<i32>> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_option_nested() {
+        let value: Option<Option<i32>> = Some(Some(100));
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<Option<i32>> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(Some(100)));
+    }
+
+    #[test]
+    fn test_option_nested_none() {
+        let value: Option<Option<i32>> = Some(None);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<Option<i32>> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(None));
+    }
+
+    #[test]
+    fn test_option_roundtrip() {
+        let cases: Vec<Option<i32>> = vec![Some(0), Some(-1), Some(2147483647), None];
+
+        for value in cases {
+            let mut buf = Vec::new();
+            value.encode(&mut buf);
+
+            let mut slice = buf.as_slice();
+            let decoded = Option::decode(&mut slice).unwrap();
+            assert_eq!(decoded, value);
+        }
+    }
+
+    #[test]
+    fn test_option_incomplete_data() {
+        // Create a buffer with only the presence boolean, no data
+        let mut buf = Vec::new();
+        true.encode(&mut buf); // Present, but no i32 data follows
+
+        let mut slice = buf.as_slice();
+        let result: Result<Option<i32>, _> = Option::decode(&mut slice);
         assert!(result.is_err());
     }
 }

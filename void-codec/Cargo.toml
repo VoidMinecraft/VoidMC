@@ -5,5 +5,5 @@ edition = "2021"
 
 [dependencies]
 void-codec-macros = { path = "../void-codec-macros" }
-uuid = "1.16.0"
+uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"
