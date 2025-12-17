@@ -1,14 +1,90 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error};
+use ussr_nbt::owned::Nbt;
 use void_net::ClientSocket;
 
 use super::login::ClientIdentity;
 use crate::game::Game;
 use void_protocol::{
-    clientbound::{self, GameEvent, Login, SynchronizePlayerPosition},
+    clientbound::{self, ChunkDataAndLight, GameEvent, Login, SetCenterChunk, SynchronizePlayerPosition},
     serverbound,
 };
+
+fn write_varint_to_vec(vec: &mut Vec<u8>, value: i32) {
+    let mut value = value as u32;
+    loop {
+        if (value & !0x7F) == 0 {
+            vec.push(value as u8);
+            return;
+        }
+        vec.push(((value & 0x7F) | 0x80) as u8);
+        value >>= 7;
+    }
+}
+
+pub fn generate_chunk(chunk_x: i32, chunk_z: i32) -> ChunkDataAndLight {
+    let mut data = Vec::new();
+
+    let stone_section_index = 3;
+
+    for section_idx in 0..24 {
+        let mut block_count: i16 = 0;
+        let mut block_state_id = 0; // Air
+        let biome_id = 1; // Plains
+
+        // If we are at chunk 0,0 and at section Y=0 -> Stone
+        if chunk_x == 0 && chunk_z == 0 && section_idx == stone_section_index {
+            block_count = 4096;
+            block_state_id = 1; // Stone
+        }
+
+        // 1. Block Count
+        data.extend_from_slice(&block_count.to_be_bytes());
+
+        // 2. Block States (Single Value Palette)
+        data.push(0); // BPE = 0
+        write_varint_to_vec(&mut data, block_state_id); // Palette ID
+        write_varint_to_vec(&mut data, 0); // Data Length = 0
+
+        // 3. Biomes (Single Value Palette)
+        data.push(0); // BPE = 0
+        write_varint_to_vec(&mut data, biome_id);
+        write_varint_to_vec(&mut data, 0);
+    }
+
+    // --- Heightmap (NBT) ---
+    // Client needs NBT Compound containing "MOTION_BLOCKING".
+    // Longs Table (i64).
+    // Size: 256 values * 9 bits = 2304 bits. 2304 / 64 = 36 Longs.
+    let motion_blocking: Vec<i64> = vec![0i64; 36];
+
+    let heightmaps = Nbt {
+        name: "".into(),
+        compound: vec![
+            ("MOTION_BLOCKING".into(), motion_blocking.into()),
+        ].into(),
+    };
+
+    // --- Lights ---
+    // 24 sections + 2 sentinels = 26 bits.
+    let empty_mask = vec![0xFFFFFFFFFFFFFFFF];
+    let zero_mask = vec![0];
+
+    ChunkDataAndLight {
+        chunk_x,
+        chunk_z,
+        heightmaps,
+        data,
+        block_entities: Vec::new(),
+        sky_light_mask: zero_mask.clone(),
+        block_light_mask: zero_mask.clone(),
+        empty_sky_light_mask: empty_mask.clone(),
+        empty_block_light_mask: empty_mask.clone(),
+        sky_light_arrays: Vec::new(),
+        block_light_arrays: Vec::new(),
+    }
+}
 
 pub struct PlayClient {
     socket: ClientSocket,
@@ -34,6 +110,8 @@ impl PlayClient {
             uuid = %uuid,
             "Player entered Play state"
         );
+
+        // 1. Login
         socket
             .send(&clientbound::PlayPacket::Login(Login {
                 entity_id: 1,
@@ -59,6 +137,26 @@ impl PlayClient {
             }))
             .await?;
 
+        // 2. Set Center Chunk
+        socket
+            .send(&clientbound::PlayPacket::SetCenterChunk(clientbound::SetCenterChunk {
+                chunk_x: 0,
+                chunk_z: 0,
+            }))
+            .await?;
+
+        // 3. Send Chunks (3x3 for now)
+        println!("Sending chunks");
+        let radius = 1;
+        for x in -radius..=radius {
+            for z in -radius..=radius {
+                let chunk_packet = generate_chunk(x, z);
+                socket.send(&clientbound::PlayPacket::ChunkDataAndLight(chunk_packet)).await?;
+            }
+        }
+
+        // 4. Game Event
+        println!("Sending game event");
         socket
             .send(&clientbound::PlayPacket::GameEvent(GameEvent {
                 event: clientbound::GameEventType::StartWaitingForLevelChunks,
@@ -66,13 +164,15 @@ impl PlayClient {
             }))
             .await?;
 
+        // 5. Player Position
+        println!("Sending player position");
         socket
             .send(&clientbound::PlayPacket::SynchronizePlayerPosition(
                 SynchronizePlayerPosition {
                     teleport_id: 0,
-                    x: 0.0,
+                    x: 8.5,
                     y: 0.0,
-                    z: 0.0,
+                    z: 8.5,
                     vx: 0.0,
                     vy: 0.0,
                     vz: 0.0,
