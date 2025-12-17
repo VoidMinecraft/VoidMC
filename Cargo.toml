@@ -1,3 +1,9 @@
 [workspace]
-resolver = "2"
-members = ["void", "void-net", "void-codec", "void-codec-macros"]
+resolver = "3"
+members = [
+  "void",
+  "void-net",
+  "void-codec",
+  "void-codec-macros",
+  "void-protocol",
+]
