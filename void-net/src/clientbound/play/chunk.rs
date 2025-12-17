@@ -73,9 +73,15 @@ pub struct ChunkSection {
 pub enum PaletteData {
     /// Single value palette (bits per entry = 0)
     SingleValue(i32),
-    // TODO: Add support for indirect and direct palettes
-    // Indirect { bits_per_entry: u8, palette: Vec<i32>, data: Vec<u64> },
-    // Direct { bits_per_entry: u8, data: Vec<u64> },
+    /// Indirect palette with custom data
+    Indirect {
+        /// Bits per entry (4-8 for blocks, 1-3 for biomes)
+        bits_per_entry: u8,
+        /// Palette mapping indices to block/biome state IDs
+        palette: Vec<i32>,
+        /// Packed data array (each long contains multiple entries)
+        data: Vec<u64>,
+    },
 }
 
 impl ChunkSection {
@@ -97,32 +103,95 @@ impl ChunkSection {
         }
     }
 
+    /// Creates a section with a single layer of blocks at a specific Y level within the section.
+    /// 
+    /// # Arguments
+    /// * `y_level` - The Y level within the section (0-15)
+    /// * `block_state_id` - The block state ID to place
+    /// * `biome_id` - The biome ID for the section
+    pub fn with_layer(y_level: u8, block_state_id: i32, biome_id: i32) -> Self {
+        assert!(y_level < 16, "Y level must be 0-15");
+        
+        // For a single layer, we need an indirect palette with air and the block
+        // Block indices: (y * 256) + (z * 16) + x
+        // Layer at y_level means indices from (y_level * 256) to (y_level * 256 + 255)
+        
+        let bits_per_entry: u8 = 4; // Minimum for blocks
+        let entries_per_long = 64 / bits_per_entry as usize; // 16 entries per long
+        let total_longs = 4096 / entries_per_long; // 256 longs
+        
+        // Palette: 0 = air, 1 = block
+        let palette = vec![0, block_state_id];
+        
+        // Build the data array
+        let mut data = vec![0u64; total_longs];
+        let layer_start = y_level as usize * 256;
+        let layer_end = layer_start + 256;
+        
+        for block_idx in layer_start..layer_end {
+            let long_idx = block_idx / entries_per_long;
+            let entry_idx = block_idx % entries_per_long;
+            let bit_offset = entry_idx * bits_per_entry as usize;
+            // Set palette index 1 (the block) for this position
+            data[long_idx] |= 1u64 << bit_offset;
+        }
+        
+        Self {
+            block_count: 256, // One layer = 16x16 = 256 blocks
+            block_state: PaletteData::Indirect {
+                bits_per_entry,
+                palette,
+                data,
+            },
+            biome: PaletteData::SingleValue(biome_id),
+        }
+    }
+
+    /// Creates a section with a floor (bottom layer, y=0) of the specified block
+    pub fn with_floor(block_state_id: i32, biome_id: i32) -> Self {
+        Self::with_layer(0, block_state_id, biome_id)
+    }
+
     /// Encodes this section to bytes
     pub fn encode_to_bytes(&self) -> Vec<u8> {
-        let mut data = Vec::new();
+        let mut bytes = Vec::new();
 
         // Block count (i16 big-endian)
-        data.extend_from_slice(&self.block_count.to_be_bytes());
+        bytes.extend_from_slice(&self.block_count.to_be_bytes());
 
         // Block states
-        match &self.block_state {
-            PaletteData::SingleValue(id) => {
-                data.push(0); // bits_per_entry = 0
-                write_varint(&mut data, *id);
-                write_varint(&mut data, 0); // data array length = 0
-            }
-        }
+        encode_palette_data(&mut bytes, &self.block_state);
 
         // Biomes
-        match &self.biome {
-            PaletteData::SingleValue(id) => {
-                data.push(0); // bits_per_entry = 0
-                write_varint(&mut data, *id);
-                write_varint(&mut data, 0); // data array length = 0
+        encode_palette_data(&mut bytes, &self.biome);
+
+        bytes
+    }
+}
+
+/// Encodes palette data to bytes
+fn encode_palette_data(bytes: &mut Vec<u8>, palette: &PaletteData) {
+    match palette {
+        PaletteData::SingleValue(id) => {
+            bytes.push(0); // bits_per_entry = 0
+            write_varint(bytes, *id);
+            write_varint(bytes, 0); // data array length = 0
+        }
+        PaletteData::Indirect { bits_per_entry, palette, data } => {
+            bytes.push(*bits_per_entry);
+            
+            // Palette length and entries
+            write_varint(bytes, palette.len() as i32);
+            for &entry in palette {
+                write_varint(bytes, entry);
+            }
+            
+            // Data array
+            write_varint(bytes, data.len() as i32);
+            for &long in data {
+                bytes.extend_from_slice(&long.to_be_bytes());
             }
         }
-
-        data
     }
 }
 
@@ -243,11 +312,17 @@ impl Chunk {
         }
     }
 
-    /// Creates a flat chunk with stone at a specific section
-    pub fn flat_stone(x: i32, z: i32, stone_section: usize) -> Self {
+    /// Creates a flat chunk with a single layer of stone at a specific section and Y level.
+    /// 
+    /// # Arguments
+    /// * `x` - Chunk X coordinate
+    /// * `z` - Chunk Z coordinate
+    /// * `section_idx` - Section index (0-23, where 0 is Y=-64 to -49)
+    /// * `y_in_section` - Y level within the section (0-15)
+    pub fn with_stone_layer(x: i32, z: i32, section_idx: usize, y_in_section: u8) -> Self {
         let mut sections: Vec<ChunkSection> = (0..24).map(|_| ChunkSection::empty()).collect();
-        if stone_section < 24 {
-            sections[stone_section] = ChunkSection::filled(1, 1); // Stone, Plains
+        if section_idx < 24 {
+            sections[section_idx] = ChunkSection::with_layer(y_in_section, 1, 1); // Stone, Plains
         }
 
         Self {
@@ -257,6 +332,14 @@ impl Chunk {
             sections,
             light: LightData::empty(),
         }
+    }
+
+    /// Creates a flat chunk with a stone floor at Y=0 (world coordinates).
+    /// This places the stone in section 4, y_in_section=0 (since section 0 starts at Y=-64).
+    pub fn flat_stone(x: i32, z: i32) -> Self {
+        // Y=0 is in section index 4 (sections: 0=-64, 1=-48, 2=-32, 3=-16, 4=0)
+        // y_in_section = 0 (bottom of the section)
+        Self::with_stone_layer(x, z, 4, 0)
     }
 
     /// Converts this chunk to a `ChunkDataAndLight` packet
