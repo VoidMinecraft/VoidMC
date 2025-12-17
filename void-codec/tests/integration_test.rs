@@ -49,7 +49,7 @@ fn test_multi_field() {
 #[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
 pub struct VarI32Packet {
     pub prefix: u8,
-    #[codec(vari32)]
+    #[codec(varint32)]
     pub value: i32,
 }
 
@@ -165,10 +165,10 @@ fn test_tagged_enum_invalid_id() {
 #[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
 pub struct MixedPacket {
     pub regular: u8,
-    #[codec(vari32)]
+    #[codec(varint32)]
     pub compact: i32,
     pub regular2: i32,
-    #[codec(vari32)]
+    #[codec(varint32)]
     pub compact2: i32,
 }
 

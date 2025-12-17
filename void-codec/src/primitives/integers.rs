@@ -102,6 +102,27 @@ impl Decode for u32 {
     }
 }
 
+impl Encode for u16 {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_be_bytes());
+    }
+}
+
+impl Decode for u16 {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        if buf.len() < 2 {
+            return Err(DecodeError::UnexpectedEof);
+        }
+
+        let (bytes, rest) = buf.split_at(2);
+        *buf = rest;
+
+        let mut array = [0u8; 2];
+        array.copy_from_slice(bytes);
+        Ok(u16::from_be_bytes(array))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +302,39 @@ mod tests {
         let mut buf = Vec::new();
         (u64::MAX).encode(&mut buf);
         assert_eq!(buf, vec![0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_u16_roundtrip() {
+        let value = 12345u16;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf.len(), 2);
+
+        let mut slice = buf.as_slice();
+        let decoded = u16::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_u16_exact_bytes() {
+        let value = 0x1234u16;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x12, 0x34]);
+    }
+
+    #[test]
+    fn test_u16_zero() {
+        let mut buf = Vec::new();
+        (0u16).encode(&mut buf);
+        assert_eq!(buf, vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_u16_max() {
+        let mut buf = Vec::new();
+        (u16::MAX).encode(&mut buf);
+        assert_eq!(buf, vec![0xFF, 0xFF]);
     }
 }

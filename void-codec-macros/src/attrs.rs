@@ -1,15 +1,17 @@
 use syn::{Attribute, LitInt, Result};
 
 pub struct FieldAttrs {
-    pub vari32: bool,
+    pub varint32: bool,
     pub varint64: bool,
+    pub json: bool,
 }
 
 impl Default for FieldAttrs {
     fn default() -> Self {
         Self {
-            vari32: false,
+            varint32: false,
             varint64: false,
+            json: false,
         }
     }
 }
@@ -49,11 +51,14 @@ pub fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs> {
         }
 
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("vari32") {
-                field_attrs.vari32 = true;
+            if meta.path.is_ident("varint32") {
+                field_attrs.varint32 = true;
                 Ok(())
             } else if meta.path.is_ident("varint64") {
                 field_attrs.varint64 = true;
+                Ok(())
+            } else if meta.path.is_ident("json") {
+                field_attrs.json = true;
                 Ok(())
             } else {
                 Err(meta.error("unknown field codec attribute"))

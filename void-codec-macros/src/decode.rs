@@ -16,13 +16,18 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                         let field_name = &f.ident;
                         let field_attrs = parse_field_attrs(&f.attrs)?;
 
-                        let decode_expr = if field_attrs.vari32 {
+                        let decode_expr = if field_attrs.varint32 {
                             quote! {
                                 let #field_name = void_codec::VarI32::decode(buf)?.0;
                             }
                         } else if field_attrs.varint64 {
                             quote! {
                                 let #field_name = void_codec::VarI64::decode(buf)?.0;
+                            }
+                        } else if field_attrs.json {
+                            quote! {
+                                let json_str = String::decode(buf)?;
+                                let #field_name = serde_json::from_str(&json_str).map_err(|_| void_codec::DecodeError::InvalidLength)?;
                             }
                         } else {
                             quote! {

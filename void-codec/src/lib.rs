@@ -54,7 +54,7 @@ mod tests {
         #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
         pub struct VarPacket {
             pub prefix: u8,
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub value: i32,
         }
 
@@ -77,7 +77,7 @@ mod tests {
     fn test_struct_with_vari32_compression() {
         #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
         pub struct SmallVarPacket {
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub value: i32,
         }
 
@@ -225,11 +225,11 @@ mod tests {
     fn test_multiple_vari32_fields() {
         #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
         pub struct MultiVarPacket {
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub a: i32,
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub b: i32,
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub c: i32,
         }
 
@@ -253,10 +253,10 @@ mod tests {
         #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
         pub struct MixedPacket {
             pub regular: u8,
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub compact: i32,
             pub regular2: i32,
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub compact2: i32,
         }
 
@@ -307,7 +307,7 @@ mod tests {
     fn test_large_varint() {
         #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
         pub struct LargeVarPacket {
-            #[codec(vari32)]
+            #[codec(varint32)]
             pub value: i32,
         }
 
@@ -358,7 +358,11 @@ mod tests {
             Complete = 1,
         }
 
-        for variant in [StatusEnum::Pending, StatusEnum::Active, StatusEnum::Complete] {
+        for variant in [
+            StatusEnum::Pending,
+            StatusEnum::Active,
+            StatusEnum::Complete,
+        ] {
             let mut buf = Vec::new();
             variant.encode(&mut buf);
 

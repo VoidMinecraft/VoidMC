@@ -25,6 +25,32 @@ impl<T: Decode> Decode for Vec<T> {
     }
 }
 
+impl Encode for String {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        VarI32(self.len() as i32).encode(buf);
+        buf.extend_from_slice(self.as_bytes());
+    }
+}
+
+impl Decode for String {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        let len = VarI32::decode(buf)?.0;
+        if len < 0 {
+            return Err(DecodeError::InvalidLength);
+        }
+
+        let len = len as usize;
+        if buf.len() < len {
+            return Err(DecodeError::UnexpectedEof);
+        }
+
+        let (bytes, rest) = buf.split_at(len);
+        *buf = rest;
+
+        String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::InvalidLength)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +254,78 @@ mod tests {
             let decoded_b = Vec::<bool>::decode(&mut slice_b).unwrap();
             assert_eq!(decoded_b, vec_b);
         }
+    }
+
+    #[test]
+    fn test_string_empty() {
+        let value = String::new();
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_simple() {
+        let value = String::from("hello");
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_with_unicode() {
+        let value = String::from("hello🎮world");
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_long() {
+        let value = String::from(
+            "The quick brown fox jumps over the lazy dog. \
+            This is a longer string to test that the VarI32 length prefix works correctly \
+            for strings longer than 127 characters.",
+        );
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_incomplete_data() {
+        let value = String::from("hello");
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Try to decode with only partial data
+        let mut slice = &buf[0..3];
+        let result = String::decode(&mut slice);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_string_invalid_utf8() {
+        // Create a buffer with invalid UTF-8
+        let mut buf = Vec::new();
+        VarI32(2).encode(&mut buf); // Length = 2
+        buf.push(0xFF);
+        buf.push(0xFE); // Invalid UTF-8 sequence
+
+        let mut slice = buf.as_slice();
+        let result = String::decode(&mut slice);
+        assert!(result.is_err());
     }
 }
