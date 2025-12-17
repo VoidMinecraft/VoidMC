@@ -37,10 +37,10 @@ impl Packet for ChunkDataAndLight {
         encoder.encode_vari32(0)?; // Block entities count (0)
 
         // Light Data
-        write_bitset(encoder, &self.sky_light_mask)?;
-        write_bitset(encoder, &self.block_light_mask)?;
-        write_bitset(encoder, &self.empty_sky_light_mask)?;
-        write_bitset(encoder, &self.empty_block_light_mask)?;
+        encoder.encode_bitset(&self.sky_light_mask)?;
+        encoder.encode_bitset(&self.block_light_mask)?;
+        encoder.encode_bitset(&self.empty_sky_light_mask)?;
+        encoder.encode_bitset(&self.empty_block_light_mask)?;
 
         let sky_arrays_len = i32::try_from(self.sky_light_arrays.len()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "sky_light_arrays length too large for VarInt")
@@ -72,17 +72,6 @@ impl Packet for ChunkDataAndLight {
     fn decode<D: PacketDecode>(_: &mut D) -> io::Result<Self> {
         Err(io::Error::new(io::ErrorKind::Other, "decode not implemented"))
     }
-}
-
-fn write_bitset<E: PacketEncode>(encoder: &mut E, bits: &[u64]) -> io::Result<()> { // TODO: Export in encoder
-    let len = i32::try_from(bits.len()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "bitset length too large for VarInt")
-    })?;
-    encoder.encode_vari32(len)?;
-    for &long in bits {
-        encoder.encode_u64(long)?;
-    }
-    Ok(())
 }
 
 #[derive(Debug)]
