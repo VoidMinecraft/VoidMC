@@ -51,7 +51,7 @@ impl PlayClient {
 
         socket
             .send(&clientbound::PlayPacket::GameEvent(GameEvent {
-                event: 13,
+                event: clientbound::GameEventType::StartWaitingForLevelChunks,
                 value: 0.0,
             }))
             .await?;
@@ -68,7 +68,7 @@ impl PlayClient {
                     vz: 0.0,
                     yaw: 0.0,
                     pitch: 0.0,
-                    flags: 0,
+                    flags: clientbound::TeleportFlags::empty(),
                 },
             ))
             .await?;

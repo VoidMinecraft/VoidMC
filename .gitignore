@@ -2,5 +2,8 @@
 /target
 
 # IDEs
-/.vscode
-/.idea
+**/.vscode/
+**/.idea/
+
+# AI
+**/.github/copilot-instructions.md
