@@ -286,6 +286,14 @@ impl ConfigurationClient {
                 Ok(packet) => match packet {
                     serverbound::ConfigurationPacket::ClientInformation(_) => {}
                     serverbound::ConfigurationPacket::KnownPacks(_) => {}
+                    serverbound::ConfigurationPacket::PluginMessage(packet) => {
+                        println!(
+                            "[{}] Plugin message: channel={:?} data={:?}",
+                            self.socket.1,
+                            packet.channel,
+                            String::from_utf8_lossy(&packet.data)
+                        );
+                    }
                     serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(_) => {
                         return PlayClient::new(self.socket, self.game, self.identity).await;
                     }
