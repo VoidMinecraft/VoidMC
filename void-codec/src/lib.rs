@@ -15,9 +15,25 @@ pub trait Decode: Sized {
 pub enum DecodeError {
     UnexpectedEof,
     InvalidVarintLength,
-    InvalidPacketId,
+    InvalidPacketId(Option<u8>),
     InvalidLength,
 }
+
+impl std::fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecodeError::UnexpectedEof => write!(f, "Unexpected end of stream"),
+            DecodeError::InvalidVarintLength => write!(f, "Invalid variable-length integer"),
+            DecodeError::InvalidPacketId(Some(id)) => {
+                write!(f, "Unsupported packet id 0x{:02X}", id)
+            }
+            DecodeError::InvalidPacketId(None) => write!(f, "Invalid packet id"),
+            DecodeError::InvalidLength => write!(f, "Invalid length value"),
+        }
+    }
+}
+
+impl std::error::Error for DecodeError {}
 
 #[cfg(test)]
 mod tests {
@@ -187,7 +203,7 @@ mod tests {
         let mut slice = buf.as_slice();
         let result = StatePacket::decode(&mut slice);
 
-        assert_eq!(result, Err(DecodeError::InvalidPacketId));
+        assert_eq!(result, Err(DecodeError::InvalidPacketId(Some(255))));
     }
 
     #[test]
@@ -410,7 +426,7 @@ mod tests {
 
         let buf = vec![99u8];
         match StatusEnum::decode(&mut buf.as_slice()) {
-            Err(DecodeError::InvalidPacketId) => (),
+            Err(DecodeError::InvalidPacketId(None)) => (),
             other => panic!("Expected InvalidPacketId error, got {:?}", other),
         }
     }

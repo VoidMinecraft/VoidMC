@@ -116,7 +116,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             let packet_id = u8::decode(buf)?;
                             Ok(match packet_id {
                                 #(#decode_variants),*
-                                _ => return Err(void_codec::DecodeError::InvalidPacketId),
+                                _ => return Err(void_codec::DecodeError::InvalidPacketId(Some(packet_id))),
                             })
                         }
                     }
@@ -174,7 +174,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             let discriminant = #encode_part;
                             Ok(match discriminant {
                                 #(#decode_variants)*
-                                _ => return Err(void_codec::DecodeError::InvalidPacketId),
+                                _ => return Err(void_codec::DecodeError::InvalidPacketId(None)),
                             })
                         }
                     }

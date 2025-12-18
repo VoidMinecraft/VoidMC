@@ -92,7 +92,13 @@ impl PlayClient {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
                         return Err(e);
                     }
-                    eprintln!("Failed to receive packet: {:?}", e);
+                    eprintln!(
+                        "[{}] Packet decode error: {}",
+                        self.socket.1,
+                        e.get_ref()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "unknown error".to_string())
+                    );
                 }
             }
         }
