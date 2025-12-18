@@ -84,6 +84,7 @@ impl PlayClient {
         loop {
             match self.socket.receive::<serverbound::PlayPacket>().await {
                 Ok(packet) => match packet {
+                    serverbound::PlayPacket::ConfirmTeleportation(_) => {}
                     serverbound::PlayPacket::TickEnd(_) => {}
                     serverbound::PlayPacket::SetPlayerPos(_) => {}
                 },
