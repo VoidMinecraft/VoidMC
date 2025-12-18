@@ -9,3 +9,6 @@ void-net = { path = "../void-net" }
 void-protocol = { path = "../void-protocol" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2.3"

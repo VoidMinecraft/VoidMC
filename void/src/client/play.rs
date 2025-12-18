@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{debug, error};
 use void_net::ClientSocket;
 
 use super::login::ClientIdentity;
@@ -23,7 +24,16 @@ impl PlayClient {
         game: Arc<Mutex<Game>>,
         identity: ClientIdentity,
     ) -> std::io::Result<Self> {
-        println!("[{}] State is now Play", socket.1);
+        let ip = socket.1.to_string();
+        let username = identity.name.clone();
+        let uuid = identity.uuid.to_string();
+
+        debug!(
+            client_ip = %ip,
+            username = %username,
+            uuid = %uuid,
+            "Player entered Play state"
+        );
         socket
             .send(&clientbound::PlayPacket::Login(Login {
                 entity_id: 1,
@@ -81,25 +91,45 @@ impl PlayClient {
     }
 
     pub async fn run(mut self) -> std::io::Result<()> {
+        let ip = self.socket.1.to_string();
+        let username = self.identity.name.clone();
+        let uuid = self.identity.uuid.to_string();
+
+        debug!(
+            client_ip = %ip,
+            username = %username,
+            uuid = %uuid,
+            "Player is now playing"
+        );
+
         loop {
             match self.socket.receive::<serverbound::PlayPacket>().await {
                 Ok(packet) => match packet {
-                    serverbound::PlayPacket::ConfirmTeleportation(_) => {}
-                    serverbound::PlayPacket::TickEnd(_) => {}
-                    serverbound::PlayPacket::SetPlayerPos(_) => {}
-                    serverbound::PlayPacket::SetPlayerPosAndRot(_) => {}
-                    serverbound::PlayPacket::PlayerLoaded(_) => {}
+                    serverbound::PlayPacket::ConfirmTeleportation(_) => {
+                        debug!(client_ip = %ip, username = %username, "Confirmed teleportation");
+                    }
+                    serverbound::PlayPacket::TickEnd(_) => {
+                        debug!(client_ip = %ip, username = %username, "Tick end");
+                    }
+                    serverbound::PlayPacket::SetPlayerPos(_) => {
+                        debug!(client_ip = %ip, username = %username, "Player moved");
+                    }
+                    serverbound::PlayPacket::SetPlayerPosAndRot(_) => {
+                        debug!(client_ip = %ip, username = %username, "Player moved and rotated");
+                    }
+                    serverbound::PlayPacket::PlayerLoaded(_) => {
+                        debug!(client_ip = %ip, username = %username, "Player loaded");
+                    }
                 },
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
                         return Err(e);
                     }
-                    eprintln!(
-                        "[{}] Packet decode error: {}",
-                        self.socket.1,
-                        e.get_ref()
-                            .map(|e| e.to_string())
-                            .unwrap_or_else(|| "unknown error".to_string())
+                    error!(
+                        client_ip = %ip,
+                        username = %username,
+                        error = ?e,
+                        "Packet decode error"
                     );
                 }
             }

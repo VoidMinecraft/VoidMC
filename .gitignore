@@ -1,6 +1,9 @@
 # Rust
 /target
 
+# Project
+**/logs/
+
 # IDEs
 **/.vscode/
 **/.idea/
