@@ -87,6 +87,8 @@ impl PlayClient {
                     serverbound::PlayPacket::ConfirmTeleportation(_) => {}
                     serverbound::PlayPacket::TickEnd(_) => {}
                     serverbound::PlayPacket::SetPlayerPos(_) => {}
+                    serverbound::PlayPacket::SetPlayerPosAndRot(_) => {}
+                    serverbound::PlayPacket::PlayerLoaded(_) => {}
                 },
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
