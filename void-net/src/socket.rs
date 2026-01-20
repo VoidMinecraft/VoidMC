@@ -46,9 +46,8 @@ impl ClientSocket {
 
         // 4. Decode the packet from the buffer
         let mut slice = packet_buf.as_slice();
-        T::decode(&mut slice).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to decode packet")
-        })
+        T::decode(&mut slice)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
     pub async fn send<T: Encode>(&mut self, packet: &T) -> std::io::Result<()> {
@@ -69,6 +68,7 @@ impl ClientSocket {
     }
 }
 
+#[derive(Debug)]
 pub struct ServerSocket(pub TcpListener);
 
 impl ServerSocket {

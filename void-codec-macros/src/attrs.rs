@@ -1,9 +1,77 @@
-use syn::{Attribute, LitInt, Result};
+use syn::{Attribute, Expr, Field, GenericArgument, LitInt, PathArguments, Result, Type};
+
+/// Transform an expression to prefix bare identifiers with `self.` for use in impl blocks
+/// E.g., `length * factor` becomes `self.length * self.factor`
+pub fn transform_expr_for_self(expr: &Expr) -> Expr {
+    match expr {
+        Expr::Path(expr_path)
+            if expr_path.path.segments.len() == 1 && expr_path.qself.is_none() =>
+        {
+            // Simple identifier - wrap with self.
+            let ident = &expr_path.path.segments[0].ident;
+            syn::parse_quote!(self.#ident)
+        }
+        Expr::Binary(expr_bin) => {
+            // Recursively transform both sides
+            let left = transform_expr_for_self(&expr_bin.left);
+            let right = transform_expr_for_self(&expr_bin.right);
+            let op = &expr_bin.op;
+            syn::parse_quote!(#left #op #right)
+        }
+        Expr::Paren(expr_paren) => {
+            let inner = transform_expr_for_self(&expr_paren.expr);
+            syn::parse_quote!((#inner))
+        }
+        // For other expressions, return as-is
+        _ => expr.clone(),
+    }
+}
+
+/// Same as above but without self. prefix for use in function context where vars are local
+pub fn transform_expr_for_local(expr: &Expr) -> Expr {
+    // Just return as-is since identifiers are already local variables in scope
+    expr.clone()
+}
+
+/// Check if a field type is `Vec<u8>`
+pub fn is_vec_u8(field: &Field) -> bool {
+    match &field.ty {
+        Type::Path(type_path) => {
+            // Check if the path is "Vec"
+            if type_path.path.segments.len() != 1 {
+                return false;
+            }
+            let segment = &type_path.path.segments[0];
+            if segment.ident != "Vec" {
+                return false;
+            }
+
+            // Check the generic argument is u8
+            match &segment.arguments {
+                PathArguments::AngleBracketed(args) => {
+                    args.args.len() == 1
+                        && args.args.iter().any(|arg| {
+                            if let GenericArgument::Type(Type::Path(type_path)) = arg {
+                                type_path.path.segments.len() == 1
+                                    && type_path.path.segments[0].ident == "u8"
+                            } else {
+                                false
+                            }
+                        })
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
 
 pub struct FieldAttrs {
     pub varint32: bool,
     pub varint64: bool,
     pub json: bool,
+    pub fixed_length: Option<Box<Expr>>,
+    pub remaining: bool,
 }
 
 impl Default for FieldAttrs {
@@ -12,6 +80,8 @@ impl Default for FieldAttrs {
             varint32: false,
             varint64: false,
             json: false,
+            fixed_length: None,
+            remaining: false,
         }
     }
 }
@@ -59,6 +129,14 @@ pub fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs> {
                 Ok(())
             } else if meta.path.is_ident("json") {
                 field_attrs.json = true;
+                Ok(())
+            } else if meta.path.is_ident("fixed_length") {
+                let _eq: syn::token::Eq = meta.input.parse()?;
+                let expr: Expr = meta.input.parse()?;
+                field_attrs.fixed_length = Some(Box::new(expr));
+                Ok(())
+            } else if meta.path.is_ident("remaining") {
+                field_attrs.remaining = true;
                 Ok(())
             } else {
                 Err(meta.error("unknown field codec attribute"))

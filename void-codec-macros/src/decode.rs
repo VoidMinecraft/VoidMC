@@ -1,4 +1,7 @@
-use crate::attrs::{parse_field_attrs, parse_repr_type, parse_type_attrs, parse_variant_attrs};
+use crate::attrs::{
+    is_vec_u8, parse_field_attrs, parse_repr_type, parse_type_attrs, parse_variant_attrs,
+    transform_expr_for_local,
+};
 use quote::quote;
 use syn::{Data, DeriveInput, Error, Fields, Result};
 
@@ -28,6 +31,37 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             quote! {
                                 let json_str = String::decode(buf)?;
                                 let #field_name = serde_json::from_str(&json_str).map_err(|_| void_codec::DecodeError::InvalidLength)?;
+                            }
+                        } else if let Some(len_expr) = &field_attrs.fixed_length {
+                            let transformed_expr = transform_expr_for_local(len_expr);
+                            // Use optimized path for Vec<u8>
+                            if is_vec_u8(f) {
+                                quote! {
+                                    let #field_name = {
+                                        let expected_len = ((#transformed_expr) as i64) as usize;
+                                        void_codec::decode_fixed_length_vec_u8(expected_len, buf)?
+                                    };
+                                }
+                            } else {
+                                quote! {
+                                    let #field_name = {
+                                        let expected_len = ((#transformed_expr) as i64) as usize;
+                                        void_codec::decode_fixed_length_vec(expected_len, buf)?
+                                    };
+                                }
+                            }
+                        } else if field_attrs.remaining {
+                            // Remaining attribute: consume all remaining bytes on decode
+                            if is_vec_u8(f) {
+                                quote! {
+                                    let #field_name = void_codec::decode_remaining_vec_u8(buf)?;
+                                }
+                            } else {
+                                // Error: remaining only works with Vec<u8>
+                                return Err(Error::new_spanned(
+                                    f,
+                                    "remaining attribute only works with Vec<u8>",
+                                ));
                             }
                         } else {
                             quote! {
@@ -116,7 +150,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             let packet_id = u8::decode(buf)?;
                             Ok(match packet_id {
                                 #(#decode_variants),*
-                                _ => return Err(void_codec::DecodeError::InvalidPacketId),
+                                _ => return Err(void_codec::DecodeError::InvalidPacketId(Some(packet_id))),
                             })
                         }
                     }
@@ -174,7 +208,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             let discriminant = #encode_part;
                             Ok(match discriminant {
                                 #(#decode_variants)*
-                                _ => return Err(void_codec::DecodeError::InvalidPacketId),
+                                _ => return Err(void_codec::DecodeError::InvalidPacketId(None)),
                             })
                         }
                     }
