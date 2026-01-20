@@ -1,4 +1,4 @@
-use void_net::clientbound::{Description, Players, Status, Version};
+use void_protocol::clientbound::{Description, Players, Status, Version};
 
 #[derive(Debug)]
 pub struct Game {

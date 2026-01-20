@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use void_net::ClientSocket;
 
 use super::login::ClientIdentity;
 use crate::game::Game;
-use void_net::{
-    ClientSocket,
+use void_protocol::{
     clientbound::{self, GameEvent, Login, SynchronizePlayerPosition},
     serverbound,
 };

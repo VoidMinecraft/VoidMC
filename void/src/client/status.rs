@@ -2,8 +2,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::game::Game;
-use void_net::{
-    ClientSocket,
+use void_net::ClientSocket;
+use void_protocol::{
     clientbound::{self, PingResponse, StatusResponse},
     serverbound,
 };

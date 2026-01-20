@@ -6,5 +6,6 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
 void-net = { path = "../void-net" }
+void-protocol = { path = "../void-protocol" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"

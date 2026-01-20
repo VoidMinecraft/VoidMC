@@ -1,0 +1,463 @@
+use crate::primitives::vari::VarI32;
+use crate::{Decode, DecodeError, Encode};
+
+impl<T: Encode> Encode for Vec<T> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        VarI32(self.len() as i32).encode(buf);
+        for item in self {
+            item.encode(buf);
+        }
+    }
+}
+
+impl<T: Decode> Decode for Vec<T> {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        let len = VarI32::decode(buf)?.0;
+        if len < 0 {
+            return Err(DecodeError::InvalidLength);
+        }
+
+        let mut vec = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            vec.push(T::decode(buf)?);
+        }
+        Ok(vec)
+    }
+}
+
+impl Encode for String {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        VarI32(self.len() as i32).encode(buf);
+        buf.extend_from_slice(self.as_bytes());
+    }
+}
+
+impl Decode for String {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        let len = VarI32::decode(buf)?.0;
+        if len < 0 {
+            return Err(DecodeError::InvalidLength);
+        }
+
+        let len = len as usize;
+        if buf.len() < len {
+            return Err(DecodeError::UnexpectedEof);
+        }
+
+        let (bytes, rest) = buf.split_at(len);
+        *buf = rest;
+
+        String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::InvalidLength)
+    }
+}
+
+impl<T: Encode> Encode for Option<T> {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        match self {
+            Some(value) => {
+                true.encode(buf);
+                value.encode(buf);
+            }
+            None => {
+                false.encode(buf);
+            }
+        }
+    }
+}
+
+impl<T: Decode> Decode for Option<T> {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        let present = bool::decode(buf)?;
+        if present {
+            T::decode(buf).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vec_i32_empty() {
+        let value: Vec<i32> = vec![];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        assert_eq!(
+            buf.len(),
+            1,
+            "Empty vec should encode to single byte (length 0)"
+        );
+
+        let mut slice = buf.as_slice();
+        let decoded = Vec::<i32>::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_vec_i32_single() {
+        let value: Vec<i32> = vec![12345];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = Vec::<i32>::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_vec_i32_multiple() {
+        let value: Vec<i32> = vec![1, 2, 3, 4, 5];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = Vec::<i32>::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_vec_u8_bytes() {
+        let value: Vec<u8> = vec![1, 2, 3, 255, 0, 127];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = Vec::<u8>::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_vec_bool() {
+        let value: Vec<bool> = vec![true, false, true, true, false];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = Vec::<bool>::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_vec_large() {
+        let value: Vec<i32> = (0..1000).collect();
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = Vec::<i32>::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+        assert_eq!(slice.len(), 0);
+    }
+
+    #[test]
+    fn test_vec_eof() {
+        let mut slice = &[][..];
+        let result = Vec::<i32>::decode(&mut slice);
+        assert_eq!(result, Err(DecodeError::UnexpectedEof));
+    }
+
+    #[test]
+    fn test_vec_invalid_length() {
+        let mut buf = Vec::new();
+        VarI32(-1).encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let result = Vec::<i32>::decode(&mut slice);
+        assert_eq!(result, Err(DecodeError::InvalidLength));
+    }
+
+    #[test]
+    fn test_vec_empty_exact_bytes() {
+        let value: Vec<i32> = vec![];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x00]);
+    }
+
+    #[test]
+    fn test_vec_u8_single_element() {
+        let value: Vec<u8> = vec![42];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x01, 42]);
+    }
+
+    #[test]
+    fn test_vec_u8_exact_bytes() {
+        let value: Vec<u8> = vec![1, 2, 3];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x03, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_vec_i32_exact_bytes() {
+        let value: Vec<i32> = vec![256];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x01, 0x00, 0x00, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn test_vec_bool_exact_bytes() {
+        let value: Vec<bool> = vec![true, false, true];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x03, 0x01, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn test_vec_length_encoded_correctly() {
+        for len in [0, 1, 5, 10, 127, 128, 255] {
+            let value: Vec<i32> = (0..len).map(|i| i as i32).collect();
+            let mut buf = Vec::new();
+            value.encode(&mut buf);
+
+            let mut slice = buf.as_slice();
+            let decoded = Vec::<i32>::decode(&mut slice).unwrap();
+            assert_eq!(decoded.len(), len, "Length {} not correctly encoded", len);
+            assert_eq!(decoded, value);
+        }
+    }
+
+    #[test]
+    fn test_vec_nested_vecs() {
+        let inner1: Vec<u8> = vec![1, 2];
+        let inner2: Vec<u8> = vec![3, 4, 5];
+        let value: Vec<Vec<u8>> = vec![inner1, inner2];
+
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = Vec::<Vec<u8>>::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_vec_u8_large_exact_format() {
+        let value: Vec<u8> = vec![0xAA; 200];
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        assert_eq!(buf[0..2], [0xC8, 0x01]);
+        for i in 2..buf.len() {
+            assert_eq!(buf[i], 0xAA);
+        }
+    }
+
+    #[test]
+    fn test_vec_incomplete_data_error() {
+        let mut buf = Vec::new();
+        vec![1i32, 2i32, 3i32].encode(&mut buf);
+
+        let mut slice = &buf[0..5];
+        let result = Vec::<i32>::decode(&mut slice);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vec_roundtrip_mixed_types() {
+        let values: Vec<(u8, bool)> = vec![(1, true), (255, false)];
+        for (a, b) in values {
+            let vec_a: Vec<u8> = vec![a];
+            let vec_b: Vec<bool> = vec![b];
+
+            let mut buf_a = Vec::new();
+            vec_a.encode(&mut buf_a);
+            let mut slice_a = buf_a.as_slice();
+            let decoded_a = Vec::<u8>::decode(&mut slice_a).unwrap();
+            assert_eq!(decoded_a, vec_a);
+
+            let mut buf_b = Vec::new();
+            vec_b.encode(&mut buf_b);
+            let mut slice_b = buf_b.as_slice();
+            let decoded_b = Vec::<bool>::decode(&mut slice_b).unwrap();
+            assert_eq!(decoded_b, vec_b);
+        }
+    }
+
+    #[test]
+    fn test_string_empty() {
+        let value = String::new();
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_simple() {
+        let value = String::from("hello");
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_with_unicode() {
+        let value = String::from("hello🎮world");
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_long() {
+        let value = String::from(
+            "The quick brown fox jumps over the lazy dog. \
+            This is a longer string to test that the VarI32 length prefix works correctly \
+            for strings longer than 127 characters.",
+        );
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded = String::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_string_incomplete_data() {
+        let value = String::from("hello");
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Try to decode with only partial data
+        let mut slice = &buf[0..3];
+        let result = String::decode(&mut slice);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_string_invalid_utf8() {
+        // Create a buffer with invalid UTF-8
+        let mut buf = Vec::new();
+        VarI32(2).encode(&mut buf); // Length = 2
+        buf.push(0xFF);
+        buf.push(0xFE); // Invalid UTF-8 sequence
+
+        let mut slice = buf.as_slice();
+        let result = String::decode(&mut slice);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_option_some_i32() {
+        let value: Option<i32> = Some(42);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [true/0x01] + [42 as 4 bytes big-endian]
+        assert_eq!(buf.len(), 5);
+        assert_eq!(buf[0], 1); // true
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<i32> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(42));
+    }
+
+    #[test]
+    fn test_option_none_i32() {
+        let value: Option<i32> = None;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [false/0x00]
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0], 0); // false
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<i32> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, None);
+    }
+
+    #[test]
+    fn test_option_some_string() {
+        let value: Option<String> = Some(String::from("hello"));
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [true/0x01] + [VarI32(5)] + [hello as UTF-8]
+        assert!(buf.len() > 1);
+        assert_eq!(buf[0], 1); // true
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<String> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(String::from("hello")));
+    }
+
+    #[test]
+    fn test_option_some_vec() {
+        let value: Option<Vec<i32>> = Some(vec![1, 2, 3]);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        // Should be: [true/0x01] + [VarI32(3)] + [1, 2, 3 as 4-byte big-endian each]
+        assert!(buf.len() > 1);
+        assert_eq!(buf[0], 1); // true
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<Vec<i32>> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_option_nested() {
+        let value: Option<Option<i32>> = Some(Some(100));
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<Option<i32>> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(Some(100)));
+    }
+
+    #[test]
+    fn test_option_nested_none() {
+        let value: Option<Option<i32>> = Some(None);
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+
+        let mut slice = buf.as_slice();
+        let decoded: Option<Option<i32>> = Option::decode(&mut slice).unwrap();
+        assert_eq!(decoded, Some(None));
+    }
+
+    #[test]
+    fn test_option_roundtrip() {
+        let cases: Vec<Option<i32>> = vec![Some(0), Some(-1), Some(2147483647), None];
+
+        for value in cases {
+            let mut buf = Vec::new();
+            value.encode(&mut buf);
+
+            let mut slice = buf.as_slice();
+            let decoded = Option::decode(&mut slice).unwrap();
+            assert_eq!(decoded, value);
+        }
+    }
+
+    #[test]
+    fn test_option_incomplete_data() {
+        // Create a buffer with only the presence boolean, no data
+        let mut buf = Vec::new();
+        true.encode(&mut buf); // Present, but no i32 data follows
+
+        let mut slice = buf.as_slice();
+        let result: Result<Option<i32>, _> = Option::decode(&mut slice);
+        assert!(result.is_err());
+    }
+}
