@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::debug;
 use ussr_nbt::owned::{Nbt, Tag};
 
 use super::login::ClientIdentity;
@@ -75,7 +76,13 @@ impl ConfigurationClient {
         game: Arc<Mutex<Game>>,
         identity: ClientIdentity,
     ) -> std::io::Result<Self> {
-        println!("[{}] State is now Configuration", socket.1);
+        let ip = socket.1.to_string();
+        debug!(
+            client_ip = %ip,
+            username = %identity.name,
+            uuid = %identity.uuid,
+            "Player entered Configuration state"
+        );
         socket
             .send(&clientbound::ConfigurationPacket::KnownPacks(KnownPacks {
                 known_packs: vec![KnownPack {
@@ -277,6 +284,10 @@ impl ConfigurationClient {
     }
 
     pub async fn run(mut self) -> std::io::Result<PlayClient> {
+        let ip = self.socket.1.to_string();
+        let username = self.identity.name.clone();
+        let _uuid = self.identity.uuid.to_string();
+
         loop {
             match self
                 .socket
@@ -284,9 +295,34 @@ impl ConfigurationClient {
                 .await
             {
                 Ok(packet) => match packet {
-                    serverbound::ConfigurationPacket::ClientInformation(_) => {}
-                    serverbound::ConfigurationPacket::KnownPacks(_) => {}
+                    serverbound::ConfigurationPacket::ClientInformation(_) => {
+                        debug!(
+                            client_ip = %ip,
+                            username = %username,
+                            "Received client information"
+                        );
+                    }
+                    serverbound::ConfigurationPacket::KnownPacks(_) => {
+                        debug!(
+                            client_ip = %ip,
+                            username = %username,
+                            "Received known packs"
+                        );
+                    }
+                    serverbound::ConfigurationPacket::PluginMessage(packet) => {
+                        debug!(
+                            client_ip = %ip,
+                            username = %username,
+                            channel = %packet.channel,
+                            "Received plugin message"
+                        );
+                    }
                     serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(_) => {
+                        debug!(
+                            client_ip = %ip,
+                            username = %username,
+                            "Configuration finished, transitioning to Play state"
+                        );
                         return PlayClient::new(self.socket, self.game, self.identity).await;
                     }
                 },
@@ -294,7 +330,12 @@ impl ConfigurationClient {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
                         return Err(e);
                     }
-                    eprintln!("Failed to receive packet: {:?}", e);
+                    tracing::error!(
+                        client_ip = %ip,
+                        username = %username,
+                        error = ?e,
+                        "Failed to receive configuration packet"
+                    );
                 }
             }
         }

@@ -141,6 +141,27 @@ impl Decode for u16 {
     }
 }
 
+impl Encode for i16 {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_be_bytes());
+    }
+}
+
+impl Decode for i16 {
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        if buf.len() < 2 {
+            return Err(DecodeError::UnexpectedEof);
+        }
+
+        let (bytes, rest) = buf.split_at(2);
+        *buf = rest;
+
+        let mut array = [0u8; 2];
+        array.copy_from_slice(bytes);
+        Ok(i16::from_be_bytes(array))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +456,66 @@ mod tests {
         let mut buf = Vec::new();
         (u16::MAX).encode(&mut buf);
         assert_eq!(buf, vec![0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn test_i16_positive_roundtrip() {
+        let value = 1234i16;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf.len(), 2);
+
+        let mut slice = buf.as_slice();
+        let decoded = i16::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_i16_negative_roundtrip() {
+        let value = -1234i16;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf.len(), 2);
+
+        let mut slice = buf.as_slice();
+        let decoded = i16::decode(&mut slice).unwrap();
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn test_i16_zero() {
+        let mut buf = Vec::new();
+        (0i16).encode(&mut buf);
+        assert_eq!(buf, vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_i16_max() {
+        let mut buf = Vec::new();
+        (i16::MAX).encode(&mut buf);
+        assert_eq!(buf, vec![0x7F, 0xFF]);
+
+        let mut slice = buf.as_slice();
+        let decoded = i16::decode(&mut slice).unwrap();
+        assert_eq!(decoded, i16::MAX);
+    }
+
+    #[test]
+    fn test_i16_min() {
+        let mut buf = Vec::new();
+        (i16::MIN).encode(&mut buf);
+        assert_eq!(buf, vec![0x80, 0x00]);
+
+        let mut slice = buf.as_slice();
+        let decoded = i16::decode(&mut slice).unwrap();
+        assert_eq!(decoded, i16::MIN);
+    }
+
+    #[test]
+    fn test_i16_exact_bytes() {
+        let value = 0x1234i16;
+        let mut buf = Vec::new();
+        value.encode(&mut buf);
+        assert_eq!(buf, vec![0x12, 0x34]);
     }
 }

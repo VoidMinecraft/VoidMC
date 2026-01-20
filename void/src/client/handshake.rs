@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::debug;
 
 use super::login::LoginClient;
 use super::status::StatusClient;
@@ -19,16 +20,19 @@ pub enum HandshakeClientNext {
 
 impl HanshakeClient {
     pub fn new(socket: ClientSocket, game: Arc<Mutex<Game>>) -> Self {
-        println!("[{}] State is now Handshake", socket.1);
+        let ip = socket.1.to_string();
+        debug!(client_ip = %ip, "Client entered Handshake state");
         Self { socket, game }
     }
 
     pub async fn run(mut self) -> std::io::Result<HandshakeClientNext> {
+        let ip = self.socket.1.to_string();
         loop {
             match self.socket.receive::<serverbound::HandshakePacket>().await {
                 Ok(packet) => match packet {
                     serverbound::HandshakePacket::Handshake(packet) => match packet.next_state {
                         State::Status => {
+                            debug!(client_ip = %ip, protocol = packet.protocol_version, "Client transitioning to Status state");
                             return Ok(HandshakeClientNext::Status(StatusClient::new(
                                 self.socket,
                                 self.game,
@@ -36,6 +40,7 @@ impl HanshakeClient {
                             )));
                         }
                         State::Login => {
+                            debug!(client_ip = %ip, protocol = packet.protocol_version, "Client transitioning to Login state");
                             return Ok(HandshakeClientNext::Login(LoginClient::new(
                                 self.socket,
                                 self.game,
@@ -48,7 +53,7 @@ impl HanshakeClient {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
                         return Err(e);
                     }
-                    eprintln!("Failed to receive packet: {:?}", e);
+                    tracing::error!(client_ip = %ip, error = ?e, "Failed to receive handshake packet");
                 }
             }
         }

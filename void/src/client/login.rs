@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{debug, error, info};
 use uuid::Uuid;
 use void_net::ClientSocket;
 
@@ -21,7 +22,8 @@ pub struct ClientIdentity {
 
 impl LoginClient {
     pub fn new(socket: ClientSocket, game: Arc<Mutex<Game>>) -> Self {
-        println!("[{}] State is now Login", socket.1);
+        let ip = socket.1.to_string();
+        debug!(client_ip = %ip, "Client entered Login state");
         Self {
             socket,
             game,
@@ -30,13 +32,16 @@ impl LoginClient {
     }
 
     pub async fn run(mut self) -> std::io::Result<ConfigurationClient> {
+        let ip = self.socket.1.to_string();
         loop {
             match self.socket.receive::<serverbound::LoginPacket>().await {
                 Ok(packet) => match packet {
                     serverbound::LoginPacket::LoginStart(packet) => {
-                        println!(
-                            "[{}] Login start for {} ({})",
-                            self.socket.1, &packet.uuid, &packet.name
+                        debug!(
+                            client_ip = %ip,
+                            username = %packet.name,
+                            uuid = %packet.uuid,
+                            "Player login started"
                         );
 
                         // Set identity
@@ -59,16 +64,18 @@ impl LoginClient {
                     }
                     serverbound::LoginPacket::LoginAcknowledged(_) => match self.client_identity {
                         Some(identity) => {
-                            println!(
-                                "[{}] Login acknowledged for {} ({})",
-                                self.socket.1, identity.uuid, identity.name
+                            info!(
+                                client_ip = %ip,
+                                username = %identity.name,
+                                uuid = %identity.uuid,
+                                "Player successfully authenticated"
                             );
                             return Ok(
                                 ConfigurationClient::new(self.socket, self.game, identity).await?
                             );
                         }
                         None => {
-                            eprintln!("[{}] Login acknowledged without identity", self.socket.1);
+                            error!(client_ip = %ip, "Login acknowledged without prior identity");
                             return Err(std::io::Error::new(
                                 std::io::ErrorKind::Other,
                                 "Login acknowledged without identity",
@@ -80,7 +87,7 @@ impl LoginClient {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
                         return Err(e);
                     }
-                    eprintln!("Failed to receive packet: {:?}", e);
+                    error!(client_ip = %ip, error = ?e, "Failed to receive login packet");
                 }
             }
         }
