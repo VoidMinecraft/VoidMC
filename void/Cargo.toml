@@ -12,3 +12,6 @@ ussr-nbt = "0.2.1"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.3"
+bevy_ecs = "0.18.0"
+bevy_app = "0.18.0"
+crossbeam-channel = "0.5.15"

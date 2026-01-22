@@ -3,7 +3,8 @@ resolver = "3"
 members = [
   "void",
   "void-net",
-  "void-codec",
-  "void-codec-macros",
+  "void-client",
   "void-protocol",
+  "void-codec",
+  "void-codec-macros"
 ]

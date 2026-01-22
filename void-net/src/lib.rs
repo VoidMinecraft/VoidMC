@@ -1,3 +1,2 @@
-mod socket;
-
-pub use socket::*;
+mod client;
+pub(crate) mod socket;

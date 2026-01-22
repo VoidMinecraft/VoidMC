@@ -1,9 +1,135 @@
-use tracing::info;
+use bevy_app::{App, PostUpdate, PreUpdate, ScheduleRunnerPlugin, TaskPoolPlugin, Update};
+use bevy_ecs::prelude::*;
+use crossbeam_channel::{Receiver, Sender};
+use std::time::Duration;
 use tracing_subscriber::prelude::*;
-use void::ServerBuilder;
+use void::{IncomingPacket, OutgoingPacket, Server};
+use void_protocol::{
+    State,
+    serverbound::{HandshakePacket, ServerboundPacket, StatusPacket},
+};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Resource)]
+pub struct NetworkChannels {
+    pub incoming: Receiver<IncomingPacket>,
+    pub outgoing: Sender<OutgoingPacket>,
+}
+
+#[derive(Message, Debug)]
+pub struct Handshake {
+    pub client_id: u32,
+    pub protocol_version: i32,
+    pub server_address: String,
+    pub server_port: u16,
+    pub next_state: State,
+}
+
+#[derive(Message, Debug)]
+pub struct StatusRequest {
+    pub client_id: u32,
+}
+
+pub fn ingest_network_packets(network_channels: Res<NetworkChannels>, mut commands: Commands) {
+    // Read incoming packets
+    while let Ok(incoming_packet) = network_channels.incoming.try_recv() {
+        tracing::debug!(
+            "Received packet from client {}: {:?}",
+            incoming_packet.client_id,
+            incoming_packet.packet
+        );
+
+        // TODO: Extract this into a method in another crate that does the Protocol -> ECS message conversion
+        match incoming_packet.packet {
+            ServerboundPacket::Handshake(packet) => match packet {
+                HandshakePacket::Handshake(packet) => {
+                    tracing::info!("Received handshake packet: {:?}", packet);
+                    commands.queue(move |w: &mut World| {
+                        w.write_message(Handshake {
+                            client_id: incoming_packet.client_id,
+                            protocol_version: packet.protocol_version,
+                            server_address: packet.server_address,
+                            server_port: packet.server_port,
+                            next_state: packet.next_state,
+                        });
+                    })
+                }
+            },
+            ServerboundPacket::Status(packet) => match packet {
+                StatusPacket::StatusRequest(packet) => {
+                    tracing::info!("Received status request packet: {:?}", packet);
+                    commands.queue(move |w: &mut World| {
+                        w.write_message(StatusRequest {
+                            client_id: incoming_packet.client_id,
+                        });
+                    })
+                }
+                _ => { /* Handle other status packets */ }
+            },
+            _ => { /* Handle other packet types */ }
+        }
+    }
+}
+
+pub fn handle_handshakes(mut commands: Commands, mut messages: MessageReader<Handshake>) {
+    for msg in messages.read() {
+        tracing::info!("New handshake received: {:?}", msg);
+        // Handle new player connections here
+    }
+}
+
+// May need to run after handshakes since packet can be sent after handshake directly and ingested in same frame
+pub fn handle_status_requests(
+    mut commands: Commands,
+    mut messages: MessageReader<StatusRequest>,
+    mut network_channels: ResMut<NetworkChannels>,
+) {
+    for msg in messages.read() {
+        tracing::info!("New status request received: {:?}", msg);
+        // Handle status requests here, e.g., send a status response back
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    setup_logging()?;
+
+    let (incoming_tx, incoming_rx) = crossbeam_channel::unbounded::<IncomingPacket>();
+    let (outgoing_tx, outgoing_rx) = crossbeam_channel::unbounded::<OutgoingPacket>();
+
+    // Start the server in a separate thread
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async move {
+            let server = Server::new("127.0.0.1:25565")
+                .await
+                .expect("Failed to start server");
+            server.run(incoming_tx).await;
+        })
+    });
+
+    App::new()
+        .add_plugins((
+            TaskPoolPlugin::default(),
+            ScheduleRunnerPlugin::run_loop(Duration::from_millis(1000 / 20)),
+        ))
+        // TODO: extract into a plugin
+        .insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+        })
+        .add_message::<Handshake>()
+        .add_message::<StatusRequest>()
+        .add_systems(PreUpdate, ingest_network_packets)
+        .add_systems(Update, (handle_handshakes, handle_status_requests))
+        .run();
+
+    Ok(())
+}
+
+fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
     // Create logs directory if it doesn't exist
     std::fs::create_dir_all("logs")?;
 
@@ -37,14 +163,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(file_layer)
         .init();
 
-    info!("Building server...");
-    let server = ServerBuilder::new("127.0.0.1:25565")
-        .motd("Void Server".to_string())
-        .favicon("data:image/png;base64,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".to_string())
-        .build()
-        .await?;
-
-    info!("Starting server...");
-    server.run().await;
     Ok(())
 }
