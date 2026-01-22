@@ -1,5 +1,5 @@
 use ussr_nbt::owned::Nbt;
-use void_codec::{Decode, Encode};
+use void_codec::{Decode, DecodeError, Encode};
 
 pub mod blocks {
     pub const AIR: i32 = 0;
@@ -435,11 +435,11 @@ fn write_bitset(buf: &mut Vec<u8>, bits: &[u64]) {
 }
 
 impl Encode for ChunkDataAndLight {
-    fn encode(&self, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    fn encode(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&self.chunk_x.to_be_bytes());
         buf.extend_from_slice(&self.chunk_z.to_be_bytes());
 
-        ussr_nbt::encode(&self.heightmaps, buf);
+        self.heightmaps.encode(buf);
 
         write_varint(buf, self.data.len() as i32);
         buf.extend_from_slice(&self.data);
@@ -462,17 +462,12 @@ impl Encode for ChunkDataAndLight {
             write_varint(buf, arr.len() as i32);
             buf.extend_from_slice(arr);
         }
-
-        Ok(())
     }
 }
 
 impl Decode for ChunkDataAndLight {
-    fn decode(_buf: &mut std::io::Cursor<&[u8]>) -> std::io::Result<Self> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "decode not implemented for ChunkDataAndLight",
-        ))
+    fn decode(_buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        Err(DecodeError::InvalidLength)
     }
 }
 
