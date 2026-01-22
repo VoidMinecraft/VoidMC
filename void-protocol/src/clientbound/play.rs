@@ -1,3 +1,4 @@
+mod chunk;
 mod game_event;
 mod login;
 mod spawn_entity;
@@ -5,6 +6,7 @@ mod synchronize_player_position;
 mod update_entity_position;
 mod update_entity_position_and_rotation;
 
+pub use chunk::*;
 pub use game_event::*;
 pub use login::*;
 pub use spawn_entity::*;
@@ -20,6 +22,8 @@ pub enum PlayPacket {
     SpawnEntity(SpawnEntity),
     #[codec(packet_id = 0x23)]
     GameEvent(GameEvent),
+    #[codec(packet_id = 0x28)]
+    ChunkDataAndLight(ChunkDataAndLight),
     #[codec(packet_id = 0x2C)]
     Login(Login),
     #[codec(packet_id = 0x2F)]
@@ -28,4 +32,6 @@ pub enum PlayPacket {
     UpdateEntityPositionAndRotation(UpdateEntityPositionAndRotation),
     #[codec(packet_id = 0x42)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
+    #[codec(packet_id = 0x58)]
+    SetCenterChunk(SetCenterChunk),
 }
