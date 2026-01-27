@@ -5,5 +5,4 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
-void-protocol = { path = "../void-protocol" }
 void-codec = { path = "../void-codec" }

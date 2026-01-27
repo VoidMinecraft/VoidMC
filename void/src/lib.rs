@@ -3,10 +3,11 @@ mod game;
 mod server;
 
 pub use server::Server;
+use void_net::socket::Packet;
 
 pub struct IncomingPacket {
     pub client_id: u32, // who sent it
-    pub packet: void_protocol::serverbound::ServerboundPacket,
+    pub packet: Packet,
 }
 
 pub struct OutgoingPacket {

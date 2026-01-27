@@ -3,10 +3,20 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use void_codec::{Decode, Encode, VarI32};
 
+pub struct Packet(Vec<u8>);
+
+impl Packet {
+    pub fn decode<T: Decode>(&self) -> std::io::Result<T> {
+        let mut slice = self.0.as_slice();
+        T::decode(&mut slice)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    }
+}
+
 pub struct ClientSocket(TcpStream, pub SocketAddr);
 
 impl ClientSocket {
-    pub async fn receive<T: Decode>(&mut self) -> std::io::Result<T> {
+    pub async fn receive(&mut self) -> std::io::Result<Packet> {
         // 1. Read a vari32 from the stream to determine packet length
         let mut len_buf = [0u8; 5]; // Max 5 bytes for VarI32
         let mut bytes_read = 0;
@@ -46,8 +56,9 @@ impl ClientSocket {
 
         // 4. Decode the packet from the buffer
         let mut slice = packet_buf.as_slice();
-        T::decode(&mut slice)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+        Ok(Packet(packet_buf))
+        // T::decode(&mut slice)
+        //     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
     pub async fn send<T: Encode>(&mut self, packet: &T) -> std::io::Result<()> {

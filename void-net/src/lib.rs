@@ -1,2 +1,1 @@
-mod client;
-pub(crate) mod socket;
+pub mod socket;
