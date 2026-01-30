@@ -11,6 +11,7 @@ use void_net::socket::ServerSocket;
 pub struct Server {
     socket: ServerSocket,
     channels: HashMap<u32, Sender<OutgoingPacket>>,
+    next_id: u32,
 }
 
 impl Server {
@@ -19,6 +20,7 @@ impl Server {
         Ok(Self {
             socket: ServerSocket(server),
             channels: HashMap::new(),
+            next_id: 1,
         })
     }
 
@@ -41,8 +43,9 @@ impl Server {
                             let client_ip = client.1.to_string();
                             info!(client_ip = %client_ip, "Accepted new connection");
 
-                            // TODO: better client ID management, this can have collisions
-                            let client_id = rand::random();
+                            let client_id = self.next_id;
+                            self.next_id += 1;
+
                             let incoming_tx = incoming_tx.clone();
                             let (outgoing_tx, outgoing_rx) = flume::unbounded();
                             self.channels.insert(client_id, outgoing_tx);
