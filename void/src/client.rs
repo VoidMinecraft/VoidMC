@@ -12,15 +12,16 @@ pub struct Client {
 
 impl Client {
     pub fn new(
-        client: ClientSocket,
+        id: u32,
+        socket: ClientSocket,
         incoming_tx: Sender<IncomingPacket>,
         outgoing_rx: Receiver<OutgoingPacket>,
     ) -> Self {
         Self {
-            socket: client,
+            socket,
             incoming_tx,
             outgoing_rx,
-            client_id: rand::random(), // TODO: better client ID management, this can have collisions
+            client_id: id,
         }
     }
 

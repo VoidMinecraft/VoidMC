@@ -187,7 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap();
 
         rt.block_on(async move {
-            let server = Server::new("127.0.0.1:25565")
+            let mut server = Server::new("127.0.0.1:25565")
                 .await
                 .expect("Failed to start server");
             server.run(incoming_tx, outgoing_rx).await;
