@@ -4,7 +4,10 @@ use flume::{Receiver, Sender};
 use tokio::net::TcpListener;
 use tracing::{error, info, instrument};
 
-use crate::{IncomingPacket, OutgoingPacket, client::Client};
+use crate::{
+    client::Client,
+    network::{IncomingPacket, OutgoingPacket},
+};
 use void_net::socket::ServerSocket;
 
 #[derive(Debug)]

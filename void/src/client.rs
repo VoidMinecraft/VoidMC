@@ -1,4 +1,4 @@
-use crate::{IncomingPacket, OutgoingPacket};
+use crate::network::{IncomingPacket, OutgoingPacket};
 use flume::{Receiver, Sender};
 use void_net::socket::ClientSocket;
 use void_protocol::clientbound::ClientboundPacket;
