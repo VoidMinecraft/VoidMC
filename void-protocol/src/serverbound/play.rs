@@ -1,11 +1,15 @@
 mod confirm_teleportation;
+mod keep_alive;
 mod player_loaded;
+mod pong;
 mod set_player_pos;
 mod set_player_pos_and_rot;
 mod tick_end;
 
 pub use confirm_teleportation::*;
+pub use keep_alive::*;
 pub use player_loaded::*;
+pub use pong::*;
 pub use set_player_pos::*;
 pub use set_player_pos_and_rot::*;
 pub use tick_end::*;
@@ -18,10 +22,14 @@ pub enum PlayPacket {
     ConfirmTeleportation(ConfirmTeleportation),
     #[codec(packet_id = 0x0B)]
     TickEnd(TickEnd),
+    #[codec(packet_id = 0x1A)]
+    KeepAlive(KeepAlive),
     #[codec(packet_id = 0x1C)]
     SetPlayerPos(SetPlayerPos),
     #[codec(packet_id = 0x1D)]
     SetPlayerPosAndRot(SetPlayerPosAndRot),
+    #[codec(packet_id = 0x29)]
+    Pong(Pong),
     #[codec(packet_id = 0x2A)]
     PlayerLoaded(PlayerLoaded),
 }
