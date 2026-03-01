@@ -5,7 +5,7 @@ pub use ping_response::*;
 pub use status_response::*;
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged)]
 pub enum StatusPacket {
     #[codec(packet_id = 0x00)]

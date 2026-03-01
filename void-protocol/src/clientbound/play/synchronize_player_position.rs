@@ -29,7 +29,7 @@ impl Decode for TeleportFlags {
     }
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct SynchronizePlayerPosition {
     #[codec(varint32)]
     pub teleport_id: i32,

@@ -7,7 +7,7 @@ pub use known_packs::*;
 pub use registry_data::*;
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged)]
 pub enum ConfigurationPacket {
     #[codec(packet_id = 0x03)]

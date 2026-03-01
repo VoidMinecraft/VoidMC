@@ -1,6 +1,6 @@
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct UpdateEntityPositionAndRotation {
     #[codec(varint32)]
     pub entity_id: i32,

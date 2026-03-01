@@ -8,7 +8,7 @@ pub use login::*;
 pub use play::*;
 pub use status::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ClientboundPacket {
     Status(StatusPacket),
     Login(LoginPacket),
