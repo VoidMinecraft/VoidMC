@@ -4,6 +4,7 @@ mod player_loaded;
 mod pong;
 mod set_player_pos;
 mod set_player_pos_and_rot;
+mod set_player_rotation;
 mod tick_end;
 
 pub use confirm_teleportation::*;
@@ -12,6 +13,7 @@ pub use player_loaded::*;
 pub use pong::*;
 pub use set_player_pos::*;
 pub use set_player_pos_and_rot::*;
+pub use set_player_rotation::*;
 pub use tick_end::*;
 use void_codec::{Decode, Encode};
 
@@ -28,6 +30,8 @@ pub enum PlayPacket {
     SetPlayerPos(SetPlayerPos),
     #[codec(packet_id = 0x1D)]
     SetPlayerPosAndRot(SetPlayerPosAndRot),
+    #[codec(packet_id = 0x1E)]
+    SetPlayerRotation(SetPlayerRotation),
     #[codec(packet_id = 0x29)]
     Pong(Pong),
     #[codec(packet_id = 0x2A)]

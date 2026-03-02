@@ -61,6 +61,12 @@ pub fn handle_play(mut events: MessageReader<PlayPacketEvent>, mut commands: Com
                     }
                 }
             }
+            serverbound::PlayPacket::SetPlayerRotation(rot) => {
+                if let Ok((_, mut rotation, _, _)) = query.get_mut(event.entity) {
+                    rotation.yaw = rot.yaw;
+                    rotation.pitch = rot.pitch;
+                }
+            }
             serverbound::PlayPacket::Pong(pong) => {
                 tracing::debug!("Client {} pong: {}", event.client_id, pong.id);
             }
