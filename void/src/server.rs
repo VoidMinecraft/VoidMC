@@ -32,6 +32,7 @@ impl Server {
         &mut self,
         incoming_tx: Sender<IncomingPacket>,
         outgoing_rx: Receiver<OutgoingPacket>,
+        disconnect_tx: Sender<u32>,
     ) {
         let local_addr = self.socket.0.local_addr().ok();
         if let Some(addr) = local_addr {
@@ -50,6 +51,7 @@ impl Server {
                             self.next_id += 1;
 
                             let incoming_tx = incoming_tx.clone();
+                            let disconnect_tx = disconnect_tx.clone();
                             let (outgoing_tx, outgoing_rx) = flume::unbounded();
                             self.channels.insert(client_id, outgoing_tx);
 
@@ -60,6 +62,7 @@ impl Server {
                                 {
                                     info!(client_ip = %client_ip, error = ?e, "Client connection closed");
                                 }
+                                let _ = disconnect_tx.send(client_id);
                             });
                         }
                         Err(e) => {
@@ -76,9 +79,8 @@ impl Server {
                     if let Some(client_tx) = self.channels.get(&client_id) {
                         if let Err(e) = client_tx.send(outgoing_packet) {
                             error!(client_id = client_id, error = ?e, "Failed to send packet to client");
+                            self.channels.remove(&client_id);
                         }
-                    } else {
-                        error!(client_id = client_id, "No channel found for client");
                     }
                 }
             }

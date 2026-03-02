@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
     let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+    let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
 
     // Start the server in a separate thread
     std::thread::spawn(move || {
@@ -29,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut server = Server::new("127.0.0.1:25565")
                 .await
                 .expect("Failed to start server");
-            server.run(incoming_tx, outgoing_rx).await;
+            server.run(incoming_tx, outgoing_rx, disconnect_tx).await;
         })
     });
 
@@ -38,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             TaskPoolPlugin::default(),
             ScheduleRunnerPlugin::run_loop(Duration::from_millis(1000 / 20)),
         ))
-        .add_plugins(NetworkPlugin::new(incoming_rx, outgoing_tx))
+        .add_plugins(NetworkPlugin::new(incoming_rx, outgoing_tx, disconnect_rx))
         .add_plugins(HandlerPlugin)
         .add_plugins(GameSystemsPlugin)
         .insert_resource(EntityIdCounter(1))

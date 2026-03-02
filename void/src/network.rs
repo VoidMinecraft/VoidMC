@@ -25,13 +25,19 @@ pub struct OutgoingPacket {
 pub struct NetworkPlugin {
     incoming_rx: Receiver<IncomingPacket>,
     outgoing_tx: Sender<OutgoingPacket>,
+    disconnect_rx: Receiver<u32>,
 }
 
 impl NetworkPlugin {
-    pub fn new(incoming_rx: Receiver<IncomingPacket>, outgoing_tx: Sender<OutgoingPacket>) -> Self {
+    pub fn new(
+        incoming_rx: Receiver<IncomingPacket>,
+        outgoing_tx: Sender<OutgoingPacket>,
+        disconnect_rx: Receiver<u32>,
+    ) -> Self {
         Self {
             incoming_rx,
             outgoing_tx,
+            disconnect_rx,
         }
     }
 }
@@ -41,6 +47,7 @@ impl Plugin for NetworkPlugin {
         app.insert_resource(NetworkChannels {
             incoming: self.incoming_rx.clone(),
             outgoing: self.outgoing_tx.clone(),
+            disconnect: self.disconnect_rx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
         .add_message::<HandshakePacketEvent>()
@@ -56,6 +63,7 @@ impl Plugin for NetworkPlugin {
 pub struct NetworkChannels {
     pub incoming: Receiver<IncomingPacket>,
     pub outgoing: Sender<OutgoingPacket>,
+    pub disconnect: Receiver<u32>,
 }
 
 #[derive(Resource)]
