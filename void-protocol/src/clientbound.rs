@@ -14,4 +14,5 @@ pub enum ClientboundPacket {
     Login(LoginPacket),
     Configuration(ConfigurationPacket),
     Play(PlayPacket),
+    ManualPlay(ManualPlayPacket),
 }
