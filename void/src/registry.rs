@@ -1,54 +1,79 @@
-use std::time::Duration;
-
-use bevy_app::{App, ScheduleRunnerPlugin, TaskPoolPlugin};
-use tracing_subscriber::prelude::*;
+use bevy_ecs::prelude::*;
 use ussr_nbt::owned::{Compound, Nbt, Tag};
-use void::{
-    Server,
-    components::EntityIdCounter,
-    handlers::{HandlerPlugin, RegistryDataStore},
-    network::{IncomingPacket, NetworkPlugin, OutgoingPacket},
-    systems::GameSystemsPlugin,
-};
 use void_protocol::clientbound::{RegistryData, RegistryEntry};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    setup_logging()?;
+/// Stores all registry data sent to clients during configuration.
+///
+/// Use the mutation methods to add, remove, or edit individual registries
+/// and entries without replacing the entire set.
+#[derive(Resource)]
+pub struct RegistryDataStore {
+    pub registries: Vec<RegistryData>,
+}
 
-    let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
-    let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-    let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+impl Default for RegistryDataStore {
+    fn default() -> Self {
+        Self {
+            registries: default_registry_data(),
+        }
+    }
+}
 
-    // Start the server in a separate thread
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+impl RegistryDataStore {
+    /// Look up a registry by its id (e.g. `"minecraft:worldgen/biome"`).
+    pub fn get_registry(&self, id: &str) -> Option<&RegistryData> {
+        self.registries.iter().find(|r| r.registry_id == id)
+    }
 
-        rt.block_on(async move {
-            let mut server = Server::new("127.0.0.1:25565")
-                .await
-                .expect("Failed to start server");
-            server.run(incoming_tx, outgoing_rx, disconnect_tx).await;
-        })
-    });
+    /// Look up a registry mutably by its id.
+    pub fn get_registry_mut(&mut self, id: &str) -> Option<&mut RegistryData> {
+        self.registries.iter_mut().find(|r| r.registry_id == id)
+    }
 
-    App::new()
-        .add_plugins((
-            TaskPoolPlugin::default(),
-            ScheduleRunnerPlugin::run_loop(Duration::from_millis(1000 / 20)),
-        ))
-        .add_plugins(NetworkPlugin::new(incoming_rx, outgoing_tx, disconnect_rx))
-        .add_plugins(HandlerPlugin)
-        .add_plugins(GameSystemsPlugin)
-        .insert_resource(EntityIdCounter(1))
-        .insert_resource(RegistryDataStore {
-            registries: build_registry_data(),
-        })
-        .run();
+    /// Append a whole new registry.
+    pub fn add_registry(&mut self, registry: RegistryData) {
+        self.registries.push(registry);
+    }
 
-    Ok(())
+    /// Remove a registry by its id, returning it if found.
+    pub fn remove_registry(&mut self, id: &str) -> Option<RegistryData> {
+        let pos = self.registries.iter().position(|r| r.registry_id == id)?;
+        Some(self.registries.remove(pos))
+    }
+
+    /// Add an entry to an existing registry.
+    pub fn add_entry(&mut self, registry_id: &str, entry: RegistryEntry) {
+        if let Some(reg) = self.get_registry_mut(registry_id) {
+            reg.entries.push(entry);
+        }
+    }
+
+    /// Remove an entry from a registry, returning it if found.
+    pub fn remove_entry(&mut self, registry_id: &str, entry_id: &str) -> Option<RegistryEntry> {
+        let reg = self.get_registry_mut(registry_id)?;
+        let pos = reg.entries.iter().position(|e| e.entry_id == entry_id)?;
+        Some(reg.entries.remove(pos))
+    }
+
+    /// Look up a single entry inside a registry.
+    pub fn get_entry(&self, registry_id: &str, entry_id: &str) -> Option<&RegistryEntry> {
+        self.get_registry(registry_id)?
+            .entries
+            .iter()
+            .find(|e| e.entry_id == entry_id)
+    }
+
+    /// Look up a single entry mutably inside a registry.
+    pub fn get_entry_mut(
+        &mut self,
+        registry_id: &str,
+        entry_id: &str,
+    ) -> Option<&mut RegistryEntry> {
+        self.get_registry_mut(registry_id)?
+            .entries
+            .iter_mut()
+            .find(|e| e.entry_id == entry_id)
+    }
 }
 
 fn nbt(tags: Vec<(&str, Tag)>) -> Nbt {
@@ -67,7 +92,8 @@ fn compound(tags: Vec<(&str, Tag)>) -> Compound {
     }
 }
 
-fn build_registry_data() -> Vec<RegistryData> {
+/// Returns the default set of registry data needed for a vanilla-compatible server.
+pub fn default_registry_data() -> Vec<RegistryData> {
     vec![
         // Minimal dimension type registry
         RegistryData {
@@ -109,6 +135,14 @@ fn build_registry_data() -> Vec<RegistryData> {
                         ("water_fog_color", Tag::Int(329011)),
                         ("fog_color", Tag::Int(12638463)),
                         ("water_color", Tag::Int(4159204)),
+                        ("grass_color", Tag::Int(7979098)),
+                        ("foliage_color", Tag::Int(6208527)),
+                        ("mood_sound", Tag::Compound(compound(vec![
+                            ("sound", Tag::String("minecraft:ambient.cave".into())),
+                            ("tick_delay", Tag::Int(6000)),
+                            ("block_search_extent", Tag::Int(8)),
+                            ("offset", Tag::Double(2.0)),
+                        ]))),
                     ]))),
                 ])),
             }],
@@ -245,41 +279,4 @@ fn build_registry_data() -> Vec<RegistryData> {
             }],
         },
     ]
-}
-
-fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
-    // Create logs directory if it doesn't exist
-    std::fs::create_dir_all("logs")?;
-
-    let file_appender = tracing_appender::rolling::daily("logs", "void.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-    let console_layer = tracing_subscriber::fmt::layer()
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_level(true)
-        .with_file(true)
-        .pretty()
-        .with_writer(std::io::stderr);
-
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_line_number(true)
-        .with_level(true)
-        .with_file(true)
-        .with_writer(non_blocking);
-
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
-        )
-        .with(console_layer)
-        .with(file_layer)
-        .init();
-
-    Ok(())
 }
