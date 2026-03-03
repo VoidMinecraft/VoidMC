@@ -1,3 +1,4 @@
+mod client_information;
 mod confirm_teleportation;
 mod keep_alive;
 mod player_loaded;
@@ -7,6 +8,7 @@ mod set_player_pos_and_rot;
 mod set_player_rotation;
 mod tick_end;
 
+pub use client_information::*;
 pub use confirm_teleportation::*;
 pub use keep_alive::*;
 pub use player_loaded::*;
@@ -22,6 +24,8 @@ use void_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x00)]
     ConfirmTeleportation(ConfirmTeleportation),
+    #[codec(packet_id = 0x0C)]
+    ClientInformation(ClientInformation),
     #[codec(packet_id = 0x0B)]
     TickEnd(TickEnd),
     #[codec(packet_id = 0x1A)]

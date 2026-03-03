@@ -1,3 +1,4 @@
+pub mod chunk;
 mod game_event;
 mod keep_alive;
 mod login;
@@ -5,13 +6,16 @@ mod ping;
 mod player_info_remove;
 mod player_info_update;
 mod remove_entities;
+mod set_center_chunk;
 mod set_head_rotation;
 mod spawn_entity;
 mod synchronize_player_position;
+mod unload_chunk;
 mod update_entity_position;
 mod update_entity_position_and_rotation;
 mod update_entity_rotation;
 
+pub use chunk::*;
 pub use game_event::*;
 pub use keep_alive::*;
 pub use login::*;
@@ -19,9 +23,11 @@ pub use ping::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
 pub use remove_entities::*;
+pub use set_center_chunk::*;
 pub use set_head_rotation::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
+pub use unload_chunk::*;
 pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
 pub use update_entity_rotation::*;
@@ -32,6 +38,8 @@ use void_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x01)]
     SpawnEntity(SpawnEntity),
+    #[codec(packet_id = 0x22)]
+    UnloadChunk(UnloadChunk),
     #[codec(packet_id = 0x23)]
     GameEvent(GameEvent),
     #[codec(packet_id = 0x27)]
@@ -50,6 +58,8 @@ pub enum PlayPacket {
     SynchronizePlayerPosition(SynchronizePlayerPosition),
     #[codec(packet_id = 0x4D)]
     SetHeadRotation(SetHeadRotation),
+    #[codec(packet_id = 0x58)]
+    SetCenterChunk(SetCenterChunk),
 }
 
 /// Packets with manual Encode impls that can't be in the tagged enum.
@@ -59,6 +69,7 @@ pub enum ManualPlayPacket {
     PlayerInfoUpdate(PlayerInfoUpdate),
     PlayerInfoRemove(PlayerInfoRemove),
     RemoveEntities(RemoveEntities),
+    ChunkDataAndLight(ChunkDataAndLight),
 }
 
 impl Encode for ManualPlayPacket {
@@ -74,6 +85,10 @@ impl Encode for ManualPlayPacket {
             }
             ManualPlayPacket::RemoveEntities(packet) => {
                 void_codec::VarI32(0x47).encode(buf);
+                packet.encode(buf);
+            }
+            ManualPlayPacket::ChunkDataAndLight(packet) => {
+                void_codec::VarI32(0x28).encode(buf);
                 packet.encode(buf);
             }
         }
