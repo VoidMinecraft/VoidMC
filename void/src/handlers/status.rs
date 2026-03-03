@@ -2,56 +2,64 @@ use bevy_ecs::prelude::*;
 use void_protocol::{clientbound, serverbound};
 
 use crate::components::ProtocolVersion;
+use crate::config::ServerConfigResource;
 use crate::events::StatusPacketEvent;
 use crate::network::{NetworkChannels, OutgoingPacket};
 
-pub fn handle_status(
-    mut events: MessageReader<StatusPacketEvent>,
-    channels: Res<NetworkChannels>,
-    query: Query<&ProtocolVersion>,
+pub fn handle_status_packet(
+    world: &mut World,
+    client_id: u32,
+    entity: Entity,
+    packet: serverbound::StatusPacket,
 ) {
-    for event in events.read() {
-        match &event.packet {
-            serverbound::StatusPacket::StatusRequest(_) => {
-                let protocol = query
-                    .get(event.entity)
-                    .map(|v| v.0)
-                    .unwrap_or(0);
+    let sender = world.resource::<NetworkChannels>().outgoing.clone();
 
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: event.client_id,
-                    packet: clientbound::ClientboundPacket::Status(
-                        clientbound::StatusPacket::StatusResponse(clientbound::StatusResponse {
-                            status: clientbound::Status {
-                                version: clientbound::Version {
-                                    name: "Void Server".to_string(),
-                                    protocol,
-                                },
-                                players: clientbound::Players {
-                                    max: 100,
-                                    online: 0,
-                                    sample: vec![],
-                                },
-                                description: clientbound::Description {
-                                    text: "Welcome to Void Server!".to_string(),
-                                },
-                                favicon: "".to_string(),
-                                enforces_secure_chat: false,
+    match &packet {
+        serverbound::StatusPacket::StatusRequest(_) => {
+            let protocol = world
+                .get::<ProtocolVersion>(entity)
+                .map(|v| v.0)
+                .unwrap_or(0);
+            let config = world.resource::<ServerConfigResource>();
+            let max_players = config.max_players;
+            let motd = config.motd.clone();
+
+            let _ = sender.send(OutgoingPacket {
+                client_id,
+                packet: clientbound::ClientboundPacket::Status(
+                    clientbound::StatusPacket::StatusResponse(clientbound::StatusResponse {
+                        status: clientbound::Status {
+                            version: clientbound::Version {
+                                name: "Void Server".to_string(),
+                                protocol,
                             },
-                        }),
-                    ),
-                });
-            }
-            serverbound::StatusPacket::PingRequest(ping) => {
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: event.client_id,
-                    packet: clientbound::ClientboundPacket::Status(
-                        clientbound::StatusPacket::PingResponse(clientbound::PingResponse {
-                            timestamp: ping.timestamp,
-                        }),
-                    ),
-                });
-            }
+                            players: clientbound::Players {
+                                max: max_players,
+                                online: 0,
+                                sample: vec![],
+                            },
+                            description: clientbound::Description { text: motd },
+                            favicon: "".to_string(),
+                            enforces_secure_chat: false,
+                        },
+                    }),
+                ),
+            });
+        }
+        serverbound::StatusPacket::PingRequest(ping) => {
+            let _ = sender.send(OutgoingPacket {
+                client_id,
+                packet: clientbound::ClientboundPacket::Status(
+                    clientbound::StatusPacket::PingResponse(clientbound::PingResponse {
+                        timestamp: ping.timestamp,
+                    }),
+                ),
+            });
         }
     }
+    world.write_message(StatusPacketEvent {
+        client_id,
+        entity,
+        packet,
+    });
 }

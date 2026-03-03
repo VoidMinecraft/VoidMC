@@ -1,5 +1,9 @@
+use std::collections::HashSet;
+
 use bevy_ecs::prelude::*;
 use uuid::Uuid;
+
+use crate::world::{ChunkPos, DimensionId};
 
 #[derive(Component)]
 pub struct ClientId(pub u32);
@@ -62,6 +66,22 @@ pub struct ClientSettings {
 
 #[derive(Component)]
 pub struct PlayerReady;
+
+/// The effective (capped) view distance last used for chunk streaming.
+#[derive(Component)]
+pub struct EffectiveViewDistance(pub i32);
+
+/// Chunks currently loaded (sent) for this player.
+#[derive(Component)]
+pub struct LoadedChunks(pub HashSet<ChunkPos>);
+
+/// The chunk column the player is currently standing in.
+#[derive(Component)]
+pub struct CurrentChunkPos(pub ChunkPos);
+
+/// Which dimension the player is in.
+#[derive(Component)]
+pub struct PlayerDimension(pub DimensionId);
 
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);
