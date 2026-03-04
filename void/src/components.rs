@@ -83,5 +83,9 @@ pub struct CurrentChunkPos(pub ChunkPos);
 #[derive(Component)]
 pub struct PlayerDimension(pub DimensionId);
 
+/// Marker component for operator (admin) players.
+#[derive(Component)]
+pub struct Operator;
+
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);

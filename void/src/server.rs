@@ -33,6 +33,7 @@ impl Server {
         incoming_tx: Sender<IncomingPacket>,
         outgoing_rx: Receiver<OutgoingPacket>,
         disconnect_tx: Sender<u32>,
+        kick_rx: Receiver<u32>,
     ) {
         let local_addr = self.socket.0.local_addr().ok();
         if let Some(addr) = local_addr {
@@ -80,6 +81,16 @@ impl Server {
                         if let Err(e) = client_tx.send(outgoing_packet) {
                             error!(client_id = client_id, error = ?e, "Failed to send packet to client");
                             self.channels.remove(&client_id);
+                        }
+                    }
+                }
+
+                result = kick_rx.recv_async() => {
+                    if let Ok(client_id) = result {
+                        // Drop the client's outgoing sender — this causes Client::run()
+                        // to exit, which then fires the disconnect notification.
+                        if self.channels.remove(&client_id).is_some() {
+                            info!(client_id = client_id, "Kicked client (dropped channel)");
                         }
                     }
                 }

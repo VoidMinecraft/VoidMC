@@ -73,3 +73,18 @@ pub struct PlayerReadyEvent {
     pub client_id: u32,
     pub entity: Entity,
 }
+
+#[derive(Event)]
+pub struct ChatCommandEvent {
+    pub entity: Entity,
+    pub client_id: u32,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Event)]
+pub struct ChatMessageEvent {
+    pub entity: Entity,
+    pub client_id: u32,
+    pub message: String,
+}

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use bevy_ecs::prelude::*;
 use void_protocol::{clientbound, serverbound};
 
+use crate::commands::CommandRegistry;
 use crate::components::{
     ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance, EntityIdCounter,
     KeepAliveState, LoadedChunks, MinecraftEntityId, PlayerDimension, Position, PreviousPosition,
@@ -179,6 +180,15 @@ fn handle_finish_configuration(world: &mut World, client_id: u32, entity: Entity
                 enforces_secure_chat: false,
             },
         )),
+    });
+
+    // Send Commands packet (command tree for tab-completion)
+    let command_tree = world.resource::<CommandRegistry>().build_command_tree();
+    let _ = sender.send(OutgoingPacket {
+        client_id,
+        packet: clientbound::ClientboundPacket::ManualPlay(
+            clientbound::ManualPlayPacket::Commands(command_tree),
+        ),
     });
 
     // Send GameEvent(StartWaitingForLevelChunks)

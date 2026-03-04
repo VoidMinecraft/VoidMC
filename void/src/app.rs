@@ -3,6 +3,8 @@ use std::time::Duration;
 use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin};
 use bevy_ecs::prelude::*;
 
+use crate::commands::plugin::CommandPlugin;
+use crate::commands::{Command, CommandRegistry};
 use crate::config::{ServerConfig, ServerConfigResource};
 use crate::components::EntityIdCounter;
 use crate::handlers::HandlerPlugin;
@@ -18,6 +20,7 @@ use crate::Server;
 pub struct VoidServer {
     config: ServerConfig,
     plugins: Vec<Box<dyn FnOnce(&mut App)>>,
+    commands: Vec<Command>,
 }
 
 impl VoidServer {
@@ -26,12 +29,19 @@ impl VoidServer {
         Self {
             config,
             plugins: Vec::new(),
+            commands: Vec::new(),
         }
     }
 
     /// Registers a custom Bevy plugin or systems hook.
     pub fn add_plugin(mut self, f: impl FnOnce(&mut App) + 'static) -> Self {
         self.plugins.push(Box::new(f));
+        self
+    }
+
+    /// Registers a command to be added to the CommandRegistry at startup.
+    pub fn add_command(mut self, command: Command) -> Self {
+        self.commands.push(command);
         self
     }
 
@@ -47,6 +57,7 @@ impl VoidServer {
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
         let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
 
         // Start the network server in a separate thread
         std::thread::spawn(move || {
@@ -59,7 +70,7 @@ impl VoidServer {
                 let mut server = Server::new(&address)
                     .await
                     .expect("Failed to start server");
-                server.run(incoming_tx, outgoing_rx, disconnect_tx).await;
+                server.run(incoming_tx, outgoing_rx, disconnect_tx, kick_rx).await;
             })
         });
 
@@ -69,8 +80,9 @@ impl VoidServer {
             TaskPoolPlugin::default(),
             ScheduleRunnerPlugin::run_loop(tick_duration),
         ))
-        .add_plugins(NetworkPlugin::new(incoming_rx, outgoing_tx, disconnect_rx))
+        .add_plugins(NetworkPlugin::new(incoming_rx, outgoing_tx, disconnect_rx, kick_tx))
         .add_plugins(HandlerPlugin)
+        .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin)
         .insert_resource(EntityIdCounter(1))
         .insert_resource(self.config.registries)
@@ -79,8 +91,17 @@ impl VoidServer {
         .init_resource::<ChunkIndex>()
         .add_systems(Startup, init_world);
 
+        // Apply user plugins first (so they can modify the registry)
         for plugin_fn in self.plugins {
             plugin_fn(&mut app);
+        }
+
+        // Register commands added via add_command()
+        {
+            let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
+            for command in self.commands {
+                registry.register(command);
+            }
         }
 
         app.run();
