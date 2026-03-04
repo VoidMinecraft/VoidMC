@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use bevy_ecs::prelude::With;
 
-use crate::components::{ClientId, PlayerName, PlayerReady};
+use crate::components::{ClientId, PlayerName, PlayerReady, Position, Rotation, TeleportState};
 use crate::network::{NetworkChannels, OutgoingPacket};
 
-use super::parser::{GameProfileArg, GreedyStringArg, IntegerArg, StringArg};
+use super::parser::{DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, StringArg};
 use super::{Command, CommandBuilder, CommandContext, CommandRegistry};
 
 /// Registers all default commands except those listed in `exclude`.
@@ -24,6 +24,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     }
     if !exclude.contains(&"plugins") {
         registry.register(plugins_command());
+    }
+    if !exclude.contains(&"tp") {
+        registry.register(tp_command());
     }
 }
 
@@ -210,6 +213,72 @@ fn handle_plugins(ctx: &mut CommandContext) {
     } else {
         ctx.reply("No plugin list available.");
     }
+}
+
+pub fn tp_command() -> Command {
+    CommandBuilder::new("tp")
+        .description("Teleport to coordinates")
+        .arg("x", DoubleArg::unbounded())
+        .arg("y", DoubleArg::unbounded())
+        .arg("z", DoubleArg::unbounded())
+        .handler(handle_tp)
+        .build()
+}
+
+fn handle_tp(ctx: &mut CommandContext) {
+    let x = *ctx.get::<f64>("x").unwrap();
+    let y = *ctx.get::<f64>("y").unwrap();
+    let z = *ctx.get::<f64>("z").unwrap();
+
+    // Read current rotation to preserve yaw/pitch
+    let (yaw, pitch) = {
+        let rot = ctx.world.get::<Rotation>(ctx.entity);
+        match rot {
+            Some(r) => (r.yaw, r.pitch),
+            None => (0.0, 0.0),
+        }
+    };
+
+    // Update TeleportState: assign teleport_id and mark as pending
+    let teleport_id = {
+        let mut tp_state = ctx.world.get_mut::<TeleportState>(ctx.entity).unwrap();
+        let id = tp_state.next_id;
+        tp_state.pending_id = Some(id);
+        tp_state.next_id += 1;
+        id
+    };
+
+    // Update Position component
+    {
+        let mut pos = ctx.world.get_mut::<Position>(ctx.entity).unwrap();
+        pos.x = x;
+        pos.y = y;
+        pos.z = z;
+    }
+
+    // Send SynchronizePlayerPosition packet
+    let channels = ctx.world.resource::<NetworkChannels>();
+    let _ = channels.outgoing.send(OutgoingPacket {
+        client_id: ctx.client_id,
+        packet: void_protocol::clientbound::ClientboundPacket::Play(
+            void_protocol::clientbound::PlayPacket::SynchronizePlayerPosition(
+                void_protocol::clientbound::SynchronizePlayerPosition {
+                    teleport_id,
+                    x,
+                    y,
+                    z,
+                    vx: 0.0,
+                    vy: 0.0,
+                    vz: 0.0,
+                    yaw,
+                    pitch,
+                    flags: void_protocol::clientbound::TeleportFlags::empty(),
+                },
+            ),
+        ),
+    });
+
+    ctx.reply(&format!("Teleported to {:.1}, {:.1}, {:.1}", x, y, z));
 }
 
 /// Optional resource listing plugin names — can be inserted by the user.

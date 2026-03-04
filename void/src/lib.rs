@@ -20,7 +20,7 @@ pub use commands::parser::{
 };
 pub use commands::defaults::{
     register_default_commands, gamemode_command, help_command, kick_command, ping_command,
-    plugins_command, PluginList,
+    plugins_command, tp_command, PluginList,
 };
 pub use config::{ServerBuilder, ServerConfig, ServerConfigResource, SpawnPosition};
 pub use registry::{default_registry_data, RegistryDataStore};
