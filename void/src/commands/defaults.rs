@@ -31,6 +31,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     if !exclude.contains(&"broadcast") {
         registry.register(broadcast_command());
     }
+    if !exclude.contains(&"tell") {
+        registry.register(tell_command());
+    }
 }
 
 pub fn help_command() -> Command {
@@ -234,6 +237,48 @@ pub fn broadcast_command() -> Command {
         .arg_variadic_required("message", Arc::new(GreedyStringArg))
         .handler(handle_broadcast)
         .build()
+}
+
+pub fn tell_command() -> Command {
+    CommandBuilder::new("tell")
+        .description("Send a private message to a player")
+        .alias("msg")
+        .arg("player", Arc::new(GameProfileArg))
+        .arg_variadic_required("message", Arc::new(GreedyStringArg))
+        .handler(handle_tell)
+        .build()
+}
+
+fn handle_tell(ctx: &mut CommandContext) {
+    let target_name = ctx.get::<String>("player").unwrap().clone();
+    let message = ctx.get::<String>("message").unwrap().clone();
+    let sender_name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
+
+    // Find the target player
+    let target: Option<u32> = {
+        let mut query = ctx
+            .world
+            .query_filtered::<(&ClientId, &PlayerName), With<PlayerReady>>();
+        query
+            .iter(ctx.world)
+            .find(|(_, name)| name.0.eq_ignore_ascii_case(&target_name))
+            .map(|(cid, _)| cid.0)
+    };
+
+    match target {
+        Some(target_cid) => {
+            super::send_system_chat(
+                ctx.world,
+                target_cid,
+                &format!("{} whispers to you: {}", sender_name, message),
+                "gray",
+            );
+            ctx.reply(&format!("You whisper to {}: {}", target_name, message));
+        }
+        None => {
+            ctx.reply_error(&format!("Player '{}' not found", target_name));
+        }
+    }
 }
 
 fn handle_broadcast(ctx: &mut CommandContext) {

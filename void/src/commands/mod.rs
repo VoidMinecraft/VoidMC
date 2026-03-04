@@ -291,7 +291,7 @@ impl<'a> CommandContext<'a> {
     }
 }
 
-fn send_system_chat(world: &World, client_id: u32, message: &str, color: &str) {
+pub(crate) fn send_system_chat(world: &World, client_id: u32, message: &str, color: &str) {
     let channels = world.resource::<NetworkChannels>();
     let nbt = text_to_nbt(message, color);
     let _ = channels.outgoing.send(OutgoingPacket {
