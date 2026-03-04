@@ -37,6 +37,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     if !exclude.contains(&"list") {
         registry.register(list_command());
     }
+    if !exclude.contains(&"say") {
+        registry.register(say_command());
+    }
 }
 
 pub fn help_command() -> Command {
@@ -373,6 +376,20 @@ fn handle_tp(ctx: &mut CommandContext) {
     });
 
     ctx.reply(&format!("Teleported to {:.1}, {:.1}, {:.1}", x, y, z));
+}
+
+pub fn say_command() -> Command {
+    CommandBuilder::new("say")
+        .description("Send a message as yourself")
+        .arg_variadic_required("message", Arc::new(GreedyStringArg))
+        .handler(handle_say)
+        .build()
+}
+
+fn handle_say(ctx: &mut CommandContext) {
+    let name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
+    let message = ctx.get::<String>("message").unwrap().clone();
+    ctx.broadcast(&format!("[{}] {}", name, message));
 }
 
 /// Optional resource listing plugin names — can be inserted by the user.
