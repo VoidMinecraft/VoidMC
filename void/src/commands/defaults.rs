@@ -34,6 +34,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     if !exclude.contains(&"tell") {
         registry.register(tell_command());
     }
+    if !exclude.contains(&"list") {
+        registry.register(list_command());
+    }
 }
 
 pub fn help_command() -> Command {
@@ -284,6 +287,36 @@ fn handle_tell(ctx: &mut CommandContext) {
 fn handle_broadcast(ctx: &mut CommandContext) {
     let message = ctx.get::<String>("message").unwrap().clone();
     ctx.broadcast(&format!("[Broadcast] {}", message));
+}
+
+pub fn list_command() -> Command {
+    CommandBuilder::new("list")
+        .description("List online players")
+        .handler(handle_list)
+        .build()
+}
+
+fn handle_list(ctx: &mut CommandContext) {
+    let names: Vec<String> = {
+        let mut query = ctx
+            .world
+            .query_filtered::<&PlayerName, With<PlayerReady>>();
+        query
+            .iter(ctx.world)
+            .map(|n| n.0.clone())
+            .collect()
+    };
+
+    if names.is_empty() {
+        ctx.reply("There are 0 player(s) online.");
+    } else {
+        let list = names.join(", ");
+        ctx.reply(&format!(
+            "There are {} player(s) online: {}",
+            names.len(),
+            list
+        ));
+    }
 }
 
 fn handle_tp(ctx: &mut CommandContext) {
