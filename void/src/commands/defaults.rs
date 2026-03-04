@@ -28,6 +28,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     if !exclude.contains(&"tp") {
         registry.register(tp_command());
     }
+    if !exclude.contains(&"broadcast") {
+        registry.register(broadcast_command());
+    }
 }
 
 pub fn help_command() -> Command {
@@ -223,6 +226,19 @@ pub fn tp_command() -> Command {
         .arg("z", DoubleArg::unbounded())
         .handler(handle_tp)
         .build()
+}
+
+pub fn broadcast_command() -> Command {
+    CommandBuilder::new("broadcast")
+        .description("Broadcast a message to all players")
+        .arg_variadic_required("message", Arc::new(GreedyStringArg))
+        .handler(handle_broadcast)
+        .build()
+}
+
+fn handle_broadcast(ctx: &mut CommandContext) {
+    let message = ctx.get::<String>("message").unwrap().clone();
+    ctx.broadcast(&format!("[Broadcast] {}", message));
 }
 
 fn handle_tp(ctx: &mut CommandContext) {
