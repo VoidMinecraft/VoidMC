@@ -1,12 +1,29 @@
 use tracing_subscriber::prelude::*;
-use void::{ServerBuilder, VoidServer};
+use void::{
+    CommandBuilder, CommandRegistry, ServerBuilder, VoidServer,
+    register_default_commands,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logging()?;
 
     VoidServer::new(ServerBuilder::new()
         .initial_chunk_radius(32)
-        .build()).run();
+        .build())
+    .add_plugin(|app| {
+        // Register all default commands
+        let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
+        register_default_commands(&mut registry, &[]);
+    })
+    .add_command(
+        CommandBuilder::new("hello")
+            .description("Greet the player")
+            .handler(|ctx| {
+                ctx.reply("Hello from void-example!");
+            })
+            .build()
+    )
+    .run();
 
     Ok(())
 }
