@@ -1,4 +1,7 @@
 pub mod chunk;
+mod command_suggestions_response;
+pub mod commands;
+mod disconnect;
 mod game_event;
 mod keep_alive;
 mod login;
@@ -10,12 +13,16 @@ mod set_center_chunk;
 mod set_head_rotation;
 mod spawn_entity;
 mod synchronize_player_position;
+mod system_chat;
 mod unload_chunk;
 mod update_entity_position;
 mod update_entity_position_and_rotation;
 mod update_entity_rotation;
 
 pub use chunk::*;
+pub use command_suggestions_response::*;
+pub use commands::*;
+pub use disconnect::*;
 pub use game_event::*;
 pub use keep_alive::*;
 pub use login::*;
@@ -27,6 +34,7 @@ pub use set_center_chunk::*;
 pub use set_head_rotation::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
+pub use system_chat::*;
 pub use unload_chunk::*;
 pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
@@ -38,6 +46,8 @@ use void_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x01)]
     SpawnEntity(SpawnEntity),
+    #[codec(packet_id = 0x1D)]
+    Disconnect(Disconnect),
     #[codec(packet_id = 0x22)]
     UnloadChunk(UnloadChunk),
     #[codec(packet_id = 0x23)]
@@ -60,6 +70,8 @@ pub enum PlayPacket {
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x58)]
     SetCenterChunk(SetCenterChunk),
+    #[codec(packet_id = 0x73)]
+    SystemChat(SystemChat),
 }
 
 /// Packets with manual Encode impls that can't be in the tagged enum.
@@ -70,6 +82,8 @@ pub enum ManualPlayPacket {
     PlayerInfoRemove(PlayerInfoRemove),
     RemoveEntities(RemoveEntities),
     ChunkDataAndLight(ChunkDataAndLight),
+    Commands(Commands),
+    CommandSuggestionsResponse(CommandSuggestionsResponse),
 }
 
 impl Encode for ManualPlayPacket {
@@ -89,6 +103,14 @@ impl Encode for ManualPlayPacket {
             }
             ManualPlayPacket::ChunkDataAndLight(packet) => {
                 void_codec::VarI32(0x28).encode(buf);
+                packet.encode(buf);
+            }
+            ManualPlayPacket::Commands(packet) => {
+                void_codec::VarI32(0x11).encode(buf);
+                packet.encode(buf);
+            }
+            ManualPlayPacket::CommandSuggestionsResponse(packet) => {
+                void_codec::VarI32(0x10).encode(buf);
                 packet.encode(buf);
             }
         }
