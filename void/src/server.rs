@@ -1,81 +1,100 @@
-use std::sync::Arc;
-use tokio::{
-    net::{TcpListener, ToSocketAddrs},
-    sync::Mutex,
-};
+use std::collections::HashMap;
+
+use flume::{Receiver, Sender};
+use tokio::net::TcpListener;
 use tracing::{error, info, instrument};
 
-use crate::{client::Client, game::Game};
-use void_net::ServerSocket;
-
-pub struct ServerBuilder<A: ToSocketAddrs> {
-    addr: A,
-    motd: Option<String>,
-    favicon: Option<String>,
-}
-
-impl<A: ToSocketAddrs> ServerBuilder<A> {
-    pub fn new(addr: A) -> Self {
-        Self {
-            addr,
-            motd: None,
-            favicon: None,
-        }
-    }
-
-    pub fn motd(mut self, motd: String) -> Self {
-        self.motd = Some(motd);
-        self
-    }
-
-    pub fn favicon(mut self, favicon: String) -> Self {
-        self.favicon = Some(favicon);
-        self
-    }
-
-    pub async fn build(self) -> std::io::Result<Server> {
-        let listener = TcpListener::bind(&self.addr).await?;
-
-        Ok(Server {
-            server: ServerSocket(listener),
-            game: Arc::new(Mutex::new(Game {
-                motd: self.motd.unwrap_or("Void server".to_string()),
-                favicon: self.favicon.unwrap_or("".to_string()),
-            })),
-        })
-    }
-}
+use crate::{
+    client::Client,
+    network::{IncomingPacket, OutgoingPacket},
+};
+use void_net::socket::ServerSocket;
 
 #[derive(Debug)]
 pub struct Server {
-    server: ServerSocket,
-    game: Arc<Mutex<Game>>,
+    socket: ServerSocket,
+    channels: HashMap<u32, Sender<OutgoingPacket>>,
+    next_id: u32,
 }
 
 impl Server {
+    pub async fn new(addr: &str) -> std::io::Result<Self> {
+        let server = TcpListener::bind(addr).await?;
+        Ok(Self {
+            socket: ServerSocket(server),
+            channels: HashMap::new(),
+            next_id: 1,
+        })
+    }
+
     #[instrument(level = "info", skip(self))]
-    pub async fn run(&self) {
-        let local_addr = self.server.0.local_addr().ok();
+    pub async fn run(
+        &mut self,
+        incoming_tx: Sender<IncomingPacket>,
+        outgoing_rx: Receiver<OutgoingPacket>,
+        disconnect_tx: Sender<u32>,
+        kick_rx: Receiver<u32>,
+    ) {
+        let local_addr = self.socket.0.local_addr().ok();
         if let Some(addr) = local_addr {
             info!(listen_addr = %addr, "Server listening");
         }
 
         loop {
-            match self.server.accept().await {
-                Ok(client) => {
-                    let game = self.game.clone();
-                    let client_ip = client.1.to_string();
-                    info!(client_ip = %client_ip, "Accepted new connection");
-                    tokio::spawn(async move {
-                        if let Err(e) = Client::new(client, game).run().await {
-                            info!(client_ip = %client_ip, error = ?e, "Client connection closed");
+            tokio::select! {
+                result = self.socket.accept() => {
+                    match result {
+                        Ok(client) => {
+                            let client_ip = client.1.to_string();
+                            info!(client_ip = %client_ip, "Accepted new connection");
+
+                            let client_id = self.next_id;
+                            self.next_id += 1;
+
+                            let incoming_tx = incoming_tx.clone();
+                            let disconnect_tx = disconnect_tx.clone();
+                            let (outgoing_tx, outgoing_rx) = flume::unbounded();
+                            self.channels.insert(client_id, outgoing_tx);
+
+                            tokio::spawn(async move {
+                                if let Err(e) = Client::new(client_id, client, incoming_tx, outgoing_rx)
+                                    .run()
+                                    .await
+                                {
+                                    info!(client_ip = %client_ip, error = ?e, "Client connection closed");
+                                }
+                                let _ = disconnect_tx.send(client_id);
+                            });
                         }
-                    });
+                        Err(e) => {
+                            error!(error = ?e, "Failed to accept connection");
+                        }
+                    }
                 }
-                Err(e) => {
-                    error!(error = ?e, "Failed to accept connection");
+
+                result = outgoing_rx.recv_async() => {
+                    let outgoing_packet = result.expect("Failed to receive outgoing packet from channel");
+                    let client_id = outgoing_packet.client_id;
+
+                    // Forward the packet to the appropriate client
+                    if let Some(client_tx) = self.channels.get(&client_id) {
+                        if let Err(e) = client_tx.send(outgoing_packet) {
+                            error!(client_id = client_id, error = ?e, "Failed to send packet to client");
+                            self.channels.remove(&client_id);
+                        }
+                    }
                 }
-            };
+
+                result = kick_rx.recv_async() => {
+                    if let Ok(client_id) = result {
+                        // Drop the client's outgoing sender — this causes Client::run()
+                        // to exit, which then fires the disconnect notification.
+                        if self.channels.remove(&client_id).is_some() {
+                            info!(client_id = client_id, "Kicked client (dropped channel)");
+                        }
+                    }
+                }
+            }
         }
     }
 }

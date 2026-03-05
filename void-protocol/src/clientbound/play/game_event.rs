@@ -1,6 +1,6 @@
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Copy, Encode, Decode)]
 #[repr(u8)]
 pub enum GameEventType {
     NoRespawnBlockAvailable = 0,
@@ -19,7 +19,7 @@ pub enum GameEventType {
     StartWaitingForLevelChunks = 13,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct GameEvent {
     pub event: GameEventType,
     pub value: f32,

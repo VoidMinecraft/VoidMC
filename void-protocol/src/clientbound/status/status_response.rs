@@ -1,31 +1,31 @@
 use serde::{Deserialize, Serialize};
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Version {
     pub name: String,
     pub protocol: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub name: String,
     pub id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Players {
     pub max: i32,
     pub online: i32,
     pub sample: Vec<Player>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Description {
     pub text: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Status {
     pub version: Version,
     pub players: Players,
@@ -35,7 +35,7 @@ pub struct Status {
     pub enforces_secure_chat: bool,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct StatusResponse {
     #[codec(json)]
     pub status: Status,

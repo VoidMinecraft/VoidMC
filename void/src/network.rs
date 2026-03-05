@@ -1,0 +1,193 @@
+use std::collections::HashMap;
+
+use bevy_app::{App, Plugin, PreUpdate};
+use bevy_ecs::prelude::*;
+use flume::{Receiver, Sender};
+use void_net::socket::Packet;
+use void_protocol::serverbound;
+
+use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
+use crate::events::{
+    ConfigurationPacketEvent, HandshakePacketEvent, LoginPacketEvent, PlayPacketEvent,
+    PlayerQuitEvent, StatusPacketEvent,
+};
+use crate::handlers;
+
+pub struct IncomingPacket {
+    pub client_id: u32,
+    pub packet: Packet,
+}
+
+pub struct OutgoingPacket {
+    pub client_id: u32,
+    pub packet: void_protocol::clientbound::ClientboundPacket,
+}
+
+pub struct NetworkPlugin {
+    incoming_rx: Receiver<IncomingPacket>,
+    outgoing_tx: Sender<OutgoingPacket>,
+    disconnect_rx: Receiver<u32>,
+    kick_tx: Sender<u32>,
+}
+
+impl NetworkPlugin {
+    pub fn new(
+        incoming_rx: Receiver<IncomingPacket>,
+        outgoing_tx: Sender<OutgoingPacket>,
+        disconnect_rx: Receiver<u32>,
+        kick_tx: Sender<u32>,
+    ) -> Self {
+        Self {
+            incoming_rx,
+            outgoing_tx,
+            disconnect_rx,
+            kick_tx,
+        }
+    }
+}
+
+impl Plugin for NetworkPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(NetworkChannels {
+            incoming: self.incoming_rx.clone(),
+            outgoing: self.outgoing_tx.clone(),
+            disconnect: self.disconnect_rx.clone(),
+            kick: self.kick_tx.clone(),
+        })
+        .insert_resource(ClientToEntityMap(HashMap::new()))
+        .add_message::<HandshakePacketEvent>()
+        .add_message::<StatusPacketEvent>()
+        .add_message::<LoginPacketEvent>()
+        .add_message::<ConfigurationPacketEvent>()
+        .add_message::<PlayPacketEvent>()
+        .add_systems(PreUpdate, ingest_network_packets);
+    }
+}
+
+#[derive(Resource)]
+pub struct NetworkChannels {
+    pub incoming: Receiver<IncomingPacket>,
+    pub outgoing: Sender<OutgoingPacket>,
+    pub disconnect: Receiver<u32>,
+    pub kick: Sender<u32>,
+}
+
+#[derive(Resource)]
+pub struct ClientToEntityMap(pub HashMap<u32, Entity>);
+
+pub fn ingest_network_packets(world: &mut World) {
+    // Batch-drain all packets from channel
+    let packets: Vec<IncomingPacket> =
+        world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
+            let mut packets = Vec::new();
+            while let Ok(packet) = channels.incoming.try_recv() {
+                packets.push(packet);
+            }
+            packets
+        });
+
+    for incoming_packet in packets {
+        let client_entity =
+            world.resource_scope(|world, mut client_to_entity_map: Mut<ClientToEntityMap>| {
+                client_to_entity_map
+                    .0
+                    .entry(incoming_packet.client_id)
+                    .or_insert_with(|| {
+                        world
+                            .spawn((
+                                Client,
+                                ClientId(incoming_packet.client_id),
+                                ConnectionState(void_protocol::State::Handshake),
+                            ))
+                            .id()
+                    })
+                    .clone()
+            });
+
+        if let Err(e) = dispatch_packet(
+            world,
+            incoming_packet.client_id,
+            client_entity,
+            incoming_packet.packet,
+        ) {
+            tracing::error!(
+                "Failed to handle packet from client {}: {}",
+                incoming_packet.client_id,
+                e
+            );
+        }
+    }
+
+    // Drain disconnect channel and handle disconnects
+    let disconnected: Vec<u32> =
+        world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
+            let mut disc = Vec::new();
+            while let Ok(client_id) = channels.disconnect.try_recv() {
+                disc.push(client_id);
+            }
+            disc
+        });
+
+    for disc_client_id in disconnected {
+        let entity = {
+            let mut map = world.resource_mut::<ClientToEntityMap>();
+            match map.0.remove(&disc_client_id) {
+                Some(e) => e,
+                None => continue,
+            }
+        };
+
+        // Trigger quit event (observer will broadcast to other players)
+        let is_ready = world.get::<PlayerReady>(entity).is_some();
+        if is_ready {
+            world.trigger(PlayerQuitEvent {
+                client_id: disc_client_id,
+                entity,
+            });
+            world.flush();
+        }
+
+        world.despawn(entity);
+    }
+}
+
+fn dispatch_packet(
+    world: &mut World,
+    client_id: u32,
+    entity: Entity,
+    packet: Packet,
+) -> std::io::Result<()> {
+    let state = world
+        .get::<ConnectionState>(entity)
+        .expect("Client must have a ConnectionState component");
+
+    match state.0 {
+        void_protocol::State::Handshake => {
+            let decoded = packet.decode::<serverbound::HandshakePacket>()?;
+            handlers::handshake::handle_handshake_packet(world, client_id, entity, decoded);
+        }
+        void_protocol::State::Status => {
+            let decoded = packet.decode::<serverbound::StatusPacket>()?;
+            handlers::status::handle_status_packet(world, client_id, entity, decoded);
+        }
+        void_protocol::State::Login => {
+            let decoded = packet.decode::<serverbound::LoginPacket>()?;
+            handlers::login::handle_login_packet(world, client_id, entity, decoded);
+        }
+        void_protocol::State::Configuration => {
+            let decoded = packet.decode::<serverbound::ConfigurationPacket>()?;
+            handlers::configuration::handle_configuration_packet(
+                world, client_id, entity, decoded,
+            );
+        }
+        void_protocol::State::Play => {
+            let decoded = packet.decode::<serverbound::PlayPacket>()?;
+            handlers::play::handle_play_packet(world, client_id, entity, decoded);
+        }
+        _ => {
+            tracing::warn!("Unhandled protocol state: {:?}", state.0);
+        }
+    }
+
+    Ok(())
+}

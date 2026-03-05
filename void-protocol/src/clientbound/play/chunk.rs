@@ -4,6 +4,7 @@ use void_codec::{Decode, DecodeError, Encode};
 pub mod blocks {
     pub const AIR: i32 = 0;
     pub const STONE: i32 = 1;
+    pub const DIRT: i32 = 10;
     pub const GRASS_BLOCK: i32 = 8; // snowy=false
     pub const WATER: i32 = 86; // level=0
 }
@@ -58,7 +59,8 @@ impl ChunkHeightmaps {
             if long_idx < 37 {
                 motion_blocking[long_idx] |= ((value & 0x1FF) << bit_offset) as i64;
                 if bit_offset > 55 && long_idx + 1 < 37 {
-                    motion_blocking[long_idx + 1] |= ((value & 0x1FF) >> (64 - bit_offset)) as i64;
+                    motion_blocking[long_idx + 1] |=
+                        ((value & 0x1FF) >> (64 - bit_offset)) as i64;
                 }
             }
         }
@@ -69,7 +71,8 @@ impl ChunkHeightmaps {
     pub fn to_nbt(&self) -> Nbt {
         Nbt {
             name: "".into(),
-            compound: vec![("MOTION_BLOCKING".into(), self.motion_blocking.clone().into())].into(),
+            compound: vec![("MOTION_BLOCKING".into(), self.motion_blocking.clone().into())]
+                .into(),
         }
     }
 }
@@ -400,7 +403,7 @@ impl Chunk {
 // ChunkDataAndLight Packet
 // ============================================================================
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ChunkDataAndLight {
     pub chunk_x: i32,
     pub chunk_z: i32,
@@ -806,7 +809,11 @@ impl ChunkBuilder {
                 }
             }
 
-            sections.push(ChunkSection::from_block_array(&block_array, self.biome_id, block_count));
+            sections.push(ChunkSection::from_block_array(
+                &block_array,
+                self.biome_id,
+                block_count,
+            ));
         }
 
         Chunk {

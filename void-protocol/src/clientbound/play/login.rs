@@ -1,12 +1,12 @@
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct LastDeathLocation {
     pub dimension: String,
     pub position: u64,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct Login {
     pub entity_id: i32,
     pub is_hardcore: bool,
