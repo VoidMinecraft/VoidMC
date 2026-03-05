@@ -1,0 +1,22 @@
+[
+  {
+    "type": "file",
+    "name": "commands",
+    "label": "Command System"
+  },
+  {
+    "type": "file",
+    "name": "players",
+    "label": "Player Management"
+  },
+  {
+    "type": "file",
+    "name": "world",
+    "label": "World & Chunks"
+  },
+  {
+    "type": "file",
+    "name": "registry",
+    "label": "Registry System"
+  }
+]

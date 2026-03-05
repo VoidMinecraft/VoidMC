@@ -1,0 +1,28 @@
+[
+  {
+    "type": "file",
+    "name": "index",
+    "label": "Overview"
+  },
+  {
+    "type": "dir",
+    "name": "server",
+    "label": "Server",
+    "collapsible": true,
+    "collapsed": false
+  },
+  {
+    "type": "dir",
+    "name": "protocol",
+    "label": "Protocol & Codec",
+    "collapsible": true,
+    "collapsed": false
+  },
+  {
+    "type": "dir",
+    "name": "gameplay",
+    "label": "Gameplay",
+    "collapsible": true,
+    "collapsed": false
+  }
+]

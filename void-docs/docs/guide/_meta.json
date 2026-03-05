@@ -1,1 +1,22 @@
-["index", "getting-started", "testing", "development"]
+[
+  {
+    "type": "file",
+    "name": "index",
+    "label": "Overview"
+  },
+  {
+    "type": "file",
+    "name": "getting-started",
+    "label": "Getting Started"
+  },
+  {
+    "type": "file",
+    "name": "testing",
+    "label": "Testing"
+  },
+  {
+    "type": "file",
+    "name": "development",
+    "label": "Development"
+  }
+]

@@ -1,1 +1,22 @@
-["index", "code-of-conduct", "contributing", "license"]
+[
+  {
+    "type": "file",
+    "name": "index",
+    "label": "Overview"
+  },
+  {
+    "type": "file",
+    "name": "code-of-conduct",
+    "label": "Code of Conduct"
+  },
+  {
+    "type": "file",
+    "name": "contributing",
+    "label": "Contributing"
+  },
+  {
+    "type": "file",
+    "name": "license",
+    "label": "License"
+  }
+]

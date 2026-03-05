@@ -1,1 +1,12 @@
-["index", "benchmarking"]
+[
+  {
+    "type": "file",
+    "name": "index",
+    "label": "Overview"
+  },
+  {
+    "type": "file",
+    "name": "benchmarking",
+    "label": "Benchmarking"
+  }
+]
