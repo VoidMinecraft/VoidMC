@@ -1,5 +1,6 @@
 use bevy_ecs::prelude::*;
 use void_protocol::serverbound;
+use void_protocol::types::{BlockFace, BlockPosition, Hand};
 
 // Raw packet messages — kept for plugin consumption via MessageReader<T>
 #[derive(Message)]
@@ -87,4 +88,105 @@ pub struct ChatMessageEvent {
     pub entity: Entity,
     pub client_id: u32,
     pub message: String,
+}
+
+#[derive(Event)]
+pub struct PlayerSneakEvent {
+    pub entity: Entity,
+    pub sneaking: bool,
+}
+
+#[derive(Event)]
+pub struct PlayerSprintEvent {
+    pub entity: Entity,
+    pub sprinting: bool,
+}
+
+#[derive(Event)]
+pub struct PlayerInteractEntityEvent {
+    pub entity: Entity,
+    pub target_id: i32,
+    pub attack: bool,
+    pub hand: Option<Hand>,
+    pub target_pos: Option<(f32, f32, f32)>,
+    pub sneaking: bool,
+}
+
+#[derive(Event)]
+pub struct PlayerStartDiggingEvent {
+    pub entity: Entity,
+    pub position: BlockPosition,
+    pub face: BlockFace,
+    pub sequence: i32,
+}
+
+#[derive(Event)]
+pub struct PlayerCancelDiggingEvent {
+    pub entity: Entity,
+    pub position: BlockPosition,
+    pub face: BlockFace,
+    pub sequence: i32,
+}
+
+#[derive(Event)]
+pub struct PlayerFinishDiggingEvent {
+    pub entity: Entity,
+    pub position: BlockPosition,
+    pub face: BlockFace,
+    pub sequence: i32,
+}
+
+#[derive(Event)]
+pub struct PlayerDropItemEvent {
+    pub entity: Entity,
+    pub drop_stack: bool,
+}
+
+#[derive(Event)]
+pub struct PlayerSwapHandsEvent {
+    pub entity: Entity,
+}
+
+#[derive(Event)]
+pub struct PlayerUseItemOnBlockEvent {
+    pub entity: Entity,
+    pub hand: Hand,
+    pub position: BlockPosition,
+    pub face: BlockFace,
+    pub cursor_x: f32,
+    pub cursor_y: f32,
+    pub cursor_z: f32,
+    pub inside_block: bool,
+    pub sequence: i32,
+}
+
+#[derive(Event)]
+pub struct PlayerUseItemEvent {
+    pub entity: Entity,
+    pub hand: Hand,
+    pub sequence: i32,
+}
+
+#[derive(Event)]
+pub struct PlayerSwingArmEvent {
+    pub entity: Entity,
+    pub hand: Hand,
+}
+
+#[derive(Event)]
+pub struct PlayerChangeSlotEvent {
+    pub entity: Entity,
+    pub slot: i16,
+}
+
+#[derive(Event)]
+pub struct PlayerToggleFlyEvent {
+    pub entity: Entity,
+    pub flying: bool,
+}
+
+#[derive(Event)]
+pub struct PlayerCloseContainerEvent {
+    pub entity: Entity,
+    pub window_id: u8,
 }

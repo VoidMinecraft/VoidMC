@@ -27,3 +27,4 @@ pub enum State {
 
 pub mod clientbound;
 pub mod serverbound;
+pub mod types;

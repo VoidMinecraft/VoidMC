@@ -22,7 +22,7 @@ pub mod biomes {
 // SetCenterChunk Packet (0x58)
 // ============================================================================
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode)]
 pub struct SetCenterChunk {
     #[codec(varint32)]
     pub chunk_x: i32,

@@ -1,19 +1,25 @@
 use tracing_subscriber::prelude::*;
 use void::{
-    CommandBuilder, CommandRegistry, ServerBuilder, VoidServer,
+    CommandBuilder, CommandRegistry, On, Query, ServerBuilder, VoidServer,
     register_default_commands,
 };
+use void::components::PlayerName;
+use void::events::PlayerStartDiggingEvent;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logging()?;
 
     VoidServer::new(ServerBuilder::new()
-        .initial_chunk_radius(32)
+        .spawn_chunk_radius(4)
+        .initial_chunk_radius(4)
         .build())
     .add_plugin(|app| {
         // Register all default commands
         let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
         register_default_commands(&mut registry, &[]);
+
+        // Observe block-breaking events
+        app.add_observer(on_player_dig);
     })
     .add_command(
         CommandBuilder::new("hello")
@@ -63,4 +69,21 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     Ok(())
+}
+
+fn on_player_dig(
+    event: On<PlayerStartDiggingEvent>,
+    query: Query<&PlayerName>,
+) {
+    let name = query
+        .get(event.entity)
+        .map(|n| n.0.as_str())
+        .unwrap_or("Unknown");
+    tracing::info!(
+        "{} broke a block at ({}, {}, {})",
+        name,
+        event.position.x,
+        event.position.y,
+        event.position.z,
+    );
 }
