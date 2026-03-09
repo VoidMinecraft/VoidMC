@@ -2,7 +2,6 @@ use bevy_ecs::prelude::*;
 use void_protocol::{clientbound, serverbound};
 
 use crate::components::{ConnectionState, PlayerName, PlayerUuid};
-use crate::events::LoginPacketEvent;
 use crate::network::{NetworkChannels, OutgoingPacket};
 
 pub fn handle_login_packet(
@@ -58,9 +57,4 @@ pub fn handle_login_packet(
             });
         }
     }
-    world.write_message(LoginPacketEvent {
-        client_id,
-        entity,
-        packet,
-    });
 }

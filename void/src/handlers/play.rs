@@ -9,7 +9,7 @@ use crate::components::{
     TeleportState,
 };
 use crate::events::{
-    ChatCommandEvent, ChatMessageEvent, PlayPacketEvent, PlayerCancelDiggingEvent,
+    ChatCommandEvent, ChatMessageEvent, PlayerCancelDiggingEvent,
     PlayerChangeSlotEvent, PlayerCloseContainerEvent, PlayerDropItemEvent,
     PlayerFinishDiggingEvent, PlayerInteractEntityEvent, PlayerMoveEvent, PlayerReadyEvent,
     PlayerRotateEvent, PlayerSneakEvent, PlayerSprintEvent, PlayerStartDiggingEvent,
@@ -292,11 +292,6 @@ pub fn handle_play_packet(
             handle_interact(world, entity, p);
         }
     }
-    world.write_message(PlayPacketEvent {
-        client_id,
-        entity,
-        packet,
-    });
 }
 
 fn handle_chat_command(world: &mut World, client_id: u32, entity: Entity, raw_command: &str) {

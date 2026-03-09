@@ -12,6 +12,10 @@ pub mod systems;
 pub mod world;
 
 pub use app::VoidServer;
+pub use handlers::{
+    ConfigurationPlugin, DefaultHandlersPlugin, HandshakePlugin, LoginPlugin, PlayPlugin,
+    PlayerEventsPlugin, StatusPlugin,
+};
 pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,
 };

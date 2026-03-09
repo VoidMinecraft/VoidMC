@@ -2,36 +2,46 @@ use bevy_ecs::prelude::*;
 use void_protocol::serverbound;
 use void_protocol::types::{BlockFace, BlockPosition, Hand};
 
-// Raw packet messages — kept for plugin consumption via MessageReader<T>
-#[derive(Message)]
+// Generic packet queue resource — each protocol state gets one
+#[derive(Resource)]
+pub struct PacketQueue<T: Send + Sync + 'static>(pub Vec<T>);
+
+impl<T: Send + Sync + 'static> Default for PacketQueue<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+// Raw packet events — queued by NetworkPlugin, drained by per-state handler plugins
+#[derive(Event)]
 pub struct HandshakePacketEvent {
     pub client_id: u32,
     pub entity: Entity,
     pub packet: serverbound::HandshakePacket,
 }
 
-#[derive(Message)]
+#[derive(Event)]
 pub struct StatusPacketEvent {
     pub client_id: u32,
     pub entity: Entity,
     pub packet: serverbound::StatusPacket,
 }
 
-#[derive(Message)]
+#[derive(Event)]
 pub struct LoginPacketEvent {
     pub client_id: u32,
     pub entity: Entity,
     pub packet: serverbound::LoginPacket,
 }
 
-#[derive(Message)]
+#[derive(Event)]
 pub struct ConfigurationPacketEvent {
     pub client_id: u32,
     pub entity: Entity,
     pub packet: serverbound::ConfigurationPacket,
 }
 
-#[derive(Message)]
+#[derive(Event)]
 pub struct PlayPacketEvent {
     pub client_id: u32,
     pub entity: Entity,

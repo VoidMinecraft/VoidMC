@@ -3,7 +3,6 @@ use void_protocol::{clientbound, serverbound};
 
 use crate::components::ProtocolVersion;
 use crate::config::ServerConfigResource;
-use crate::events::StatusPacketEvent;
 use crate::network::{NetworkChannels, OutgoingPacket};
 
 pub fn handle_status_packet(
@@ -57,9 +56,4 @@ pub fn handle_status_packet(
             });
         }
     }
-    world.write_message(StatusPacketEvent {
-        client_id,
-        entity,
-        packet,
-    });
 }
