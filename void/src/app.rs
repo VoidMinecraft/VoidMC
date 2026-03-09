@@ -7,7 +7,7 @@ use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
 use crate::config::{ServerConfig, ServerConfigResource};
 use crate::components::EntityIdCounter;
-use crate::handlers::HandlerPlugin;
+use crate::handlers::DefaultHandlersPlugin;
 use crate::network::{NetworkPlugin, OutgoingPacket, IncomingPacket};
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
@@ -81,7 +81,7 @@ impl VoidServer {
             ScheduleRunnerPlugin::run_loop(tick_duration),
         ))
         .add_plugins(NetworkPlugin::new(incoming_rx, outgoing_tx, disconnect_rx, kick_tx))
-        .add_plugins(HandlerPlugin)
+        .add_plugins(DefaultHandlersPlugin)
         .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin)
         .insert_resource(EntityIdCounter(1))

@@ -8,10 +8,9 @@ use void_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
 use crate::events::{
-    ConfigurationPacketEvent, HandshakePacketEvent, LoginPacketEvent, PlayPacketEvent,
+    ConfigurationPacketEvent, HandshakePacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent,
     PlayerQuitEvent, StatusPacketEvent,
 };
-use crate::handlers;
 
 pub struct IncomingPacket {
     pub client_id: u32,
@@ -55,11 +54,11 @@ impl Plugin for NetworkPlugin {
             kick: self.kick_tx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
-        .add_message::<HandshakePacketEvent>()
-        .add_message::<StatusPacketEvent>()
-        .add_message::<LoginPacketEvent>()
-        .add_message::<ConfigurationPacketEvent>()
-        .add_message::<PlayPacketEvent>()
+        .init_resource::<PacketQueue<HandshakePacketEvent>>()
+        .init_resource::<PacketQueue<StatusPacketEvent>>()
+        .init_resource::<PacketQueue<LoginPacketEvent>>()
+        .init_resource::<PacketQueue<ConfigurationPacketEvent>>()
+        .init_resource::<PacketQueue<PlayPacketEvent>>()
         .add_systems(PreUpdate, ingest_network_packets);
     }
 }
@@ -164,25 +163,79 @@ fn dispatch_packet(
     match state.0 {
         void_protocol::State::Handshake => {
             let decoded = packet.decode::<serverbound::HandshakePacket>()?;
-            handlers::handshake::handle_handshake_packet(world, client_id, entity, decoded);
+            // Apply state transition eagerly so subsequent packets in this
+            // batch are decoded with the correct protocol state.
+            let serverbound::HandshakePacket::Handshake(ref hs) = decoded;
+            world
+                .entity_mut(entity)
+                .insert(ConnectionState(hs.next_state));
+            world
+                .resource_mut::<PacketQueue<HandshakePacketEvent>>()
+                .0
+                .push(HandshakePacketEvent {
+                    client_id,
+                    entity,
+                    packet: decoded,
+                });
         }
         void_protocol::State::Status => {
             let decoded = packet.decode::<serverbound::StatusPacket>()?;
-            handlers::status::handle_status_packet(world, client_id, entity, decoded);
+            world
+                .resource_mut::<PacketQueue<StatusPacketEvent>>()
+                .0
+                .push(StatusPacketEvent {
+                    client_id,
+                    entity,
+                    packet: decoded,
+                });
         }
         void_protocol::State::Login => {
             let decoded = packet.decode::<serverbound::LoginPacket>()?;
-            handlers::login::handle_login_packet(world, client_id, entity, decoded);
+            // Eagerly transition to Configuration so later packets decode correctly.
+            if matches!(decoded, serverbound::LoginPacket::LoginAcknowledged(_)) {
+                world
+                    .entity_mut(entity)
+                    .insert(ConnectionState(void_protocol::State::Configuration));
+            }
+            world
+                .resource_mut::<PacketQueue<LoginPacketEvent>>()
+                .0
+                .push(LoginPacketEvent {
+                    client_id,
+                    entity,
+                    packet: decoded,
+                });
         }
         void_protocol::State::Configuration => {
             let decoded = packet.decode::<serverbound::ConfigurationPacket>()?;
-            handlers::configuration::handle_configuration_packet(
-                world, client_id, entity, decoded,
-            );
+            // Eagerly transition to Play so later packets decode correctly.
+            if matches!(
+                decoded,
+                serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(_)
+            ) {
+                world
+                    .entity_mut(entity)
+                    .insert(ConnectionState(void_protocol::State::Play));
+            }
+            world
+                .resource_mut::<PacketQueue<ConfigurationPacketEvent>>()
+                .0
+                .push(ConfigurationPacketEvent {
+                    client_id,
+                    entity,
+                    packet: decoded,
+                });
         }
         void_protocol::State::Play => {
             let decoded = packet.decode::<serverbound::PlayPacket>()?;
-            handlers::play::handle_play_packet(world, client_id, entity, decoded);
+            world
+                .resource_mut::<PacketQueue<PlayPacketEvent>>()
+                .0
+                .push(PlayPacketEvent {
+                    client_id,
+                    entity,
+                    packet: decoded,
+                });
         }
         _ => {
             tracing::warn!("Unhandled protocol state: {:?}", state.0);

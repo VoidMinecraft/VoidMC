@@ -10,7 +10,7 @@ use crate::components::{
     Rotation, TeleportState,
 };
 use crate::config::ServerConfigResource;
-use crate::events::{ConfigurationPacketEvent, PlayerJoinEvent};
+use crate::events::PlayerJoinEvent;
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::registry::RegistryDataStore;
 use crate::world::{ChunkData, ChunkIndex, ChunkPos, ChunkPosition, DimensionId};
@@ -69,11 +69,6 @@ pub fn handle_configuration_packet(
             handle_finish_configuration(world, client_id, entity);
         }
     }
-    world.write_message(ConfigurationPacketEvent {
-        client_id,
-        entity,
-        packet,
-    });
 }
 
 fn handle_finish_configuration(world: &mut World, client_id: u32, entity: Entity) {

@@ -2,11 +2,10 @@ use bevy_ecs::prelude::*;
 use void_protocol::serverbound;
 
 use crate::components::{ConnectionState, ProtocolVersion};
-use crate::events::HandshakePacketEvent;
 
 pub fn handle_handshake_packet(
     world: &mut World,
-    client_id: u32,
+    _client_id: u32,
     entity: Entity,
     packet: serverbound::HandshakePacket,
 ) {
@@ -18,9 +17,4 @@ pub fn handle_handshake_packet(
             ));
         }
     }
-    world.write_message(HandshakePacketEvent {
-        client_id,
-        entity,
-        packet,
-    });
 }

@@ -1459,6 +1459,7 @@ dependencies = [
  "tracing",
  "ussr-nbt",
  "uuid",
+ "void-codec",
  "void-net",
  "void-protocol",
 ]

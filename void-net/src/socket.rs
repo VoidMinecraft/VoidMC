@@ -54,11 +54,7 @@ impl ClientSocket {
         let mut packet_buf = vec![0u8; len];
         self.0.read_exact(&mut packet_buf).await?;
 
-        // 4. Decode the packet from the buffer
-        let mut slice = packet_buf.as_slice();
         Ok(Packet(packet_buf))
-        // T::decode(&mut slice)
-        //     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
     pub async fn send<T: Encode>(&mut self, packet: &T) -> std::io::Result<()> {

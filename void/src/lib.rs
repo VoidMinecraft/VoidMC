@@ -12,6 +12,10 @@ pub mod systems;
 pub mod world;
 
 pub use app::VoidServer;
+pub use handlers::{
+    ConfigurationPlugin, DefaultHandlersPlugin, HandshakePlugin, LoginPlugin, PlayPlugin,
+    PlayerEventsPlugin, StatusPlugin,
+};
 pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,
 };
@@ -26,3 +30,7 @@ pub use config::{ServerBuilder, ServerConfig, ServerConfigResource, SpawnPositio
 pub use registry::{default_registry_data, RegistryDataStore};
 pub use server::Server;
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
+pub use void_protocol::types::{BlockFace, BlockPosition, Hand};
+
+// Re-export commonly used bevy_ecs types for plugin developers
+pub use bevy_ecs::prelude::{On, Query};
