@@ -20,6 +20,8 @@ impl Plugin for DefaultPlugins {
             configuration::ConfigurationPlugin,
             play::PlayPlugin,
             movement::MovementPlugin,
+            chat::ChatPlugin,
+            interaction::InteractionPlugin,
         ));
     }
 }

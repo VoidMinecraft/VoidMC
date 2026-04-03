@@ -1,4 +1,5 @@
 use tracing_subscriber::prelude::*;
+use tracing_appender::non_blocking::WorkerGuard;
 use void::components::PlayerName;
 use void::events::PlayerStartDiggingEvent;
 use void::{
@@ -7,7 +8,7 @@ use void::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    setup_logging()?;
+    let _log_guard = setup_logging()?;
 
     VoidServer::new(
         ServerConfigBuilder::new()
@@ -36,12 +37,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
+fn setup_logging() -> Result<WorkerGuard, Box<dyn std::error::Error>> {
     // Create logs directory if it doesn't exist
     std::fs::create_dir_all("logs")?;
 
-    let file_appender = tracing_appender::rolling::daily("logs", "void.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    let log_file = std::fs::File::create(format!("logs/void-{timestamp}.log"))?;
+    let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
 
     let console_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
@@ -70,7 +74,7 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
         .with(file_layer)
         .init();
 
-    Ok(())
+    Ok(guard)
 }
 
 fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) {

@@ -160,183 +160,218 @@ fn dispatch_packet(
         .expect("Client must have a ConnectionState component");
 
     match state.0 {
-        void_protocol::State::Handshake => match packet.decode::<serverbound::HandshakePacket>()? {
-            serverbound::HandshakePacket::Handshake(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-        },
-        void_protocol::State::Status => match packet.decode::<serverbound::StatusPacket>()? {
-            serverbound::StatusPacket::PingRequest(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::StatusPacket::StatusRequest(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-        },
-        void_protocol::State::Login => match packet.decode::<serverbound::LoginPacket>()? {
-            serverbound::LoginPacket::LoginStart(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::LoginPacket::LoginAcknowledged(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-        },
-        void_protocol::State::Configuration => match packet
-            .decode::<serverbound::ConfigurationPacket>()?
-        {
-            serverbound::ConfigurationPacket::ClientInformation(packet) => {
-                world.trigger(PacketEvent {
-                    client_id,
-                    entity,
-                    packet,
-                })
-            }
-            serverbound::ConfigurationPacket::PluginMessage(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::ConfigurationPacket::KnownPacks(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(packet) => world
-                .trigger(PacketEvent {
+        void_protocol::State::Handshake => {
+            let packet = packet.decode::<serverbound::HandshakePacket>()?;
+            tracing::debug!("[Client {}][Handshake] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::HandshakePacket::Handshake(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
                     packet,
                 }),
-        },
-        void_protocol::State::Play => match packet.decode::<serverbound::PlayPacket>()? {
-            serverbound::PlayPacket::ChatCommand(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::ChatMessage(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::ChatCommandUnsigned(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::ClientInformation(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::CloseContainer(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::CommandSuggestionsRequest(packet) => {
-                world.trigger(PacketEvent {
+            }
+        }
+        void_protocol::State::Status => {
+            let packet = packet.decode::<serverbound::StatusPacket>()?;
+            tracing::debug!("[Client {}][Status] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::StatusPacket::PingRequest(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
                     packet,
-                })
+                }),
+                serverbound::StatusPacket::StatusRequest(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
             }
-            serverbound::PlayPacket::ConfirmTeleportation(packet) => world.trigger(PacketEvent {
+        }
+        void_protocol::State::Login => {
+            let packet = packet.decode::<serverbound::LoginPacket>()?;
+            tracing::debug!("[Client {}][Login] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::LoginPacket::LoginStart(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::LoginPacket::LoginAcknowledged(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+            }
+        }
+        void_protocol::State::Configuration => {
+            let packet = packet.decode::<serverbound::ConfigurationPacket>()?;
+            tracing::debug!(
+                "[Client {}][Configuration] Received {:?}",
                 client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::Interact(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::KeepAlive(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::PlayerAbilities(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::PlayerAction(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::PlayerCommand(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::PlayerLoaded(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::Pong(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::SetHeldItem(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::SetPlayerPos(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::SetPlayerPosAndRot(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::SetPlayerRotation(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::SignedChatCommand(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::SwingArm(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::TickEnd(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::UseItem(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-            serverbound::PlayPacket::UseItemOn(packet) => world.trigger(PacketEvent {
-                client_id,
-                entity,
-                packet,
-            }),
-        },
+                packet
+            );
+
+            match packet {
+                serverbound::ConfigurationPacket::ClientInformation(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::ConfigurationPacket::PluginMessage(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::ConfigurationPacket::KnownPacks(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(packet) => world
+                    .trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    }),
+            }
+        }
+        void_protocol::State::Play => {
+            let packet = packet.decode::<serverbound::PlayPacket>()?;
+            tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::PlayPacket::ChatCommand(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::ChatMessage(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::ChatCommandUnsigned(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::PlayPacket::ClientInformation(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::CloseContainer(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::CommandSuggestionsRequest(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::PlayPacket::ConfirmTeleportation(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::PlayPacket::Interact(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::KeepAlive(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerAbilities(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerAction(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerCommand(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerLoaded(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::Pong(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetHeldItem(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetPlayerPos(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetPlayerPosAndRot(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetPlayerRotation(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SignedChatCommand(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SwingArm(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::TickEnd(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::UseItem(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::UseItemOn(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+            }
+        }
         _ => {
             tracing::warn!("Unhandled protocol state: {:?}", state.0);
         }
