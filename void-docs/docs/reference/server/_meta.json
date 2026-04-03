@@ -1,0 +1,22 @@
+[
+  {
+    "type": "file",
+    "name": "architecture",
+    "label": "Architecture"
+  },
+  {
+    "type": "file",
+    "name": "configuration",
+    "label": "Configuration"
+  },
+  {
+    "type": "file",
+    "name": "ecs",
+    "label": "ECS Components & Resources"
+  },
+  {
+    "type": "file",
+    "name": "events",
+    "label": "Events"
+  }
+]
