@@ -4,6 +4,7 @@ pub mod configuration;
 pub mod handshake;
 pub mod login;
 pub mod movement;
+pub mod play;
 pub mod status;
 
 pub struct DefaultPlugins;
@@ -15,6 +16,7 @@ impl Plugin for DefaultPlugins {
             status::StatusPlugin,
             login::LoginPlugin,
             configuration::ConfigurationPlugin,
+            play::PlayPlugin,
             movement::MovementPlugin,
         ));
     }

@@ -21,42 +21,6 @@ pub fn handle_play_packet(
     packet: serverbound::PlayPacket,
 ) {
     match &packet {
-        serverbound::PlayPacket::PlayerLoaded(_) => {
-            tracing::info!("Client {} player loaded, marking ready", client_id);
-            world.entity_mut(entity).insert(PlayerReady);
-            world.trigger(PlayerReadyEvent { client_id, entity });
-            world.flush();
-        }
-        serverbound::PlayPacket::TickEnd(_) => {
-            // No-op
-        }
-        serverbound::PlayPacket::KeepAlive(ka) => {
-            if let Some(mut keep_alive_state) = world.get_mut::<KeepAliveState>(entity) {
-                if keep_alive_state.last_sent_id == ka.keep_alive_id {
-                    keep_alive_state.awaiting_response = false;
-                    tracing::debug!(
-                        "Client {} responded to keep-alive {}",
-                        client_id,
-                        ka.keep_alive_id
-                    );
-                }
-            }
-        }
-        serverbound::PlayPacket::Pong(pong) => {
-            tracing::debug!("Client {} pong: {}", client_id, pong.id);
-        }
-        serverbound::PlayPacket::ClientInformation(info) => {
-            tracing::debug!(
-                "Client {} updated settings (play): locale={}, view_distance={}",
-                client_id,
-                info.locale,
-                info.view_distance
-            );
-            world.entity_mut(entity).insert(ClientSettings {
-                locale: info.locale.clone(),
-                view_distance: info.view_distance,
-            });
-        }
         serverbound::PlayPacket::ChatCommand(cmd) => {
             handle_chat_command(world, client_id, entity, &cmd.command);
         }
@@ -91,11 +55,6 @@ pub fn handle_play_packet(
                 entity,
                 window_id: p.window_id,
             });
-            world.flush();
-        }
-        serverbound::PlayPacket::PlayerAbilities(p) => {
-            let flying = (p.flags & 0x02) != 0;
-            world.trigger(PlayerToggleFlyEvent { entity, flying });
             world.flush();
         }
         serverbound::PlayPacket::PlayerCommand(p) => match p.action_id {

@@ -1,12 +1,12 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands, world::World};
 use void_protocol::serverbound::{
-    ConfirmTeleportation, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation,
+    ConfirmTeleportation, PlayerAbilities, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation,
 };
 
 use crate::{
     components::{Position, Rotation, TeleportState},
-    events::{PlayerMoveEvent, PlayerRotateEvent},
+    events::{PlayerMoveEvent, PlayerRotateEvent, PlayerToggleFlyEvent},
     network::PacketEvent,
 };
 
@@ -18,6 +18,7 @@ impl Plugin for MovementPlugin {
         app.add_observer(handle_set_player_pos);
         app.add_observer(handle_set_player_pos_and_rot);
         app.add_observer(handle_set_player_rotation);
+        app.add_observer(handle_player_abilities);
     }
 }
 
@@ -121,4 +122,12 @@ fn handle_set_player_rotation(
         yaw: event.packet.yaw,
         pitch: event.packet.pitch,
     })
+}
+
+fn handle_player_abilities(event: On<PacketEvent<PlayerAbilities>>, mut commands: Commands) {
+    let flying = (event.packet.flags & 0x02) != 0;
+    commands.trigger(PlayerToggleFlyEvent {
+        entity: event.entity,
+        flying,
+    });
 }
