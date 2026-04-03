@@ -1504,6 +1504,7 @@ dependencies = [
 name = "void-protocol"
 version = "0.1.0"
 dependencies = [
+ "bevy_ecs",
  "bitflags",
  "serde",
  "serde_json",

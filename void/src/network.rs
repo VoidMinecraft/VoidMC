@@ -8,8 +8,7 @@ use void_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
 use crate::events::{
-    ConfigurationPacketEvent, HandshakePacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent,
-    PlayerQuitEvent, StatusPacketEvent,
+    ConfigurationPacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent, PlayerQuitEvent,
 };
 
 pub struct IncomingPacket {
@@ -54,8 +53,6 @@ impl Plugin for NetworkPlugin {
             kick: self.kick_tx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
-        .init_resource::<PacketQueue<HandshakePacketEvent>>()
-        .init_resource::<PacketQueue<StatusPacketEvent>>()
         .init_resource::<PacketQueue<LoginPacketEvent>>()
         .init_resource::<PacketQueue<ConfigurationPacketEvent>>()
         .init_resource::<PacketQueue<PlayPacketEvent>>()
@@ -75,6 +72,7 @@ pub struct NetworkChannels {
 pub struct ClientToEntityMap(pub HashMap<u32, Entity>);
 
 pub fn ingest_network_packets(world: &mut World) {
+    // TODO: This batch-draining approach is simple but may lead to increased latency under high load.
     // Batch-drain all packets from channel
     let packets: Vec<IncomingPacket> =
         world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
@@ -149,6 +147,13 @@ pub fn ingest_network_packets(world: &mut World) {
     }
 }
 
+#[derive(Debug, Event)]
+pub struct PacketEvent<T> {
+    pub client_id: u32,
+    pub entity: Entity,
+    pub packet: T,
+}
+
 fn dispatch_packet(
     world: &mut World,
     client_id: u32,
@@ -161,33 +166,26 @@ fn dispatch_packet(
 
     match state.0 {
         void_protocol::State::Handshake => {
-            let decoded = packet.decode::<serverbound::HandshakePacket>()?;
-            // Apply state transition eagerly so subsequent packets in this
-            // batch are decoded with the correct protocol state.
-            let serverbound::HandshakePacket::Handshake(ref hs) = decoded;
-            world
-                .entity_mut(entity)
-                .insert(ConnectionState(hs.next_state));
-            world
-                .resource_mut::<PacketQueue<HandshakePacketEvent>>()
-                .0
-                .push(HandshakePacketEvent {
+            match packet.decode::<serverbound::HandshakePacket>()? {
+                serverbound::HandshakePacket::Handshake(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
-                    packet: decoded,
-                });
+                    packet,
+                }),
+            }
         }
-        void_protocol::State::Status => {
-            let decoded = packet.decode::<serverbound::StatusPacket>()?;
-            world
-                .resource_mut::<PacketQueue<StatusPacketEvent>>()
-                .0
-                .push(StatusPacketEvent {
-                    client_id,
-                    entity,
-                    packet: decoded,
-                });
-        }
+        void_protocol::State::Status => match packet.decode::<serverbound::StatusPacket>()? {
+            serverbound::StatusPacket::PingRequest(packet) => world.trigger(PacketEvent {
+                client_id,
+                entity,
+                packet,
+            }),
+            serverbound::StatusPacket::StatusRequest(packet) => world.trigger(PacketEvent {
+                client_id,
+                entity,
+                packet,
+            }),
+        },
         void_protocol::State::Login => {
             let decoded = packet.decode::<serverbound::LoginPacket>()?;
             // Eagerly transition to Configuration so later packets decode correctly.
@@ -240,6 +238,8 @@ fn dispatch_packet(
             tracing::warn!("Unhandled protocol state: {:?}", state.0);
         }
     }
+
+    world.flush();
 
     Ok(())
 }

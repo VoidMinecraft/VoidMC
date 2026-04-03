@@ -12,21 +12,6 @@ impl<T: Send + Sync + 'static> Default for PacketQueue<T> {
     }
 }
 
-// Raw packet events — queued by NetworkPlugin, drained by per-state handler plugins
-#[derive(Event)]
-pub struct HandshakePacketEvent {
-    pub client_id: u32,
-    pub entity: Entity,
-    pub packet: serverbound::HandshakePacket,
-}
-
-#[derive(Event)]
-pub struct StatusPacketEvent {
-    pub client_id: u32,
-    pub entity: Entity,
-    pub packet: serverbound::StatusPacket,
-}
-
 #[derive(Event)]
 pub struct LoginPacketEvent {
     pub client_id: u32,

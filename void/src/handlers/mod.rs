@@ -1,54 +1,15 @@
 pub mod configuration;
-pub mod handshake;
 pub mod login;
 pub mod play;
-pub mod status;
 
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_ecs::prelude::*;
 
-use crate::events::{
-    ConfigurationPacketEvent, HandshakePacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent,
-    StatusPacketEvent,
-};
+use crate::events::{ConfigurationPacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent};
 use crate::network::ingest_network_packets;
+use crate::plugins::handshake::HandshakePlugin;
+use crate::plugins::status::StatusPlugin;
 use crate::systems::player;
-
-pub struct HandshakePlugin;
-
-impl Plugin for HandshakePlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            PreUpdate,
-            handle_handshake_packets.after(ingest_network_packets),
-        );
-    }
-}
-
-fn handle_handshake_packets(world: &mut World) {
-    let packets = std::mem::take(&mut world.resource_mut::<PacketQueue<HandshakePacketEvent>>().0);
-    for event in packets {
-        handshake::handle_handshake_packet(world, event.client_id, event.entity, event.packet);
-    }
-}
-
-pub struct StatusPlugin;
-
-impl Plugin for StatusPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            PreUpdate,
-            handle_status_packets.after(ingest_network_packets),
-        );
-    }
-}
-
-fn handle_status_packets(world: &mut World) {
-    let packets = std::mem::take(&mut world.resource_mut::<PacketQueue<StatusPacketEvent>>().0);
-    for event in packets {
-        status::handle_status_packet(world, event.client_id, event.entity, event.packet);
-    }
-}
 
 pub struct LoginPlugin;
 

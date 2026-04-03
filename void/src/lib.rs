@@ -6,6 +6,7 @@ pub mod config;
 pub mod events;
 pub mod handlers;
 pub mod network;
+pub mod plugins;
 pub mod registry;
 mod server;
 pub mod systems;
@@ -25,8 +26,7 @@ pub use commands::{
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use handlers::{
-    ConfigurationPlugin, DefaultHandlersPlugin, HandshakePlugin, LoginPlugin, PlayPlugin,
-    PlayerEventsPlugin, StatusPlugin,
+    ConfigurationPlugin, DefaultHandlersPlugin, LoginPlugin, PlayPlugin, PlayerEventsPlugin,
 };
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
