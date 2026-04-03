@@ -80,8 +80,11 @@ impl Plugin for ConfigurationPlugin {
 }
 
 fn handle_configuration_packets(world: &mut World) {
-    let packets =
-        std::mem::take(&mut world.resource_mut::<PacketQueue<ConfigurationPacketEvent>>().0);
+    let packets = std::mem::take(
+        &mut world
+            .resource_mut::<PacketQueue<ConfigurationPacketEvent>>()
+            .0,
+    );
     for event in packets {
         configuration::handle_configuration_packet(
             world,
@@ -96,10 +99,7 @@ pub struct PlayPlugin;
 
 impl Plugin for PlayPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            PreUpdate,
-            handle_play_packets.after(ingest_network_packets),
-        );
+        app.add_systems(PreUpdate, handle_play_packets.after(ingest_network_packets));
     }
 }
 

@@ -1,9 +1,9 @@
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 
-mod encode;
-mod decode;
 mod attrs;
+mod decode;
+mod encode;
 
 #[proc_macro_derive(Encode, attributes(codec))]
 pub fn derive_encode(input: TokenStream) -> TokenStream {

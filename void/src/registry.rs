@@ -85,10 +85,7 @@ fn nbt(tags: Vec<(&str, Tag)>) -> Nbt {
 
 fn compound(tags: Vec<(&str, Tag)>) -> Compound {
     Compound {
-        tags: tags
-            .into_iter()
-            .map(|(k, v)| (k.into(), v))
-            .collect(),
+        tags: tags.into_iter().map(|(k, v)| (k.into(), v)).collect(),
     }
 }
 
@@ -111,7 +108,10 @@ pub fn default_registry_data() -> Vec<RegistryData> {
                     ("min_y", Tag::Int(-64)),
                     ("height", Tag::Int(384)),
                     ("logical_height", Tag::Int(384)),
-                    ("infiniburn", Tag::String("#minecraft:infiniburn_overworld".into())),
+                    (
+                        "infiniburn",
+                        Tag::String("#minecraft:infiniburn_overworld".into()),
+                    ),
                     ("effects", Tag::String("minecraft:overworld".into())),
                     ("ambient_light", Tag::Float(0.0)),
                     ("piglin_safe", Tag::Byte(0)),
@@ -130,20 +130,26 @@ pub fn default_registry_data() -> Vec<RegistryData> {
                     ("has_precipitation", Tag::Byte(1)),
                     ("temperature", Tag::Float(0.8)),
                     ("downfall", Tag::Float(0.4)),
-                    ("effects", Tag::Compound(compound(vec![
-                        ("sky_color", Tag::Int(7907327)),
-                        ("water_fog_color", Tag::Int(329011)),
-                        ("fog_color", Tag::Int(12638463)),
-                        ("water_color", Tag::Int(4159204)),
-                        ("grass_color", Tag::Int(7979098)),
-                        ("foliage_color", Tag::Int(6208527)),
-                        ("mood_sound", Tag::Compound(compound(vec![
-                            ("sound", Tag::String("minecraft:ambient.cave".into())),
-                            ("tick_delay", Tag::Int(6000)),
-                            ("block_search_extent", Tag::Int(8)),
-                            ("offset", Tag::Double(2.0)),
-                        ]))),
-                    ]))),
+                    (
+                        "effects",
+                        Tag::Compound(compound(vec![
+                            ("sky_color", Tag::Int(7907327)),
+                            ("water_fog_color", Tag::Int(329011)),
+                            ("fog_color", Tag::Int(12638463)),
+                            ("water_color", Tag::Int(4159204)),
+                            ("grass_color", Tag::Int(7979098)),
+                            ("foliage_color", Tag::Int(6208527)),
+                            (
+                                "mood_sound",
+                                Tag::Compound(compound(vec![
+                                    ("sound", Tag::String("minecraft:ambient.cave".into())),
+                                    ("tick_delay", Tag::Int(6000)),
+                                    ("block_search_extent", Tag::Int(8)),
+                                    ("offset", Tag::Double(2.0)),
+                                ])),
+                            ),
+                        ])),
+                    ),
                 ])),
             }],
         },
@@ -206,9 +212,18 @@ pub fn default_registry_data() -> Vec<RegistryData> {
             entries: vec![RegistryEntry {
                 entry_id: "minecraft:pale".to_string(),
                 data: Some(nbt(vec![
-                    ("wild_texture", Tag::String("minecraft:textures/entity/wolf/wolf.png".into())),
-                    ("tame_texture", Tag::String("minecraft:textures/entity/wolf/wolf_tame.png".into())),
-                    ("angry_texture", Tag::String("minecraft:textures/entity/wolf/wolf_angry.png".into())),
+                    (
+                        "wild_texture",
+                        Tag::String("minecraft:textures/entity/wolf/wolf.png".into()),
+                    ),
+                    (
+                        "tame_texture",
+                        Tag::String("minecraft:textures/entity/wolf/wolf_tame.png".into()),
+                    ),
+                    (
+                        "angry_texture",
+                        Tag::String("minecraft:textures/entity/wolf/wolf_angry.png".into()),
+                    ),
                     ("biomes", Tag::String("minecraft:plains".into())),
                 ])),
             }],
@@ -219,12 +234,30 @@ pub fn default_registry_data() -> Vec<RegistryData> {
             entries: vec![RegistryEntry {
                 entry_id: "minecraft:classic".to_string(),
                 data: Some(nbt(vec![
-                    ("ambient_sound", Tag::String("minecraft:entity.wolf.ambient".into())),
-                    ("death_sound", Tag::String("minecraft:entity.wolf.death".into())),
-                    ("growl_sound", Tag::String("minecraft:entity.wolf.growl".into())),
-                    ("hurt_sound", Tag::String("minecraft:entity.wolf.hurt".into())),
-                    ("pant_sound", Tag::String("minecraft:entity.wolf.pant".into())),
-                    ("whine_sound", Tag::String("minecraft:entity.wolf.whine".into())),
+                    (
+                        "ambient_sound",
+                        Tag::String("minecraft:entity.wolf.ambient".into()),
+                    ),
+                    (
+                        "death_sound",
+                        Tag::String("minecraft:entity.wolf.death".into()),
+                    ),
+                    (
+                        "growl_sound",
+                        Tag::String("minecraft:entity.wolf.growl".into()),
+                    ),
+                    (
+                        "hurt_sound",
+                        Tag::String("minecraft:entity.wolf.hurt".into()),
+                    ),
+                    (
+                        "pant_sound",
+                        Tag::String("minecraft:entity.wolf.pant".into()),
+                    ),
+                    (
+                        "whine_sound",
+                        Tag::String("minecraft:entity.wolf.whine".into()),
+                    ),
                 ])),
             }],
         },
@@ -233,9 +266,10 @@ pub fn default_registry_data() -> Vec<RegistryData> {
             registry_id: "minecraft:cat_variant".to_string(),
             entries: vec![RegistryEntry {
                 entry_id: "minecraft:tabby".to_string(),
-                data: Some(nbt(vec![
-                    ("texture", Tag::String("minecraft:textures/entity/cat/tabby.png".into())),
-                ])),
+                data: Some(nbt(vec![(
+                    "texture",
+                    Tag::String("minecraft:textures/entity/cat/tabby.png".into()),
+                )])),
             }],
         },
         // Chicken variant registry (required non-empty)
@@ -243,9 +277,10 @@ pub fn default_registry_data() -> Vec<RegistryData> {
             registry_id: "minecraft:chicken_variant".to_string(),
             entries: vec![RegistryEntry {
                 entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![
-                    ("texture", Tag::String("minecraft:textures/entity/chicken/temperate.png".into())),
-                ])),
+                data: Some(nbt(vec![(
+                    "texture",
+                    Tag::String("minecraft:textures/entity/chicken/temperate.png".into()),
+                )])),
             }],
         },
         // Cow variant registry (required non-empty)
@@ -253,9 +288,10 @@ pub fn default_registry_data() -> Vec<RegistryData> {
             registry_id: "minecraft:cow_variant".to_string(),
             entries: vec![RegistryEntry {
                 entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![
-                    ("texture", Tag::String("minecraft:textures/entity/cow/temperate.png".into())),
-                ])),
+                data: Some(nbt(vec![(
+                    "texture",
+                    Tag::String("minecraft:textures/entity/cow/temperate.png".into()),
+                )])),
             }],
         },
         // Frog variant registry (required non-empty)
@@ -263,9 +299,10 @@ pub fn default_registry_data() -> Vec<RegistryData> {
             registry_id: "minecraft:frog_variant".to_string(),
             entries: vec![RegistryEntry {
                 entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![
-                    ("texture", Tag::String("minecraft:textures/entity/frog/temperate.png".into())),
-                ])),
+                data: Some(nbt(vec![(
+                    "texture",
+                    Tag::String("minecraft:textures/entity/frog/temperate.png".into()),
+                )])),
             }],
         },
         // Pig variant registry (required non-empty)
@@ -273,9 +310,10 @@ pub fn default_registry_data() -> Vec<RegistryData> {
             registry_id: "minecraft:pig_variant".to_string(),
             entries: vec![RegistryEntry {
                 entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![
-                    ("texture", Tag::String("minecraft:textures/entity/pig/temperate.png".into())),
-                ])),
+                data: Some(nbt(vec![(
+                    "texture",
+                    Tag::String("minecraft:textures/entity/pig/temperate.png".into()),
+                )])),
             }],
         },
     ]

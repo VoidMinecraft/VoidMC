@@ -1,7 +1,5 @@
 use bevy_ecs::prelude::*;
-use void_protocol::clientbound::chunk::{
-    blocks, ChunkBuilder, Chunk as ProtocolChunk,
-};
+use void_protocol::clientbound::chunk::{Chunk as ProtocolChunk, ChunkBuilder, blocks};
 
 use super::chunk_pos::ChunkPos;
 
@@ -42,10 +40,9 @@ impl WorldGenerator for DefaultWorldGenerator {
         ChunkBuilder::new(pos.x, pos.z)
             .with_heightmap_layered(
                 |x, z| {
-                    let main_wave =
-                        (x as f64 * freq).sin() + (z as f64 * freq).sin();
-                    let detail = (x as f64 * freq * 3.7).sin() * 0.3
-                        + (z as f64 * freq * 2.9).sin() * 0.3;
+                    let main_wave = (x as f64 * freq).sin() + (z as f64 * freq).sin();
+                    let detail =
+                        (x as f64 * freq * 3.7).sin() * 0.3 + (z as f64 * freq * 2.9).sin() * 0.3;
                     base + ((main_wave + detail) * amp) as i32
                 },
                 &[

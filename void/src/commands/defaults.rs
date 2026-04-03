@@ -90,10 +90,7 @@ fn handle_help(ctx: &mut CommandContext) {
             let registry = ctx.world.resource::<CommandRegistry>();
             match registry.resolve(&cmd_name).map(|s| s.to_string()) {
                 Some(canonical) => {
-                    let desc = registry
-                        .description(&canonical)
-                        .unwrap_or("")
-                        .to_string();
+                    let desc = registry.description(&canonical).unwrap_or("").to_string();
                     let usage = registry
                         .usage(&canonical)
                         .unwrap_or_else(|| format!("/{}", canonical));
@@ -195,9 +192,7 @@ fn handle_kick(ctx: &mut CommandContext) {
                 client_id: target_cid,
                 packet: void_protocol::clientbound::ClientboundPacket::Play(
                     void_protocol::clientbound::PlayPacket::Disconnect(
-                        void_protocol::clientbound::Disconnect {
-                            reason: reason_nbt,
-                        },
+                        void_protocol::clientbound::Disconnect { reason: reason_nbt },
                     ),
                 ),
             });
@@ -301,13 +296,8 @@ pub fn list_command() -> Command {
 
 fn handle_list(ctx: &mut CommandContext) {
     let names: Vec<String> = {
-        let mut query = ctx
-            .world
-            .query_filtered::<&PlayerName, With<PlayerReady>>();
-        query
-            .iter(ctx.world)
-            .map(|n| n.0.clone())
-            .collect()
+        let mut query = ctx.world.query_filtered::<&PlayerName, With<PlayerReady>>();
+        query.iter(ctx.world).map(|n| n.0.clone()).collect()
     };
 
     if names.is_empty() {

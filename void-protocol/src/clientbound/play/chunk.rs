@@ -59,8 +59,7 @@ impl ChunkHeightmaps {
             if long_idx < 37 {
                 motion_blocking[long_idx] |= ((value & 0x1FF) << bit_offset) as i64;
                 if bit_offset > 55 && long_idx + 1 < 37 {
-                    motion_blocking[long_idx + 1] |=
-                        ((value & 0x1FF) >> (64 - bit_offset)) as i64;
+                    motion_blocking[long_idx + 1] |= ((value & 0x1FF) >> (64 - bit_offset)) as i64;
                 }
             }
         }
@@ -71,8 +70,11 @@ impl ChunkHeightmaps {
     pub fn to_nbt(&self) -> Nbt {
         Nbt {
             name: "".into(),
-            compound: vec![("MOTION_BLOCKING".into(), self.motion_blocking.clone().into())]
-                .into(),
+            compound: vec![(
+                "MOTION_BLOCKING".into(),
+                self.motion_blocking.clone().into(),
+            )]
+            .into(),
         }
     }
 }
@@ -111,7 +113,7 @@ impl ChunkSection {
         Self {
             block_count: 0,
             block_state: PaletteData::SingleValue(0), // Air
-            biome: PaletteData::SingleValue(0), // First registered biome
+            biome: PaletteData::SingleValue(0),       // First registered biome
         }
     }
 
@@ -371,9 +373,7 @@ impl Chunk {
 
     /// Creates a superflat chunk with customizable layers.
     pub fn superflat(x: i32, z: i32, layers: &[(i32, i32)]) -> Self {
-        ChunkBuilder::new(x, z)
-            .fill_layers(layers)
-            .build()
+        ChunkBuilder::new(x, z).fill_layers(layers).build()
     }
 
     /// Converts the chunk to a ChunkDataAndLight packet
@@ -626,7 +626,14 @@ impl ChunkBuilder {
     }
 
     /// Creates a circular hill/crater at a position.
-    pub fn add_hill(mut self, center_x: i32, center_z: i32, radius: i32, height: i32, block: i32) -> Self {
+    pub fn add_hill(
+        mut self,
+        center_x: i32,
+        center_z: i32,
+        radius: i32,
+        height: i32,
+        block: i32,
+    ) -> Self {
         let base_x = self.x * 16;
         let base_z = self.z * 16;
 
@@ -695,7 +702,14 @@ impl ChunkBuilder {
     }
 
     /// Creates concentric rings pattern at a specific Y level.
-    pub fn concentric_rings(mut self, world_y: i32, center_x: i32, center_z: i32, ring_width: i32, colors: &[i32]) -> Self {
+    pub fn concentric_rings(
+        mut self,
+        world_y: i32,
+        center_x: i32,
+        center_z: i32,
+        ring_width: i32,
+        colors: &[i32],
+    ) -> Self {
         if colors.is_empty() {
             return self;
         }
@@ -718,7 +732,14 @@ impl ChunkBuilder {
     }
 
     /// Creates a spiral pattern at a specific Y level.
-    pub fn spiral(mut self, world_y: i32, center_x: i32, center_z: i32, colors: &[i32], twist: f64) -> Self {
+    pub fn spiral(
+        mut self,
+        world_y: i32,
+        center_x: i32,
+        center_z: i32,
+        colors: &[i32],
+        twist: f64,
+    ) -> Self {
         if colors.is_empty() {
             return self;
         }
@@ -735,7 +756,8 @@ impl ChunkBuilder {
                 let angle = dz.atan2(dx);
                 let dist = (dx * dx + dz * dz).sqrt();
                 let spiral_angle = angle + dist * twist;
-                let segment = ((spiral_angle / (2.0 * std::f64::consts::PI) * colors.len() as f64).rem_euclid(colors.len() as f64)) as usize;
+                let segment = ((spiral_angle / (2.0 * std::f64::consts::PI) * colors.len() as f64)
+                    .rem_euclid(colors.len() as f64)) as usize;
                 self.blocks[y_idx][z][x] = colors[segment];
             }
         }
@@ -743,7 +765,15 @@ impl ChunkBuilder {
     }
 
     /// Applies a gradient from one block to another based on distance from center.
-    pub fn radial_gradient(mut self, world_y: i32, center_x: i32, center_z: i32, max_radius: i32, inner_block: i32, outer_block: i32) -> Self {
+    pub fn radial_gradient(
+        mut self,
+        world_y: i32,
+        center_x: i32,
+        center_z: i32,
+        max_radius: i32,
+        inner_block: i32,
+        outer_block: i32,
+    ) -> Self {
         let y_idx = Self::y_to_index(world_y);
         let base_x = self.x * 16;
         let base_z = self.z * 16;
@@ -757,7 +787,11 @@ impl ChunkBuilder {
                 let dist = ((dx * dx + dz * dz) as f64).sqrt();
                 let t = (dist / max_radius as f64).clamp(0.0, 1.0);
                 let threshold = ((x + z) % 3) as f64 / 3.0;
-                self.blocks[y_idx][z][x] = if t < threshold { inner_block } else { outer_block };
+                self.blocks[y_idx][z][x] = if t < threshold {
+                    inner_block
+                } else {
+                    outer_block
+                };
             }
         }
         self
@@ -828,7 +862,8 @@ impl ChunkBuilder {
 
 /// Simple hash function for pseudo-random generation.
 fn simple_hash(x: i32, y: i32, z: i32) -> f64 {
-    let n = x.wrapping_mul(374761393)
+    let n = x
+        .wrapping_mul(374761393)
         .wrapping_add(y.wrapping_mul(668265263))
         .wrapping_add(z.wrapping_mul(1274126177));
     let n = n ^ (n >> 13);

@@ -1,5 +1,5 @@
 use void_protocol::clientbound::{
-    blocks, biomes, Chunk, ChunkHeightmaps, ChunkSection, LightData, PaletteData,
+    Chunk, ChunkHeightmaps, ChunkSection, LightData, PaletteData, biomes, blocks,
 };
 
 /// Encode a VarInt the same way the protocol does, for manual verification.
@@ -121,7 +121,8 @@ fn test_single_value_section_encoding() {
         offset, actual_palette_bytes
     );
     assert_eq!(
-        actual_palette_bytes, &varint_8[..],
+        actual_palette_bytes,
+        &varint_8[..],
         "block_state palette value should encode VarInt(8)"
     );
     offset += varint_8.len();
@@ -134,7 +135,8 @@ fn test_single_value_section_encoding() {
         offset, actual_datalen_bytes
     );
     assert_eq!(
-        actual_datalen_bytes, &varint_0[..],
+        actual_datalen_bytes,
+        &varint_0[..],
         "block_state data_array_length should encode VarInt(0)"
     );
     offset += varint_0.len();
@@ -154,7 +156,8 @@ fn test_single_value_section_encoding() {
         offset, actual_biome_bytes
     );
     assert_eq!(
-        actual_biome_bytes, &varint_0[..],
+        actual_biome_bytes,
+        &varint_0[..],
         "biome palette value should encode VarInt(0)"
     );
     offset += varint_0.len();
@@ -166,15 +169,23 @@ fn test_single_value_section_encoding() {
         offset, actual_biome_datalen
     );
     assert_eq!(
-        actual_biome_datalen, &varint_0[..],
+        actual_biome_datalen,
+        &varint_0[..],
         "biome data_array_length should encode VarInt(0)"
     );
     offset += varint_0.len();
 
     println!();
-    println!("Total consumed: {} bytes (section length: {})", offset, bytes.len());
+    println!(
+        "Total consumed: {} bytes (section length: {})",
+        offset,
+        bytes.len()
+    );
     assert_eq!(offset, bytes.len(), "all bytes should be accounted for");
-    assert_eq!(bytes, expected, "full byte sequence must match expected encoding");
+    assert_eq!(
+        bytes, expected,
+        "full byte sequence must match expected encoding"
+    );
 
     println!();
     println!("[PASS] Single-value ChunkSection encoding is correct.");
@@ -265,8 +276,10 @@ fn test_full_chunk_24_sections_encoding() {
 
     let single_section_size = 8;
     let expected_total = single_section_size * 24;
-    println!("Expected total: {} bytes ({} sections * {} bytes/section)",
-        expected_total, 24, single_section_size);
+    println!(
+        "Expected total: {} bytes ({} sections * {} bytes/section)",
+        expected_total, 24, single_section_size
+    );
 
     assert_eq!(
         chunk_data.len(),
@@ -302,15 +315,30 @@ fn test_full_chunk_24_sections_encoding() {
 
         println!(
             "  Section {:2}: block_count={:5}, block_state(bpe={}, palette={}, datalen={}), biome(bpe={}, palette={}, datalen={})",
-            idx, block_count, bpe_block, palette_block, datalen_block, bpe_biome, palette_biome, datalen_biome
+            idx,
+            block_count,
+            bpe_block,
+            palette_block,
+            datalen_block,
+            bpe_biome,
+            palette_biome,
+            datalen_biome
         );
 
         assert_eq!(block_count, exp_count, "section {} block_count", idx);
         assert_eq!(bpe_block, 0, "section {} block bpe", idx);
-        assert_eq!(palette_block as i32, exp_block, "section {} block palette value", idx);
+        assert_eq!(
+            palette_block as i32, exp_block,
+            "section {} block palette value",
+            idx
+        );
         assert_eq!(datalen_block, 0, "section {} block data array len", idx);
         assert_eq!(bpe_biome, 0, "section {} biome bpe", idx);
-        assert_eq!(palette_biome, 0, "section {} biome palette value (plains=0)", idx);
+        assert_eq!(
+            palette_biome, 0,
+            "section {} biome palette value (plains=0)",
+            idx
+        );
         assert_eq!(datalen_biome, 0, "section {} biome data array len", idx);
     }
 
@@ -319,9 +347,17 @@ fn test_full_chunk_24_sections_encoding() {
         let base = idx * single_section_size;
         let section_bytes = &chunk_data[base..base + single_section_size];
         let block_count = i16::from_be_bytes([section_bytes[0], section_bytes[1]]);
-        assert_eq!(block_count, 0, "section {} should be empty (block_count=0)", idx);
+        assert_eq!(
+            block_count, 0,
+            "section {} should be empty (block_count=0)",
+            idx
+        );
         assert_eq!(section_bytes[2], 0, "section {} block bpe should be 0", idx);
-        assert_eq!(section_bytes[3], 0, "section {} block palette should be AIR(0)", idx);
+        assert_eq!(
+            section_bytes[3], 0,
+            "section {} block palette should be AIR(0)",
+            idx
+        );
     }
 
     // Also verify that to_packet() produces the same data bytes
@@ -337,5 +373,8 @@ fn test_full_chunk_24_sections_encoding() {
     );
 
     println!();
-    println!("[PASS] Full chunk (24 sections) encoding verified: {} bytes total.", chunk_data.len());
+    println!(
+        "[PASS] Full chunk (24 sections) encoding verified: {} bytes total.",
+        chunk_data.len()
+    );
 }

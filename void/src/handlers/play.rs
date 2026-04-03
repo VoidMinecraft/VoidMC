@@ -9,12 +9,11 @@ use crate::components::{
     TeleportState,
 };
 use crate::events::{
-    ChatCommandEvent, ChatMessageEvent, PlayerCancelDiggingEvent,
-    PlayerChangeSlotEvent, PlayerCloseContainerEvent, PlayerDropItemEvent,
-    PlayerFinishDiggingEvent, PlayerInteractEntityEvent, PlayerMoveEvent, PlayerReadyEvent,
-    PlayerRotateEvent, PlayerSneakEvent, PlayerSprintEvent, PlayerStartDiggingEvent,
-    PlayerSwapHandsEvent, PlayerSwingArmEvent, PlayerToggleFlyEvent, PlayerUseItemEvent,
-    PlayerUseItemOnBlockEvent,
+    ChatCommandEvent, ChatMessageEvent, PlayerCancelDiggingEvent, PlayerChangeSlotEvent,
+    PlayerCloseContainerEvent, PlayerDropItemEvent, PlayerFinishDiggingEvent,
+    PlayerInteractEntityEvent, PlayerMoveEvent, PlayerReadyEvent, PlayerRotateEvent,
+    PlayerSneakEvent, PlayerSprintEvent, PlayerStartDiggingEvent, PlayerSwapHandsEvent,
+    PlayerSwingArmEvent, PlayerToggleFlyEvent, PlayerUseItemEvent, PlayerUseItemOnBlockEvent,
 };
 use crate::network::{NetworkChannels, OutgoingPacket};
 
@@ -183,89 +182,85 @@ pub fn handle_play_packet(
             world.trigger(PlayerToggleFlyEvent { entity, flying });
             world.flush();
         }
-        serverbound::PlayPacket::PlayerCommand(p) => {
-            match p.action_id {
-                PlayerCommandAction::StartSneaking => {
-                    world.trigger(PlayerSneakEvent {
-                        entity,
-                        sneaking: true,
-                    });
-                    world.flush();
-                }
-                PlayerCommandAction::StopSneaking => {
-                    world.trigger(PlayerSneakEvent {
-                        entity,
-                        sneaking: false,
-                    });
-                    world.flush();
-                }
-                PlayerCommandAction::StartSprinting => {
-                    world.trigger(PlayerSprintEvent {
-                        entity,
-                        sprinting: true,
-                    });
-                    world.flush();
-                }
-                PlayerCommandAction::StopSprinting => {
-                    world.trigger(PlayerSprintEvent {
-                        entity,
-                        sprinting: false,
-                    });
-                    world.flush();
-                }
-                _ => {}
+        serverbound::PlayPacket::PlayerCommand(p) => match p.action_id {
+            PlayerCommandAction::StartSneaking => {
+                world.trigger(PlayerSneakEvent {
+                    entity,
+                    sneaking: true,
+                });
+                world.flush();
             }
-        }
-        serverbound::PlayPacket::PlayerAction(p) => {
-            match p.status {
-                PlayerActionStatus::StartedDigging => {
-                    world.trigger(PlayerStartDiggingEvent {
-                        entity,
-                        position: p.position,
-                        face: p.face,
-                        sequence: p.sequence,
-                    });
-                    world.flush();
-                }
-                PlayerActionStatus::CancelledDigging => {
-                    world.trigger(PlayerCancelDiggingEvent {
-                        entity,
-                        position: p.position,
-                        face: p.face,
-                        sequence: p.sequence,
-                    });
-                    world.flush();
-                }
-                PlayerActionStatus::FinishedDigging => {
-                    world.trigger(PlayerFinishDiggingEvent {
-                        entity,
-                        position: p.position,
-                        face: p.face,
-                        sequence: p.sequence,
-                    });
-                    world.flush();
-                }
-                PlayerActionStatus::DropItemStack => {
-                    world.trigger(PlayerDropItemEvent {
-                        entity,
-                        drop_stack: true,
-                    });
-                    world.flush();
-                }
-                PlayerActionStatus::DropItem => {
-                    world.trigger(PlayerDropItemEvent {
-                        entity,
-                        drop_stack: false,
-                    });
-                    world.flush();
-                }
-                PlayerActionStatus::SwapItemInHand => {
-                    world.trigger(PlayerSwapHandsEvent { entity });
-                    world.flush();
-                }
-                _ => {}
+            PlayerCommandAction::StopSneaking => {
+                world.trigger(PlayerSneakEvent {
+                    entity,
+                    sneaking: false,
+                });
+                world.flush();
             }
-        }
+            PlayerCommandAction::StartSprinting => {
+                world.trigger(PlayerSprintEvent {
+                    entity,
+                    sprinting: true,
+                });
+                world.flush();
+            }
+            PlayerCommandAction::StopSprinting => {
+                world.trigger(PlayerSprintEvent {
+                    entity,
+                    sprinting: false,
+                });
+                world.flush();
+            }
+            _ => {}
+        },
+        serverbound::PlayPacket::PlayerAction(p) => match p.status {
+            PlayerActionStatus::StartedDigging => {
+                world.trigger(PlayerStartDiggingEvent {
+                    entity,
+                    position: p.position,
+                    face: p.face,
+                    sequence: p.sequence,
+                });
+                world.flush();
+            }
+            PlayerActionStatus::CancelledDigging => {
+                world.trigger(PlayerCancelDiggingEvent {
+                    entity,
+                    position: p.position,
+                    face: p.face,
+                    sequence: p.sequence,
+                });
+                world.flush();
+            }
+            PlayerActionStatus::FinishedDigging => {
+                world.trigger(PlayerFinishDiggingEvent {
+                    entity,
+                    position: p.position,
+                    face: p.face,
+                    sequence: p.sequence,
+                });
+                world.flush();
+            }
+            PlayerActionStatus::DropItemStack => {
+                world.trigger(PlayerDropItemEvent {
+                    entity,
+                    drop_stack: true,
+                });
+                world.flush();
+            }
+            PlayerActionStatus::DropItem => {
+                world.trigger(PlayerDropItemEvent {
+                    entity,
+                    drop_stack: false,
+                });
+                world.flush();
+            }
+            PlayerActionStatus::SwapItemInHand => {
+                world.trigger(PlayerSwapHandsEvent { entity });
+                world.flush();
+            }
+            _ => {}
+        },
         serverbound::PlayPacket::UseItemOn(p) => {
             world.trigger(PlayerUseItemOnBlockEvent {
                 entity,
@@ -367,19 +362,17 @@ fn handle_chat_message(world: &mut World, client_id: u32, entity: Entity, messag
     world.flush();
 }
 
-fn handle_command_suggestions(
-    world: &mut World,
-    client_id: u32,
-    text: &str,
-    transaction_id: i32,
-) {
+fn handle_command_suggestions(world: &mut World, client_id: u32, text: &str, transaction_id: i32) {
     // text is e.g. "/kick dan" — split into command + partial arg
     let without_slash = text.strip_prefix('/').unwrap_or(text);
     let parts: Vec<&str> = without_slash.splitn(2, ' ').collect();
     let command_name = parts[0];
 
     // Verify the command exists
-    let exists = world.resource::<CommandRegistry>().resolve(command_name).is_some();
+    let exists = world
+        .resource::<CommandRegistry>()
+        .resolve(command_name)
+        .is_some();
     if !exists {
         return;
     }
@@ -424,11 +417,7 @@ fn handle_command_suggestions(
     });
 }
 
-fn handle_interact(
-    world: &mut World,
-    entity: Entity,
-    packet: &serverbound::Interact,
-) {
+fn handle_interact(world: &mut World, entity: Entity, packet: &serverbound::Interact) {
     let mut data = packet._data.as_slice();
 
     let (attack, hand, target_pos) = match packet.interact_type {

@@ -13,8 +13,8 @@ use crate::config::ServerConfigResource;
 use crate::events::PlayerJoinEvent;
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::registry::RegistryDataStore;
-use crate::world::{ChunkData, ChunkIndex, ChunkPos, ChunkPosition, DimensionId};
 use crate::world::generation::WorldGen;
+use crate::world::{ChunkData, ChunkIndex, ChunkPos, ChunkPosition, DimensionId};
 
 pub fn handle_configuration_packet(
     world: &mut World,
@@ -85,7 +85,17 @@ fn handle_finish_configuration(world: &mut World, client_id: u32, entity: Entity
     });
 
     // Read config values
-    let (spawn_x, spawn_z, spawn_y_opt, hardcore, max_players, view_distance, simulation_distance, game_mode, initial_chunk_radius) = {
+    let (
+        spawn_x,
+        spawn_z,
+        spawn_y_opt,
+        hardcore,
+        max_players,
+        view_distance,
+        simulation_distance,
+        game_mode,
+        initial_chunk_radius,
+    ) = {
         let config = world.resource::<ServerConfigResource>();
         (
             config.spawn_x,
@@ -258,13 +268,7 @@ fn handle_finish_configuration(world: &mut World, client_id: u32, entity: Entity
     world.flush();
 }
 
-fn send_teleport(
-    sender: &flume::Sender<OutgoingPacket>,
-    client_id: u32,
-    x: f64,
-    y: f64,
-    z: f64,
-) {
+fn send_teleport(sender: &flume::Sender<OutgoingPacket>, client_id: u32, x: f64, y: f64, z: f64) {
     let _ = sender.send(OutgoingPacket {
         client_id,
         packet: clientbound::ClientboundPacket::Play(

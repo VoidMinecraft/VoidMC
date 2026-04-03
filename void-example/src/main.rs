@@ -1,18 +1,20 @@
 use tracing_subscriber::prelude::*;
-use void::{
-    CommandBuilder, CommandRegistry, On, Query, ServerBuilder, VoidServer,
-    register_default_commands,
-};
 use void::components::PlayerName;
 use void::events::PlayerStartDiggingEvent;
+use void::{
+    CommandBuilder, CommandRegistry, On, Query, ServerConfigBuilder, VoidServer,
+    register_default_commands,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     setup_logging()?;
 
-    VoidServer::new(ServerBuilder::new()
-        .spawn_chunk_radius(4)
-        .initial_chunk_radius(4)
-        .build())
+    VoidServer::new(
+        ServerConfigBuilder::new()
+            .spawn_chunk_radius(4)
+            .initial_chunk_radius(4)
+            .build(),
+    )
     .add_plugin(|app| {
         // Register all default commands
         let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
@@ -27,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .handler(|ctx| {
                 ctx.reply("Hello from void-example!");
             })
-            .build()
+            .build(),
     )
     .run();
 
@@ -71,10 +73,7 @@ fn setup_logging() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn on_player_dig(
-    event: On<PlayerStartDiggingEvent>,
-    query: Query<&PlayerName>,
-) {
+fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) {
     let name = query
         .get(event.entity)
         .map(|n| n.0.as_str())
