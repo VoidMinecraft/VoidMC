@@ -1,0 +1,12 @@
+# Rust
+/target
+
+# Project
+**/logs/
+
+# IDEs
+**/.vscode/
+**/.idea/
+
+# AI
+**/.github/copilot-instructions.md

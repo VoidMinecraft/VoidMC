@@ -1,0 +1,27 @@
+[
+  {
+    "text": "Guide",
+    "link": "/guide/",
+    "activeMatch": "/guide/"
+  },
+  {
+    "text": "Reference",
+    "link": "/reference/",
+    "activeMatch": "/reference/"
+  },
+  {
+    "text": "Architecture",
+    "link": "/architecture/",
+    "activeMatch": "/architecture/"
+  },
+  {
+    "text": "Contributing",
+    "link": "/contributing/",
+    "activeMatch": "/contributing/"
+  },
+  {
+    "text": "Performance",
+    "link": "/performance/",
+    "activeMatch": "/performance/"
+  }
+]

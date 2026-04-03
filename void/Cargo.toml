@@ -1,0 +1,16 @@
+[package]
+name = "void"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.44.1", features = ["full"] }
+void-net = { path = "../void-net" }
+void-codec = { path = "../void-codec" }
+void-protocol = { path = "../void-protocol" }
+uuid = { version = "1.16.0", features = ["v4"] }
+ussr-nbt = "0.2.1"
+tracing = "0.1.44"
+bevy_ecs = "0.18.0"
+bevy_app = "0.18.0"
+flume = "0.12.0"

@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = [
+  "void",
+  "void-example",
+  "void-net",
+  "void-protocol",
+  "void-codec",
+  "void-codec-macros"
+]

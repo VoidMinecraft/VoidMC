@@ -1,0 +1,20 @@
+mod configuration;
+mod handshake;
+mod login;
+mod play;
+mod status;
+
+pub use configuration::*;
+pub use handshake::*;
+pub use login::*;
+pub use play::*;
+pub use status::*;
+
+#[derive(Debug)]
+pub enum ServerboundPacket {
+    Handshake(HandshakePacket),
+    Status(StatusPacket),
+    Login(LoginPacket),
+    Configuration(ConfigurationPacket),
+    Play(PlayPacket),
+}
