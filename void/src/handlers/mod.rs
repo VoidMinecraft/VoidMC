@@ -5,10 +5,6 @@ use bevy_ecs::prelude::*;
 
 use crate::events::{PacketQueue, PlayPacketEvent};
 use crate::network::ingest_network_packets;
-use crate::plugins::configuration::ConfigurationPlugin;
-use crate::plugins::handshake::HandshakePlugin;
-use crate::plugins::login::LoginPlugin;
-use crate::plugins::status::StatusPlugin;
 use crate::systems::player;
 
 pub struct PlayPlugin;
@@ -40,13 +36,6 @@ pub struct DefaultHandlersPlugin;
 
 impl Plugin for DefaultHandlersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((
-            HandshakePlugin,
-            StatusPlugin,
-            LoginPlugin,
-            ConfigurationPlugin,
-            PlayPlugin,
-            PlayerEventsPlugin,
-        ));
+        app.add_plugins((PlayPlugin, PlayerEventsPlugin));
     }
 }

@@ -4,16 +4,13 @@ use void_protocol::serverbound;
 use void_protocol::types::{Hand, PlayerActionStatus, PlayerCommandAction};
 
 use crate::commands::{self, CommandRegistry};
-use crate::components::{
-    ClientId, ClientSettings, KeepAliveState, PlayerName, PlayerReady, Position, Rotation,
-    TeleportState,
-};
+use crate::components::{ClientId, ClientSettings, KeepAliveState, PlayerName, PlayerReady};
 use crate::events::{
     ChatCommandEvent, ChatMessageEvent, PlayerCancelDiggingEvent, PlayerChangeSlotEvent,
     PlayerCloseContainerEvent, PlayerDropItemEvent, PlayerFinishDiggingEvent,
-    PlayerInteractEntityEvent, PlayerMoveEvent, PlayerReadyEvent, PlayerRotateEvent,
-    PlayerSneakEvent, PlayerSprintEvent, PlayerStartDiggingEvent, PlayerSwapHandsEvent,
-    PlayerSwingArmEvent, PlayerToggleFlyEvent, PlayerUseItemEvent, PlayerUseItemOnBlockEvent,
+    PlayerInteractEntityEvent, PlayerReadyEvent, PlayerSneakEvent, PlayerSprintEvent,
+    PlayerStartDiggingEvent, PlayerSwapHandsEvent, PlayerSwingArmEvent, PlayerToggleFlyEvent,
+    PlayerUseItemEvent, PlayerUseItemOnBlockEvent,
 };
 use crate::network::{NetworkChannels, OutgoingPacket};
 
@@ -24,75 +21,6 @@ pub fn handle_play_packet(
     packet: serverbound::PlayPacket,
 ) {
     match &packet {
-        serverbound::PlayPacket::ConfirmTeleportation(confirm) => {
-            if let Some(mut teleport_state) = world.get_mut::<TeleportState>(entity) {
-                if teleport_state.pending_id == Some(confirm.teleport_id) {
-                    teleport_state.pending_id = None;
-                    tracing::debug!(
-                        "Client {} confirmed teleport {}",
-                        client_id,
-                        confirm.teleport_id
-                    );
-                } else {
-                    tracing::warn!(
-                        "Client {} confirmed unexpected teleport {} (expected {:?})",
-                        client_id,
-                        confirm.teleport_id,
-                        teleport_state.pending_id
-                    );
-                }
-            }
-        }
-        serverbound::PlayPacket::SetPlayerPos(pos) => {
-            let old = world.get::<Position>(entity).cloned();
-            if let Some(mut position) = world.get_mut::<Position>(entity) {
-                position.x = pos.x;
-                position.y = pos.y;
-                position.z = pos.z;
-            }
-            if let Some(old) = old {
-                world.trigger(PlayerMoveEvent {
-                    entity,
-                    old_x: old.x,
-                    old_y: old.y,
-                    old_z: old.z,
-                    new_x: pos.x,
-                    new_y: pos.y,
-                    new_z: pos.z,
-                });
-                world.flush();
-            }
-        }
-        serverbound::PlayPacket::SetPlayerPosAndRot(pos_rot) => {
-            let old = world.get::<Position>(entity).cloned();
-            if let Some(mut position) = world.get_mut::<Position>(entity) {
-                position.x = pos_rot.x;
-                position.y = pos_rot.y;
-                position.z = pos_rot.z;
-            }
-            if let Some(mut rotation) = world.get_mut::<Rotation>(entity) {
-                rotation.yaw = pos_rot.yaw;
-                rotation.pitch = pos_rot.pitch;
-            }
-            if let Some(old) = old {
-                world.trigger(PlayerMoveEvent {
-                    entity,
-                    old_x: old.x,
-                    old_y: old.y,
-                    old_z: old.z,
-                    new_x: pos_rot.x,
-                    new_y: pos_rot.y,
-                    new_z: pos_rot.z,
-                });
-                world.flush();
-            }
-            world.trigger(PlayerRotateEvent {
-                entity,
-                yaw: pos_rot.yaw,
-                pitch: pos_rot.pitch,
-            });
-            world.flush();
-        }
         serverbound::PlayPacket::PlayerLoaded(_) => {
             tracing::info!("Client {} player loaded, marking ready", client_id);
             world.entity_mut(entity).insert(PlayerReady);
@@ -113,18 +41,6 @@ pub fn handle_play_packet(
                     );
                 }
             }
-        }
-        serverbound::PlayPacket::SetPlayerRotation(rot) => {
-            if let Some(mut rotation) = world.get_mut::<Rotation>(entity) {
-                rotation.yaw = rot.yaw;
-                rotation.pitch = rot.pitch;
-            }
-            world.trigger(PlayerRotateEvent {
-                entity,
-                yaw: rot.yaw,
-                pitch: rot.pitch,
-            });
-            world.flush();
         }
         serverbound::PlayPacket::Pong(pong) => {
             tracing::debug!("Client {} pong: {}", client_id, pong.id);
@@ -286,6 +202,7 @@ pub fn handle_play_packet(
         serverbound::PlayPacket::Interact(p) => {
             handle_interact(world, entity, p);
         }
+        _ => {}
     }
 }
 
