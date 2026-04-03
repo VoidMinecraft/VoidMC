@@ -7,9 +7,7 @@ use void_net::socket::Packet;
 use void_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
-use crate::events::{
-    ConfigurationPacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent, PlayerQuitEvent,
-};
+use crate::events::{ConfigurationPacketEvent, PacketQueue, PlayPacketEvent, PlayerQuitEvent};
 
 pub struct IncomingPacket {
     pub client_id: u32,
@@ -53,7 +51,6 @@ impl Plugin for NetworkPlugin {
             kick: self.kick_tx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
-        .init_resource::<PacketQueue<LoginPacketEvent>>()
         .init_resource::<PacketQueue<ConfigurationPacketEvent>>()
         .init_resource::<PacketQueue<PlayPacketEvent>>()
         .add_systems(PreUpdate, ingest_network_packets);
@@ -186,23 +183,18 @@ fn dispatch_packet(
                 packet,
             }),
         },
-        void_protocol::State::Login => {
-            let decoded = packet.decode::<serverbound::LoginPacket>()?;
-            // Eagerly transition to Configuration so later packets decode correctly.
-            if matches!(decoded, serverbound::LoginPacket::LoginAcknowledged(_)) {
-                world
-                    .entity_mut(entity)
-                    .insert(ConnectionState(void_protocol::State::Configuration));
-            }
-            world
-                .resource_mut::<PacketQueue<LoginPacketEvent>>()
-                .0
-                .push(LoginPacketEvent {
-                    client_id,
-                    entity,
-                    packet: decoded,
-                });
-        }
+        void_protocol::State::Login => match packet.decode::<serverbound::LoginPacket>()? {
+            serverbound::LoginPacket::LoginStart(packet) => world.trigger(PacketEvent {
+                client_id,
+                entity,
+                packet,
+            }),
+            serverbound::LoginPacket::LoginAcknowledged(packet) => world.trigger(PacketEvent {
+                client_id,
+                entity,
+                packet,
+            }),
+        },
         void_protocol::State::Configuration => {
             let decoded = packet.decode::<serverbound::ConfigurationPacket>()?;
             // Eagerly transition to Play so later packets decode correctly.

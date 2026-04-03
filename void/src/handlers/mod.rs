@@ -1,33 +1,15 @@
 pub mod configuration;
-pub mod login;
 pub mod play;
 
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_ecs::prelude::*;
 
-use crate::events::{ConfigurationPacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent};
+use crate::events::{ConfigurationPacketEvent, PacketQueue, PlayPacketEvent};
 use crate::network::ingest_network_packets;
 use crate::plugins::handshake::HandshakePlugin;
+use crate::plugins::login::LoginPlugin;
 use crate::plugins::status::StatusPlugin;
 use crate::systems::player;
-
-pub struct LoginPlugin;
-
-impl Plugin for LoginPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(
-            PreUpdate,
-            handle_login_packets.after(ingest_network_packets),
-        );
-    }
-}
-
-fn handle_login_packets(world: &mut World) {
-    let packets = std::mem::take(&mut world.resource_mut::<PacketQueue<LoginPacketEvent>>().0);
-    for event in packets {
-        login::handle_login_packet(world, event.client_id, event.entity, event.packet);
-    }
-}
 
 pub struct ConfigurationPlugin;
 

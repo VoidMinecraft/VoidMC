@@ -25,9 +25,7 @@ pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
-pub use handlers::{
-    ConfigurationPlugin, DefaultHandlersPlugin, LoginPlugin, PlayPlugin, PlayerEventsPlugin,
-};
+pub use handlers::{ConfigurationPlugin, DefaultHandlersPlugin, PlayPlugin, PlayerEventsPlugin};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
 pub use void_protocol::types::{BlockFace, BlockPosition, Hand};
