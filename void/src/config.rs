@@ -59,11 +59,11 @@ impl Default for ServerConfig {
 }
 
 /// Builder for ergonomic `ServerConfig` construction.
-pub struct ServerBuilder {
+pub struct ServerConfigBuilder {
     config: ServerConfig,
 }
 
-impl ServerBuilder {
+impl ServerConfigBuilder {
     pub fn new() -> Self {
         Self {
             config: ServerConfig::default(),
@@ -140,7 +140,7 @@ impl ServerBuilder {
     }
 }
 
-impl Default for ServerBuilder {
+impl Default for ServerConfigBuilder {
     fn default() -> Self {
         Self::new()
     }
