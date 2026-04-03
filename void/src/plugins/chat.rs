@@ -39,7 +39,7 @@ fn handle_command(client_id: u32, entity: Entity, command: &str, mut commands: C
         None => return,
     };
 
-    // TODO: Call the function below
+    // TODO: Commands should be a Bevy's Message so that it execution can be deferred
     // crate::commands::dispatch_command(world, client_id, entity, &command_name, args.clone());
     commands.trigger(ChatCommandEvent {
         entity: entity,

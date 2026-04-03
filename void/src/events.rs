@@ -1,23 +1,5 @@
 use bevy_ecs::prelude::*;
-use void_protocol::serverbound;
 use void_protocol::types::{BlockFace, BlockPosition, Hand};
-
-// Generic packet queue resource — each protocol state gets one
-#[derive(Resource)]
-pub struct PacketQueue<T: Send + Sync + 'static>(pub Vec<T>);
-
-impl<T: Send + Sync + 'static> Default for PacketQueue<T> {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
-
-#[derive(Event)]
-pub struct PlayPacketEvent {
-    pub client_id: u32,
-    pub entity: Entity,
-    pub packet: serverbound::PlayPacket,
-}
 
 // Semantic game events — triggered via world.trigger() and handled by observers
 #[derive(Event)]

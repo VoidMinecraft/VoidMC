@@ -3,6 +3,7 @@ use bevy_app::Plugin;
 pub mod chat;
 pub mod configuration;
 pub mod handshake;
+pub mod interaction;
 pub mod login;
 pub mod movement;
 pub mod play;
