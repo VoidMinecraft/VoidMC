@@ -13,13 +13,6 @@ impl<T: Send + Sync + 'static> Default for PacketQueue<T> {
 }
 
 #[derive(Event)]
-pub struct ConfigurationPacketEvent {
-    pub client_id: u32,
-    pub entity: Entity,
-    pub packet: serverbound::ConfigurationPacket,
-}
-
-#[derive(Event)]
 pub struct PlayPacketEvent {
     pub client_id: u32,
     pub entity: Entity,

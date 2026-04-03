@@ -7,7 +7,7 @@ use void_net::socket::Packet;
 use void_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
-use crate::events::{ConfigurationPacketEvent, PacketQueue, PlayPacketEvent, PlayerQuitEvent};
+use crate::events::{PacketQueue, PlayPacketEvent, PlayerQuitEvent};
 
 pub struct IncomingPacket {
     pub client_id: u32,
@@ -51,7 +51,6 @@ impl Plugin for NetworkPlugin {
             kick: self.kick_tx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
-        .init_resource::<PacketQueue<ConfigurationPacketEvent>>()
         .init_resource::<PacketQueue<PlayPacketEvent>>()
         .add_systems(PreUpdate, ingest_network_packets);
     }
@@ -162,15 +161,13 @@ fn dispatch_packet(
         .expect("Client must have a ConnectionState component");
 
     match state.0 {
-        void_protocol::State::Handshake => {
-            match packet.decode::<serverbound::HandshakePacket>()? {
-                serverbound::HandshakePacket::Handshake(packet) => world.trigger(PacketEvent {
-                    client_id,
-                    entity,
-                    packet,
-                }),
-            }
-        }
+        void_protocol::State::Handshake => match packet.decode::<serverbound::HandshakePacket>()? {
+            serverbound::HandshakePacket::Handshake(packet) => world.trigger(PacketEvent {
+                client_id,
+                entity,
+                packet,
+            }),
+        },
         void_protocol::State::Status => match packet.decode::<serverbound::StatusPacket>()? {
             serverbound::StatusPacket::PingRequest(packet) => world.trigger(PacketEvent {
                 client_id,
@@ -195,26 +192,33 @@ fn dispatch_packet(
                 packet,
             }),
         },
-        void_protocol::State::Configuration => {
-            let decoded = packet.decode::<serverbound::ConfigurationPacket>()?;
-            // Eagerly transition to Play so later packets decode correctly.
-            if matches!(
-                decoded,
-                serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(_)
-            ) {
-                world
-                    .entity_mut(entity)
-                    .insert(ConnectionState(void_protocol::State::Play));
-            }
-            world
-                .resource_mut::<PacketQueue<ConfigurationPacketEvent>>()
-                .0
-                .push(ConfigurationPacketEvent {
+        void_protocol::State::Configuration => match packet
+            .decode::<serverbound::ConfigurationPacket>()?
+        {
+            serverbound::ConfigurationPacket::ClientInformation(packet) => {
+                world.trigger(PacketEvent {
                     client_id,
                     entity,
-                    packet: decoded,
-                });
-        }
+                    packet,
+                })
+            }
+            serverbound::ConfigurationPacket::PluginMessage(packet) => world.trigger(PacketEvent {
+                client_id,
+                entity,
+                packet,
+            }),
+            serverbound::ConfigurationPacket::KnownPacks(packet) => world.trigger(PacketEvent {
+                client_id,
+                entity,
+                packet,
+            }),
+            serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(packet) => world
+                .trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+        },
         void_protocol::State::Play => {
             let decoded = packet.decode::<serverbound::PlayPacket>()?;
             world
@@ -231,6 +235,7 @@ fn dispatch_packet(
         }
     }
 
+    // Ensure all events are processed and any resulting state changes are applied before processing the next packet
     world.flush();
 
     Ok(())
