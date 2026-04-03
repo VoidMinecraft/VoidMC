@@ -1,5 +1,6 @@
 use bevy_app::Plugin;
 
+pub mod chat;
 pub mod configuration;
 pub mod handshake;
 pub mod login;
