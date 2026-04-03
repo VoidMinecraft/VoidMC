@@ -11,4 +11,3 @@ void-codec-macros = { path = "../void-codec-macros" }
 uuid = "1.16.0"
 ussr-nbt = "0.2.1"
 bitflags = "2.10.0"
-bevy_ecs = "0.18.0"

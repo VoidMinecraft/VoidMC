@@ -1,7 +1,6 @@
-use bevy_ecs::event::Event;
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode, Event)]
+#[derive(Debug, Encode, Decode)]
 pub struct Interact {
     #[codec(varint32)]
     pub entity_id: i32,

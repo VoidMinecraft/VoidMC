@@ -1,4 +1,3 @@
-use bevy_ecs::event::Event;
 use void_codec::{Decode, Encode};
 
 #[derive(Debug, Encode, Decode)]
@@ -8,7 +7,7 @@ pub struct KnownPack {
     pub version: String,
 }
 
-#[derive(Debug, Encode, Decode, Event)]
+#[derive(Debug, Encode, Decode)]
 pub struct KnownPacks {
     pub known_packs: Vec<KnownPack>,
 }

@@ -1,9 +1,8 @@
-use bevy_ecs::event::Event;
 use void_codec::{Decode, Encode};
 
 use crate::types::{BlockFace, BlockPosition, Hand};
 
-#[derive(Debug, Encode, Decode, Event)]
+#[derive(Debug, Encode, Decode)]
 pub struct UseItemOn {
     pub hand: Hand,
     pub location: BlockPosition,

@@ -1,9 +1,8 @@
-use bevy_ecs::event::Event;
 use void_codec::{Decode, Encode};
 
 /// Serverbound Chat Message (0x06) — regular chat message.
 /// We only parse the message string; the remaining crypto fields are ignored.
-#[derive(Debug, Encode, Decode, Event)]
+#[derive(Debug, Encode, Decode)]
 pub struct ChatMessage {
     pub message: String,
     #[codec(remaining)]
