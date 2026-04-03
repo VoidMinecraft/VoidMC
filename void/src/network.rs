@@ -118,14 +118,13 @@ pub fn ingest_network_packets(world: &mut World) {
     }
 
     // Drain disconnect channel and handle disconnects
-    let disconnected: Vec<u32> =
-        world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
-            let mut disc = Vec::new();
-            while let Ok(client_id) = channels.disconnect.try_recv() {
-                disc.push(client_id);
-            }
-            disc
-        });
+    let disconnected: Vec<u32> = world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
+        let mut disc = Vec::new();
+        while let Ok(client_id) = channels.disconnect.try_recv() {
+            disc.push(client_id);
+        }
+        disc
+    });
 
     for disc_client_id in disconnected {
         let entity = {

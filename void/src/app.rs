@@ -3,18 +3,18 @@ use std::time::Duration;
 use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin};
 use bevy_ecs::prelude::*;
 
+use crate::Server;
 use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
-use crate::config::{ServerConfig, ServerConfigResource};
 use crate::components::EntityIdCounter;
+use crate::config::{ServerConfig, ServerConfigResource};
 use crate::handlers::DefaultHandlersPlugin;
-use crate::network::{NetworkPlugin, OutgoingPacket, IncomingPacket};
+use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
     ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, DimensionId,
     generation::WorldGen,
 };
-use crate::Server;
 
 /// The main entry point for running a Void server.
 pub struct VoidServer {
@@ -67,10 +67,10 @@ impl VoidServer {
                 .unwrap();
 
             rt.block_on(async move {
-                let mut server = Server::new(&address)
-                    .await
-                    .expect("Failed to start server");
-                server.run(incoming_tx, outgoing_rx, disconnect_tx, kick_rx).await;
+                let mut server = Server::new(&address).await.expect("Failed to start server");
+                server
+                    .run(incoming_tx, outgoing_rx, disconnect_tx, kick_rx)
+                    .await;
             })
         });
 
@@ -80,7 +80,12 @@ impl VoidServer {
             TaskPoolPlugin::default(),
             ScheduleRunnerPlugin::run_loop(tick_duration),
         ))
-        .add_plugins(NetworkPlugin::new(incoming_rx, outgoing_tx, disconnect_rx, kick_tx))
+        .add_plugins(NetworkPlugin::new(
+            incoming_rx,
+            outgoing_tx,
+            disconnect_rx,
+            kick_tx,
+        ))
         .add_plugins(DefaultHandlersPlugin)
         .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin)
@@ -127,9 +132,7 @@ fn init_world(
                 ChunkDimension(DimensionId::Overworld),
             ))
             .id();
-        chunk_index
-            .0
-            .insert((DimensionId::Overworld, pos), entity);
+        chunk_index.0.insert((DimensionId::Overworld, pos), entity);
         count += 1;
     }
 

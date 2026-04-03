@@ -291,7 +291,10 @@ impl ArgParser for BoolArg {
         match input.to_lowercase().as_str() {
             "true" | "yes" | "1" => Ok(Box::new(true)),
             "false" | "no" | "0" => Ok(Box::new(false)),
-            _ => Err(format!("'{}' is not a valid boolean (expected true/false/yes/no/1/0)", input)),
+            _ => Err(format!(
+                "'{}' is not a valid boolean (expected true/false/yes/no/1/0)",
+                input
+            )),
         }
     }
 

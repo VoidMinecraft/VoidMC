@@ -360,8 +360,7 @@ impl CommandRegistry {
     /// Register a command built with `CommandBuilder`.
     pub fn register(&mut self, command: Command) {
         for alias in &command.aliases {
-            self.aliases
-                .insert(alias.clone(), command.name.clone());
+            self.aliases.insert(alias.clone(), command.name.clone());
         }
         self.commands.insert(
             command.name.clone(),
@@ -425,7 +424,9 @@ impl CommandRegistry {
                     })
                     .collect();
 
-                let usage = cmd.usage.clone().unwrap_or_else(|| auto_usage(&cmd.name, &cmd.arguments, &cmd.flag_definitions));
+                let usage = cmd.usage.clone().unwrap_or_else(|| {
+                    auto_usage(&cmd.name, &cmd.arguments, &cmd.flag_definitions)
+                });
 
                 Resolved::Found(ResolveResult {
                     handler: Arc::clone(&cmd.handler),
@@ -453,7 +454,9 @@ impl CommandRegistry {
     pub fn usage(&self, name: &str) -> Option<String> {
         let canonical = self.resolve(name)?;
         self.commands.get(canonical).map(|c| {
-            c.usage.clone().unwrap_or_else(|| auto_usage(&c.name, &c.arguments, &c.flag_definitions))
+            c.usage
+                .clone()
+                .unwrap_or_else(|| auto_usage(&c.name, &c.arguments, &c.flag_definitions))
         })
     }
 
@@ -483,8 +486,8 @@ impl CommandRegistry {
             }
 
             // The literal node for the command name
-            let is_executable = cmd.arguments.is_empty()
-                || cmd.arguments.iter().all(|a| !a.required);
+            let is_executable =
+                cmd.arguments.is_empty() || cmd.arguments.iter().all(|a| !a.required);
             let children = if arg_indices.is_empty() {
                 Vec::new()
             } else {
@@ -513,9 +516,10 @@ impl CommandRegistry {
                 let is_exec = i + 1 == cmd.arguments.len()
                     || cmd.arguments[i + 1..].iter().all(|a| !a.required);
 
-                let protocol_parser = arg.parser.protocol_parser().unwrap_or(
-                    Parser::String(StringType::SingleWord),
-                );
+                let protocol_parser = arg
+                    .parser
+                    .protocol_parser()
+                    .unwrap_or(Parser::String(StringType::SingleWord));
 
                 let suggestions = arg.parser.suggestions_type().map(|s| s.to_string());
 
@@ -583,10 +587,7 @@ fn auto_usage(name: &str, arguments: &[ArgumentDefinition], flags: &[FlagDefinit
     }
 
     for flag in flags {
-        let short = flag
-            .short
-            .map(|c| format!("-{}/", c))
-            .unwrap_or_default();
+        let short = flag.short.map(|c| format!("-{}/", c)).unwrap_or_default();
         if flag.takes_value {
             parts.push(format!("[{}--{} <value>]", short, flag.long));
         } else {
@@ -703,12 +704,7 @@ pub fn dispatch_command(
                 for err in &flag_errors {
                     send_system_chat(world, client_id, &err.to_player_message(), "red");
                 }
-                send_system_chat(
-                    world,
-                    client_id,
-                    &format!("Usage: {}", res.usage),
-                    "gray",
-                );
+                send_system_chat(world, client_id, &format!("Usage: {}", res.usage), "gray");
                 return;
             }
 
@@ -729,12 +725,7 @@ pub fn dispatch_command(
                     for err in &errors {
                         send_system_chat(world, client_id, &err.to_player_message(), "red");
                     }
-                    send_system_chat(
-                        world,
-                        client_id,
-                        &format!("Usage: {}", res.usage),
-                        "gray",
-                    );
+                    send_system_chat(world, client_id, &format!("Usage: {}", res.usage), "gray");
                 }
             }
         }

@@ -8,8 +8,7 @@ use crate::components::{
 use crate::config::ServerConfigResource;
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::world::{
-    ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition,
-    generation::WorldGen,
+    ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, generation::WorldGen,
 };
 
 /// Streams chunks to players as they move through the world.
@@ -33,8 +32,15 @@ pub fn stream_chunks(
     world_gen: Res<WorldGen>,
     config: Res<ServerConfigResource>,
 ) {
-    for (client_id, position, mut current_chunk, mut effective_vd, mut loaded_chunks, dimension, settings) in
-        players.iter_mut()
+    for (
+        client_id,
+        position,
+        mut current_chunk,
+        mut effective_vd,
+        mut loaded_chunks,
+        dimension,
+        settings,
+    ) in players.iter_mut()
     {
         let new_chunk = ChunkPos::from_block(position.x, position.z);
 
@@ -82,12 +88,12 @@ pub fn stream_chunks(
         for pos in &to_unload {
             let _ = channels.outgoing.send(OutgoingPacket {
                 client_id: client_id.0,
-                packet: clientbound::ClientboundPacket::Play(
-                    clientbound::PlayPacket::UnloadChunk(clientbound::UnloadChunk {
+                packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::UnloadChunk(
+                    clientbound::UnloadChunk {
                         chunk_x: pos.x,
                         chunk_z: pos.z,
-                    }),
-                ),
+                    },
+                )),
             });
             loaded_chunks.0.remove(pos);
         }

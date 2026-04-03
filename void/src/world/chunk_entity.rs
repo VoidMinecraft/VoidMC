@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use bevy_ecs::prelude::*;
 use void_protocol::clientbound::chunk::{
-    ChunkHeightmaps, ChunkSection, LightData, Chunk as ProtocolChunk, ChunkDataAndLight,
+    Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData,
 };
 
 use super::chunk_pos::ChunkPos;

@@ -208,6 +208,9 @@ mod tests {
 
         // Verify structure preserved
         assert_eq!(decoded.name, original_nbt.name);
-        assert_eq!(decoded.compound.tags.len(), original_nbt.compound.tags.len());
+        assert_eq!(
+            decoded.compound.tags.len(),
+            original_nbt.compound.tags.len()
+        );
     }
 }

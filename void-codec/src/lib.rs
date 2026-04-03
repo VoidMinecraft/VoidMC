@@ -961,7 +961,7 @@ mod tests {
 
         // After decode, remaining should be empty (remaining attribute consumed garbage too)
         assert_eq!(slice.len(), 0);
-        
+
         // The decoded data field should include the garbage
         assert_eq!(decoded.data, vec![10, 20, 30, 255, 254, 253]);
     }
@@ -1095,7 +1095,7 @@ mod tests {
         // remaining consumes all remaining bytes
         // For fixed_length, we need to encode both the length and the data
         // For remaining, we only encode the data
-        
+
         #[derive(Encode, Decode, Debug, PartialEq)]
         struct WithFixedKnownLen {
             #[codec(fixed_length = 4)]
@@ -1110,13 +1110,9 @@ mod tests {
 
         let data = vec![1, 2, 3, 4];
 
-        let fixed = WithFixedKnownLen {
-            data: data.clone(),
-        };
+        let fixed = WithFixedKnownLen { data: data.clone() };
 
-        let remaining = WithRemaining {
-            data: data.clone(),
-        };
+        let remaining = WithRemaining { data: data.clone() };
 
         let mut buf_fixed = Vec::new();
         fixed.encode(&mut buf_fixed);
