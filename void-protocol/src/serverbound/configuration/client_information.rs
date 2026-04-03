@@ -1,3 +1,4 @@
+use bevy_ecs::event::Event;
 use void_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Copy, Encode, Decode)]
@@ -26,7 +27,7 @@ pub enum ParticleStatus {
     Minimal = 0x2,
 }
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, Event)]
 pub struct ClientInformation {
     pub locale: String,
     pub view_distance: u8,

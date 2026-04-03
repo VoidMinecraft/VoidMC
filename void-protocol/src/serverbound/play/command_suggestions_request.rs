@@ -1,6 +1,7 @@
+use bevy_ecs::event::Event;
 use void_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, Event)]
 pub struct CommandSuggestionsRequest {
     #[codec(varint32)]
     pub transaction_id: i32,

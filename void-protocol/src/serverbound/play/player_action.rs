@@ -1,8 +1,9 @@
+use bevy_ecs::event::Event;
 use void_codec::{Decode, Encode};
 
 use crate::types::{BlockFace, BlockPosition, PlayerActionStatus};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, Event)]
 pub struct PlayerAction {
     pub status: PlayerActionStatus,
     pub position: BlockPosition,
