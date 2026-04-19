@@ -1,5 +1,5 @@
-use tracing_subscriber::prelude::*;
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::prelude::*;
 use void::components::PlayerName;
 use void::events::PlayerStartDiggingEvent;
 use void::{

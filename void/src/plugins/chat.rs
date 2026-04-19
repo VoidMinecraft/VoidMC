@@ -3,8 +3,7 @@ use bevy_ecs::{
     entity::Entity,
     observer::On,
     query::With,
-    system::{Commands, Query, Res},
-    world::World,
+    system::{Commands, Query, Res, ResMut},
 };
 use void_protocol::{
     clientbound,
@@ -15,6 +14,7 @@ use void_protocol::{
 
 use crate::{
     CommandRegistry,
+    commands::{CommandEnqueueSequence, CommandQueue, enqueue_command},
     components::{ClientId, PlayerName, PlayerReady},
     events::{ChatCommandEvent, ChatMessageEvent},
     network::{NetworkChannels, OutgoingPacket, PacketEvent},
@@ -32,46 +32,81 @@ impl Plugin for ChatPlugin {
     }
 }
 
-fn handle_command(client_id: u32, entity: Entity, command: &str, mut commands: Commands) {
+fn handle_command(
+    client_id: u32,
+    entity: Entity,
+    command: &str,
+    queue: &mut CommandQueue,
+    sequence: &mut CommandEnqueueSequence,
+    mut commands: Commands,
+) {
     let parts: Vec<String> = command.split_whitespace().map(String::from).collect();
     let (command_name, args) = match parts.split_first() {
         Some((name, rest)) => (name.clone(), rest.to_vec()),
         None => return,
     };
 
-    // TODO: Commands should be a Bevy's Message so that it execution can be deferred
-    // crate::commands::dispatch_command(world, client_id, entity, &command_name, args.clone());
+    enqueue_command(
+        queue,
+        sequence,
+        client_id,
+        entity,
+        command_name.clone(),
+        args.clone(),
+    );
+
     commands.trigger(ChatCommandEvent {
-        entity: entity,
-        client_id: client_id,
+        entity,
+        client_id,
         command: command_name,
         args,
     });
 }
 
-fn handle_chat_command(event: On<PacketEvent<ChatCommand>>, commands: Commands) {
+fn handle_chat_command(
+    event: On<PacketEvent<ChatCommand>>,
+    queue: ResMut<CommandQueue>,
+    sequence: ResMut<CommandEnqueueSequence>,
+    commands: Commands,
+) {
     handle_command(
         event.client_id,
         event.entity,
         &event.packet.command,
+        queue.into_inner(),
+        sequence.into_inner(),
         commands,
     );
 }
 
-fn handle_chat_command_unsigned(event: On<PacketEvent<ChatCommandUnsigned>>, commands: Commands) {
+fn handle_chat_command_unsigned(
+    event: On<PacketEvent<ChatCommandUnsigned>>,
+    queue: ResMut<CommandQueue>,
+    sequence: ResMut<CommandEnqueueSequence>,
+    commands: Commands,
+) {
     handle_command(
         event.client_id,
         event.entity,
         &event.packet.command,
+        queue.into_inner(),
+        sequence.into_inner(),
         commands,
     );
 }
 
-fn handle_signed_chat_command(event: On<PacketEvent<SignedChatCommand>>, commands: Commands) {
+fn handle_signed_chat_command(
+    event: On<PacketEvent<SignedChatCommand>>,
+    queue: ResMut<CommandQueue>,
+    sequence: ResMut<CommandEnqueueSequence>,
+    commands: Commands,
+) {
     handle_command(
         event.client_id,
         event.entity,
         &event.packet.command,
+        queue.into_inner(),
+        sequence.into_inner(),
         commands,
     );
 }
@@ -79,21 +114,30 @@ fn handle_signed_chat_command(event: On<PacketEvent<SignedChatCommand>>, command
 fn handle_chat_message(
     event: On<PacketEvent<ChatMessage>>,
     mut commands: Commands,
-    world: &World,
+    queue: ResMut<CommandQueue>,
+    sequence: ResMut<CommandEnqueueSequence>,
     channels: Res<NetworkChannels>,
+    player_names: Query<&PlayerName>,
     ready_clients: Query<&ClientId, With<PlayerReady>>,
 ) {
     // If the client doesn't recognise a command in its tree, it sends
     // "/command args" as a ChatMessage instead of ChatCommand.  Intercept that.
     if let Some(cmd) = event.packet.message.strip_prefix('/') {
-        handle_command(event.client_id, event.entity, cmd, commands);
+        handle_command(
+            event.client_id,
+            event.entity,
+            cmd,
+            queue.into_inner(),
+            sequence.into_inner(),
+            commands,
+        );
         return;
     }
 
-    let player_name = world
-        .get::<PlayerName>(event.entity)
+    let player_name = player_names
+        .get(event.entity)
         .map(|n| n.0.clone())
-        .unwrap_or_else(|| "Unknown".to_string());
+        .unwrap_or_else(|_| "Unknown".to_string());
 
     let formatted = format!("<{}> {}", player_name, event.packet.message);
     let nbt = crate::commands::text_to_nbt(&formatted, "white");

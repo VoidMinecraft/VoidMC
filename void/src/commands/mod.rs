@@ -5,7 +5,7 @@ pub mod parser;
 pub mod plugin;
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
@@ -208,7 +208,7 @@ impl CommandBuilder {
 
 /// Context passed to command handlers — provides helpers to interact with the world.
 pub struct CommandContext<'a> {
-    pub world: &'a mut World,
+    world: &'a mut World,
     pub entity: Entity,
     pub client_id: u32,
     pub args: Vec<String>,
@@ -235,6 +235,18 @@ impl<'a> CommandContext<'a> {
     /// Get a typed flag value.
     pub fn flag_value<T: 'static>(&self, name: &str) -> Option<&T> {
         self.flags.get_value::<T>(name)
+    }
+
+    /// Read-only world access for advanced command handlers.
+    pub fn with_world<R>(&self, f: impl FnOnce(&World) -> R) -> R {
+        f(self.world)
+    }
+
+    /// Mutable world access for advanced command handlers.
+    ///
+    /// Prefer using dedicated helper methods when possible.
+    pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
+        f(self.world)
     }
 
     /// Send a system message to the command sender.
@@ -673,6 +685,74 @@ fn parse_positional(
         Ok(parsed)
     } else {
         Err(errors)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QueuedCommand {
+    pub client_id: u32,
+    pub entity: Entity,
+    pub command: String,
+    pub args: Vec<String>,
+    pub sequence: u64,
+}
+
+#[derive(Resource, Default)]
+pub struct CommandQueue(pub VecDeque<QueuedCommand>);
+
+#[derive(Resource, Default)]
+pub struct CommandEnqueueSequence(pub u64);
+
+pub fn enqueue_command(
+    queue: &mut CommandQueue,
+    sequence: &mut CommandEnqueueSequence,
+    client_id: u32,
+    entity: Entity,
+    command: String,
+    args: Vec<String>,
+) {
+    let next_sequence = sequence.0;
+    sequence.0 = sequence.0.wrapping_add(1);
+
+    queue.0.push_back(QueuedCommand {
+        client_id,
+        entity,
+        command,
+        args,
+        sequence: next_sequence,
+    });
+}
+
+pub fn drain_command_queue(world: &mut World) {
+    loop {
+        let queued = {
+            let mut queue = world.resource_mut::<CommandQueue>();
+            queue.0.pop_front()
+        };
+
+        let Some(queued) = queued else {
+            break;
+        };
+
+        if !world.entities().contains(queued.entity) {
+            tracing::debug!(
+                "Dropping queued command '{}' for despawned entity {:?}",
+                queued.command,
+                queued.entity
+            );
+            continue;
+        }
+
+        dispatch_command(
+            world,
+            queued.client_id,
+            queued.entity,
+            &queued.command,
+            queued.args,
+        );
+
+        // Preserve command-to-command ordering for deferred side effects.
+        world.flush();
     }
 }
 
