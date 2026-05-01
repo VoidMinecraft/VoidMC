@@ -15,6 +15,8 @@ pub struct GameSystemsPlugin;
 impl Plugin for GameSystemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KeepAliveTicker>()
+            .add_observer(player::on_player_ready)
+            .add_observer(player::on_player_quit)
             .add_systems(
                 Update,
                 keep_alive::send_keep_alive.after(CommandSystems::DrainQueue),
