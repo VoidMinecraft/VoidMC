@@ -40,7 +40,6 @@ impl Client {
 
                 result = self.outgoing_rx.recv_async() => {
                     let outgoing_packet = result.expect("Failed to receive outgoing packet from channel");
-                    tracing::debug!("Sending packet to client {}: {:?}", self.client_id, outgoing_packet.packet);
                     match outgoing_packet.packet {
                         ClientboundPacket::Status(packet) => self.socket.send(&packet).await?,
                         ClientboundPacket::Login(packet) => self.socket.send(&packet).await?,

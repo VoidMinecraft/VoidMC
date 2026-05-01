@@ -4,8 +4,8 @@ pub mod commands;
 pub mod components;
 pub mod config;
 pub mod events;
-pub mod handlers;
 pub mod network;
+pub mod plugins;
 pub mod registry;
 mod server;
 pub mod systems;
@@ -24,10 +24,6 @@ pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
-pub use handlers::{
-    ConfigurationPlugin, DefaultHandlersPlugin, HandshakePlugin, LoginPlugin, PlayPlugin,
-    PlayerEventsPlugin, StatusPlugin,
-};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
 pub use void_protocol::types::{BlockFace, BlockPosition, Hand};

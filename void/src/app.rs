@@ -8,8 +8,8 @@ use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
 use crate::components::EntityIdCounter;
 use crate::config::{ServerConfig, ServerConfigResource};
-use crate::handlers::DefaultHandlersPlugin;
 use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
+use crate::plugins::DefaultPlugins;
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
     ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, DimensionId,
@@ -86,7 +86,7 @@ impl VoidServer {
             disconnect_rx,
             kick_tx,
         ))
-        .add_plugins(DefaultHandlersPlugin)
+        .add_plugins(DefaultPlugins)
         .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin)
         .insert_resource(EntityIdCounter(1))

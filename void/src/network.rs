@@ -7,10 +7,7 @@ use void_net::socket::Packet;
 use void_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
-use crate::events::{
-    ConfigurationPacketEvent, HandshakePacketEvent, LoginPacketEvent, PacketQueue, PlayPacketEvent,
-    PlayerQuitEvent, StatusPacketEvent,
-};
+use crate::events::PlayerQuitEvent;
 
 pub struct IncomingPacket {
     pub client_id: u32,
@@ -54,11 +51,6 @@ impl Plugin for NetworkPlugin {
             kick: self.kick_tx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
-        .init_resource::<PacketQueue<HandshakePacketEvent>>()
-        .init_resource::<PacketQueue<StatusPacketEvent>>()
-        .init_resource::<PacketQueue<LoginPacketEvent>>()
-        .init_resource::<PacketQueue<ConfigurationPacketEvent>>()
-        .init_resource::<PacketQueue<PlayPacketEvent>>()
         .add_systems(PreUpdate, ingest_network_packets);
     }
 }
@@ -75,6 +67,7 @@ pub struct NetworkChannels {
 pub struct ClientToEntityMap(pub HashMap<u32, Entity>);
 
 pub fn ingest_network_packets(world: &mut World) {
+    // TODO: This batch-draining approach is simple but may lead to increased latency under high load.
     // Batch-drain all packets from channel
     let packets: Vec<IncomingPacket> =
         world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
@@ -149,6 +142,13 @@ pub fn ingest_network_packets(world: &mut World) {
     }
 }
 
+#[derive(Debug, Event)]
+pub struct PacketEvent<T> {
+    pub client_id: u32,
+    pub entity: Entity,
+    pub packet: T,
+}
+
 fn dispatch_packet(
     world: &mut World,
     client_id: u32,
@@ -161,85 +161,224 @@ fn dispatch_packet(
 
     match state.0 {
         void_protocol::State::Handshake => {
-            let decoded = packet.decode::<serverbound::HandshakePacket>()?;
-            // Apply state transition eagerly so subsequent packets in this
-            // batch are decoded with the correct protocol state.
-            let serverbound::HandshakePacket::Handshake(ref hs) = decoded;
-            world
-                .entity_mut(entity)
-                .insert(ConnectionState(hs.next_state));
-            world
-                .resource_mut::<PacketQueue<HandshakePacketEvent>>()
-                .0
-                .push(HandshakePacketEvent {
+            let packet = packet.decode::<serverbound::HandshakePacket>()?;
+            tracing::debug!("[Client {}][Handshake] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::HandshakePacket::Handshake(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
-                    packet: decoded,
-                });
+                    packet,
+                }),
+            }
         }
         void_protocol::State::Status => {
-            let decoded = packet.decode::<serverbound::StatusPacket>()?;
-            world
-                .resource_mut::<PacketQueue<StatusPacketEvent>>()
-                .0
-                .push(StatusPacketEvent {
+            let packet = packet.decode::<serverbound::StatusPacket>()?;
+            tracing::debug!("[Client {}][Status] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::StatusPacket::PingRequest(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
-                    packet: decoded,
-                });
+                    packet,
+                }),
+                serverbound::StatusPacket::StatusRequest(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+            }
         }
         void_protocol::State::Login => {
-            let decoded = packet.decode::<serverbound::LoginPacket>()?;
-            // Eagerly transition to Configuration so later packets decode correctly.
-            if matches!(decoded, serverbound::LoginPacket::LoginAcknowledged(_)) {
-                world
-                    .entity_mut(entity)
-                    .insert(ConnectionState(void_protocol::State::Configuration));
-            }
-            world
-                .resource_mut::<PacketQueue<LoginPacketEvent>>()
-                .0
-                .push(LoginPacketEvent {
+            let packet = packet.decode::<serverbound::LoginPacket>()?;
+            tracing::debug!("[Client {}][Login] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::LoginPacket::LoginStart(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
-                    packet: decoded,
-                });
+                    packet,
+                }),
+                serverbound::LoginPacket::LoginAcknowledged(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+            }
         }
         void_protocol::State::Configuration => {
-            let decoded = packet.decode::<serverbound::ConfigurationPacket>()?;
-            // Eagerly transition to Play so later packets decode correctly.
-            if matches!(
-                decoded,
-                serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(_)
-            ) {
-                world
-                    .entity_mut(entity)
-                    .insert(ConnectionState(void_protocol::State::Play));
+            let packet = packet.decode::<serverbound::ConfigurationPacket>()?;
+            tracing::debug!(
+                "[Client {}][Configuration] Received {:?}",
+                client_id,
+                packet
+            );
+
+            match packet {
+                serverbound::ConfigurationPacket::ClientInformation(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::ConfigurationPacket::PluginMessage(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::ConfigurationPacket::KnownPacks(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::ConfigurationPacket::FinishConfigurationAcknowledged(packet) => world
+                    .trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    }),
             }
-            world
-                .resource_mut::<PacketQueue<ConfigurationPacketEvent>>()
-                .0
-                .push(ConfigurationPacketEvent {
-                    client_id,
-                    entity,
-                    packet: decoded,
-                });
         }
         void_protocol::State::Play => {
-            let decoded = packet.decode::<serverbound::PlayPacket>()?;
-            world
-                .resource_mut::<PacketQueue<PlayPacketEvent>>()
-                .0
-                .push(PlayPacketEvent {
+            let packet = packet.decode::<serverbound::PlayPacket>()?;
+            tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
+
+            match packet {
+                serverbound::PlayPacket::ChatCommand(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
-                    packet: decoded,
-                });
+                    packet,
+                }),
+                serverbound::PlayPacket::ChatMessage(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::ChatCommandUnsigned(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::PlayPacket::ClientInformation(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::CloseContainer(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::CommandSuggestionsRequest(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::PlayPacket::ConfirmTeleportation(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
+                serverbound::PlayPacket::Interact(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::KeepAlive(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerAbilities(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerAction(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerCommand(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::PlayerLoaded(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::Pong(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetHeldItem(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetPlayerPos(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetPlayerPosAndRot(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SetPlayerRotation(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SignedChatCommand(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::SwingArm(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::TickEnd(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::UseItem(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::UseItemOn(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+            }
         }
         _ => {
             tracing::warn!("Unhandled protocol state: {:?}", state.0);
         }
     }
+
+    // Ensure all events are processed and any resulting state changes are applied before processing the next packet
+    world.flush();
 
     Ok(())
 }

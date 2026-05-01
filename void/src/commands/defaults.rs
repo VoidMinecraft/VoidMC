@@ -86,22 +86,21 @@ pub fn plugins_command() -> Command {
 fn handle_help(ctx: &mut CommandContext) {
     // Check if a specific command was requested
     if let Some(cmd_name) = ctx.get::<String>("command").cloned() {
-        let (canonical, desc, usage) = {
-            let registry = ctx.world.resource::<CommandRegistry>();
-            match registry.resolve(&cmd_name).map(|s| s.to_string()) {
-                Some(canonical) => {
-                    let desc = registry.description(&canonical).unwrap_or("").to_string();
-                    let usage = registry
-                        .usage(&canonical)
-                        .unwrap_or_else(|| format!("/{}", canonical));
-                    (canonical, desc, usage)
-                }
-                None => {
-                    let msg = format!("Unknown command: /{}", cmd_name);
-                    // registry borrow ends here at block boundary
-                    return ctx.reply_error(&msg);
-                }
-            }
+        let resolved = ctx.with_world(|world| {
+            let registry = world.resource::<CommandRegistry>();
+            registry.resolve(&cmd_name).map(|canonical_name| {
+                let canonical = canonical_name.to_string();
+                let desc = registry.description(&canonical).unwrap_or("").to_string();
+                let usage = registry
+                    .usage(&canonical)
+                    .unwrap_or_else(|| format!("/{}", canonical));
+                (canonical, desc, usage)
+            })
+        });
+
+        let Some((canonical, desc, usage)) = resolved else {
+            ctx.reply_error(&format!("Unknown command: /{}", cmd_name));
+            return;
         };
 
         let mut lines = vec![format!("--- /{} ---", canonical)];
@@ -114,15 +113,17 @@ fn handle_help(ctx: &mut CommandContext) {
     }
 
     // List all commands
-    let registry = ctx.world.resource::<CommandRegistry>();
-    let mut entries: Vec<(String, String)> = registry
-        .command_names()
-        .iter()
-        .map(|name| {
-            let desc = registry.description(name).unwrap_or("").to_string();
-            (name.to_string(), desc)
-        })
-        .collect();
+    let mut entries: Vec<(String, String)> = ctx.with_world(|world| {
+        let registry = world.resource::<CommandRegistry>();
+        registry
+            .command_names()
+            .iter()
+            .map(|name| {
+                let desc = registry.description(name).unwrap_or("").to_string();
+                (name.to_string(), desc)
+            })
+            .collect()
+    });
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut lines = vec!["--- Available Commands ---".to_string()];
@@ -149,17 +150,19 @@ fn handle_gamemode(ctx: &mut CommandContext) {
     };
 
     // Send GameEvent to change gamemode
-    let channels = ctx.world.resource::<NetworkChannels>();
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: ctx.client_id,
-        packet: void_protocol::clientbound::ClientboundPacket::Play(
-            void_protocol::clientbound::PlayPacket::GameEvent(
-                void_protocol::clientbound::GameEvent {
-                    event: void_protocol::clientbound::GameEventType::ChangeGameMode,
-                    value: mode as f32,
-                },
+    ctx.with_world(|world| {
+        let channels = world.resource::<NetworkChannels>();
+        let _ = channels.outgoing.send(OutgoingPacket {
+            client_id: ctx.client_id,
+            packet: void_protocol::clientbound::ClientboundPacket::Play(
+                void_protocol::clientbound::PlayPacket::GameEvent(
+                    void_protocol::clientbound::GameEvent {
+                        event: void_protocol::clientbound::GameEventType::ChangeGameMode,
+                        value: mode as f32,
+                    },
+                ),
             ),
-        ),
+        });
     });
 
     ctx.reply(&format!("Game mode set to {} ({})", mode_name, mode));
@@ -173,28 +176,28 @@ fn handle_kick(ctx: &mut CommandContext) {
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
     // Find the target player
-    let target: Option<u32> = {
-        let mut query = ctx
-            .world
-            .query_filtered::<(&ClientId, &PlayerName), With<PlayerReady>>();
+    let target: Option<u32> = ctx.with_world_mut(|world| {
+        let mut query = world.query_filtered::<(&ClientId, &PlayerName), With<PlayerReady>>();
         query
-            .iter(ctx.world)
+            .iter(world)
             .find(|(_, name)| name.0.eq_ignore_ascii_case(&target_name))
             .map(|(cid, _)| cid.0)
-    };
+    });
 
     match target {
         Some(target_cid) => {
             // Send Disconnect packet
             let reason_nbt = crate::commands::text_to_nbt(&reason, "red");
-            let channels = ctx.world.resource::<NetworkChannels>();
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: target_cid,
-                packet: void_protocol::clientbound::ClientboundPacket::Play(
-                    void_protocol::clientbound::PlayPacket::Disconnect(
-                        void_protocol::clientbound::Disconnect { reason: reason_nbt },
+            ctx.with_world(|world| {
+                let channels = world.resource::<NetworkChannels>();
+                let _ = channels.outgoing.send(OutgoingPacket {
+                    client_id: target_cid,
+                    packet: void_protocol::clientbound::ClientboundPacket::Play(
+                        void_protocol::clientbound::PlayPacket::Disconnect(
+                            void_protocol::clientbound::Disconnect { reason: reason_nbt },
+                        ),
                     ),
-                ),
+                });
             });
 
             ctx.reply(&format!("Kicked {} (reason: {})", target_name, reason));
@@ -210,7 +213,7 @@ fn handle_ping(ctx: &mut CommandContext) {
 }
 
 fn handle_plugins(ctx: &mut CommandContext) {
-    if let Some(plugin_list) = ctx.world.get_resource::<PluginList>() {
+    if let Some(plugin_list) = ctx.with_world(|world| world.get_resource::<PluginList>().cloned()) {
         if plugin_list.0.is_empty() {
             ctx.reply("No plugins loaded.");
         } else {
@@ -256,24 +259,24 @@ fn handle_tell(ctx: &mut CommandContext) {
     let sender_name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
 
     // Find the target player
-    let target: Option<u32> = {
-        let mut query = ctx
-            .world
-            .query_filtered::<(&ClientId, &PlayerName), With<PlayerReady>>();
+    let target: Option<u32> = ctx.with_world_mut(|world| {
+        let mut query = world.query_filtered::<(&ClientId, &PlayerName), With<PlayerReady>>();
         query
-            .iter(ctx.world)
+            .iter(world)
             .find(|(_, name)| name.0.eq_ignore_ascii_case(&target_name))
             .map(|(cid, _)| cid.0)
-    };
+    });
 
     match target {
         Some(target_cid) => {
-            super::send_system_chat(
-                ctx.world,
-                target_cid,
-                &format!("{} whispers to you: {}", sender_name, message),
-                "gray",
-            );
+            ctx.with_world(|world| {
+                super::send_system_chat(
+                    world,
+                    target_cid,
+                    &format!("{} whispers to you: {}", sender_name, message),
+                    "gray",
+                );
+            });
             ctx.reply(&format!("You whisper to {}: {}", target_name, message));
         }
         None => {
@@ -295,10 +298,10 @@ pub fn list_command() -> Command {
 }
 
 fn handle_list(ctx: &mut CommandContext) {
-    let names: Vec<String> = {
-        let mut query = ctx.world.query_filtered::<&PlayerName, With<PlayerReady>>();
-        query.iter(ctx.world).map(|n| n.0.clone()).collect()
-    };
+    let names: Vec<String> = ctx.with_world_mut(|world| {
+        let mut query = world.query_filtered::<&PlayerName, With<PlayerReady>>();
+        query.iter(world).map(|n| n.0.clone()).collect()
+    });
 
     if names.is_empty() {
         ctx.reply("There are 0 player(s) online.");
@@ -316,53 +319,56 @@ fn handle_tp(ctx: &mut CommandContext) {
     let x = *ctx.get::<f64>("x").unwrap();
     let y = *ctx.get::<f64>("y").unwrap();
     let z = *ctx.get::<f64>("z").unwrap();
+    let entity = ctx.entity;
 
     // Read current rotation to preserve yaw/pitch
-    let (yaw, pitch) = {
-        let rot = ctx.world.get::<Rotation>(ctx.entity);
+    let (yaw, pitch) = ctx.with_world(|world| {
+        let rot = world.get::<Rotation>(entity);
         match rot {
             Some(r) => (r.yaw, r.pitch),
             None => (0.0, 0.0),
         }
-    };
+    });
 
     // Update TeleportState: assign teleport_id and mark as pending
-    let teleport_id = {
-        let mut tp_state = ctx.world.get_mut::<TeleportState>(ctx.entity).unwrap();
+    let teleport_id = ctx.with_world_mut(|world| {
+        let mut tp_state = world.get_mut::<TeleportState>(entity).unwrap();
         let id = tp_state.next_id;
         tp_state.pending_id = Some(id);
         tp_state.next_id += 1;
         id
-    };
+    });
 
     // Update Position component
-    {
-        let mut pos = ctx.world.get_mut::<Position>(ctx.entity).unwrap();
+    ctx.with_world_mut(|world| {
+        let mut pos = world.get_mut::<Position>(entity).unwrap();
         pos.x = x;
         pos.y = y;
         pos.z = z;
-    }
+    });
 
     // Send SynchronizePlayerPosition packet
-    let channels = ctx.world.resource::<NetworkChannels>();
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: ctx.client_id,
-        packet: void_protocol::clientbound::ClientboundPacket::Play(
-            void_protocol::clientbound::PlayPacket::SynchronizePlayerPosition(
-                void_protocol::clientbound::SynchronizePlayerPosition {
-                    teleport_id,
-                    x,
-                    y,
-                    z,
-                    vx: 0.0,
-                    vy: 0.0,
-                    vz: 0.0,
-                    yaw,
-                    pitch,
-                    flags: void_protocol::clientbound::TeleportFlags::empty(),
-                },
+    ctx.with_world(|world| {
+        let channels = world.resource::<NetworkChannels>();
+        let _ = channels.outgoing.send(OutgoingPacket {
+            client_id: ctx.client_id,
+            packet: void_protocol::clientbound::ClientboundPacket::Play(
+                void_protocol::clientbound::PlayPacket::SynchronizePlayerPosition(
+                    void_protocol::clientbound::SynchronizePlayerPosition {
+                        teleport_id,
+                        x,
+                        y,
+                        z,
+                        vx: 0.0,
+                        vy: 0.0,
+                        vz: 0.0,
+                        yaw,
+                        pitch,
+                        flags: void_protocol::clientbound::TeleportFlags::empty(),
+                    },
+                ),
             ),
-        ),
+        });
     });
 
     ctx.reply(&format!("Teleported to {:.1}, {:.1}, {:.1}", x, y, z));
@@ -383,5 +389,5 @@ fn handle_say(ctx: &mut CommandContext) {
 }
 
 /// Optional resource listing plugin names — can be inserted by the user.
-#[derive(bevy_ecs::prelude::Resource)]
+#[derive(Clone, bevy_ecs::prelude::Resource)]
 pub struct PluginList(pub Vec<String>);
