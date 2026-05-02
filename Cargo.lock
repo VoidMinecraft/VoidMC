@@ -1460,6 +1460,7 @@ dependencies = [
  "ussr-nbt",
  "uuid",
  "void-codec",
+ "void-data",
  "void-net",
  "void-protocol",
 ]
@@ -1480,6 +1481,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "void-data"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "ussr-nbt",
 ]
 
 [[package]]
