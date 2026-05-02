@@ -44,31 +44,31 @@ use void_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x01)]
     SpawnEntity(SpawnEntity),
-    #[codec(packet_id = 0x1D)]
+    #[codec(packet_id = 0x20)]
     Disconnect(Disconnect),
-    #[codec(packet_id = 0x22)]
+    #[codec(packet_id = 0x25)]
     UnloadChunk(UnloadChunk),
-    #[codec(packet_id = 0x23)]
+    #[codec(packet_id = 0x26)]
     GameEvent(GameEvent),
-    #[codec(packet_id = 0x27)]
-    KeepAlive(KeepAlive),
     #[codec(packet_id = 0x2C)]
+    KeepAlive(KeepAlive),
+    #[codec(packet_id = 0x31)]
     Login(Login),
-    #[codec(packet_id = 0x2F)]
+    #[codec(packet_id = 0x35)]
     UpdateEntityPosition(UpdateEntityPosition),
-    #[codec(packet_id = 0x30)]
+    #[codec(packet_id = 0x36)]
     UpdateEntityPositionAndRotation(UpdateEntityPositionAndRotation),
-    #[codec(packet_id = 0x32)]
+    #[codec(packet_id = 0x38)]
     UpdateEntityRotation(UpdateEntityRotation),
-    #[codec(packet_id = 0x37)]
+    #[codec(packet_id = 0x3D)]
     Ping(Ping),
-    #[codec(packet_id = 0x42)]
+    #[codec(packet_id = 0x48)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
-    #[codec(packet_id = 0x4D)]
+    #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
-    #[codec(packet_id = 0x58)]
+    #[codec(packet_id = 0x5E)]
     SetCenterChunk(SetCenterChunk),
-    #[codec(packet_id = 0x73)]
+    #[codec(packet_id = 0x79)]
     SystemChat(SystemChat),
 }
 
@@ -88,27 +88,27 @@ impl Encode for ManualPlayPacket {
     fn encode(&self, buf: &mut Vec<u8>) {
         match self {
             ManualPlayPacket::PlayerInfoUpdate(packet) => {
-                void_codec::VarI32(0x40).encode(buf);
+                void_codec::VarI32(0x46).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::PlayerInfoRemove(packet) => {
-                void_codec::VarI32(0x3F).encode(buf);
+                void_codec::VarI32(0x45).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::RemoveEntities(packet) => {
-                void_codec::VarI32(0x47).encode(buf);
+                void_codec::VarI32(0x4D).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::ChunkDataAndLight(packet) => {
-                void_codec::VarI32(0x28).encode(buf);
+                void_codec::VarI32(0x2D).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::Commands(packet) => {
-                void_codec::VarI32(0x11).encode(buf);
+                void_codec::VarI32(0x10).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::CommandSuggestionsResponse(packet) => {
-                void_codec::VarI32(0x10).encode(buf);
+                void_codec::VarI32(0x0F).encode(buf);
                 packet.encode(buf);
             }
         }
