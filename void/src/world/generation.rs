@@ -1,7 +1,24 @@
+use std::sync::OnceLock;
+
 use bevy_ecs::prelude::*;
 use void_protocol::clientbound::chunk::{Chunk as ProtocolChunk, ChunkBuilder, blocks};
 
 use super::chunk_pos::ChunkPos;
+
+/// Resolves the network ID of `minecraft:plains` in the shipped biome
+/// registry. Falls back to 0 if the lookup fails (which would mean the registry
+/// isn't shipped).
+fn plains_biome_id() -> i32 {
+    static ID: OnceLock<i32> = OnceLock::new();
+    *ID.get_or_init(|| {
+        void_data::registry_index(
+            void_data::Version::V26_1_2,
+            "minecraft:worldgen/biome",
+            "minecraft:plains",
+        )
+        .unwrap_or(0)
+    })
+}
 
 /// Pluggable terrain generator trait.
 pub trait WorldGenerator: Send + Sync {
@@ -38,6 +55,7 @@ impl WorldGenerator for DefaultWorldGenerator {
         let amp = self.amplitude;
         let water = self.water_level;
         ChunkBuilder::new(pos.x, pos.z)
+            .biome(plains_biome_id())
             .with_heightmap_layered(
                 |x, z| {
                     let main_wave = (x as f64 * freq).sin() + (z as f64 * freq).sin();
