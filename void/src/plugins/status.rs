@@ -1,5 +1,5 @@
 use bevy_app::{App, Plugin};
-use bevy_ecs::{observer::On, system::Res, world::World};
+use bevy_ecs::{observer::On, system::Res};
 use void_protocol::{
     clientbound,
     serverbound::{PingRequest, StatusRequest},
@@ -7,9 +7,12 @@ use void_protocol::{
 
 use crate::{
     ServerConfigResource,
-    components::ProtocolVersion,
     network::{NetworkChannels, OutgoingPacket, PacketEvent},
 };
+
+/// Protocol version this server speaks (Minecraft 26.1.2).
+const PROTOCOL_VERSION: i32 = 773;
+const PROTOCOL_NAME: &str = "26.1.2";
 
 /// Plugin handling the status state of the Minecraft protocol, where clients can query server information without fully logging in.
 pub struct StatusPlugin;
@@ -29,8 +32,10 @@ impl Plugin for StatusPlugin {
             },
         );
 
-        app.add_observer(|event: On<PacketEvent<StatusRequest>>, world: &World, channels: Res<NetworkChannels>, config: Res<ServerConfigResource>| {
-                let protocol_version = world.get::<ProtocolVersion>(event.entity).map(|v| v.0).expect("Client should have a ProtocolVersion component by the time they send a StatusRequest");
+        app.add_observer(
+            |event: On<PacketEvent<StatusRequest>>,
+             channels: Res<NetworkChannels>,
+             config: Res<ServerConfigResource>| {
                 let max_players = config.max_players;
                 let motd = config.motd.clone();
 
@@ -40,8 +45,8 @@ impl Plugin for StatusPlugin {
                         clientbound::StatusPacket::StatusResponse(clientbound::StatusResponse {
                             status: clientbound::Status {
                                 version: clientbound::Version {
-                                    name: "Void Server".to_string(),
-                                    protocol: protocol_version,
+                                    name: PROTOCOL_NAME.to_string(),
+                                    protocol: PROTOCOL_VERSION,
                                 },
                                 players: clientbound::Players {
                                     max: max_players,

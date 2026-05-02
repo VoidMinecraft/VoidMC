@@ -44,6 +44,7 @@ impl Client {
                         ClientboundPacket::Status(packet) => self.socket.send(&packet).await?,
                         ClientboundPacket::Login(packet) => self.socket.send(&packet).await?,
                         ClientboundPacket::Configuration(packet) => self.socket.send(&packet).await?,
+                        ClientboundPacket::ManualConfiguration(packet) => self.socket.send(&packet).await?,
                         ClientboundPacket::Play(packet) => self.socket.send(&packet).await?,
                         ClientboundPacket::ManualPlay(packet) => self.socket.send(&packet).await?,
                     }
