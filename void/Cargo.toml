@@ -8,6 +8,7 @@ tokio = { version = "1.44.1", features = ["full"] }
 void-net = { path = "../void-net" }
 void-codec = { path = "../void-codec" }
 void-protocol = { path = "../void-protocol" }
+void-data = { path = "../void-data" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"
 tracing = "0.1.44"
