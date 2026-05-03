@@ -2,7 +2,7 @@
 name = "voidmc-codec-macros"
 edition = "2021"
 description = "Procedural macro derives for the voidmc-codec encode/decode traits."
-version.workspace = true
+version = "0.1.0"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true

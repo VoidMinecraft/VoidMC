@@ -1,0 +1,50 @@
+[workspace]
+# Open one PR per crate that has unreleased changes
+release_always = false
+# Tag format: <crate>-vX.Y.Z (release-plz default for workspaces)
+git_release_enable = true
+git_tag_enable = true
+publish = true
+changelog_update = true
+semver_check = true
+dependencies_update = false
+
+# Conventional-commit driven changelog
+changelog_path = "./CHANGELOG.md"
+
+[changelog]
+header = "# Changelog\n\nAll notable changes to this project will be documented in this file.\n"
+body = """
+## [{{ version }}]{% if release_link %}({{ release_link }}){% endif %} - {{ timestamp | date(format=\"%Y-%m-%d\") }}
+{% for group, commits in commits | group_by(attribute=\"group\") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}*({{ commit.scope }})* {% endif %}{{ commit.message | upper_first }}{% if commit.breaking %} [**breaking**]{% endif %}\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactor" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Tests" },
+  { message = "^build", group = "Build" },
+  { message = "^ci", group = "CI", skip = true },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore\\(deps\\)", skip = true },
+  { message = "^chore", group = "Chores" },
+  { message = "^revert", group = "Reverts" },
+]
+protect_breaking_commits = true
+sort_commits = "oldest"
+
+# Per-crate overrides — example-only crate is non-publish
+[[package]]
+name = "voidmc-example"
+publish = false
+release = false
+git_release_enable = false
+git_tag_enable = false

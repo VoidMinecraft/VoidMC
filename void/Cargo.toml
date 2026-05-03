@@ -2,7 +2,7 @@
 name = "voidmc"
 edition = "2024"
 description = "Modular, ECS-driven Minecraft server framework written in Rust."
-version.workspace = true
+version = "0.1.0"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true

@@ -2,7 +2,7 @@
 name = "voidmc-data"
 edition = "2024"
 description = "Vanilla Minecraft registry data, extracted from Paper and embedded as NBT blobs at build time."
-version.workspace = true
+version = "0.1.0"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true

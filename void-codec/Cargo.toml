@@ -2,7 +2,7 @@
 name = "voidmc-codec"
 edition = "2021"
 description = "Encode/decode primitives for the Minecraft network protocol used by VoidMC."
-version.workspace = true
+version = "0.1.0"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
