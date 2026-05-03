@@ -36,6 +36,10 @@ pub struct ServerConfig {
     pub hardcore: bool,
     pub metrics_debug: bool,
     pub metrics_tps_output: Option<String>,
+    pub max_packets_per_tick: usize,
+    pub packet_ingest_budget_ms: u64,
+    pub max_chunk_generations_per_tick: usize,
+    pub slow_tick_ms: u64,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
 }
@@ -56,6 +60,10 @@ impl Default for ServerConfig {
             hardcore: false,
             metrics_debug: false,
             metrics_tps_output: None,
+            max_packets_per_tick: 1000,
+            packet_ingest_budget_ms: 4,
+            max_chunk_generations_per_tick: 8,
+            slow_tick_ms: 200,
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
         }
@@ -139,6 +147,26 @@ impl ServerConfigBuilder {
         self
     }
 
+    pub fn max_packets_per_tick(mut self, max_packets: usize) -> Self {
+        self.config.max_packets_per_tick = max_packets;
+        self
+    }
+
+    pub fn packet_ingest_budget_ms(mut self, budget_ms: u64) -> Self {
+        self.config.packet_ingest_budget_ms = budget_ms;
+        self
+    }
+
+    pub fn max_chunk_generations_per_tick(mut self, max_chunks: usize) -> Self {
+        self.config.max_chunk_generations_per_tick = max_chunks;
+        self
+    }
+
+    pub fn slow_tick_ms(mut self, slow_tick_ms: u64) -> Self {
+        self.config.slow_tick_ms = slow_tick_ms;
+        self
+    }
+
     pub fn world_generator(mut self, generator: impl WorldGenerator + 'static) -> Self {
         self.config.world_generator = Box::new(generator);
         self
@@ -178,6 +206,10 @@ pub struct ServerConfigResource {
     pub hardcore: bool,
     pub metrics_debug: bool,
     pub metrics_tps_output: Option<String>,
+    pub max_packets_per_tick: usize,
+    pub packet_ingest_budget_ms: u64,
+    pub max_chunk_generations_per_tick: usize,
+    pub slow_tick_ms: u64,
 }
 
 impl From<&ServerConfig> for ServerConfigResource {
@@ -198,6 +230,10 @@ impl From<&ServerConfig> for ServerConfigResource {
             hardcore: config.hardcore,
             metrics_debug: config.metrics_debug,
             metrics_tps_output: config.metrics_tps_output.clone(),
+            max_packets_per_tick: config.max_packets_per_tick,
+            packet_ingest_budget_ms: config.packet_ingest_budget_ms,
+            max_chunk_generations_per_tick: config.max_chunk_generations_per_tick,
+            slow_tick_ms: config.slow_tick_ms,
         }
     }
 }
