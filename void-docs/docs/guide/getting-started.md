@@ -6,7 +6,7 @@ Welcome to Void, a high-performance Minecraft server implementation built in Rus
 
 Void is an academic project (EIP) that implements a Minecraft-compatible server from scratch. It demonstrates:
 
-- **Advanced network protocol implementation** (Minecraft 1.21.4)
+- **Advanced network protocol implementation** (Minecraft 26.1.2)
 - **High-performance async architecture** using Tokio
 - **Modular design** with clear separation between protocol, codec, and networking layers
 - **Production-ready practices** including comprehensive testing and documentation
@@ -37,7 +37,7 @@ The server will start on `127.0.0.1:25565` by default.
 
 ### First Connection
 
-Once the server is running, you can connect with any Minecraft client (1.21.4):
+Once the server is running, you can connect with any Minecraft client (26.1.2):
 
 1. Open Minecraft
 2. Add a server with address `127.0.0.1`
