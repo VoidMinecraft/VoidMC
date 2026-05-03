@@ -1,5 +1,4 @@
 mod chat_command;
-mod chat_command_unsigned;
 mod chat_message;
 mod client_information;
 mod close_container;
@@ -23,7 +22,6 @@ mod use_item;
 mod use_item_on;
 
 pub use chat_command::*;
-pub use chat_command_unsigned::*;
 pub use chat_message::*;
 pub use client_information::*;
 pub use close_container::*;
@@ -52,48 +50,46 @@ use void_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x00)]
     ConfirmTeleportation(ConfirmTeleportation),
-    #[codec(packet_id = 0x04)]
-    ChatCommand(ChatCommand),
-    #[codec(packet_id = 0x05)]
-    ChatCommandUnsigned(ChatCommandUnsigned),
-    #[codec(packet_id = 0x06)]
-    SignedChatCommand(SignedChatCommand),
     #[codec(packet_id = 0x07)]
+    ChatCommand(ChatCommand),
+    #[codec(packet_id = 0x08)]
+    SignedChatCommand(SignedChatCommand),
+    #[codec(packet_id = 0x09)]
     ChatMessage(ChatMessage),
-    #[codec(packet_id = 0x0B)]
-    TickEnd(TickEnd),
-    #[codec(packet_id = 0x0C)]
-    ClientInformation(ClientInformation),
     #[codec(packet_id = 0x0D)]
+    TickEnd(TickEnd),
+    #[codec(packet_id = 0x0E)]
+    ClientInformation(ClientInformation),
+    #[codec(packet_id = 0x0F)]
     CommandSuggestionsRequest(CommandSuggestionsRequest),
-    #[codec(packet_id = 0x11)]
+    #[codec(packet_id = 0x13)]
     CloseContainer(CloseContainer),
-    #[codec(packet_id = 0x18)]
-    Interact(Interact),
     #[codec(packet_id = 0x1A)]
-    KeepAlive(KeepAlive),
+    Interact(Interact),
     #[codec(packet_id = 0x1C)]
-    SetPlayerPos(SetPlayerPos),
-    #[codec(packet_id = 0x1D)]
-    SetPlayerPosAndRot(SetPlayerPosAndRot),
+    KeepAlive(KeepAlive),
     #[codec(packet_id = 0x1E)]
+    SetPlayerPos(SetPlayerPos),
+    #[codec(packet_id = 0x1F)]
+    SetPlayerPosAndRot(SetPlayerPosAndRot),
+    #[codec(packet_id = 0x20)]
     SetPlayerRotation(SetPlayerRotation),
-    #[codec(packet_id = 0x26)]
-    PlayerAbilities(PlayerAbilities),
-    #[codec(packet_id = 0x27)]
-    PlayerAction(PlayerAction),
     #[codec(packet_id = 0x28)]
-    PlayerCommand(PlayerCommand),
+    PlayerAbilities(PlayerAbilities),
     #[codec(packet_id = 0x29)]
-    Pong(Pong),
+    PlayerAction(PlayerAction),
     #[codec(packet_id = 0x2A)]
+    PlayerCommand(PlayerCommand),
+    #[codec(packet_id = 0x2C)]
     PlayerLoaded(PlayerLoaded),
-    #[codec(packet_id = 0x33)]
+    #[codec(packet_id = 0x2D)]
+    Pong(Pong),
+    #[codec(packet_id = 0x35)]
     SetHeldItem(SetHeldItem),
-    #[codec(packet_id = 0x3A)]
+    #[codec(packet_id = 0x3F)]
     SwingArm(SwingArm),
-    #[codec(packet_id = 0x3C)]
+    #[codec(packet_id = 0x42)]
     UseItemOn(UseItemOn),
-    #[codec(packet_id = 0x3D)]
+    #[codec(packet_id = 0x43)]
     UseItem(UseItem),
 }

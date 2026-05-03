@@ -53,7 +53,7 @@ fn test_single_value_section_encoding() {
     // [Block Count]       i16 big-endian: 4096 = 0x1000
     // [Block States]
     //   bits_per_entry:   u8  = 0   (single value palette)
-    //   palette_value:    VarInt(8)  -> 0x08
+    //   palette_value:    VarInt(9)  -> 0x08
     //   data_array_len:   VarInt(0)  -> 0x00
     // [Biomes]
     //   bits_per_entry:   u8  = 0   (single value palette)
@@ -65,16 +65,16 @@ fn test_single_value_section_encoding() {
 
     // 1) block_count: i16 big-endian = 4096 = 0x10, 0x00
     expected.extend_from_slice(&4096_i16.to_be_bytes());
+    // 1b) fluid_count: i16 = 0 (1.21.5+).
+    expected.extend_from_slice(&0_i16.to_be_bytes());
 
-    // 2) Block state palette (single value)
+    // 2) Block state palette (single value) — 1.21.5+: no data array.
     expected.push(0x00); // bits_per_entry = 0
-    expected.extend(encode_varint(8)); // palette value = grass_block = 8
-    expected.extend(encode_varint(0)); // data array length = 0
+    expected.extend(encode_varint(9)); // palette value = grass_block = 8
 
-    // 3) Biome palette (single value)
+    // 3) Biome palette (single value) — 1.21.5+: no data array.
     expected.push(0x00); // bits_per_entry = 0
     expected.extend(encode_varint(0)); // palette value = plains = 0
-    expected.extend(encode_varint(0)); // data array length = 0
 
     println!("=== Expected bytes ===");
     print!("Hex: ");
@@ -104,6 +104,11 @@ fn test_single_value_section_encoding() {
     assert_eq!(bc, 4096, "block_count should be 4096");
     offset += 2;
 
+    // Fluid count (1.21.5+): 2 bytes, always 0 for us.
+    let fc = i16::from_be_bytes([bytes[offset], bytes[offset + 1]]);
+    assert_eq!(fc, 0, "fluid_count should be 0");
+    offset += 2;
+
     // Block state palette: bits_per_entry
     println!(
         "  [{:02}]      block_state bits_per_entry = {} (0x{:02x})",
@@ -113,33 +118,22 @@ fn test_single_value_section_encoding() {
     offset += 1;
 
     // Block state palette: VarInt palette value
-    // VarInt(8) = single byte 0x08
-    let varint_8 = encode_varint(8);
+    // VarInt(9) = single byte 0x08
+    let varint_8 = encode_varint(9);
     let actual_palette_bytes = &bytes[offset..offset + varint_8.len()];
     println!(
-        "  [{:02}]      block_state palette_value = VarInt(8) -> {:02x?}",
+        "  [{:02}]      block_state palette_value = VarInt(9) -> {:02x?}",
         offset, actual_palette_bytes
     );
     assert_eq!(
         actual_palette_bytes,
         &varint_8[..],
-        "block_state palette value should encode VarInt(8)"
+        "block_state palette value should encode VarInt(9)"
     );
     offset += varint_8.len();
 
-    // Block state palette: VarInt data_array_length = 0
+    // No block_state data array on SingleValue (1.21.5+: ZeroBitStorage → 0 longs).
     let varint_0 = encode_varint(0);
-    let actual_datalen_bytes = &bytes[offset..offset + varint_0.len()];
-    println!(
-        "  [{:02}]      block_state data_array_length = VarInt(0) -> {:02x?}",
-        offset, actual_datalen_bytes
-    );
-    assert_eq!(
-        actual_datalen_bytes,
-        &varint_0[..],
-        "block_state data_array_length should encode VarInt(0)"
-    );
-    offset += varint_0.len();
 
     // Biome palette: bits_per_entry
     println!(
@@ -162,18 +156,8 @@ fn test_single_value_section_encoding() {
     );
     offset += varint_0.len();
 
-    // Biome palette: VarInt data_array_length = 0
-    let actual_biome_datalen = &bytes[offset..offset + varint_0.len()];
-    println!(
-        "  [{:02}]      biome data_array_length = VarInt(0) -> {:02x?}",
-        offset, actual_biome_datalen
-    );
-    assert_eq!(
-        actual_biome_datalen,
-        &varint_0[..],
-        "biome data_array_length should encode VarInt(0)"
-    );
-    offset += varint_0.len();
+    // No biome data array on SingleValue (1.21.5+).
+    let _ = varint_0;
 
     println!();
     println!(
@@ -210,13 +194,13 @@ fn test_empty_section_encoding() {
     let mut expected = Vec::new();
     // block_count = 0
     expected.extend_from_slice(&0_i16.to_be_bytes());
-    // block_state: bits_per_entry=0, VarInt(0), VarInt(0)
+    // fluid_count = 0 (1.21.5+).
+    expected.extend_from_slice(&0_i16.to_be_bytes());
+    // block_state: bits_per_entry=0, VarInt(0)  (no data array on SingleValue)
     expected.push(0x00);
     expected.extend(encode_varint(0));
-    expected.extend(encode_varint(0));
-    // biome: bits_per_entry=0, VarInt(0), VarInt(0)
+    // biome: bits_per_entry=0, VarInt(0)  (no data array on SingleValue)
     expected.push(0x00);
-    expected.extend(encode_varint(0));
     expected.extend(encode_varint(0));
 
     assert_eq!(bytes, expected, "empty section encoding must match");
@@ -274,6 +258,7 @@ fn test_full_chunk_24_sections_encoding() {
     //
     // So every section here is exactly 8 bytes.
 
+    // 1.21.5+ SingleValue: 2 (block_count) + 2 (fluid_count) + 1+1 (block) + 1+1 (biome) = 8.
     let single_section_size = 8;
     let expected_total = single_section_size * 24;
     println!(
@@ -306,23 +291,16 @@ fn test_full_chunk_24_sections_encoding() {
         let section_bytes = &chunk_data[base..base + single_section_size];
 
         let block_count = i16::from_be_bytes([section_bytes[0], section_bytes[1]]);
-        let bpe_block = section_bytes[2];
-        let palette_block = section_bytes[3]; // VarInt, single byte for values < 128
-        let datalen_block = section_bytes[4];
-        let bpe_biome = section_bytes[5];
-        let palette_biome = section_bytes[6];
-        let datalen_biome = section_bytes[7];
+        let fluid_count = i16::from_be_bytes([section_bytes[2], section_bytes[3]]);
+        assert_eq!(fluid_count, 0, "section {} fluid_count", idx);
+        let bpe_block = section_bytes[4];
+        let palette_block = section_bytes[5]; // VarInt, single byte for values < 128
+        let bpe_biome = section_bytes[6];
+        let palette_biome = section_bytes[7];
 
         println!(
-            "  Section {:2}: block_count={:5}, block_state(bpe={}, palette={}, datalen={}), biome(bpe={}, palette={}, datalen={})",
-            idx,
-            block_count,
-            bpe_block,
-            palette_block,
-            datalen_block,
-            bpe_biome,
-            palette_biome,
-            datalen_biome
+            "  Section {:2}: block_count={:5}, block_state(bpe={}, palette={}), biome(bpe={}, palette={})",
+            idx, block_count, bpe_block, palette_block, bpe_biome, palette_biome
         );
 
         assert_eq!(block_count, exp_count, "section {} block_count", idx);
@@ -332,14 +310,12 @@ fn test_full_chunk_24_sections_encoding() {
             "section {} block palette value",
             idx
         );
-        assert_eq!(datalen_block, 0, "section {} block data array len", idx);
         assert_eq!(bpe_biome, 0, "section {} biome bpe", idx);
         assert_eq!(
             palette_biome, 0,
             "section {} biome palette value (plains=0)",
             idx
         );
-        assert_eq!(datalen_biome, 0, "section {} biome data array len", idx);
     }
 
     // Verify empty sections (6..23)

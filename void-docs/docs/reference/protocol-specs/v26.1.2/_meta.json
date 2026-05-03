@@ -1,0 +1,21 @@
+[
+  { "type": "file", "name": "index", "label": "Overview" },
+  { "type": "file", "name": "data-types", "label": "Data Types" },
+  { "type": "file", "name": "text-component", "label": "Text Component" },
+  { "type": "file", "name": "slot", "label": "Slot / ItemStack" },
+  { "type": "file", "name": "particle", "label": "Particle" },
+  { "type": "file", "name": "connection-lifecycle", "label": "Connection Lifecycle" },
+  { "type": "file", "name": "handshake", "label": "Handshake State" },
+  { "type": "file", "name": "status", "label": "Status State" },
+  { "type": "file", "name": "login", "label": "Login State" },
+  { "type": "file", "name": "configuration", "label": "Configuration State" },
+  { "type": "file", "name": "play-clientbound", "label": "Play — Clientbound" },
+  { "type": "file", "name": "play-serverbound", "label": "Play — Serverbound" },
+  { "type": "file", "name": "registries", "label": "Registries" },
+  { "type": "file", "name": "tags", "label": "Tags" },
+  { "type": "file", "name": "chunks", "label": "Chunks & Lighting" },
+  { "type": "file", "name": "entities", "label": "Entities" },
+  { "type": "file", "name": "entity-metadata", "label": "Entity Metadata" },
+  { "type": "file", "name": "commands", "label": "Commands" },
+  { "type": "file", "name": "chat", "label": "Chat System" }
+]
