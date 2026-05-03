@@ -102,22 +102,24 @@ Found a typo? Want to improve a section? See [Contributing](/contributing) for h
 ## Development Commands
 
 ```bash
+bun install --frozen-lockfile
+
 # Start development server
-yarn dev
+bun run dev
 
 # Build static site
-yarn build
+bun run build
 
 # Preview build
-yarn preview
+bun run preview
 
-# Format code
-yarn format
+# Format & check code (requires `biome` in devDependencies)
+bun run format
+bun run check
 ```
 
-Visit `http://localhost:5173` after `yarn dev`
+Visit `http://localhost:5173` after `bun run dev`
 
 ---
 
-**Last Updated**: December 2025
-**Void Version**: 0.1.0-alpha
+**Last Updated**: May 3, 2026

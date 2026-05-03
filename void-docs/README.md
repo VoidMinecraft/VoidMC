@@ -5,25 +5,25 @@
 Install the dependencies:
 
 ```bash
-npm install
+bun install --frozen-lockfile
 ```
 
 ## Get started
 
-Start the dev server:
+Start the dev server (uses the scripts in `package.json`):
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 Build the website for production:
 
 ```bash
-npm run build
+bun run build
 ```
 
 Preview the production build locally:
 
 ```bash
-npm run preview
+bun run preview
 ```

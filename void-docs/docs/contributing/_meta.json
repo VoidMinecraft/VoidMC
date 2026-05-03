@@ -11,11 +11,6 @@
   },
   {
     "type": "file",
-    "name": "contributing",
-    "label": "Contributing"
-  },
-  {
-    "type": "file",
     "name": "license",
     "label": "License"
   }
