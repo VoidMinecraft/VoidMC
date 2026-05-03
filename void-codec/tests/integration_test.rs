@@ -328,7 +328,9 @@ fn test_multiple_vecs_in_struct() {
 
     assert_eq!(decoded, packet);
 }
-#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
+#[derive(
+    voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy,
+)]
 #[repr(u8)]
 pub enum SimpleState {
     Idle = 0,
@@ -352,7 +354,9 @@ fn test_repr_u8_enum() {
     }
 }
 
-#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
+#[derive(
+    voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy,
+)]
 #[repr(i32)]
 pub enum DetailedStatus {
     Unknown = -1,
@@ -376,7 +380,9 @@ fn test_repr_i32_enum() {
     assert_eq!(decoded, status);
 }
 
-#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
+#[derive(
+    voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy,
+)]
 #[codec(varint32)]
 #[repr(i32)]
 pub enum CompressedState {

@@ -160,7 +160,7 @@ fn handle_command_suggestions(
     let command_name = parts[0];
 
     // Verify the command exists
-    if !command_registry.resolve(command_name).is_some() {
+    if command_registry.resolve(command_name).is_none() {
         return;
     }
 

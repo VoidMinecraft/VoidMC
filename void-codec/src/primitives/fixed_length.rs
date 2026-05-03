@@ -2,7 +2,6 @@ use crate::{Decode, DecodeError, Encode};
 
 /// Helper functions for encoding/decoding fixed-length vectors
 /// These functions do not encode a length prefix since it's known from context
-
 pub fn encode_fixed_length_vec<T: Encode>(
     vec: &[T],
     expected_len: usize,

@@ -66,6 +66,7 @@ pub fn is_vec_u8(field: &Field) -> bool {
     }
 }
 
+#[derive(Default)]
 pub struct FieldAttrs {
     pub varint32: bool,
     pub varint64: bool,
@@ -74,42 +75,16 @@ pub struct FieldAttrs {
     pub remaining: bool,
 }
 
-impl Default for FieldAttrs {
-    fn default() -> Self {
-        Self {
-            varint32: false,
-            varint64: false,
-            json: false,
-            fixed_length: None,
-            remaining: false,
-        }
-    }
-}
-
+#[derive(Default)]
 pub struct TypeAttrs {
     pub tagged: bool,
     pub varint32: bool,
     pub varint64: bool,
 }
 
-impl Default for TypeAttrs {
-    fn default() -> Self {
-        Self {
-            tagged: false,
-            varint32: false,
-            varint64: false,
-        }
-    }
-}
-
+#[derive(Default)]
 pub struct VariantAttrs {
     pub packet_id: Option<u8>,
-}
-
-impl Default for VariantAttrs {
-    fn default() -> Self {
-        Self { packet_id: None }
-    }
 }
 
 pub fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs> {

@@ -33,7 +33,7 @@ impl Client {
                     self.incoming_tx
                         .send(IncomingPacket {
                             client_id: self.client_id,
-                            packet: packet,
+                            packet,
                         })
                         .expect("Failed to send incoming packet to channel");
                 }

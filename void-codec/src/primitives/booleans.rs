@@ -61,7 +61,7 @@ mod tests {
     fn test_bool_only_zero_decodes_false() {
         let mut slice = &[0u8][..];
         let decoded = bool::decode(&mut slice).unwrap();
-        assert_eq!(decoded, false);
+        assert!(!decoded);
     }
 
     #[test]
@@ -69,7 +69,7 @@ mod tests {
         for byte in 1u8..=255u8 {
             let mut slice = &[byte][..];
             let decoded = bool::decode(&mut slice).unwrap();
-            assert_eq!(decoded, true, "byte {} should decode to true", byte);
+            assert!(decoded, "byte {} should decode to true", byte);
         }
     }
 

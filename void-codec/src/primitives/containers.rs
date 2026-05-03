@@ -245,8 +245,8 @@ mod tests {
         value.encode(&mut buf);
 
         assert_eq!(buf[0..2], [0xC8, 0x01]);
-        for i in 2..buf.len() {
-            assert_eq!(buf[i], 0xAA);
+        for byte in buf.iter().skip(2) {
+            assert_eq!(*byte, 0xAA);
         }
     }
 

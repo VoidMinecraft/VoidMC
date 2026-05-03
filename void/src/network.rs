@@ -93,7 +93,7 @@ pub fn ingest_network_packets(world: &mut World) {
                             ))
                             .id()
                     })
-                    .clone()
+                    .to_owned()
             });
 
         if let Err(e) = dispatch_packet(

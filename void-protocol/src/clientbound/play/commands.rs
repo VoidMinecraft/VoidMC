@@ -154,18 +154,18 @@ impl Encode for Commands {
             }
 
             // Name (for literal and argument nodes)
-            if node.node_type == 1 || node.node_type == 2 {
-                if let Some(ref name) = node.name {
-                    encode_string(buf, name);
-                }
+            if (node.node_type == 1 || node.node_type == 2)
+                && let Some(ref name) = node.name
+            {
+                encode_string(buf, name);
             }
 
             // Parser (for argument nodes only)
-            if node.node_type == 2 {
-                if let Some(ref parser) = node.parser {
-                    VarI32(parser.parser_id()).encode(buf);
-                    parser.encode_properties(buf);
-                }
+            if node.node_type == 2
+                && let Some(ref parser) = node.parser
+            {
+                VarI32(parser.parser_id()).encode(buf);
+                parser.encode_properties(buf);
             }
 
             // Suggestions type (optional)

@@ -1,3 +1,10 @@
+#![allow(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    clippy::collapsible_if,
+    clippy::map_entry
+)]
+
 mod app;
 mod client;
 pub mod commands;

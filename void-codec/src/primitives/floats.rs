@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn test_f32_roundtrip() {
-        let value = 3.14159f32;
+        let value = std::f32::consts::PI;
         let mut buf = Vec::new();
         value.encode(&mut buf);
 
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn test_f64_roundtrip() {
-        let value = 3.14159265359f64;
+        let value = std::f64::consts::PI;
         let mut buf = Vec::new();
         value.encode(&mut buf);
 

@@ -193,10 +193,7 @@ fn handle_interact(event: On<PacketEvent<Interact>>, mut commands: Commands) {
         _ => return,
     };
 
-    let sneaking = match bool::decode(&mut data) {
-        Ok(v) => v,
-        Err(_) => false,
-    };
+    let sneaking: bool = bool::decode(&mut data).unwrap_or_default();
 
     commands.trigger(PlayerInteractEntityEvent {
         entity: event.entity,

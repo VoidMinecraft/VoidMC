@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if)]
+
 use voidmc_codec::{Decode, Encode};
 
 /// Represents the different connection states of a Minecraft client in the protocol lifecycle.

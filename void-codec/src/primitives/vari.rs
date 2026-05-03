@@ -385,7 +385,7 @@ mod tests {
             let mut buf = Vec::new();
             vi32.encode(&mut buf);
 
-            assert!(buf.len() >= 1, "VarI32 should encode to at least 1 byte");
+            assert!(!buf.is_empty(), "VarI32 should encode to at least 1 byte");
             assert!(buf.len() <= 5, "VarI32 should encode to at most 5 bytes");
 
             let mut decoded_value = 0u32;

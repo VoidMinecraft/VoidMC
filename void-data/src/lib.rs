@@ -5,6 +5,7 @@
 //! [`entry_nbt`] to access them; NBT parsing is lazy.
 //!
 //! Asset extraction is a separate, manual step — see `scripts/extract.sh`.
+#![allow(clippy::type_complexity)]
 
 use std::sync::OnceLock;
 

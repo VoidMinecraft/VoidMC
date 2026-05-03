@@ -379,7 +379,7 @@ mod tests {
             let mut buf = Vec::new();
             vi64.encode(&mut buf);
 
-            assert!(buf.len() >= 1, "VarI64 should encode to at least 1 byte");
+            assert!(!buf.is_empty(), "VarI64 should encode to at least 1 byte");
             assert!(buf.len() <= 10, "VarI64 should encode to at most 10 bytes");
 
             let mut decoded_value = 0u64;

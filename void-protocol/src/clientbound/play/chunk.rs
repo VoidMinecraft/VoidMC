@@ -199,7 +199,7 @@ impl ChunkSection {
 
         let bits_per_entry = ((palette.len() as f64).log2().ceil() as u8).max(4);
         let entries_per_long = 64 / bits_per_entry as usize;
-        let total_longs = (4096 + entries_per_long - 1) / entries_per_long;
+        let total_longs = 4096_usize.div_ceil(entries_per_long);
 
         let mut data = vec![0u64; total_longs];
         let mask = (1u64 << bits_per_entry) - 1;
@@ -604,8 +604,8 @@ impl ChunkBuilder {
                 let surface_y = height_fn(world_x, world_z);
                 let surface_idx = Self::y_to_index(surface_y);
 
-                let mut depth = 0i32;
-                for y in (0..surface_idx).rev() {
+                for (depth, y) in (0..surface_idx).rev().enumerate() {
+                    let depth = depth as i32;
                     let block = layers
                         .iter()
                         .find(|(d, _)| depth < *d)
@@ -613,7 +613,6 @@ impl ChunkBuilder {
                         .unwrap_or(blocks::STONE);
 
                     self.blocks[y][local_z][local_x] = block;
-                    depth += 1;
                 }
             }
         }

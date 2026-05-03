@@ -57,7 +57,7 @@ impl<'a> std::io::Read for NbtReader<'a> {
 impl Encode for Nbt {
     fn encode(&self, buf: &mut Vec<u8>) {
         let mut temp_buf = Vec::new();
-        if let Ok(_) = self.write(&mut temp_buf) {
+        if self.write(&mut temp_buf).is_ok() {
             // Write the compound tag
             buf.push(0x0A);
             // NBT library includes: tag (1) + name_len (2) + name (0 for empty root) + payload
