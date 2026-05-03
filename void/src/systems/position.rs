@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
@@ -6,6 +7,7 @@ use crate::components::{
 };
 use crate::network::{NetworkChannels, OutgoingPacket};
 
+#[instrument(level = "info", skip(channels, moved_query, all_players))]
 pub fn broadcast_position(
     channels: Res<NetworkChannels>,
     moved_query: Query<
@@ -68,6 +70,7 @@ pub fn broadcast_position(
     }
 }
 
+#[instrument(level = "info", skip(query))]
 pub fn update_previous_positions(
     mut query: Query<
         (&Position, &mut PreviousPosition),

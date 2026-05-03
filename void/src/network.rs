@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_ecs::prelude::*;
 use flume::{Receiver, Sender};
+use tracing::instrument;
 use voidmc_net::socket::Packet;
 use voidmc_protocol::serverbound;
 
@@ -66,6 +67,7 @@ pub struct NetworkChannels {
 #[derive(Resource)]
 pub struct ClientToEntityMap(pub HashMap<u32, Entity>);
 
+#[instrument(level = "info", skip(world))]
 pub fn ingest_network_packets(world: &mut World) {
     // TODO: This batch-draining approach is simple but may lead to increased latency under high load.
     // Batch-drain all packets from channel

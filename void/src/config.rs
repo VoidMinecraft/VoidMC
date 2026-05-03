@@ -34,6 +34,8 @@ pub struct ServerConfig {
     pub initial_chunk_radius: i32,
     pub motd: String,
     pub hardcore: bool,
+    pub metrics_debug: bool,
+    pub metrics_tps_output: Option<String>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
 }
@@ -52,6 +54,8 @@ impl Default for ServerConfig {
             initial_chunk_radius: 3,
             motd: "Welcome to Void Server!".to_string(),
             hardcore: false,
+            metrics_debug: false,
+            metrics_tps_output: None,
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
         }
@@ -125,6 +129,16 @@ impl ServerConfigBuilder {
         self
     }
 
+    pub fn metrics_debug(mut self, enabled: bool) -> Self {
+        self.config.metrics_debug = enabled;
+        self
+    }
+
+    pub fn metrics_tps_output(mut self, output: impl Into<String>) -> Self {
+        self.config.metrics_tps_output = Some(output.into());
+        self
+    }
+
     pub fn world_generator(mut self, generator: impl WorldGenerator + 'static) -> Self {
         self.config.world_generator = Box::new(generator);
         self
@@ -162,6 +176,8 @@ pub struct ServerConfigResource {
     pub initial_chunk_radius: i32,
     pub motd: String,
     pub hardcore: bool,
+    pub metrics_debug: bool,
+    pub metrics_tps_output: Option<String>,
 }
 
 impl From<&ServerConfig> for ServerConfigResource {
@@ -180,6 +196,8 @@ impl From<&ServerConfig> for ServerConfigResource {
             initial_chunk_radius: config.initial_chunk_radius,
             motd: config.motd.clone(),
             hardcore: config.hardcore,
+            metrics_debug: config.metrics_debug,
+            metrics_tps_output: config.metrics_tps_output.clone(),
         }
     }
 }

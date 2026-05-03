@@ -41,6 +41,8 @@ let config = ServerBuilder::new()
 | `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over) |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
+| `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output |
+| `metrics_tps_output` | `Option<String>` | `None` | Optional TPS CSV output path (defaults to `logs/tps-<timestamp>.csv`) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
 

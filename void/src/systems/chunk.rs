@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
@@ -12,6 +13,10 @@ use crate::world::{
 };
 
 /// Streams chunks to players as they move through the world.
+#[instrument(
+    level = "info",
+    skip(channels, chunk_index, chunk_query, players, commands, world_gen, config)
+)]
 pub fn stream_chunks(
     channels: Res<NetworkChannels>,
     mut chunk_index: ResMut<ChunkIndex>,
