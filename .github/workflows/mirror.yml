@@ -29,4 +29,4 @@ jobs:
         working-directory: repo.git
         run: |
           git remote add mirror git@github.com:EpitechPGE45-2025/G-EIP-700-PAR-7-1-eip-44.git
-          git push --mirror mirror
+          git push --prune mirror 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
