@@ -8,77 +8,77 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 | ID | Name |
 |----|------|
-| 0x00 | [Confirm Teleportation](#confirm-teleportation) |
-| 0x01 | [Attack](#attack) |
-| 0x02 | [Query Block Entity Tag](#query-block-entity-tag) |
-| 0x03 | [Bundle Item Selected](#bundle-item-selected) |
-| 0x04 | [Change Difficulty](#change-difficulty) |
-| 0x05 | [Change Game Mode](#change-game-mode) |
+| 0x00 | [Confirm Teleportation](#0x00---confirm-teleportation) |
+| 0x01 | [Attack](#0x01---attack) |
+| 0x02 | [Query Block Entity Tag](#0x02---query-block-entity-tag) |
+| 0x03 | [Bundle Item Selected](#0x03---bundle-item-selected) |
+| 0x04 | [Change Difficulty](#0x04---change-difficulty) |
+| 0x05 | [Change Game Mode](#0x05---change-game-mode) |
 | 0x06 | [Acknowledge Message (Chat Ack)](#acknowledge-message) |
 | 0x07 | [Chat Command (unsigned)](#chat-command) |
-| 0x08 | [Signed Chat Command](#signed-chat-command) |
-| 0x09 | [Chat Message](#chat-message) |
+| 0x08 | [Signed Chat Command](#0x08---signed-chat-command) |
+| 0x09 | [Chat Message](#0x09---chat-message) |
 | 0x0A | [Player Session (Chat Session Update)](#player-session) |
-| 0x0B | [Chunk Batch Received](#chunk-batch-received) |
+| 0x0B | [Chunk Batch Received](#0x0b---chunk-batch-received) |
 | 0x0C | [Client Status (Client Command)](#client-status) |
-| 0x0D | [Client Tick End](#client-tick-end) |
-| 0x0E | [Client Information](#client-information) |
-| 0x0F | [Command Suggestions Request](#command-suggestions-request) |
-| 0x10 | [Acknowledge Configuration](#acknowledge-configuration) |
-| 0x11 | [Click Container Button](#click-container-button) |
-| 0x12 | [Click Container](#click-container) |
-| 0x13 | [Close Container](#close-container) |
-| 0x14 | [Change Container Slot State](#change-container-slot-state) |
-| 0x15 | [Cookie Response](#cookie-response) |
+| 0x0D | [Client Tick End](#0x0d---client-tick-end) |
+| 0x0E | [Client Information](#0x0e---client-information) |
+| 0x0F | [Command Suggestions Request](#0x0f---command-suggestions-request) |
+| 0x10 | [Acknowledge Configuration](#0x10---acknowledge-configuration) |
+| 0x11 | [Click Container Button](#0x11---click-container-button) |
+| 0x12 | [Click Container](#0x12---click-container) |
+| 0x13 | [Close Container](#0x13---close-container) |
+| 0x14 | [Change Container Slot State](#0x14---change-container-slot-state) |
+| 0x15 | [Cookie Response](#0x15---cookie-response) |
 | 0x16 | [Serverbound Plugin Message (Custom Payload)](#serverbound-plugin-message) |
-| 0x17 | [Debug Sample Subscription Request](#debug-sample-subscription-request) |
-| 0x18 | [Edit Book](#edit-book) |
-| 0x19 | [Query Entity Tag](#query-entity-tag) |
-| 0x1A | [Interact](#interact) |
-| 0x1B | [Jigsaw Generate](#jigsaw-generate) |
-| 0x1C | [Serverbound Keep Alive](#serverbound-keep-alive) |
-| 0x1D | [Lock Difficulty](#lock-difficulty) |
-| 0x1E | [Set Player Position](#set-player-position) |
-| 0x1F | [Set Player Position and Rotation](#set-player-position-and-rotation) |
-| 0x20 | [Set Player Rotation](#set-player-rotation) |
-| 0x21 | [Set Player Movement Flags](#set-player-movement-flags) |
-| 0x22 | [Move Vehicle](#move-vehicle) |
-| 0x23 | [Paddle Boat](#paddle-boat) |
-| 0x24 | [Pick Item from Block](#pick-item-from-block) |
-| 0x25 | [Pick Item from Entity](#pick-item-from-entity) |
-| 0x26 | [Ping Request](#ping-request) |
-| 0x27 | [Place Recipe](#place-recipe) |
-| 0x28 | [Player Abilities](#player-abilities) |
-| 0x29 | [Player Action](#player-action) |
-| 0x2A | [Player Command](#player-command) |
-| 0x2B | [Player Input](#player-input) |
-| 0x2C | [Player Loaded](#player-loaded) |
-| 0x2D | [Pong](#pong) |
-| 0x2E | [Change Recipe Book Settings](#change-recipe-book-settings) |
-| 0x2F | [Set Seen Recipe](#set-seen-recipe) |
-| 0x30 | [Rename Item](#rename-item) |
-| 0x31 | [Resource Pack Response](#resource-pack-response) |
-| 0x32 | [Seen Advancements](#seen-advancements) |
-| 0x33 | [Select Trade](#select-trade) |
-| 0x34 | [Set Beacon Effect](#set-beacon-effect) |
-| 0x35 | [Set Held Item](#set-held-item) |
-| 0x36 | [Program Command Block](#program-command-block) |
-| 0x37 | [Program Command Block Minecart](#program-command-block-minecart) |
-| 0x38 | [Set Creative Mode Slot](#set-creative-mode-slot) |
-| 0x39 | [Set Game Rule](#set-game-rule) |
-| 0x3A | [Program Jigsaw Block](#program-jigsaw-block) |
-| 0x3B | [Program Structure Block](#program-structure-block) |
-| 0x3C | [Set Test Block](#set-test-block) |
-| 0x3D | [Update Sign](#update-sign) |
-| 0x3E | [Spectate Entity](#spectate-entity) |
-| 0x3F | [Swing Arm](#swing-arm) |
-| 0x40 | [Teleport to Entity](#teleport-to-entity) |
-| 0x41 | [Test Instance Block Action](#test-instance-block-action) |
-| 0x42 | [Use Item On](#use-item-on) |
-| 0x43 | [Use Item](#use-item) |
-| 0x44 | [Custom Click Action](#custom-click-action) |
+| 0x17 | [Debug Sample Subscription Request](#0x17---debug-sample-subscription-request) |
+| 0x18 | [Edit Book](#0x18---edit-book) |
+| 0x19 | [Query Entity Tag](#0x19---query-entity-tag) |
+| 0x1A | [Interact](#0x1a---interact) |
+| 0x1B | [Jigsaw Generate](#0x1b---jigsaw-generate) |
+| 0x1C | [Serverbound Keep Alive](#0x1c---serverbound-keep-alive) |
+| 0x1D | [Lock Difficulty](#0x1d---lock-difficulty) |
+| 0x1E | [Set Player Position](#0x1e---set-player-position) |
+| 0x1F | [Set Player Position and Rotation](#0x1f---set-player-position-and-rotation) |
+| 0x20 | [Set Player Rotation](#0x20---set-player-rotation) |
+| 0x21 | [Set Player Movement Flags](#0x21---set-player-movement-flags) |
+| 0x22 | [Move Vehicle](#0x22---move-vehicle) |
+| 0x23 | [Paddle Boat](#0x23---paddle-boat) |
+| 0x24 | [Pick Item from Block](#0x24---pick-item-from-block) |
+| 0x25 | [Pick Item from Entity](#0x25---pick-item-from-entity) |
+| 0x26 | [Ping Request](#0x26---ping-request) |
+| 0x27 | [Place Recipe](#0x27---place-recipe) |
+| 0x28 | [Player Abilities](#0x28---player-abilities) |
+| 0x29 | [Player Action](#0x29---player-action) |
+| 0x2A | [Player Command](#0x2a---player-command) |
+| 0x2B | [Player Input](#0x2b---player-input) |
+| 0x2C | [Player Loaded](#0x2c---player-loaded) |
+| 0x2D | [Pong](#0x2d---pong) |
+| 0x2E | [Change Recipe Book Settings](#0x2e---change-recipe-book-settings) |
+| 0x2F | [Set Seen Recipe](#0x2f---set-seen-recipe) |
+| 0x30 | [Rename Item](#0x30---rename-item) |
+| 0x31 | [Resource Pack Response](#0x31---resource-pack-response) |
+| 0x32 | [Seen Advancements](#0x32---seen-advancements) |
+| 0x33 | [Select Trade](#0x33---select-trade) |
+| 0x34 | [Set Beacon Effect](#0x34---set-beacon-effect) |
+| 0x35 | [Set Held Item](#0x35---set-held-item) |
+| 0x36 | [Program Command Block](#0x36---program-command-block) |
+| 0x37 | [Program Command Block Minecart](#0x37---program-command-block-minecart) |
+| 0x38 | [Set Creative Mode Slot](#0x38---set-creative-mode-slot) |
+| 0x39 | [Set Game Rule](#0x39---set-game-rule) |
+| 0x3A | [Program Jigsaw Block](#0x3a---program-jigsaw-block) |
+| 0x3B | [Program Structure Block](#0x3b---program-structure-block) |
+| 0x3C | [Set Test Block](#0x3c---set-test-block) |
+| 0x3D | [Update Sign](#0x3d---update-sign) |
+| 0x3E | [Spectate Entity](#0x3e---spectate-entity) |
+| 0x3F | [Swing Arm](#0x3f---swing-arm) |
+| 0x40 | [Teleport to Entity](#0x40---teleport-to-entity) |
+| 0x41 | [Test Instance Block Action](#0x41---test-instance-block-action) |
+| 0x42 | [Use Item On](#0x42---use-item-on) |
+| 0x43 | [Use Item](#0x43---use-item) |
+| 0x44 | [Custom Click Action](#0x44---custom-click-action) |
 
-## Confirm Teleportation
+## 0x00 - Confirm Teleportation
 
 **Packet ID:** `0x00` · **State:** Play · **Bound To:** Server
 
@@ -88,7 +88,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent by the client immediately after applying a clientbound Player Position. Until the server receives an acknowledgement matching the latest pending teleport ID, all subsequent movement packets are ignored.
 
-## Attack
+## 0x01 - Attack
 
 **Packet ID:** `0x01` · **State:** Play · **Bound To:** Server
 
@@ -98,9 +98,9 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Compact convenience form of the more general Interact packet specifically for left-click attacks. Sent in addition to a `Swing Arm` packet.
 
-> NOTE: This packet is a recent split from the legacy combined Interact packet; the older form (with attack/use/interact-at variants) has been replaced by this packet plus [Interact](#interact).
+> NOTE: This packet is a recent split from the legacy combined Interact packet; the older form (with attack/use/interact-at variants) has been replaced by this packet plus [Interact](#0x1a---interact).
 
-## Query Block Entity Tag
+## 0x02 - Query Block Entity Tag
 
 **Packet ID:** `0x02` · **State:** Play · **Bound To:** Server
 
@@ -111,7 +111,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Issued by debug clients (F3+I) to request the full NBT of a block entity. Requires operator permission level on the server.
 
-## Bundle Item Selected
+## 0x03 - Bundle Item Selected
 
 **Packet ID:** `0x03` · **State:** Play · **Bound To:** Server
 
@@ -122,7 +122,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent when the player scrolls to choose which item is currently surfaced by a bundle.
 
-## Change Difficulty
+## 0x04 - Change Difficulty
 
 **Packet ID:** `0x04` · **State:** Play · **Bound To:** Server
 
@@ -132,7 +132,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Single-player only. Servers ignore the packet unless the sender is OP and the difficulty is unlocked.
 
-## Change Game Mode
+## 0x05 - Change Game Mode
 
 **Packet ID:** `0x05` · **State:** Play · **Bound To:** Server
 
@@ -160,9 +160,9 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 |-------|------|-------|
 | Command | [String](./data-types#string) (≤256) | The command text without the leading `/`. |
 
-**Semantics.** Sent when the client executes a slash command that has no signable argument components. Command-argument signatures, if any, are sent via [Signed Chat Command](#signed-chat-command).
+**Semantics.** Sent when the client executes a slash command that has no signable argument components. Command-argument signatures, if any, are sent via [Signed Chat Command](#0x08---signed-chat-command).
 
-## Signed Chat Command
+## 0x08 - Signed Chat Command
 
 **Packet ID:** `0x08` · **State:** Play · **Bound To:** Server
 
@@ -177,7 +177,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent for commands that contain at least one argument requiring a chat signature (e.g. `/msg`, `/me`).
 
-## Chat Message
+## 0x09 - Chat Message
 
 **Packet ID:** `0x09` · **State:** Play · **Bound To:** Server
 
@@ -205,7 +205,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Establishes or renews the per-player signing session used by secure chat. Sent right after login and whenever the chat key rotates.
 
-## Chunk Batch Received
+## 0x0B - Chunk Batch Received
 
 **Packet ID:** `0x0B` · **State:** Play · **Bound To:** Server
 
@@ -225,7 +225,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Multi-purpose client lifecycle command. `Perform Respawn` is sent when the player clicks the death-screen respawn button.
 
-## Client Tick End
+## 0x0D - Client Tick End
 
 **Packet ID:** `0x0D` · **State:** Play · **Bound To:** Server
 
@@ -233,7 +233,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Marks the end of a client game tick. Sent every tick to let the server align tick-bound work (e.g. movement coalescing). Carries no fields.
 
-## Client Information
+## 0x0E - Client Information
 
 **Packet ID:** `0x0E` · **State:** Play · **Bound To:** Server
 
@@ -251,7 +251,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent immediately after entering Play and re-sent whenever the client's settings change. Defined in the shared `common` namespace; identical to the configuration-state packet of the same name.
 
-## Command Suggestions Request
+## 0x0F - Command Suggestions Request
 
 **Packet ID:** `0x0F` · **State:** Play · **Bound To:** Server
 
@@ -262,7 +262,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Asks the server to brigadier-parse the partial command text and return tab-completion candidates.
 
-## Acknowledge Configuration
+## 0x10 - Acknowledge Configuration
 
 **Packet ID:** `0x10` · **State:** Play · **Bound To:** Server
 
@@ -270,7 +270,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent by the client in response to a clientbound `Start Configuration` packet. After sending, the client transitions to the Configuration state. This packet is `terminal`: no further Play packets may follow it on the wire.
 
-## Click Container Button
+## 0x11 - Click Container Button
 
 **Packet ID:** `0x11` · **State:** Play · **Bound To:** Server
 
@@ -281,7 +281,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Used by containers that expose explicit buttons rather than slot interactions.
 
-## Click Container
+## 0x12 - Click Container
 
 **Packet ID:** `0x12` · **State:** Play · **Bound To:** Server
 
@@ -297,7 +297,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Container interaction. The server recomputes the click and, if the client's predicted hashes diverge, replies with corrective `Container Set Slot` / `Container Set Content` packets. See [./slot](./slot) for the hashed-slot encoding.
 
-## Close Container
+## 0x13 - Close Container
 
 **Packet ID:** `0x13` · **State:** Play · **Bound To:** Server
 
@@ -307,7 +307,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Notifies the server that the player closed an inventory screen. Servers may also close the window from their side via the clientbound counterpart.
 
-## Change Container Slot State
+## 0x14 - Change Container Slot State
 
 **Packet ID:** `0x14` · **State:** Play · **Bound To:** Server
 
@@ -319,7 +319,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Used by the crafter (3×3 auto-crafter) UI to enable or disable individual ingredient slots.
 
-## Cookie Response
+## 0x15 - Cookie Response
 
 **Packet ID:** `0x15` · **State:** Play · **Bound To:** Server
 
@@ -341,7 +341,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Generic transport for mod/plugin extension channels. The vanilla client sends `minecraft:brand` carrying its brand string immediately after entering Play.
 
-## Debug Sample Subscription Request
+## 0x17 - Debug Sample Subscription Request
 
 **Packet ID:** `0x17` · **State:** Play · **Bound To:** Server
 
@@ -351,7 +351,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Subscribes the client to one or more debug feeds (e.g. tick-time samples). Operator-only.
 
-## Edit Book
+## 0x18 - Edit Book
 
 **Packet ID:** `0x18` · **State:** Play · **Bound To:** Server
 
@@ -363,7 +363,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Saves an in-progress writable book or signs it into a written book.
 
-## Query Entity Tag
+## 0x19 - Query Entity Tag
 
 **Packet ID:** `0x19` · **State:** Play · **Bound To:** Server
 
@@ -374,7 +374,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Operator/debug request for the full NBT of an entity (F3+I on an entity).
 
-## Interact
+## 0x1A - Interact
 
 **Packet ID:** `0x1A` · **State:** Play · **Bound To:** Server
 
@@ -385,11 +385,11 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 | Target | [Vec3](./data-types) of three Floats | Local hit position relative to the entity, used by interact-at hitboxes. |
 | Using Secondary Action | [Boolean](./data-types#boolean) | True if the player was sneaking when the interaction occurred. |
 
-**Semantics.** Right-click / interact-at action against an entity. Pure left-click attacks use the dedicated [Attack](#attack) packet.
+**Semantics.** Right-click / interact-at action against an entity. Pure left-click attacks use the dedicated [Attack](#0x01---attack) packet.
 
-> NOTE: The single Java packet encodes interact-at semantics. The presence of three floats is unconditional; the previous "type" discriminator was removed when [Attack](#attack) was split out.
+> NOTE: The single Java packet encodes interact-at semantics. The presence of three floats is unconditional; the previous "type" discriminator was removed when [Attack](#0x01---attack) was split out.
 
-## Jigsaw Generate
+## 0x1B - Jigsaw Generate
 
 **Packet ID:** `0x1B` · **State:** Play · **Bound To:** Server
 
@@ -401,7 +401,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent by the jigsaw block UI to trigger structure generation. Operator-only.
 
-## Serverbound Keep Alive
+## 0x1C - Serverbound Keep Alive
 
 **Packet ID:** `0x1C` · **State:** Play · **Bound To:** Server
 
@@ -411,7 +411,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Liveness response. The server disconnects clients that fail to respond within the configured keep-alive window.
 
-## Lock Difficulty
+## 0x1D - Lock Difficulty
 
 **Packet ID:** `0x1D` · **State:** Play · **Bound To:** Server
 
@@ -421,7 +421,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Single-player only; sent by the host to lock or unlock the world's difficulty.
 
-## Set Player Position
+## 0x1E - Set Player Position
 
 **Packet ID:** `0x1E` · **State:** Play · **Bound To:** Server
 
@@ -434,7 +434,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent each tick the player's position changed but rotation did not.
 
-## Set Player Position and Rotation
+## 0x1F - Set Player Position and Rotation
 
 **Packet ID:** `0x1F` · **State:** Play · **Bound To:** Server
 
@@ -449,7 +449,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent each tick when both position and rotation changed.
 
-## Set Player Rotation
+## 0x20 - Set Player Rotation
 
 **Packet ID:** `0x20` · **State:** Play · **Bound To:** Server
 
@@ -461,7 +461,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent each tick when only rotation changed.
 
-## Set Player Movement Flags
+## 0x21 - Set Player Movement Flags
 
 **Packet ID:** `0x21` · **State:** Play · **Bound To:** Server
 
@@ -471,7 +471,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent each tick when neither position nor rotation changed but the on-ground / horizontal-collision status must still be reported. Corresponds to the `Move Player Status Only` Java class.
 
-## Move Vehicle
+## 0x22 - Move Vehicle
 
 **Packet ID:** `0x22` · **State:** Play · **Bound To:** Server
 
@@ -484,7 +484,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent while the player drives a controllable vehicle (boats, certain minecarts) to authoritatively report its position.
 
-## Paddle Boat
+## 0x23 - Paddle Boat
 
 **Packet ID:** `0x23` · **State:** Play · **Bound To:** Server
 
@@ -495,7 +495,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Drives boat-paddle animation when the player controls a boat.
 
-## Pick Item from Block
+## 0x24 - Pick Item from Block
 
 **Packet ID:** `0x24` · **State:** Play · **Bound To:** Server
 
@@ -506,7 +506,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent when the player middle-clicks a block in creative mode to obtain its item form.
 
-## Pick Item from Entity
+## 0x25 - Pick Item from Entity
 
 **Packet ID:** `0x25` · **State:** Play · **Bound To:** Server
 
@@ -517,7 +517,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Creative middle-click on an entity.
 
-## Ping Request
+## 0x26 - Ping Request
 
 **Packet ID:** `0x26` · **State:** Play · **Bound To:** Server
 
@@ -527,7 +527,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Out-of-band latency probe. Distinct from Keep Alive in that the client chooses both the timing and the payload.
 
-## Place Recipe
+## 0x27 - Place Recipe
 
 **Packet ID:** `0x27` · **State:** Play · **Bound To:** Server
 
@@ -539,7 +539,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent when the player clicks a recipe in the recipe book to lay it out into the crafting grid.
 
-## Player Abilities
+## 0x28 - Player Abilities
 
 **Packet ID:** `0x28` · **State:** Play · **Bound To:** Server
 
@@ -549,7 +549,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Reports a change to the player's flying state (toggling creative/spectator flight). The server uses this to keep its abilities snapshot in sync.
 
-## Player Action
+## 0x29 - Player Action
 
 **Packet ID:** `0x29` · **State:** Play · **Bound To:** Server
 
@@ -562,7 +562,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Catch-all for non-movement player actions tied to the world. The `STAB` action was added alongside the bundled `Attack` split.
 
-## Player Command
+## 0x2A - Player Command
 
 **Packet ID:** `0x2A` · **State:** Play · **Bound To:** Server
 
@@ -574,7 +574,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Player state-machine transitions that don't fit the movement packets.
 
-## Player Input
+## 0x2B - Player Input
 
 **Packet ID:** `0x2B` · **State:** Play · **Bound To:** Server
 
@@ -584,7 +584,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Reports the raw movement input keys the player is holding. Used by vehicles and by the server-side "anti-cheat" movement validator.
 
-## Player Loaded
+## 0x2C - Player Loaded
 
 **Packet ID:** `0x2C` · **State:** Play · **Bound To:** Server
 
@@ -592,7 +592,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent once after the player's surroundings have been fully received (initial chunk load complete or post-respawn). Marks the moment the server may resume sending world events that depend on the player being "ready".
 
-## Pong
+## 0x2D - Pong
 
 **Packet ID:** `0x2D` · **State:** Play · **Bound To:** Server
 
@@ -600,9 +600,9 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 |-------|------|-------|
 | ID | [Int](./data-types#int) (32-bit, big-endian, **not** a [VarInt](./data-types#varint)) | Echo of the integer payload from the most recent clientbound `Ping`. |
 
-**Semantics.** Reply to the common-state `Ping` packet. Distinct from [Ping Request](#ping-request) — that one is client-initiated, this one is server-initiated.
+**Semantics.** Reply to the common-state `Ping` packet. Distinct from [Ping Request](#0x26---ping-request) — that one is client-initiated, this one is server-initiated.
 
-## Change Recipe Book Settings
+## 0x2E - Change Recipe Book Settings
 
 **Packet ID:** `0x2E` · **State:** Play · **Bound To:** Server
 
@@ -614,7 +614,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Persists the player's per-book recipe-book UI state to the server.
 
-## Set Seen Recipe
+## 0x2F - Set Seen Recipe
 
 **Packet ID:** `0x2F` · **State:** Play · **Bound To:** Server
 
@@ -624,7 +624,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Marks a recipe-book entry as no longer requiring the "new!" badge.
 
-## Rename Item
+## 0x30 - Rename Item
 
 **Packet ID:** `0x30` · **State:** Play · **Bound To:** Server
 
@@ -634,7 +634,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent live as the player edits the anvil's name field, so the server can update the output preview and XP cost.
 
-## Resource Pack Response
+## 0x31 - Resource Pack Response
 
 **Packet ID:** `0x31` · **State:** Play · **Bound To:** Server
 
@@ -645,7 +645,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Reports progress for a resource pack offered via clientbound `Resource Pack Push`. `ACCEPTED` and `DOWNLOADED` are intermediate; all other values are terminal for the given UUID.
 
-## Seen Advancements
+## 0x32 - Seen Advancements
 
 **Packet ID:** `0x32` · **State:** Play · **Bound To:** Server
 
@@ -656,7 +656,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Reports advancement-screen UI state so the server can stream advancement progress only for the currently visible tab.
 
-## Select Trade
+## 0x33 - Select Trade
 
 **Packet ID:** `0x33` · **State:** Play · **Bound To:** Server
 
@@ -666,7 +666,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent when the player picks an offer from the merchant UI; the server then prefills the trade input slots.
 
-## Set Beacon Effect
+## 0x34 - Set Beacon Effect
 
 **Packet ID:** `0x34` · **State:** Play · **Bound To:** Server
 
@@ -677,7 +677,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent when the player confirms a beacon's effect selection. Consumes the iron ingot (or equivalent payment) on the server side.
 
-## Set Held Item
+## 0x35 - Set Held Item
 
 **Packet ID:** `0x35` · **State:** Play · **Bound To:** Server
 
@@ -687,7 +687,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Notifies the server of a hotbar selection change.
 
-## Program Command Block
+## 0x36 - Program Command Block
 
 **Packet ID:** `0x36` · **State:** Play · **Bound To:** Server
 
@@ -700,7 +700,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Saves changes from the command block UI. Operator + creative mode required.
 
-## Program Command Block Minecart
+## 0x37 - Program Command Block Minecart
 
 **Packet ID:** `0x37` · **State:** Play · **Bound To:** Server
 
@@ -712,7 +712,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Saves changes from the command-block minecart UI.
 
-## Set Creative Mode Slot
+## 0x38 - Set Creative Mode Slot
 
 **Packet ID:** `0x38` · **State:** Play · **Bound To:** Server
 
@@ -723,7 +723,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Creative-mode "place this stack into that slot" operation. The server rejects this packet entirely if the player is not in a game mode with infinite materials.
 
-## Set Game Rule
+## 0x39 - Set Game Rule
 
 **Packet ID:** `0x39` · **State:** Play · **Bound To:** Server
 
@@ -733,7 +733,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Single-player only. Sent from the in-game rule-tweak menu.
 
-## Program Jigsaw Block
+## 0x3A - Program Jigsaw Block
 
 **Packet ID:** `0x3A` · **State:** Play · **Bound To:** Server
 
@@ -750,7 +750,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Saves changes from the jigsaw block UI. Operator-only.
 
-## Program Structure Block
+## 0x3B - Program Structure Block
 
 **Packet ID:** `0x3B` · **State:** Play · **Bound To:** Server
 
@@ -771,7 +771,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Saves changes from the structure block UI. Operator + creative mode required.
 
-## Set Test Block
+## 0x3C - Set Test Block
 
 **Packet ID:** `0x3C` · **State:** Play · **Bound To:** Server
 
@@ -783,7 +783,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Saves changes from the test-block UI used by the in-game test framework.
 
-## Update Sign
+## 0x3D - Update Sign
 
 **Packet ID:** `0x3D` · **State:** Play · **Bound To:** Server
 
@@ -795,7 +795,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Sent when the player closes the sign edit screen.
 
-## Spectate Entity
+## 0x3E - Spectate Entity
 
 **Packet ID:** `0x3E` · **State:** Play · **Bound To:** Server
 
@@ -805,7 +805,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Spectator-mode only. Server resolves the UUID into an entity in the player's current world; otherwise the packet is ignored.
 
-## Swing Arm
+## 0x3F - Swing Arm
 
 **Packet ID:** `0x3F` · **State:** Play · **Bound To:** Server
 
@@ -815,7 +815,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Plays the arm-swing animation. Sent on left-click and on most use-item actions; the server rebroadcasts via `Entity Animation` to other clients.
 
-## Teleport to Entity
+## 0x40 - Teleport to Entity
 
 **Packet ID:** `0x40` · **State:** Play · **Bound To:** Server
 
@@ -825,7 +825,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Spectator-mode shortcut to jump to another entity by UUID.
 
-## Test Instance Block Action
+## 0x41 - Test Instance Block Action
 
 **Packet ID:** `0x41` · **State:** Play · **Bound To:** Server
 
@@ -840,7 +840,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Saves changes to or executes a test-instance block (the more general successor to the legacy structure-test block).
 
-## Use Item On
+## 0x42 - Use Item On
 
 **Packet ID:** `0x42` · **State:** Play · **Bound To:** Server
 
@@ -852,7 +852,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Right-click on a block. Most block placements, opens, and item-on-block uses go through this packet.
 
-## Use Item
+## 0x43 - Use Item
 
 **Packet ID:** `0x43` · **State:** Play · **Bound To:** Server
 
@@ -865,7 +865,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 
 **Semantics.** Right-click in the air or on a non-block target (e.g. drinking a potion, throwing a snowball). Yaw/pitch are sent so the server can use the same view direction the client did when computing projectile trajectories.
 
-## Custom Click Action
+## 0x44 - Custom Click Action
 
 **Packet ID:** `0x44` · **State:** Play · **Bound To:** Server
 
