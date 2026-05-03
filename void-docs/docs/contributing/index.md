@@ -39,11 +39,11 @@ If you experience or witness unacceptable behavior, please report it by contacti
 
 ```bash
 # Fork on GitHub, then clone your fork
-git clone https://github.com/YOUR-USERNAME/void.git
+git clone https://github.com/YOUR-USERNAME/VoidMC.git
 cd void
 
 # Add upstream remote for syncing
-git remote add upstream https://github.com/void-minecraft/void.git
+git remote add upstream https://github.com/VoidMinecraft/VoidMC.git
 ```
 
 ### Setup Development Environment

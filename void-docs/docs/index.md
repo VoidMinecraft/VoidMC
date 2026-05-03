@@ -11,7 +11,7 @@ hero:
       link: /guide/getting-started
     - theme: alt
       text: View on GitHub
-      link: https://github.com/EpitechPromo2027/G-EIP-600-lil-6-1-eip-adam.cavillon
+      link: https://github.com/VoidMinecraft/VoidMC
   image:
     src: /void-icon.png
     alt: Void Logo

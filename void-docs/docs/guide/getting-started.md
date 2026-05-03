@@ -23,7 +23,7 @@ Void is an academic project (EIP) that implements a Minecraft-compatible server 
 
 ```bash
 # Clone the repository
-git clone https://github.com/void-minecraft/void.git
+git clone https://github.com/VoidMinecraft/VoidMC.git
 cd void
 
 # Build the project

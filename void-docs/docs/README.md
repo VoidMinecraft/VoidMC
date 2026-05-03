@@ -42,8 +42,8 @@ Tools and techniques for identifying and fixing performance bottlenecks.
 
 ## Quick Links
 
-- **GitHub Repository**: [void-minecraft/void](https://github.com/void-minecraft/void)
-- **Issues & Discussions**: [GitHub Issues](https://github.com/void-minecraft/void/issues)
+- **GitHub Repository**: [void-minecraft/void](https://github.com/VoidMinecraft/VoidMC)
+- **Issues & Discussions**: [GitHub Issues](https://github.com/VoidMinecraft/VoidMC/issues)
 - **Community**: See README for Discord/community channels
 
 ## For Different Roles
