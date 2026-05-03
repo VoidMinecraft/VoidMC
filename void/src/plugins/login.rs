@@ -63,7 +63,7 @@ fn handle_login_acknowledged(
                 known_packs: vec![clientbound::KnownPack {
                     namespace: "minecraft".to_string(),
                     id: "core".to_string(),
-                    version: "1.21.4".to_string(),
+                    version: "26.1.2".to_string(),
                 }],
             }),
         ),

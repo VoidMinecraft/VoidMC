@@ -59,12 +59,58 @@ fn handle_known_packs(
 
     let _ = channels.outgoing.send(crate::network::OutgoingPacket {
         client_id: event.client_id,
+        packet: clientbound::ClientboundPacket::ManualConfiguration(
+            clientbound::ManualConfigurationPacket::UpdateTags(build_update_tags(&registries)),
+        ),
+    });
+
+    let _ = channels.outgoing.send(crate::network::OutgoingPacket {
+        client_id: event.client_id,
         packet: clientbound::ClientboundPacket::Configuration(
             clientbound::ConfigurationPacket::FinishConfiguration(
                 clientbound::FinishConfiguration {},
             ),
         ),
     });
+}
+
+/// Translates `void_data::tagged_registries()` into the wire format. Tag
+/// values are mapped to numeric indices using the order of entries in the
+/// registry as it was just sent.
+fn build_update_tags(registries: &RegistryDataStore) -> clientbound::UpdateTags {
+    let version = void_data::Version::V26_1_2;
+    let mut out = Vec::new();
+
+    for (registry_id, tags) in void_data::tagged_registries(version) {
+        let Some(registry) = registries.get_registry(registry_id) else {
+            continue;
+        };
+
+        let mut tag_entries = Vec::new();
+        for (tag_id, entry_ids) in *tags {
+            let mut indices = Vec::with_capacity(entry_ids.len());
+            for entry_id in *entry_ids {
+                if let Some(idx) = registry
+                    .entries
+                    .iter()
+                    .position(|e| e.entry_id == *entry_id)
+                {
+                    indices.push(idx as i32);
+                }
+            }
+            tag_entries.push(clientbound::TagEntry {
+                tag_id: tag_id.to_string(),
+                entries: indices,
+            });
+        }
+
+        out.push(clientbound::RegistryTags {
+            registry_id: registry_id.to_string(),
+            tags: tag_entries,
+        });
+    }
+
+    clientbound::UpdateTags { registries: out }
 }
 
 fn handle_finish_configuration(

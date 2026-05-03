@@ -1,11 +1,10 @@
-use ussr_nbt::owned::Nbt;
 use void_codec::{Decode, DecodeError, Encode};
 
 pub mod blocks {
     pub const AIR: i32 = 0;
     pub const STONE: i32 = 1;
     pub const DIRT: i32 = 10;
-    pub const GRASS_BLOCK: i32 = 8; // snowy=false
+    pub const GRASS_BLOCK: i32 = 9; // snowy=false (id 8 is snowy=true)
     pub const WATER: i32 = 86; // level=0
 }
 
@@ -34,7 +33,15 @@ pub struct SetCenterChunk {
 // Chunk Heightmaps
 // ============================================================================
 
+/// Heightmap type IDs as defined by `Heightmap.Types.id` in vanilla.
+/// Only types with `Usage.CLIENT` are sent over the wire (1 and 4).
+pub const HEIGHTMAP_TYPE_WORLD_SURFACE: i32 = 1;
+pub const HEIGHTMAP_TYPE_MOTION_BLOCKING: i32 = 4;
+
 /// Represents the heightmap data for a chunk.
+///
+/// Wire format (1.21.5+): `varint count` followed by, for each entry,
+/// `varint type_id` and a `long_array` (varint length + i64s).
 #[derive(Debug, Clone, Default)]
 pub struct ChunkHeightmaps {
     /// MOTION_BLOCKING heightmap: 256 values packed into 37 longs (9 bits per value)
@@ -64,18 +71,6 @@ impl ChunkHeightmaps {
             }
         }
         Self { motion_blocking }
-    }
-
-    /// Converts to NBT format for packet encoding
-    pub fn to_nbt(&self) -> Nbt {
-        Nbt {
-            name: "".into(),
-            compound: vec![(
-                "MOTION_BLOCKING".into(),
-                self.motion_blocking.clone().into(),
-            )]
-            .into(),
-        }
     }
 }
 
@@ -227,16 +222,23 @@ impl ChunkSection {
         }
     }
 
-    /// Encodes this section to bytes
+    /// Encodes this section to bytes.
+    ///
+    /// Wire format (1.21.5+, `PalettedContainer.read`):
+    ///   - SingleValue: `[bits=0, varint(value)]` (no data array — `ZeroBitStorage`).
+    ///   - Indirect:    `[bits, varint(palette_len), varint × palette_len, i64 × N]`
+    ///     where `N` is implicit from `bits` and the entry count, **no length prefix**.
     pub fn encode_to_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
+        // 1.21.5+: section header is two shorts — non-empty block count
+        // (`block_count`) and fluid count. We don't track fluids, so it stays 0.
         data.extend_from_slice(&self.block_count.to_be_bytes());
+        data.extend_from_slice(&0_i16.to_be_bytes());
 
         match &self.block_state {
             PaletteData::SingleValue(id) => {
                 data.push(0);
                 write_varint(&mut data, *id);
-                write_varint(&mut data, 0);
             }
             PaletteData::Indirect {
                 bits_per_entry,
@@ -248,7 +250,6 @@ impl ChunkSection {
                 for &id in palette {
                     write_varint(&mut data, id);
                 }
-                write_varint(&mut data, block_data.len() as i32);
                 for &long in block_data {
                     data.extend_from_slice(&long.to_be_bytes());
                 }
@@ -259,7 +260,6 @@ impl ChunkSection {
             PaletteData::SingleValue(id) => {
                 data.push(0);
                 write_varint(&mut data, *id);
-                write_varint(&mut data, 0);
             }
             PaletteData::Indirect {
                 bits_per_entry,
@@ -271,7 +271,6 @@ impl ChunkSection {
                 for &id in palette {
                     write_varint(&mut data, id);
                 }
-                write_varint(&mut data, biome_data.len() as i32);
                 for &long in biome_data {
                     data.extend_from_slice(&long.to_be_bytes());
                 }
@@ -386,7 +385,7 @@ impl Chunk {
         ChunkDataAndLight {
             chunk_x: self.x,
             chunk_z: self.z,
-            heightmaps: self.heightmaps.to_nbt(),
+            heightmaps: self.heightmaps.clone(),
             data,
             block_entities: Vec::new(),
             sky_light_mask: self.light.sky_light_mask.clone(),
@@ -407,7 +406,7 @@ impl Chunk {
 pub struct ChunkDataAndLight {
     pub chunk_x: i32,
     pub chunk_z: i32,
-    pub heightmaps: Nbt,
+    pub heightmaps: ChunkHeightmaps,
     pub data: Vec<u8>,
     pub block_entities: Vec<u8>,
     pub sky_light_mask: Vec<u64>,
@@ -442,7 +441,14 @@ impl Encode for ChunkDataAndLight {
         buf.extend_from_slice(&self.chunk_x.to_be_bytes());
         buf.extend_from_slice(&self.chunk_z.to_be_bytes());
 
-        self.heightmaps.encode(buf);
+        // Heightmaps (1.21.5+): varint count + (varint type_id + long_array) × N.
+        // We only ship MOTION_BLOCKING; the client tolerates a partial map.
+        write_varint(buf, 1);
+        write_varint(buf, HEIGHTMAP_TYPE_MOTION_BLOCKING);
+        write_varint(buf, self.heightmaps.motion_blocking.len() as i32);
+        for &long in &self.heightmaps.motion_blocking {
+            buf.extend_from_slice(&long.to_be_bytes());
+        }
 
         write_varint(buf, self.data.len() as i32);
         buf.extend_from_slice(&self.data);

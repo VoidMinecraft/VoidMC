@@ -259,13 +259,6 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
-                serverbound::PlayPacket::ChatCommandUnsigned(packet) => {
-                    world.trigger(PacketEvent {
-                        client_id,
-                        entity,
-                        packet,
-                    })
-                }
                 serverbound::PlayPacket::ClientInformation(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,

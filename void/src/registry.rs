@@ -1,5 +1,4 @@
 use bevy_ecs::prelude::*;
-use ussr_nbt::owned::{Compound, Nbt, Tag};
 use void_protocol::clientbound::{RegistryData, RegistryEntry};
 
 /// Stores all registry data sent to clients during configuration.
@@ -76,269 +75,30 @@ impl RegistryDataStore {
     }
 }
 
-fn nbt(tags: Vec<(&str, Tag)>) -> Nbt {
-    Nbt {
-        name: Default::default(),
-        compound: compound(tags),
-    }
-}
-
-fn compound(tags: Vec<(&str, Tag)>) -> Compound {
-    Compound {
-        tags: tags.into_iter().map(|(k, v)| (k.into(), v)).collect(),
-    }
-}
-
 /// Returns the default set of registry data needed for a vanilla-compatible server.
+///
+/// Every shipped registry now comes from `void_data` (datapack JSONs extracted
+/// from Paper at the targeted version).
 pub fn default_registry_data() -> Vec<RegistryData> {
-    vec![
-        // Minimal dimension type registry
-        RegistryData {
-            registry_id: "minecraft:dimension_type".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:overworld".to_string(),
-                data: Some(nbt(vec![
-                    ("has_skylight", Tag::Byte(1)),
-                    ("has_ceiling", Tag::Byte(0)),
-                    ("ultrawarm", Tag::Byte(0)),
-                    ("natural", Tag::Byte(1)),
-                    ("coordinate_scale", Tag::Double(1.0)),
-                    ("bed_works", Tag::Byte(1)),
-                    ("respawn_anchor_works", Tag::Byte(0)),
-                    ("min_y", Tag::Int(-64)),
-                    ("height", Tag::Int(384)),
-                    ("logical_height", Tag::Int(384)),
-                    (
-                        "infiniburn",
-                        Tag::String("#minecraft:infiniburn_overworld".into()),
-                    ),
-                    ("effects", Tag::String("minecraft:overworld".into())),
-                    ("ambient_light", Tag::Float(0.0)),
-                    ("piglin_safe", Tag::Byte(0)),
-                    ("has_raids", Tag::Byte(1)),
-                    ("monster_spawn_light_level", Tag::Int(0)),
-                    ("monster_spawn_block_light_limit", Tag::Int(0)),
-                ])),
-            }],
-        },
-        // Minimal biome registry
-        RegistryData {
-            registry_id: "minecraft:worldgen/biome".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:plains".to_string(),
-                data: Some(nbt(vec![
-                    ("has_precipitation", Tag::Byte(1)),
-                    ("temperature", Tag::Float(0.8)),
-                    ("downfall", Tag::Float(0.4)),
-                    (
-                        "effects",
-                        Tag::Compound(compound(vec![
-                            ("sky_color", Tag::Int(7907327)),
-                            ("water_fog_color", Tag::Int(329011)),
-                            ("fog_color", Tag::Int(12638463)),
-                            ("water_color", Tag::Int(4159204)),
-                            ("grass_color", Tag::Int(7979098)),
-                            ("foliage_color", Tag::Int(6208527)),
-                            (
-                                "mood_sound",
-                                Tag::Compound(compound(vec![
-                                    ("sound", Tag::String("minecraft:ambient.cave".into())),
-                                    ("tick_delay", Tag::Int(6000)),
-                                    ("block_search_extent", Tag::Int(8)),
-                                    ("offset", Tag::Double(2.0)),
-                                ])),
-                            ),
-                        ])),
-                    ),
-                ])),
-            }],
-        },
-        // Painting variant registry (required)
-        RegistryData {
-            registry_id: "minecraft:painting_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:kebab".to_string(),
-                data: Some(nbt(vec![
-                    ("asset_id", Tag::String("minecraft:kebab".into())),
-                    ("width", Tag::Int(1)),
-                    ("height", Tag::Int(1)),
-                ])),
-            }],
-        },
-        // Damage type registry — full vanilla 1.21.4 set
-        RegistryData {
-            registry_id: "minecraft:damage_type".to_string(),
-            entries: [
-                ("minecraft:arrow", "arrow", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:bad_respawn_point", "badRespawnPoint", "always", 0.1),
-                ("minecraft:cactus", "cactus", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:campfire", "inFire", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:cramming", "cramming", "never", 0.0),
-                ("minecraft:dragon_breath", "dragonBreath", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:drown", "drown", "never", 0.0),
-                ("minecraft:dry_out", "dryout", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:ender_pearl", "fall", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:explosion", "explosion", "always", 0.1),
-                ("minecraft:fall", "fall", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:falling_anvil", "anvil", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:falling_block", "fallingBlock", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:falling_stalactite", "fallingStalactite", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:fireball", "onFire", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:fireworks", "fireworks", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:fly_into_wall", "flyIntoWall", "never", 0.0),
-                ("minecraft:freeze", "freeze", "never", 0.0),
-                ("minecraft:generic", "generic", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:generic_kill", "genericKill", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:hot_floor", "hotFloor", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:in_fire", "inFire", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:in_wall", "inWall", "never", 0.0),
-                ("minecraft:indirect_magic", "indirectMagic", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:lava", "lava", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:lightning_bolt", "lightningBolt", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:mace_smash", "mace_smash", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:magic", "magic", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:mob_attack", "mob", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:mob_attack_no_aggro", "mob", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:mob_projectile", "mob", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:on_fire", "onFire", "when_caused_by_living_non_player", 0.0),
-                ("minecraft:out_of_world", "outOfWorld", "never", 0.0),
-                ("minecraft:outside_border", "outsideBorder", "never", 0.0),
-                ("minecraft:player_attack", "player", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:player_explosion", "explosion.player", "always", 0.1),
-                ("minecraft:sonic_boom", "sonic_boom", "always", 0.0),
-                ("minecraft:spit", "mob", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:stalagmite", "stalagmite", "never", 0.0),
-                ("minecraft:starve", "starve", "never", 0.0),
-                ("minecraft:sting", "sting", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:sweet_berry_bush", "sweetBerryBush", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:thorns", "thorns", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:thrown", "thrown", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:trident", "trident", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:unattributed_fireball", "onFire", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:wind_charge", "mob", "when_caused_by_living_non_player", 0.1),
-                ("minecraft:wither", "wither", "never", 0.0),
-                ("minecraft:wither_skull", "witherSkull", "when_caused_by_living_non_player", 0.1),
-            ]
-            .into_iter()
-            .map(|(id, msg, scaling, exhaustion)| RegistryEntry {
-                entry_id: id.to_string(),
-                data: Some(nbt(vec![
-                    ("message_id", Tag::String(msg.into())),
-                    ("scaling", Tag::String(scaling.into())),
-                    ("exhaustion", Tag::Float(exhaustion)),
-                ])),
-            })
-            .collect(),
-        },
-        // Wolf variant registry (required non-empty)
-        RegistryData {
-            registry_id: "minecraft:wolf_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:pale".to_string(),
-                data: Some(nbt(vec![
-                    (
-                        "wild_texture",
-                        Tag::String("minecraft:textures/entity/wolf/wolf.png".into()),
-                    ),
-                    (
-                        "tame_texture",
-                        Tag::String("minecraft:textures/entity/wolf/wolf_tame.png".into()),
-                    ),
-                    (
-                        "angry_texture",
-                        Tag::String("minecraft:textures/entity/wolf/wolf_angry.png".into()),
-                    ),
-                    ("biomes", Tag::String("minecraft:plains".into())),
-                ])),
-            }],
-        },
-        // Wolf sound variant registry (required non-empty)
-        RegistryData {
-            registry_id: "minecraft:wolf_sound_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:classic".to_string(),
-                data: Some(nbt(vec![
-                    (
-                        "ambient_sound",
-                        Tag::String("minecraft:entity.wolf.ambient".into()),
-                    ),
-                    (
-                        "death_sound",
-                        Tag::String("minecraft:entity.wolf.death".into()),
-                    ),
-                    (
-                        "growl_sound",
-                        Tag::String("minecraft:entity.wolf.growl".into()),
-                    ),
-                    (
-                        "hurt_sound",
-                        Tag::String("minecraft:entity.wolf.hurt".into()),
-                    ),
-                    (
-                        "pant_sound",
-                        Tag::String("minecraft:entity.wolf.pant".into()),
-                    ),
-                    (
-                        "whine_sound",
-                        Tag::String("minecraft:entity.wolf.whine".into()),
-                    ),
-                ])),
-            }],
-        },
-        // Cat variant registry (required non-empty)
-        RegistryData {
-            registry_id: "minecraft:cat_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:tabby".to_string(),
-                data: Some(nbt(vec![(
-                    "texture",
-                    Tag::String("minecraft:textures/entity/cat/tabby.png".into()),
-                )])),
-            }],
-        },
-        // Chicken variant registry (required non-empty)
-        RegistryData {
-            registry_id: "minecraft:chicken_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![(
-                    "texture",
-                    Tag::String("minecraft:textures/entity/chicken/temperate.png".into()),
-                )])),
-            }],
-        },
-        // Cow variant registry (required non-empty)
-        RegistryData {
-            registry_id: "minecraft:cow_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![(
-                    "texture",
-                    Tag::String("minecraft:textures/entity/cow/temperate.png".into()),
-                )])),
-            }],
-        },
-        // Frog variant registry (required non-empty)
-        RegistryData {
-            registry_id: "minecraft:frog_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![(
-                    "texture",
-                    Tag::String("minecraft:textures/entity/frog/temperate.png".into()),
-                )])),
-            }],
-        },
-        // Pig variant registry (required non-empty)
-        RegistryData {
-            registry_id: "minecraft:pig_variant".to_string(),
-            entries: vec![RegistryEntry {
-                entry_id: "minecraft:temperate".to_string(),
-                data: Some(nbt(vec![(
-                    "texture",
-                    Tag::String("minecraft:textures/entity/pig/temperate.png".into()),
-                )])),
-            }],
-        },
-    ]
+    let version = void_data::Version::V26_1_2;
+    void_data::registries(version)
+        .iter()
+        .map(|(registry_id, entries)| {
+            let entries = entries
+                .iter()
+                .map(|(entry_id, _bytes)| {
+                    let nbt = void_data::entry_nbt(version, registry_id, entry_id)
+                        .expect("entry shipped but parse failed");
+                    RegistryEntry {
+                        entry_id: entry_id.to_string(),
+                        data: Some(nbt.clone()),
+                    }
+                })
+                .collect();
+            RegistryData {
+                registry_id: registry_id.to_string(),
+                entries,
+            }
+        })
+        .collect()
 }

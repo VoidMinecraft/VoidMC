@@ -1,0 +1,12 @@
+[package]
+name = "void-data"
+version = "0.1.0"
+edition = "2024"
+description = "Vanilla Minecraft registry data, extracted from Paper and embedded as NBT blobs at build time."
+
+[dependencies]
+ussr-nbt = "0.2.1"
+
+[build-dependencies]
+serde_json = "1.0"
+ussr-nbt = "0.2.1"

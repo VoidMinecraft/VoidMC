@@ -7,9 +7,7 @@ use bevy_ecs::{
 };
 use void_protocol::{
     clientbound,
-    serverbound::{
-        ChatCommand, ChatCommandUnsigned, ChatMessage, CommandSuggestionsRequest, SignedChatCommand,
-    },
+    serverbound::{ChatCommand, ChatMessage, CommandSuggestionsRequest, SignedChatCommand},
 };
 
 use crate::{
@@ -25,7 +23,6 @@ pub struct ChatPlugin;
 impl Plugin for ChatPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(handle_chat_command);
-        app.add_observer(handle_chat_command_unsigned);
         app.add_observer(handle_signed_chat_command);
         app.add_observer(handle_chat_message);
         app.add_observer(handle_command_suggestions);
@@ -65,22 +62,6 @@ fn handle_command(
 
 fn handle_chat_command(
     event: On<PacketEvent<ChatCommand>>,
-    queue: ResMut<CommandQueue>,
-    sequence: ResMut<CommandEnqueueSequence>,
-    commands: Commands,
-) {
-    handle_command(
-        event.client_id,
-        event.entity,
-        &event.packet.command,
-        queue.into_inner(),
-        sequence.into_inner(),
-        commands,
-    );
-}
-
-fn handle_chat_command_unsigned(
-    event: On<PacketEvent<ChatCommandUnsigned>>,
     queue: ResMut<CommandQueue>,
     sequence: ResMut<CommandEnqueueSequence>,
     commands: Commands,

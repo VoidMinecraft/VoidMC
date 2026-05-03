@@ -40,7 +40,7 @@ impl ChunkData {
         ChunkDataAndLight {
             chunk_x: x,
             chunk_z: z,
-            heightmaps: self.heightmaps.to_nbt(),
+            heightmaps: self.heightmaps.clone(),
             data,
             block_entities: Vec::new(),
             sky_light_mask: self.light.sky_light_mask.clone(),
