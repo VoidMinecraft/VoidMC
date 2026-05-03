@@ -24,5 +24,12 @@
     "label": "Gameplay",
     "collapsible": true,
     "collapsed": false
+  },
+  {
+    "type": "dir",
+    "name": "protocol-specs",
+    "label": "Protocol Specs",
+    "collapsible": true,
+    "collapsed": true
   }
 ]
