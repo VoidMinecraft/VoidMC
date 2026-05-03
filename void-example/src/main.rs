@@ -20,6 +20,7 @@ struct MetricsEnv {
     flame_enabled: bool,
     tps_output: Option<String>,
     flame_output: Option<String>,
+    packet_debug: bool,
 }
 
 impl MetricsEnv {
@@ -27,6 +28,7 @@ impl MetricsEnv {
         let metrics_debug = env_flag("VOID_METRICS_DEBUG");
         let tps_output = env_string("VOID_TPS_OUTPUT");
         let flame_output = env_string("VOID_FLAME_OUTPUT");
+        let packet_debug = env_flag("VOID_PACKET_DEBUG");
         let metrics_mode = env::var("VOID_METRICS_MODE").ok();
         let flame_enabled = matches!(metrics_mode.as_deref(), Some("flame"))
             || flame_output.is_some();
@@ -36,6 +38,7 @@ impl MetricsEnv {
             flame_enabled,
             tps_output,
             flame_output,
+            packet_debug,
         }
     }
 
@@ -121,11 +124,17 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
         None
     };
 
+    let mut env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if metrics_env.packet_debug {
+        if let Ok(directive) = "voidmc::network=debug".parse() {
+            env_filter = env_filter.add_directive(directive);
+        }
+    }
+
     let registry = tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
-        )
+        .with(env_filter)
         .with(console_layer)
         .with(file_layer);
 

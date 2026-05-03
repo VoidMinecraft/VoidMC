@@ -37,6 +37,10 @@ pub fn stream_chunks(
     world_gen: Res<WorldGen>,
     config: Res<ServerConfigResource>,
 ) {
+    let max_chunk_generations = config.max_chunk_generations_per_tick;
+    let mut generated_this_tick = 0usize;
+    let mut throttled = false;
+
     for (
         client_id,
         position,
@@ -114,6 +118,11 @@ pub fn stream_chunks(
 
             // Generate chunk on-demand if not in index
             if !chunk_index.0.contains_key(&key) {
+                if max_chunk_generations > 0 && generated_this_tick >= max_chunk_generations {
+                    throttled = true;
+                    continue;
+                }
+
                 let chunk = world_gen.0.generate_chunk(pos);
                 let entity = commands
                     .spawn((
@@ -123,6 +132,7 @@ pub fn stream_chunks(
                     ))
                     .id();
                 chunk_index.0.insert(key, entity);
+                generated_this_tick += 1;
 
                 // For newly spawned chunks, build the packet directly from the protocol chunk
                 let packet = chunk.to_packet();
@@ -150,5 +160,13 @@ pub fn stream_chunks(
                 }
             }
         }
+    }
+
+    if throttled {
+        tracing::warn!(
+            generated_this_tick,
+            max_chunk_generations_per_tick = max_chunk_generations,
+            "Chunk generation throttled"
+        );
     }
 }

@@ -6,6 +6,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::prelude::*;
 
+use crate::config::ServerConfigResource;
+
 const DEFAULT_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct MetricsPlugin {
@@ -86,11 +88,19 @@ impl TpsMetrics {
     }
 }
 
-pub fn track_tps(mut metrics: ResMut<TpsMetrics>) {
+pub fn track_tps(mut metrics: ResMut<TpsMetrics>, config: Res<ServerConfigResource>) {
     let now = Instant::now();
     let tick_delta = now.duration_since(metrics.last_tick);
     metrics.last_tick = now;
     metrics.last_tick_ms = tick_delta.as_secs_f64() * 1000.0;
+
+    if config.slow_tick_ms > 0 && metrics.last_tick_ms > config.slow_tick_ms as f64 {
+        tracing::warn!(
+            last_tick_ms = metrics.last_tick_ms,
+            slow_tick_ms = config.slow_tick_ms,
+            "Slow tick detected"
+        );
+    }
 
     metrics.total_ticks += 1;
     metrics.window_ticks += 1;
