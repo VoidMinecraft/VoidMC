@@ -14,15 +14,6 @@ jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: true
-
-      - name: Fetch all refs
-        run: |
-          git fetch origin --prune --tags '+refs/heads/*:refs/heads/*'
-
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
@@ -30,7 +21,12 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan github.com >> ~/.ssh/known_hosts
 
-      - name: Push mirror
+      - name: Mirror clone source
+        run: |
+          git clone --mirror https://github.com/${{ github.repository }}.git repo.git
+
+      - name: Push mirror to eip
+        working-directory: repo.git
         run: |
           git remote add mirror git@github.com:EpitechPGE45-2025/G-EIP-700-PAR-7-1-eip-44.git
           git push --mirror mirror
