@@ -16,7 +16,7 @@ export default defineConfig({
         icon: "github",
         mode: "link",
         content:
-          "https://github.com/EpitechPromo2027/G-EIP-600-lil-6-1-eip-adam.cavillon",
+          "https://github.com/VoidMinecraft/VoidMC",
       },
     ],
   },

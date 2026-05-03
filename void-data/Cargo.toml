@@ -1,8 +1,13 @@
 [package]
 name = "void-data"
-version = "0.1.0"
 edition = "2024"
 description = "Vanilla Minecraft registry data, extracted from Paper and embedded as NBT blobs at build time."
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [dependencies]
 ussr-nbt = "0.2.1"

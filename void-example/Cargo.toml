@@ -1,10 +1,17 @@
 [package]
 name = "void-example"
-version = "0.1.0"
 edition = "2024"
+description = "Runnable example server demonstrating the VoidMC framework."
+publish = false
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [dependencies]
-void = { path = "../void" }
+void = { version = "0.1.0", path = "../void" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.3"

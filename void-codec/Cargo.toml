@@ -1,9 +1,15 @@
 [package]
 name = "void-codec"
-version = "0.1.0"
 edition = "2021"
+description = "Encode/decode primitives for the Minecraft network protocol used by VoidMC."
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [dependencies]
-void-codec-macros = { path = "../void-codec-macros" }
+void-codec-macros = { version = "0.1.0", path = "../void-codec-macros" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"

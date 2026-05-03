@@ -1,7 +1,13 @@
 [package]
 name = "void-codec-macros"
-version = "0.1.0"
 edition = "2021"
+description = "Procedural macro derives for the void-codec encode/decode traits."
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [lib]
 proc-macro = true

@@ -1,8 +1,14 @@
 [package]
 name = "void-net"
-version = "0.1.0"
 edition = "2024"
+description = "Async networking layer for the VoidMC Minecraft server framework."
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
-void-codec = { path = "../void-codec" }
+void-codec = { version = "0.1.0", path = "../void-codec" }

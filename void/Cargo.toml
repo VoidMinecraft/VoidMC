@@ -1,14 +1,20 @@
 [package]
 name = "void"
-version = "0.1.0"
 edition = "2024"
+description = "Modular, ECS-driven Minecraft server framework written in Rust."
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
-void-net = { path = "../void-net" }
-void-codec = { path = "../void-codec" }
-void-protocol = { path = "../void-protocol" }
-void-data = { path = "../void-data" }
+void-net = { version = "0.1.0", path = "../void-net" }
+void-codec = { version = "0.1.0", path = "../void-codec" }
+void-protocol = { version = "0.1.0", path = "../void-protocol" }
+void-data = { version = "0.1.0", path = "../void-data" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"
 tracing = "0.1.44"

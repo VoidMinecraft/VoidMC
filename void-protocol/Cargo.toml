@@ -1,13 +1,19 @@
 [package]
 name = "void-protocol"
-version = "0.1.0"
 edition = "2024"
+description = "Minecraft Java Edition protocol packet definitions used by VoidMC."
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
 
 [dependencies]
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0"
-void-codec = { path = "../void-codec" }
-void-codec-macros = { path = "../void-codec-macros" }
+void-codec = { version = "0.1.0", path = "../void-codec" }
+void-codec-macros = { version = "0.1.0", path = "../void-codec-macros" }
 uuid = "1.16.0"
 ussr-nbt = "0.2.1"
 bitflags = "2.10.0"
