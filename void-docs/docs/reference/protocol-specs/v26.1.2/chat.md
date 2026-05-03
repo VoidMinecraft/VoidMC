@@ -2,7 +2,7 @@
 
 Minecraft 1.20 introduced — and 1.21+ refined — a hybrid chat model. Messages may flow as **signed player chat** (cryptographically tied to a Mojang-issued profile key, allowing third-party moderation), as **unsigned disguised chat** (server-rendered as if from a player), or as **system chat** (no sender). All player-visible text is always rendered through a **Chat Type**, which provides the translation key and parameter set used by the client.
 
-This page specifies the chat-related packets in 26.1.2. Chat-type registry shape is covered in [./registries](./registries).
+This page documents the chat-related concepts and reusable sub-payloads (signed message body, filter mask, bound chat type). Byte-level packet layouts live on the [Play — Clientbound](./play-clientbound) and [Play — Serverbound](./play-serverbound) pages. Chat-type registry shape is covered in [./registries](./registries).
 
 ## Concepts
 
@@ -13,26 +13,24 @@ This page specifies the chat-related packets in 26.1.2. Chat-type registry shape
 - **Last Seen Messages**: the rolling window (≤ 20 entries) of message signatures the sender had observed when authoring the message; included in the signed payload to bind context.
 - **Chat Session**: a per-connection `(session UUID, public key)` pair. Established serverbound; required before the client may send signed messages.
 
-## Clientbound packets
+## Packets
 
-### Player Chat
+| Direction | Packet | Notes |
+|-----------|--------|-------|
+| Client-bound | [Player Chat](./play-clientbound) | Signed message originating from a player. Embeds [Signed message body](#signed-message-body), [Filter mask](#filter-mask), and [Bound chat type](#bound-chat-type). |
+| Client-bound | [Disguised Chat](./play-clientbound) | Unsigned, server-authored message rendered as if from a player; carries a `Component` and a [Bound chat type](#bound-chat-type). |
+| Client-bound | [System Chat](./play-clientbound) | Sender-less message; optional action-bar overlay flag. |
+| Client-bound | [Delete Chat](./play-clientbound) | Asks the client to drop a previously delivered Player Chat by its packed signature. |
+| Client-bound | [Chat Suggestions](./play-clientbound) | Adds/replaces/removes plain-text completions surfaced by the chat box. |
+| Client-bound | [Custom Chat Completions](./play-clientbound) | Server-extensible variant of Chat Suggestions for things like player-name completion. |
+| Server-bound | [Chat Session Update](./play-serverbound) | Establishes (or rotates) the client's chat session — see [Chat session](#chat-session). |
+| Server-bound | [Chat](./play-serverbound) | Signed message: text, salt, timestamp, optional 256-byte signature, last-seen window, ack offset. |
+| Server-bound | [Chat Command](./play-serverbound) | Same as Chat but with a parsed command path; each signable `String` argument is sent with its own per-argument signature. |
+| Server-bound | [Chat Acknowledgement](./play-serverbound) | Carries an offset `VarInt` — number of additional messages the client has acknowledged since its last ack. |
 
-A signed message originating from a player.
+> Refer to the packet pages for exact field tables and IDs. The sub-payloads below are reused across multiple of these packets and so live here.
 
-| Field | Type | Notes |
-|-------|------|-------|
-| Global index | [VarInt](./data-types#varint) | Server's monotonic counter for the message stream (used for `Chat Acknowledgement`). |
-| Sender UUID | [UUID](./data-types#uuid) | Profile UUID of the sender. |
-| Index | [VarInt](./data-types#varint) | Sender's per-session index. |
-| Has signature | [Boolean](./data-types#boolean) | |
-| Signature | byte[256] | Only when `Has signature` is true. |
-| Body | sub-payload | See [Signed message body](#signed-message-body). |
-| Has unsigned content | [Boolean](./data-types#boolean) | |
-| Unsigned content | Component | Server-overridden display content (when the server rewrites the rendered message); only when present. |
-| Filter mask | sub-payload | See [Filter mask](#filter-mask). |
-| Chat type | Bound chat type | See [Bound chat type](#bound-chat-type). |
-
-#### Signed message body
+## Signed message body
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -41,14 +39,14 @@ A signed message originating from a player.
 | Salt | [Long](./data-types#long) | Random salt used in the signature. |
 | Last seen | Array | VarInt count + per-entry `(VarInt id, Optional byte[256])`. `id` is `cache_id + 1`; if `id == 0`, the full 256-byte signature is inlined; otherwise the entry references the cached signature at `cache_id`. |
 
-#### Filter mask
+## Filter mask
 
 | Field | Type | Notes |
 |-------|------|-------|
 | Type | [VarInt](./data-types#varint) enum | 0 = `PASS_THROUGH`, 1 = `FULLY_FILTERED`, 2 = `PARTIALLY_FILTERED`. |
 | Bits | [BitSet](./data-types#bitset) | Only present when `Type == 2`. Each set bit marks a UTF-16 code unit of `Content` that the moderation provider flagged. |
 
-#### Bound chat type
+## Bound chat type
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -57,48 +55,18 @@ A signed message originating from a player.
 | Has target name | [Boolean](./data-types#boolean) | |
 | Target name | Component | Only present when `Has target name` is true (private message recipient, team chat, etc.). |
 
-### Disguised Chat
+## Packed message signature
 
-An unsigned, server-authored message the client should render as if it were a player message.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Message | Component | Already-formatted message content. |
-| Chat type | Bound chat type | Same shape as in Player Chat. |
-
-### System Chat
+Used by [Delete Chat](./play-clientbound) and any field documented as "Packed signature":
 
 | Field | Type | Notes |
 |-------|------|-------|
-| Content | Component | |
-| Overlay | [Boolean](./data-types#boolean) | If true, render in the action-bar slot above the hotbar instead of the chat box. |
+| ID | [VarInt](./data-types#varint) | `0` means a full inline signature follows; otherwise `id - 1` indexes the message-signature cache. |
+| Signature | byte[256] | Only present when `ID == 0`. |
 
-### Delete Chat
+## Chat session
 
-Asks the client to remove a previously delivered Player Chat message from its history.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Message signature | Packed signature | `(VarInt id, Optional byte[256])`: `id == 0` means full inline signature follows; otherwise `id - 1` indexes the message-signature cache. |
-
-### Chat Suggestions
-
-Adds, replaces, or removes a list of plain-text completions surfaced in the client's chat tab-completion popup (independent of command argument suggestions).
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Action | [VarInt](./data-types#varint) enum | 0 = add, 1 = remove, 2 = set. |
-| Entries | Array of [String](./data-types#string) | Length-prefixed list. |
-
-### Custom Chat Completions
-
-A server-extensible variant of `Chat Suggestions` for things like player-name completion. Same shape as `Chat Suggestions`.
-
-## Serverbound packets
-
-### Chat Session Update
-
-Establishes (or rotates) the client's chat session.
+The chat-session payload of [Chat Session Update](./play-serverbound):
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -107,21 +75,7 @@ Establishes (or rotates) the client's chat session.
 | Public key | byte[] (≤ ~512) | DER-encoded RSA public key. |
 | Key signature | byte[] (≤ 4096) | Mojang's signature over the key + sender UUID + expiry. |
 
-The server validates the key signature against the Mojang services key; if valid, future signed `Chat` packets from this client are decoded with this key.
-
-### Chat (signed)
-
-(Mentioned for completeness — see [./play-serverbound](./play-serverbound) for the full layout.) Carries the message text, salt, timestamp, optional 256-byte signature, the sender's last-seen window, and the offset acknowledgement.
-
-### Chat Command (signed)
-
-Same shape as Chat, but with a parsed command path: each signable `String` argument is sent with its own per-argument signature.
-
-### Chat Acknowledgement
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Offset | [VarInt](./data-types#varint) | Number of additional messages the client has acknowledged since its last ack. The server uses this to advance the client's last-seen window without retransmitting signatures. |
+The server validates the key signature against the Mojang services key; if valid, future signed Chat packets from this client are decoded with this key.
 
 ## Chat type registry recap
 

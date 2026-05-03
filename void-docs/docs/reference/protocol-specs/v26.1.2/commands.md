@@ -1,18 +1,12 @@
 # Commands
 
-The server publishes its complete Brigadier command graph to the client with the `Commands` packet (clientbound, Play state). The client uses this graph to drive in-chat tab-completion, parse-time error highlighting, and to filter `/`-prefixed input from the chat box. The client never *executes* commands locally — it sends them to the server as `Chat Command` packets — but it must be able to *recognize* the syntax.
+The server publishes its complete Brigadier command graph to the client with [Commands (`0x10`)](./play-clientbound#0x10---commands) (clientbound, Play state). The client uses this graph to drive in-chat tab-completion, parse-time error highlighting, and to filter `/`-prefixed input from the chat box. The client never *executes* commands locally — it sends them to the server as `Chat Command` packets — but it must be able to *recognize* the syntax.
 
-This page covers `Commands`, `Command Suggestions Request`, and `Command Suggestions Response`.
+Tab-completion uses [Command Suggestions Request (`0x0F`)](./play-serverbound#0x0f---command-suggestions-request) and [Command Suggestions (`0x0F`)](./play-clientbound#0x0f---command-suggestions). Their byte-level layouts live on the packet pages; this page documents the Brigadier sub-payloads they reference.
 
-## The Commands packet
+## Node graph
 
 The graph is sent as a flat array of nodes plus a root index. Children and redirects are referenced by integer indices into that array.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Node count | [VarInt](./data-types#varint) | Number of nodes that follow. |
-| Nodes | Array | Repeats `count` times, see [Node](#node). |
-| Root index | [VarInt](./data-types#varint) | Index of the root node. |
 
 ### Node
 
@@ -26,7 +20,7 @@ The graph is sent as a flat array of nodes plus a root index. Children and redir
 | Parser | sub-payload (optional) | Present for argument nodes only — see [Parsers](#parsers). |
 | Suggestions identifier | [Identifier](./data-types) (optional) | Present iff `flags & 0x10`. |
 
-#### Flags byte
+### Flags byte
 
 ```text
 bits 0..1   Node type:
@@ -112,37 +106,10 @@ The parser registry is fixed for a given protocol version. Parsers in 26.1.2:
 | `dialog` | none |
 | `uuid` | none |
 
-> NOTE: When an argument node uses one of vanilla's *suggestions providers* (rather than the parser's built-in suggestions), `flags & 0x10` is set and `Suggestions identifier` is the provider's identifier. The vanilla providers are `minecraft:ask_server`, `minecraft:all_recipes`, `minecraft:available_sounds`, `minecraft:summonable_entities`. `minecraft:ask_server` instructs the client to call back via `Command Suggestions Request` whenever the user types in that argument.
+> NOTE: When an argument node uses one of vanilla's *suggestions providers* (rather than the parser's built-in suggestions), `flags & 0x10` is set and `Suggestions identifier` is the provider's identifier. The vanilla providers are `minecraft:ask_server`, `minecraft:all_recipes`, `minecraft:available_sounds`, `minecraft:summonable_entities`. `minecraft:ask_server` instructs the client to call back via [Command Suggestions Request](./play-serverbound#0x0f---command-suggestions-request) whenever the user types in that argument.
 
 ## Validation
 
 The client validates the graph before installing it: every child/redirect index must point to a node already buildable (no forward dangling references after redirect resolution). A malformed graph terminates the connection.
-
-## Command Suggestions Request (serverbound)
-
-Triggered while the client is editing a command argument backed by `minecraft:ask_server`.
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Transaction ID | [VarInt](./data-types#varint) | Echoed back by the server. |
-| Text | [String](./data-types#string) (≤ 32500) | Current input including the leading `/`. |
-
-## Command Suggestions Response (clientbound)
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Transaction ID | [VarInt](./data-types#varint) | Matches the request. |
-| Range start | [VarInt](./data-types#varint) | Character offset into `Text` where suggestions should replace. |
-| Range length | [VarInt](./data-types#varint) | Number of characters to replace. |
-| Suggestions count | [VarInt](./data-types#varint) | |
-| Suggestions | Array | Repeats `count` times, see below. |
-
-Each suggestion:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Match | [String](./data-types#string) | The completion text. |
-| Has tooltip | [Boolean](./data-types#boolean) | |
-| Tooltip | Component | Only present when `Has tooltip` is true. |
 
 > Source: net/minecraft/network/protocol/game/ClientboundCommandsPacket.java, net/minecraft/network/protocol/game/ClientboundCommandSuggestionsPacket.java, net/minecraft/network/protocol/game/ServerboundCommandSuggestionPacket.java, net/minecraft/commands/synchronization/ArgumentTypeInfos.java, net/minecraft/commands/synchronization/SuggestionProviders.java.

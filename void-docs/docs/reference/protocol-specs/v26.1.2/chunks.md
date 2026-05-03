@@ -1,15 +1,8 @@
 # Chunks & Lighting
 
-A *chunk* is a 16×384×16 column of blocks divided into 24 vertical *sections* of 16×16×16. The server sends a chunk to the client as one `Level Chunk With Light` packet, which is the concatenation of two well-defined sub-payloads: chunk data (heightmaps + block/biome contents + block entities) and light data (sky/block light bitmasks + arrays). Light updates outside of chunk loads are sent independently as `Update Light` and reuse the same light sub-payload.
+A *chunk* is a 16×384×16 column of blocks divided into 24 vertical *sections* of 16×16×16. The server sends a chunk to the client as one [Level Chunk With Light](./play-clientbound#0x2d---level-chunk-with-light) packet, which is the concatenation of two well-defined sub-payloads: chunk data (heightmaps + block/biome contents + block entities) and light data (sky/block light bitmasks + arrays). Light updates outside of chunk loads are sent independently as [Update Light](./play-clientbound#0x30---light-update) and reuse the same light sub-payload.
 
-## Level Chunk With Light packet
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Chunk X | [Int](./data-types#int) | Chunk coordinate. |
-| Chunk Z | [Int](./data-types#int) | Chunk coordinate. |
-| Chunk data | sub-payload | See [Chunk data](#chunk-data). |
-| Light data | sub-payload | See [Light data](#light-data). |
+The packet field tables (with packet IDs) live on the play-clientbound page; this page specifies the two sub-payloads they share.
 
 ## Chunk data
 
@@ -94,7 +87,7 @@ The packed long array uses the standard 1.16+ "no spanning" layout: each long co
 
 ## Light data
 
-The light sub-payload is *also* the body of the standalone `Update Light` packet. It uses BitSets (sent as `long[]` with a length prefix) to indicate which sections include data.
+The light sub-payload is *also* the body of the standalone [Update Light](./play-clientbound#0x30---light-update) packet. It uses BitSets (sent as `long[]` with a length prefix) to indicate which sections include data.
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -110,15 +103,5 @@ A section index runs from `0` (one section below the bottom of the world for cro
 Each light array stores 4 bits per block (one nibble per cell, two cells per byte), totalling 4096 cells × 4 bits = 16384 bits = 2048 bytes. The lower nibble is the cell at the lower index.
 
 A bit set in the *empty* mask means "this section exists but its values are all zero, save bandwidth"; the client should treat it as fully dark for that layer. A section absent from both the data mask and the empty mask is unchanged.
-
-## Update Light
-
-`Update Light` carries only:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| Chunk X | [VarInt](./data-types#varint) | Chunk coordinate. |
-| Chunk Z | [VarInt](./data-types#varint) | Chunk coordinate. |
-| Light data | sub-payload | Same layout as in `Level Chunk With Light`. |
 
 > Source: net/minecraft/network/protocol/game/ClientboundLevelChunkPacketData.java, net/minecraft/network/protocol/game/ClientboundLightUpdatePacketData.java, net/minecraft/network/protocol/game/ClientboundLevelChunkWithLightPacket.java, net/minecraft/world/level/chunk/LevelChunkSection.java, net/minecraft/world/level/chunk/PalettedContainer.java, net/minecraft/world/level/chunk/SingleValuePalette.java, net/minecraft/world/level/chunk/LinearPalette.java, net/minecraft/world/level/chunk/HashMapPalette.java, net/minecraft/world/level/chunk/GlobalPalette.java, net/minecraft/util/SimpleBitStorage.java, net/minecraft/world/level/levelgen/Heightmap.java.
