@@ -37,7 +37,7 @@ pub use unload_chunk::*;
 pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
 pub use update_entity_rotation::*;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged)]
@@ -88,27 +88,27 @@ impl Encode for ManualPlayPacket {
     fn encode(&self, buf: &mut Vec<u8>) {
         match self {
             ManualPlayPacket::PlayerInfoUpdate(packet) => {
-                void_codec::VarI32(0x46).encode(buf);
+                voidmc_codec::VarI32(0x46).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::PlayerInfoRemove(packet) => {
-                void_codec::VarI32(0x45).encode(buf);
+                voidmc_codec::VarI32(0x45).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::RemoveEntities(packet) => {
-                void_codec::VarI32(0x4D).encode(buf);
+                voidmc_codec::VarI32(0x4D).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::ChunkDataAndLight(packet) => {
-                void_codec::VarI32(0x2D).encode(buf);
+                voidmc_codec::VarI32(0x2D).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::Commands(packet) => {
-                void_codec::VarI32(0x10).encode(buf);
+                voidmc_codec::VarI32(0x10).encode(buf);
                 packet.encode(buf);
             }
             ManualPlayPacket::CommandSuggestionsResponse(packet) => {
-                void_codec::VarI32(0x0F).encode(buf);
+                voidmc_codec::VarI32(0x0F).encode(buf);
                 packet.encode(buf);
             }
         }

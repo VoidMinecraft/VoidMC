@@ -1,4 +1,4 @@
-use void_protocol::clientbound::{
+use voidmc_protocol::clientbound::{
     Chunk, ChunkHeightmaps, ChunkSection, LightData, PaletteData, biomes, blocks,
 };
 

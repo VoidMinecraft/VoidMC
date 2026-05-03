@@ -1,7 +1,7 @@
 [package]
-name = "void-codec-macros"
+name = "voidmc-codec-macros"
 edition = "2021"
-description = "Procedural macro derives for the void-codec encode/decode traits."
+description = "Procedural macro derives for the voidmc-codec encode/decode traits."
 version.workspace = true
 license.workspace = true
 repository.workspace = true

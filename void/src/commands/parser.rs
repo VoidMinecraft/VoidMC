@@ -2,7 +2,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use bevy_ecs::world::World;
-use void_protocol::clientbound::commands::{Parser, StringType};
+use voidmc_protocol::clientbound::commands::{Parser, StringType};
 
 /// Trait for argument parsers that both map to the Minecraft protocol
 /// command tree (for tab-completion) and actually parse/validate values.

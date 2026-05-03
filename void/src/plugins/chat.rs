@@ -5,7 +5,7 @@ use bevy_ecs::{
     query::With,
     system::{Commands, Query, Res, ResMut},
 };
-use void_protocol::{
+use voidmc_protocol::{
     clientbound,
     serverbound::{ChatCommand, ChatMessage, CommandSuggestionsRequest, SignedChatCommand},
 };
@@ -187,7 +187,7 @@ fn handle_command_suggestions(
         (event.packet.text.len() - partial.len()) as i32
     };
 
-    let response = void_protocol::clientbound::CommandSuggestionsResponse {
+    let response = voidmc_protocol::clientbound::CommandSuggestionsResponse {
         transaction_id: event.packet.transaction_id,
         start,
         length: partial.len() as i32,
@@ -196,8 +196,8 @@ fn handle_command_suggestions(
 
     let _ = channels.outgoing.send(OutgoingPacket {
         client_id: event.client_id,
-        packet: void_protocol::clientbound::ClientboundPacket::ManualPlay(
-            void_protocol::clientbound::ManualPlayPacket::CommandSuggestionsResponse(response),
+        packet: voidmc_protocol::clientbound::ClientboundPacket::ManualPlay(
+            voidmc_protocol::clientbound::ManualPlayPacket::CommandSuggestionsResponse(response),
         ),
     });
 }

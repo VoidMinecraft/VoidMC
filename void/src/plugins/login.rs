@@ -3,7 +3,7 @@ use bevy_ecs::{
     observer::On,
     system::{Commands, Res},
 };
-use void_protocol::{
+use voidmc_protocol::{
     clientbound,
     serverbound::{LoginAcknowledged, LoginStart},
 };
@@ -53,7 +53,7 @@ fn handle_login_acknowledged(
     commands
         .entity(event.entity)
         .insert(crate::components::ConnectionState(
-            void_protocol::State::Configuration,
+            voidmc_protocol::State::Configuration,
         ));
 
     let _ = channels.outgoing.send(crate::network::OutgoingPacket {

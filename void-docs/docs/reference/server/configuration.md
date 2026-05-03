@@ -5,7 +5,7 @@
 `ServerBuilder` provides a fluent API for constructing a `ServerConfig`:
 
 ```rust
-use void::{ServerBuilder, SpawnPosition};
+use voidmc::{ServerBuilder, SpawnPosition};
 
 let config = ServerBuilder::new()
     .address("0.0.0.0:25565")

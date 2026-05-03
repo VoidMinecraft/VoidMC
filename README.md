@@ -53,7 +53,7 @@ cargo test --workspace
 ## Example
 
 ```rust
-use void::{ServerBuilder, VoidServer};
+use voidmc::{ServerBuilder, VoidServer};
 
 fn main() {
     VoidServer::new(ServerBuilder::new().build())

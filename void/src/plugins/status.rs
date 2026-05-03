@@ -1,6 +1,6 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Res};
-use void_protocol::{
+use voidmc_protocol::{
     clientbound,
     serverbound::{PingRequest, StatusRequest},
 };

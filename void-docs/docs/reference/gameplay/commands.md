@@ -10,7 +10,7 @@ Build commands using the fluent `CommandBuilder`:
 
 ```rust
 use std::sync::Arc;
-use void::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg};
+use voidmc::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg};
 
 let command = CommandBuilder::new("greet")
     .description("Greet a player with a custom message")
@@ -110,8 +110,8 @@ Implement the `ArgParser` trait to create custom argument types:
 
 ```rust
 use std::any::Any;
-use void::ArgParser;
-use void_protocol::clientbound::commands::Parser;
+use voidmc::ArgParser;
+use voidmc_protocol::clientbound::commands::Parser;
 
 pub struct ColorArg;
 
@@ -126,7 +126,7 @@ impl ArgParser for ColorArg {
     }
 
     fn protocol_parser(&self) -> Option<Parser> {
-        Some(Parser::String(void_protocol::clientbound::commands::StringType::SingleWord))
+        Some(Parser::String(voidmc_protocol::clientbound::commands::StringType::SingleWord))
     }
 
     // Optional: provide tab-completion suggestions
@@ -161,7 +161,7 @@ Example:
 Register all built-in commands with `register_default_commands`:
 
 ```rust
-use void::{CommandRegistry, register_default_commands};
+use voidmc::{CommandRegistry, register_default_commands};
 
 let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
 register_default_commands(&mut registry, &[]);
@@ -193,7 +193,7 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 The `/plugins` command reads from an optional `PluginList` resource. Insert it in your plugin to make plugin names visible:
 
 ```rust
-use void::PluginList;
+use voidmc::PluginList;
 
 VoidServer::new(config)
     .add_plugin(|app| {

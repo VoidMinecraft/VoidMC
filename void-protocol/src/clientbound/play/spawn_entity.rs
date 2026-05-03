@@ -1,5 +1,5 @@
 use uuid::Uuid;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SpawnEntity {

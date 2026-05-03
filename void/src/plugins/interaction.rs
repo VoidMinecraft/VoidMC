@@ -1,7 +1,7 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands};
-use void_codec::Decode;
-use void_protocol::{
+use voidmc_codec::Decode;
+use voidmc_protocol::{
     serverbound::{
         CloseContainer, Interact, PlayerAction, PlayerCommand, SetHeldItem, SwingArm, UseItem,
         UseItemOn,

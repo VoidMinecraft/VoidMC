@@ -1,4 +1,4 @@
-use void_codec::{Decode, DecodeError, Encode};
+use voidmc_codec::{Decode, DecodeError, Encode};
 
 pub mod blocks {
     pub const AIR: i32 = 0;

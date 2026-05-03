@@ -140,15 +140,15 @@ The generator uses `ChunkBuilder` from `void-protocol` with:
 Implement `WorldGenerator` and pass it to the builder:
 
 ```rust
-use void::{DefaultWorldGenerator, ServerBuilder, WorldGenerator};
-use void::world::ChunkPos;
+use voidmc::{DefaultWorldGenerator, ServerBuilder, WorldGenerator};
+use voidmc::world::ChunkPos;
 
 struct FlatWorldGenerator;
 
 impl WorldGenerator for FlatWorldGenerator {
-    fn generate_chunk(&self, pos: &ChunkPos) -> void_protocol::clientbound::chunk::Chunk {
-        void_protocol::clientbound::chunk::ChunkBuilder::new(pos.x, pos.z)
-            .with_flat_layer(64, void_protocol::clientbound::chunk::blocks::GRASS_BLOCK)
+    fn generate_chunk(&self, pos: &ChunkPos) -> voidmc_protocol::clientbound::chunk::Chunk {
+        voidmc_protocol::clientbound::chunk::ChunkBuilder::new(pos.x, pos.z)
+            .with_flat_layer(64, voidmc_protocol::clientbound::chunk::blocks::GRASS_BLOCK)
             .build()
     }
 

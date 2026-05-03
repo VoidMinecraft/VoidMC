@@ -1449,7 +1449,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "void"
+name = "voidmc"
 version = "0.1.0"
 dependencies = [
  "bevy_app",
@@ -1459,23 +1459,23 @@ dependencies = [
  "tracing",
  "ussr-nbt",
  "uuid",
- "void-codec",
- "void-data",
- "void-net",
- "void-protocol",
+ "voidmc-codec",
+ "voidmc-data",
+ "voidmc-net",
+ "voidmc-protocol",
 ]
 
 [[package]]
-name = "void-codec"
+name = "voidmc-codec"
 version = "0.1.0"
 dependencies = [
  "ussr-nbt",
  "uuid",
- "void-codec-macros",
+ "voidmc-codec-macros",
 ]
 
 [[package]]
-name = "void-codec-macros"
+name = "voidmc-codec-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -1484,7 +1484,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "void-data"
+name = "voidmc-data"
 version = "0.1.0"
 dependencies = [
  "serde_json",
@@ -1492,25 +1492,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "void-example"
+name = "voidmc-example"
 version = "0.1.0"
 dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "void",
+ "voidmc",
 ]
 
 [[package]]
-name = "void-net"
+name = "voidmc-net"
 version = "0.1.0"
 dependencies = [
  "tokio",
- "void-codec",
+ "voidmc-codec",
 ]
 
 [[package]]
-name = "void-protocol"
+name = "voidmc-protocol"
 version = "0.1.0"
 dependencies = [
  "bitflags",
@@ -1518,8 +1518,8 @@ dependencies = [
  "serde_json",
  "ussr-nbt",
  "uuid",
- "void-codec",
- "void-codec-macros",
+ "voidmc-codec",
+ "voidmc-codec-macros",
 ]
 
 [[package]]

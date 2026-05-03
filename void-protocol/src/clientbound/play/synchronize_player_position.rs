@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use void_codec::{Decode, DecodeError, Encode};
+use voidmc_codec::{Decode, DecodeError, Encode};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

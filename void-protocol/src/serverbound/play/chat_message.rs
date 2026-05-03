@@ -1,4 +1,4 @@
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 /// Serverbound Chat Message (0x06) — regular chat message.
 /// We only parse the message string; the remaining crypto fields are ignored.

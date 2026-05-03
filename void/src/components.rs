@@ -12,7 +12,7 @@ pub struct ClientId(pub u32);
 pub struct Client;
 
 #[derive(Component)]
-pub struct ConnectionState(pub void_protocol::State);
+pub struct ConnectionState(pub voidmc_protocol::State);
 
 #[derive(Component)]
 pub struct ProtocolVersion(pub i32);

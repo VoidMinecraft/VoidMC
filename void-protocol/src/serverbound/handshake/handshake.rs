@@ -1,4 +1,4 @@
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 use crate::State;
 

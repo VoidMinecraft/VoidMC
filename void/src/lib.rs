@@ -26,7 +26,7 @@ pub use commands::{
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
-pub use void_protocol::types::{BlockFace, BlockPosition, Hand};
+pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
 
 // Re-export commonly used bevy_ecs types for plugin developers

@@ -1,6 +1,6 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands};
-use void_protocol::serverbound::Handshake;
+use voidmc_protocol::serverbound::Handshake;
 
 use crate::{
     components::{ConnectionState, ProtocolVersion},

@@ -1,7 +1,7 @@
 mod handshake;
 
 pub use handshake::*;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Encode, Decode)]
 #[codec(tagged)]

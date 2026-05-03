@@ -1,8 +1,8 @@
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
-extern crate void_codec_macros;
+extern crate voidmc_codec_macros;
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct SimplePacket {
     pub value: u8,
 }
@@ -22,7 +22,7 @@ fn test_simple() {
     assert_eq!(decoded, packet);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct MultiFieldPacket {
     pub a: u8,
     pub b: i32,
@@ -46,7 +46,7 @@ fn test_multi_field() {
     assert_eq!(decoded, packet);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct VarI32Packet {
     pub prefix: u8,
     #[codec(varint32)]
@@ -71,12 +71,12 @@ fn test_vari32_field() {
     assert_eq!(decoded, packet);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct Inner {
     pub value: u8,
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct Nested {
     pub inner: Inner,
     pub extra: i32,
@@ -98,17 +98,17 @@ fn test_nested_structs() {
     assert_eq!(decoded, packet);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct Packet1 {
     pub data: u8,
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct Packet2 {
     pub value: i32,
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode)]
 #[codec(tagged)]
 pub enum StatePacket {
     #[codec(packet_id = 0)]
@@ -162,7 +162,7 @@ fn test_tagged_enum_invalid_id() {
     assert!(result.is_err(), "Should fail with invalid packet ID");
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct MixedPacket {
     pub regular: u8,
     #[codec(varint32)]
@@ -190,7 +190,7 @@ fn test_mixed_vari32_and_regular() {
     assert_eq!(decoded, packet);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct UnitStruct;
 
 #[test]
@@ -208,17 +208,17 @@ fn test_unit_struct() {
     assert_eq!(decoded, packet);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct LoginPacket {
     pub username: u8,
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct PlayPacket {
     pub entity_id: i32,
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode)]
 #[codec(tagged)]
 pub enum ProtocolPacket {
     #[codec(packet_id = 0x00)]
@@ -263,7 +263,7 @@ fn test_custom_packet_ids_play() {
     }
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct ChunkData {
     pub chunk_x: i32,
     pub blocks: Vec<u8>,
@@ -287,7 +287,7 @@ fn test_vec_in_struct() {
     assert_eq!(decoded.blocks, vec![1, 2, 3, 4, 5]);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct EntityList {
     pub entities: Vec<i32>,
 }
@@ -305,7 +305,7 @@ fn test_vec_empty_in_struct() {
     assert_eq!(decoded.entities.len(), 0);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct MultipleVecs {
     pub ids: Vec<u8>,
     pub values: Vec<i32>,
@@ -328,7 +328,7 @@ fn test_multiple_vecs_in_struct() {
 
     assert_eq!(decoded, packet);
 }
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
 pub enum SimpleState {
     Idle = 0,
@@ -352,7 +352,7 @@ fn test_repr_u8_enum() {
     }
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
 #[repr(i32)]
 pub enum DetailedStatus {
     Unknown = -1,
@@ -376,7 +376,7 @@ fn test_repr_i32_enum() {
     assert_eq!(decoded, status);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy)]
 #[codec(varint32)]
 #[repr(i32)]
 pub enum CompressedState {
@@ -398,7 +398,7 @@ fn test_repr_i32_enum_with_varint32() {
     assert!(buf.len() < 4);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct StatePacketRepr {
     pub state: SimpleState,
     pub counter: u32,
@@ -420,7 +420,7 @@ fn test_struct_with_repr_enum_field() {
     assert_eq!(decoded, packet);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 #[codec(varint64)]
 #[repr(i64)]
 pub enum CompressedLongState {
@@ -442,7 +442,7 @@ fn test_repr_i64_enum_with_varint64() {
     assert!(buf.len() < 8);
 }
 
-#[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+#[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct PacketWithVarI64 {
     #[codec(varint64)]
     pub long_value: i64,

@@ -1,7 +1,7 @@
 mod primitives;
 
 pub use primitives::*;
-pub use void_codec_macros::{Decode, Encode};
+pub use voidmc_codec_macros::{Decode, Encode};
 
 pub trait Encode {
     fn encode(&self, buf: &mut Vec<u8>);
@@ -38,11 +38,11 @@ impl std::error::Error for DecodeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate as void_codec;
+    use crate as voidmc_codec;
 
     #[test]
     fn test_struct_with_mixed_fields() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct TestPacket {
             pub a: u8,
             pub b: i32,
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn test_struct_with_vari32() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct VarPacket {
             pub prefix: u8,
             #[codec(varint32)]
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn test_struct_with_vari32_compression() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct SmallVarPacket {
             #[codec(varint32)]
             pub value: i32,
@@ -118,17 +118,17 @@ mod tests {
 
     #[test]
     fn test_tagged_enum() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct Packet1 {
             pub data: u8,
         }
 
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct Packet2 {
             pub value: i32,
         }
 
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode)]
         #[codec(tagged)]
         pub enum StatePacket {
             #[codec(packet_id = 0)]
@@ -155,17 +155,17 @@ mod tests {
 
     #[test]
     fn test_tagged_enum_second_variant() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct Packet1 {
             pub data: u8,
         }
 
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct Packet2 {
             pub value: i32,
         }
 
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode)]
         #[codec(tagged)]
         pub enum StatePacket {
             #[codec(packet_id = 0)]
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_tagged_enum_invalid_id() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, Debug, PartialEq)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
         #[codec(tagged)]
         pub enum StatePacket {
             #[codec(packet_id = 0)]
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_unit_struct() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct UnitPacket;
 
         let packet = UnitPacket;
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_empty_decode() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct TestPacket {
             pub a: i32,
         }
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn test_multiple_vari32_fields() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct MultiVarPacket {
             #[codec(varint32)]
             pub a: i32,
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn test_mixed_vari32_and_regular() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct MixedPacket {
             pub regular: u8,
             #[codec(varint32)]
@@ -294,12 +294,12 @@ mod tests {
 
     #[test]
     fn test_nested_structs() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct Inner {
             pub value: u8,
         }
 
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct Outer {
             pub inner: Inner,
             pub extra: i32,
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_large_varint() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct LargeVarPacket {
             #[codec(varint32)]
             pub value: i32,
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_repr_u8_enum() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         #[repr(u8)]
         pub enum SimpleEnum {
             First = 0,
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn test_repr_i32_enum() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         #[repr(i32)]
         pub enum StatusEnum {
             Pending = -1,
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_repr_i32_enum_varint32_compression() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         #[codec(varint32)]
         #[repr(i32)]
         pub enum CompressedEnum {
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_repr_u8_enum_invalid_discriminant() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         #[repr(u8)]
         pub enum StatusEnum {
             Active = 1,
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_repr_i32_enum_varint32() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         #[codec(varint32)]
         #[repr(i32)]
         pub enum VarIntEnum {
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn test_fixed_length_vec_literal() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthLiteral {
             #[codec(fixed_length = 3)]
             pub data: Vec<u8>,
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_fixed_length_vec_field_reference() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthFieldRef {
             pub length: u32,
             #[codec(fixed_length = length)]
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_fixed_length_vec_arithmetic() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthArithmetic {
             pub length: u32,
             pub factor: u32,
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_fixed_length_vec_complex_expression() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthComplex {
             pub length: u32,
             pub factor: u32,
@@ -550,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_fixed_length_vec_multiple_fields() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct MultipleFixedLength {
             pub length: u32,
             pub factor: u32,
@@ -582,7 +582,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Fixed-length vector length mismatch")]
     fn test_fixed_length_vec_wrong_length() {
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthWrong {
             #[codec(fixed_length = 3)]
             pub data: Vec<u8>,
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn test_fixed_length_no_length_prefix() {
         // Verify that fixed-length vectors don't encode a length prefix
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthNormal {
             pub length: u32,
             #[codec(fixed_length = length)]
@@ -630,12 +630,12 @@ mod tests {
     #[test]
     fn test_fixed_length_vs_normal_vector_size() {
         // Compare sizes: fixed-length should NOT have varint length prefix, normal vectors should
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode)]
         pub struct WithNormalVector {
             pub data: Vec<u8>,
         }
 
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode)]
         pub struct WithFixedLengthVector {
             pub length: u32,
             #[codec(fixed_length = length)]
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     fn test_fixed_length_decode_from_raw_bytes() {
         // Verify we can decode fixed-length vectors from manually constructed byte buffers
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthManual {
             pub length: u32,
             #[codec(fixed_length = length)]
@@ -704,7 +704,7 @@ mod tests {
     #[test]
     fn test_fixed_length_roundtrip_preserves_format() {
         // Verify encode -> decode -> encode produces identical bytes
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedLengthRoundtrip {
             pub length: u32,
             #[codec(fixed_length = length)]
@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn test_fixed_length_multiple_fields_binary_format() {
         // Verify multiple fixed-length fields don't include prefixes
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct MultipleFix {
             pub len_a: u32,
             pub len_b: u32,
@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn test_fixed_length_with_expression_binary() {
         // Verify fixed-length with arithmetic expression works correctly
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct FixedWithExpr {
             pub base: u32,
             pub multiplier: u32,
@@ -809,7 +809,7 @@ mod tests {
     fn test_fixed_length_vec_u8_large_buffer() {
         // Verify optimization for Vec<u8> with large buffers
         // This would be slow if we called u8::decode() 32000 times
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct LargeFixedBuffer {
             pub size: u32,
             #[codec(fixed_length = size)]
@@ -841,7 +841,7 @@ mod tests {
     #[test]
     fn test_fixed_length_vec_u8_optimized_vs_generic() {
         // Verify Vec<u8> uses optimized path and generic types use generic path
-        #[derive(void_codec_macros::Encode, void_codec_macros::Decode, PartialEq, Debug)]
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct MixedVectors {
             pub len: u32,
             #[codec(fixed_length = len)]

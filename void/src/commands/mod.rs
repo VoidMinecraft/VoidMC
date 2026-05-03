@@ -9,7 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
-use void_protocol::clientbound::commands::{CommandNode, Commands, Parser, StringType};
+use voidmc_protocol::clientbound::commands::{CommandNode, Commands, Parser, StringType};
 
 use crate::components::{ClientId, PlayerName, PlayerReady};
 use crate::network::{NetworkChannels, OutgoingPacket};
@@ -271,9 +271,9 @@ impl<'a> CommandContext<'a> {
             .collect();
 
         let nbt = text_to_nbt(message, "white");
-        let packet = void_protocol::clientbound::ClientboundPacket::Play(
-            void_protocol::clientbound::PlayPacket::SystemChat(
-                void_protocol::clientbound::SystemChat {
+        let packet = voidmc_protocol::clientbound::ClientboundPacket::Play(
+            voidmc_protocol::clientbound::PlayPacket::SystemChat(
+                voidmc_protocol::clientbound::SystemChat {
                     content: nbt,
                     overlay: false,
                 },
@@ -308,9 +308,9 @@ pub(crate) fn send_system_chat(world: &World, client_id: u32, message: &str, col
     let nbt = text_to_nbt(message, color);
     let _ = channels.outgoing.send(OutgoingPacket {
         client_id,
-        packet: void_protocol::clientbound::ClientboundPacket::Play(
-            void_protocol::clientbound::PlayPacket::SystemChat(
-                void_protocol::clientbound::SystemChat {
+        packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
+            voidmc_protocol::clientbound::PlayPacket::SystemChat(
+                voidmc_protocol::clientbound::SystemChat {
                     content: nbt,
                     overlay: false,
                 },

@@ -61,8 +61,8 @@ The `data` field contains an NBT compound (`ussr_nbt::owned::Nbt`) whose tags va
 Use `ServerBuilder::configure_registries` to modify registries before the server starts:
 
 ```rust
-use void::ServerBuilder;
-use void_protocol::clientbound::{RegistryData, RegistryEntry};
+use voidmc::ServerBuilder;
+use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 use ussr_nbt::owned::{Nbt, Tag, Compound};
 
 let config = ServerBuilder::new()
@@ -112,7 +112,7 @@ let config = ServerBuilder::new()
 Registries can also be modified in a plugin before clients connect:
 
 ```rust
-use void::RegistryDataStore;
+use voidmc::RegistryDataStore;
 
 VoidServer::new(config)
     .add_plugin(|app| {

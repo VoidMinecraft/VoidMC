@@ -21,11 +21,11 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
 
                         let encode_expr = if field_attrs.varint32 {
                             quote! {
-                                void_codec::VarI32(self.#field_name).encode(buf);
+                                voidmc_codec::VarI32(self.#field_name).encode(buf);
                             }
                         } else if field_attrs.varint64 {
                             quote! {
-                                void_codec::VarI64(self.#field_name).encode(buf);
+                                voidmc_codec::VarI64(self.#field_name).encode(buf);
                             }
                         } else if field_attrs.json {
                             quote! {
@@ -39,7 +39,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                                 quote! {
                                     {
                                         let expected_len = ((#transformed_expr) as i64) as usize;
-                                        match void_codec::encode_fixed_length_vec_u8(&self.#field_name, expected_len, buf) {
+                                        match voidmc_codec::encode_fixed_length_vec_u8(&self.#field_name, expected_len, buf) {
                                             Ok(_) => {},
                                             Err(e) => panic!("{}", e),
                                         }
@@ -49,7 +49,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                                 quote! {
                                     {
                                         let expected_len = ((#transformed_expr) as i64) as usize;
-                                        match void_codec::encode_fixed_length_vec(&self.#field_name, expected_len, buf) {
+                                        match voidmc_codec::encode_fixed_length_vec(&self.#field_name, expected_len, buf) {
                                             Ok(_) => {},
                                             Err(e) => panic!("{}", e),
                                         }
@@ -60,7 +60,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             // Remaining attribute: consume all remaining bytes on decode
                             if is_vec_u8(f) {
                                 quote! {
-                                    void_codec::encode_remaining_vec_u8(&self.#field_name, buf);
+                                    voidmc_codec::encode_remaining_vec_u8(&self.#field_name, buf);
                                 }
                             } else {
                                 // Error: remaining only works with Vec<u8>
@@ -80,7 +80,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     .collect::<Result<Vec<_>>>()?;
 
                 let expanded = quote! {
-                    impl void_codec::Encode for #name {
+                    impl voidmc_codec::Encode for #name {
                         fn encode(&self, buf: &mut Vec<u8>) {
                             #(#encode_fields)*
                         }
@@ -95,7 +95,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
             )),
             Fields::Unit => {
                 let expanded = quote! {
-                    impl void_codec::Encode for #name {
+                    impl voidmc_codec::Encode for #name {
                         fn encode(&self, _buf: &mut Vec<u8>) {}
                     }
                 };
@@ -144,7 +144,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     .collect::<Result<Vec<_>>>()?;
 
                 let expanded = quote! {
-                    impl void_codec::Encode for #name {
+                    impl voidmc_codec::Encode for #name {
                         fn encode(&self, buf: &mut Vec<u8>) {
                             match self {
                                 #(#variants)*
@@ -181,11 +181,11 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
 
                                 let encode_expr = if type_attrs.varint32 {
                                     quote! {
-                                        void_codec::VarI32(#discriminant as i32).encode(buf);
+                                        voidmc_codec::VarI32(#discriminant as i32).encode(buf);
                                     }
                                 } else if type_attrs.varint64 {
                                     quote! {
-                                        void_codec::VarI64(#discriminant as i64).encode(buf);
+                                        voidmc_codec::VarI64(#discriminant as i64).encode(buf);
                                     }
                                 } else {
                                     quote! {
@@ -208,7 +208,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     .collect::<Result<Vec<_>>>()?;
 
                 let expanded = quote! {
-                    impl void_codec::Encode for #name {
+                    impl voidmc_codec::Encode for #name {
                         fn encode(&self, buf: &mut Vec<u8>) {
                             match self {
                                 #(#variants)*

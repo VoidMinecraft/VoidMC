@@ -1,4 +1,4 @@
-use void_codec::{Encode, VarI32};
+use voidmc_codec::{Encode, VarI32};
 
 /// A single tag's flat list of registry indices.
 #[derive(Debug, Clone)]

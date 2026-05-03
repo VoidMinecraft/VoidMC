@@ -1,4 +1,4 @@
-use void_codec::{Decode, DecodeError, Encode};
+use voidmc_codec::{Decode, DecodeError, Encode};
 
 /// A block position packed into an i64 using Minecraft's bit layout.
 ///

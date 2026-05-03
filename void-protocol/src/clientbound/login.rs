@@ -1,7 +1,7 @@
 mod login_success;
 
 pub use login_success::*;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged)]

@@ -145,7 +145,7 @@ cargo expand
 
 ```rust
 // void-protocol/src/clientbound/play/spawn_entity.rs
-use void_codec::{Encode, Decode};
+use voidmc_codec::{Encode, Decode};
 
 #[derive(Encode, Decode, Debug)]
 pub struct SpawnEntity {

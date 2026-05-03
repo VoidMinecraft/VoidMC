@@ -1,5 +1,5 @@
 [package]
-name = "void-data"
+name = "voidmc-data"
 edition = "2024"
 description = "Vanilla Minecraft registry data, extracted from Paper and embedded as NBT blobs at build time."
 version.workspace = true

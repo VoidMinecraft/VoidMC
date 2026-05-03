@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_ecs::prelude::*;
 use flume::{Receiver, Sender};
-use void_net::socket::Packet;
-use void_protocol::serverbound;
+use voidmc_net::socket::Packet;
+use voidmc_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
 use crate::events::PlayerQuitEvent;
@@ -16,7 +16,7 @@ pub struct IncomingPacket {
 
 pub struct OutgoingPacket {
     pub client_id: u32,
-    pub packet: void_protocol::clientbound::ClientboundPacket,
+    pub packet: voidmc_protocol::clientbound::ClientboundPacket,
 }
 
 pub struct NetworkPlugin {
@@ -89,7 +89,7 @@ pub fn ingest_network_packets(world: &mut World) {
                             .spawn((
                                 Client,
                                 ClientId(incoming_packet.client_id),
-                                ConnectionState(void_protocol::State::Handshake),
+                                ConnectionState(voidmc_protocol::State::Handshake),
                             ))
                             .id()
                     })
@@ -160,7 +160,7 @@ fn dispatch_packet(
         .expect("Client must have a ConnectionState component");
 
     match state.0 {
-        void_protocol::State::Handshake => {
+        voidmc_protocol::State::Handshake => {
             let packet = packet.decode::<serverbound::HandshakePacket>()?;
             tracing::debug!("[Client {}][Handshake] Received {:?}", client_id, packet);
 
@@ -172,7 +172,7 @@ fn dispatch_packet(
                 }),
             }
         }
-        void_protocol::State::Status => {
+        voidmc_protocol::State::Status => {
             let packet = packet.decode::<serverbound::StatusPacket>()?;
             tracing::debug!("[Client {}][Status] Received {:?}", client_id, packet);
 
@@ -189,7 +189,7 @@ fn dispatch_packet(
                 }),
             }
         }
-        void_protocol::State::Login => {
+        voidmc_protocol::State::Login => {
             let packet = packet.decode::<serverbound::LoginPacket>()?;
             tracing::debug!("[Client {}][Login] Received {:?}", client_id, packet);
 
@@ -206,7 +206,7 @@ fn dispatch_packet(
                 }),
             }
         }
-        void_protocol::State::Configuration => {
+        voidmc_protocol::State::Configuration => {
             let packet = packet.decode::<serverbound::ConfigurationPacket>()?;
             tracing::debug!(
                 "[Client {}][Configuration] Received {:?}",
@@ -244,7 +244,7 @@ fn dispatch_packet(
                     }),
             }
         }
-        void_protocol::State::Play => {
+        voidmc_protocol::State::Play => {
             let packet = packet.decode::<serverbound::PlayPacket>()?;
             tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
 

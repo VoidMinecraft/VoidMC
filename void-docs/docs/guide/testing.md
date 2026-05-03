@@ -51,7 +51,7 @@ Tests embedded in documentation comments.
 /// # Examples
 ///
 /// ```
-/// use void::add;
+/// use voidmc::add;
 /// assert_eq!(add(2, 3), 5);
 /// ```
 pub fn add(a: i32, b: i32) -> i32 {

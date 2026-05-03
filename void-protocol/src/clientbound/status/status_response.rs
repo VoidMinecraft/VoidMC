@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Version {

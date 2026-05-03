@@ -1,5 +1,5 @@
 use ussr_nbt::owned::Nbt;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 /// Clientbound System Chat Message (0x73).
 /// Sends a system message (not player chat) to the client.

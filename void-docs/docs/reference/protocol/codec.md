@@ -22,7 +22,7 @@ pub trait Decode: Sized {
 The `void-codec-macros` crate provides `#[derive(Encode, Decode)]` for automatic implementation:
 
 ```rust
-use void_codec::{Encode, Decode};
+use voidmc_codec::{Encode, Decode};
 
 #[derive(Encode, Decode)]
 pub struct LoginStart {
@@ -185,7 +185,7 @@ pub enum DecodeError {
 Define a new packet struct and derive the codec:
 
 ```rust
-use void_codec::{Encode, Decode};
+use voidmc_codec::{Encode, Decode};
 
 #[derive(Encode, Decode)]
 pub struct MyCustomPacket {

@@ -1,4 +1,4 @@
-use void_codec::{Decode, DecodeError, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, Encode, VarI32};
 
 /// The type of string parsing expected by the client.
 #[derive(Debug, Clone, Copy)]

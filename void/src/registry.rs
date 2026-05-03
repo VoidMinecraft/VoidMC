@@ -1,5 +1,5 @@
 use bevy_ecs::prelude::*;
-use void_protocol::clientbound::{RegistryData, RegistryEntry};
+use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 
 /// Stores all registry data sent to clients during configuration.
 ///
@@ -77,17 +77,17 @@ impl RegistryDataStore {
 
 /// Returns the default set of registry data needed for a vanilla-compatible server.
 ///
-/// Every shipped registry now comes from `void_data` (datapack JSONs extracted
+/// Every shipped registry now comes from `voidmc_data` (datapack JSONs extracted
 /// from Paper at the targeted version).
 pub fn default_registry_data() -> Vec<RegistryData> {
-    let version = void_data::Version::V26_1_2;
-    void_data::registries(version)
+    let version = voidmc_data::Version::V26_1_2;
+    voidmc_data::registries(version)
         .iter()
         .map(|(registry_id, entries)| {
             let entries = entries
                 .iter()
                 .map(|(entry_id, _bytes)| {
-                    let nbt = void_data::entry_nbt(version, registry_id, entry_id)
+                    let nbt = voidmc_data::entry_nbt(version, registry_id, entry_id)
                         .expect("entry shipped but parse failed");
                     RegistryEntry {
                         entry_id: entry_id.to_string(),

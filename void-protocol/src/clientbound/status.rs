@@ -3,7 +3,7 @@ mod status_response;
 
 pub use ping_response::*;
 pub use status_response::*;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged)]

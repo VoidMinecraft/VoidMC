@@ -7,7 +7,7 @@ pub use finish_configuration::*;
 pub use known_packs::*;
 pub use registry_data::*;
 pub use update_tags::*;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged)]
@@ -31,7 +31,7 @@ impl Encode for ManualConfigurationPacket {
     fn encode(&self, buf: &mut Vec<u8>) {
         match self {
             ManualConfigurationPacket::UpdateTags(packet) => {
-                void_codec::VarI32(0x0D).encode(buf);
+                voidmc_codec::VarI32(0x0D).encode(buf);
                 packet.encode(buf);
             }
         }

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use void_codec::{Decode, Encode, VarI32};
+use voidmc_codec::{Decode, Encode, VarI32};
 
 pub struct Packet(Vec<u8>);
 

@@ -1,6 +1,6 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands, world::World};
-use void_protocol::serverbound::{
+use voidmc_protocol::serverbound::{
     ConfirmTeleportation, PlayerAbilities, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation,
 };
 

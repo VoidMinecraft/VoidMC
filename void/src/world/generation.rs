@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use bevy_ecs::prelude::*;
-use void_protocol::clientbound::chunk::{Chunk as ProtocolChunk, ChunkBuilder, blocks};
+use voidmc_protocol::clientbound::chunk::{Chunk as ProtocolChunk, ChunkBuilder, blocks};
 
 use super::chunk_pos::ChunkPos;
 
@@ -11,8 +11,8 @@ use super::chunk_pos::ChunkPos;
 fn plains_biome_id() -> i32 {
     static ID: OnceLock<i32> = OnceLock::new();
     *ID.get_or_init(|| {
-        void_data::registry_index(
-            void_data::Version::V26_1_2,
+        voidmc_data::registry_index(
+            voidmc_data::Version::V26_1_2,
             "minecraft:worldgen/biome",
             "minecraft:plains",
         )

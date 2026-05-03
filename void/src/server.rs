@@ -8,7 +8,7 @@ use crate::{
     client::Client,
     network::{IncomingPacket, OutgoingPacket},
 };
-use void_net::socket::ServerSocket;
+use voidmc_net::socket::ServerSocket;
 
 #[derive(Debug)]
 pub struct Server {

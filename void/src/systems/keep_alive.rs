@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy_ecs::prelude::*;
-use void_protocol::clientbound;
+use voidmc_protocol::clientbound;
 
 use crate::components::{ClientId, KeepAliveState, PlayerReady};
 use crate::network::{NetworkChannels, OutgoingPacket};

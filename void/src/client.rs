@@ -1,7 +1,7 @@
 use crate::network::{IncomingPacket, OutgoingPacket};
 use flume::{Receiver, Sender};
-use void_net::socket::ClientSocket;
-use void_protocol::clientbound::ClientboundPacket;
+use voidmc_net::socket::ClientSocket;
+use voidmc_protocol::clientbound::ClientboundPacket;
 
 pub struct Client {
     socket: ClientSocket,

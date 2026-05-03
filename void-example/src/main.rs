@@ -1,8 +1,8 @@
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::prelude::*;
-use void::components::PlayerName;
-use void::events::PlayerStartDiggingEvent;
-use void::{
+use voidmc::components::PlayerName;
+use voidmc::events::PlayerStartDiggingEvent;
+use voidmc::{
     CommandBuilder, CommandRegistry, On, Query, ServerConfigBuilder, VoidServer,
     register_default_commands,
 };

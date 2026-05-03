@@ -17,7 +17,7 @@ Void is a Minecraft-compatible server framework written in Rust. It combines [Be
 Add `void` as a dependency, then create a minimal server:
 
 ```rust
-use void::{
+use voidmc::{
     CommandBuilder, CommandRegistry, ServerBuilder, VoidServer,
     register_default_commands,
 };

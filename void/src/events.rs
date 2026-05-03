@@ -1,5 +1,5 @@
 use bevy_ecs::prelude::*;
-use void_protocol::types::{BlockFace, BlockPosition, Hand};
+use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 
 // Semantic game events — triggered via world.trigger() and handled by observers
 #[derive(Event)]

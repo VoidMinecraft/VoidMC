@@ -1,5 +1,5 @@
 use uuid::Uuid;
-use void_codec::{Encode, VarI32};
+use voidmc_codec::{Encode, VarI32};
 
 #[derive(Debug, Clone)]
 pub struct PlayerInfoEntry {

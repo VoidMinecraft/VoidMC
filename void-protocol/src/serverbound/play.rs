@@ -43,7 +43,7 @@ pub use swing_arm::*;
 pub use tick_end::*;
 pub use use_item::*;
 pub use use_item_on::*;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Encode, Decode)]
 #[codec(tagged)]

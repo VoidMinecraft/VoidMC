@@ -7,7 +7,7 @@ pub use client_information::{ChatMode, ClientInformation, MainHand, ParticleStat
 pub use finish_configuration_acknowledged::FinishConfigurationAcknowledged;
 pub use known_packs::{KnownPack, KnownPacks};
 pub use plugin_message::PluginMessage;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Encode, Decode)]
 #[codec(tagged)]

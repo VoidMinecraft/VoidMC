@@ -3,7 +3,7 @@ mod login_start;
 
 pub use login_acknowledged::*;
 pub use login_start::*;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Encode, Decode)]
 #[codec(tagged)]

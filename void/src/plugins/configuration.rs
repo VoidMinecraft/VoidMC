@@ -5,7 +5,7 @@ use bevy_ecs::{
     observer::On,
     system::{Commands, Query, Res, ResMut},
 };
-use void_protocol::{
+use voidmc_protocol::{
     State, clientbound,
     serverbound::{ClientInformation, FinishConfigurationAcknowledged, KnownPacks, PluginMessage},
 };
@@ -74,14 +74,14 @@ fn handle_known_packs(
     });
 }
 
-/// Translates `void_data::tagged_registries()` into the wire format. Tag
+/// Translates `voidmc_data::tagged_registries()` into the wire format. Tag
 /// values are mapped to numeric indices using the order of entries in the
 /// registry as it was just sent.
 fn build_update_tags(registries: &RegistryDataStore) -> clientbound::UpdateTags {
-    let version = void_data::Version::V26_1_2;
+    let version = voidmc_data::Version::V26_1_2;
     let mut out = Vec::new();
 
-    for (registry_id, tags) in void_data::tagged_registries(version) {
+    for (registry_id, tags) in voidmc_data::tagged_registries(version) {
         let Some(registry) = registries.get_registry(registry_id) else {
             continue;
         };

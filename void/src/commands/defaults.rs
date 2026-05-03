@@ -154,10 +154,10 @@ fn handle_gamemode(ctx: &mut CommandContext) {
         let channels = world.resource::<NetworkChannels>();
         let _ = channels.outgoing.send(OutgoingPacket {
             client_id: ctx.client_id,
-            packet: void_protocol::clientbound::ClientboundPacket::Play(
-                void_protocol::clientbound::PlayPacket::GameEvent(
-                    void_protocol::clientbound::GameEvent {
-                        event: void_protocol::clientbound::GameEventType::ChangeGameMode,
+            packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
+                voidmc_protocol::clientbound::PlayPacket::GameEvent(
+                    voidmc_protocol::clientbound::GameEvent {
+                        event: voidmc_protocol::clientbound::GameEventType::ChangeGameMode,
                         value: mode as f32,
                     },
                 ),
@@ -192,9 +192,9 @@ fn handle_kick(ctx: &mut CommandContext) {
                 let channels = world.resource::<NetworkChannels>();
                 let _ = channels.outgoing.send(OutgoingPacket {
                     client_id: target_cid,
-                    packet: void_protocol::clientbound::ClientboundPacket::Play(
-                        void_protocol::clientbound::PlayPacket::Disconnect(
-                            void_protocol::clientbound::Disconnect { reason: reason_nbt },
+                    packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
+                        voidmc_protocol::clientbound::PlayPacket::Disconnect(
+                            voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
                         ),
                     ),
                 });
@@ -352,9 +352,9 @@ fn handle_tp(ctx: &mut CommandContext) {
         let channels = world.resource::<NetworkChannels>();
         let _ = channels.outgoing.send(OutgoingPacket {
             client_id: ctx.client_id,
-            packet: void_protocol::clientbound::ClientboundPacket::Play(
-                void_protocol::clientbound::PlayPacket::SynchronizePlayerPosition(
-                    void_protocol::clientbound::SynchronizePlayerPosition {
+            packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
+                voidmc_protocol::clientbound::PlayPacket::SynchronizePlayerPosition(
+                    voidmc_protocol::clientbound::SynchronizePlayerPosition {
                         teleport_id,
                         x,
                         y,
@@ -364,7 +364,7 @@ fn handle_tp(ctx: &mut CommandContext) {
                         vz: 0.0,
                         yaw,
                         pitch,
-                        flags: void_protocol::clientbound::TeleportFlags::empty(),
+                        flags: voidmc_protocol::clientbound::TeleportFlags::empty(),
                     },
                 ),
             ),

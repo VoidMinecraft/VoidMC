@@ -119,7 +119,7 @@ Register an observer function in your plugin:
 
 ```rust
 use bevy_ecs::prelude::*;
-use void::events::PlayerJoinEvent;
+use voidmc::events::PlayerJoinEvent;
 
 fn on_join(event: On<PlayerJoinEvent>) {
     println!("Player joined! client_id={}", event.client_id);
@@ -138,7 +138,7 @@ Read raw packet messages in a system:
 
 ```rust
 use bevy_ecs::prelude::*;
-use void::events::PlayPacketEvent;
+use voidmc::events::PlayPacketEvent;
 
 fn my_packet_system(mut reader: MessageReader<PlayPacketEvent>) {
     for event in reader.read() {

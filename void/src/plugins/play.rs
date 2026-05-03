@@ -1,6 +1,6 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands, world::World};
-use void_protocol::{
+use voidmc_protocol::{
     clientbound::KeepAlive,
     serverbound::{ClientInformation, PlayerLoaded, Pong, TickEnd},
 };

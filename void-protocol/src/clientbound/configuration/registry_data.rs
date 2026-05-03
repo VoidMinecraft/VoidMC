@@ -1,5 +1,5 @@
 use ussr_nbt::owned::Nbt;
-use void_codec::{Decode, Encode};
+use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct RegistryEntry {
