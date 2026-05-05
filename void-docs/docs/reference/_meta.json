@@ -26,6 +26,11 @@
     "collapsed": false
   },
   {
+    "type": "file",
+    "name": "data",
+    "label": "Vanilla Data"
+  },
+  {
     "type": "dir",
     "name": "protocol-specs",
     "label": "Protocol Specs",
