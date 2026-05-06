@@ -22,6 +22,7 @@ pub enum Parser {
     String(StringType),
     Entity { single: bool, players_only: bool },
     GameProfile,
+    ResourceLocation,
     Message,
 }
 
@@ -36,6 +37,7 @@ impl Parser {
             Parser::String(_) => 5,
             Parser::Entity { .. } => 6,
             Parser::GameProfile => 7,
+            Parser::ResourceLocation => 35,
             Parser::Message => 19,
         }
     }
@@ -93,7 +95,7 @@ impl Parser {
                 let flags = (*single as u8) | ((*players_only as u8) << 1);
                 buf.push(flags);
             }
-            Parser::GameProfile | Parser::Message => {}
+            Parser::GameProfile | Parser::ResourceLocation | Parser::Message => {}
         }
     }
 }
@@ -183,5 +185,22 @@ impl Decode for Commands {
     fn decode(_buf: &mut &[u8]) -> Result<Self, DecodeError> {
         // Server-only packet, no need to decode
         Err(DecodeError::InvalidLength)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_location_parser_id_is_35() {
+        assert_eq!(Parser::ResourceLocation.parser_id(), 35);
+    }
+
+    #[test]
+    fn resource_location_encodes_no_properties() {
+        let mut buf = Vec::new();
+        Parser::ResourceLocation.encode_properties(&mut buf);
+        assert!(buf.is_empty());
     }
 }

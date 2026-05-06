@@ -87,5 +87,25 @@ pub struct PlayerDimension(pub DimensionId);
 #[derive(Component)]
 pub struct Operator;
 
+/// Numeric entity type ID from the `minecraft:entity_type` registry.
+#[derive(Component)]
+pub struct EntityType(pub i32);
+
+/// Marker component for non-player summoned entities.
+#[derive(Component)]
+pub struct SpawnedEntity;
+
+/// UUID for a non-player summoned entity, matching the UUID sent in SpawnEntity.
+#[derive(Component)]
+pub struct EntityUuid(pub uuid::Uuid);
+
+/// Entity velocity in blocks/tick, matching the SpawnEntity packet LpVec3 format.
+#[derive(Component)]
+pub struct Velocity {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);

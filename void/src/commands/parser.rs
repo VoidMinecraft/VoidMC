@@ -390,3 +390,121 @@ impl ArgParser for MessageArg {
         Some(Parser::Message)
     }
 }
+
+/// Resource location argument — parses as `String`, protocol hint = `ResourceLocation`.
+/// Validates namespace:path format where both parts must be non-empty and contain only
+/// lowercase alphanumeric characters, underscores, hyphens, periods, and forward slashes (path only).
+pub struct ResourceLocationArg;
+
+impl ArgParser for ResourceLocationArg {
+    fn type_name(&self) -> &str {
+        "resource_location"
+    }
+
+    fn parse(&self, input: &str) -> Result<Box<dyn Any + Send + Sync>, String> {
+        let valid_ns_char =
+            |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c);
+        let valid_path_char =
+            |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-/".contains(c);
+        let parts: Vec<&str> = input.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(format!(
+                "'{}' is not a valid resource location (expected namespace:path)",
+                input
+            ));
+        }
+        let (ns, path) = (parts[0], parts[1]);
+        if ns.is_empty() {
+            return Err("resource location namespace must not be empty".to_string());
+        }
+        if path.is_empty() {
+            return Err("resource location path must not be empty".to_string());
+        }
+        if !ns.chars().all(valid_ns_char) {
+            return Err(format!("namespace '{}' contains invalid characters", ns));
+        }
+        if !path.chars().all(valid_path_char) {
+            return Err(format!("path '{}' contains invalid characters", path));
+        }
+        Ok(Box::new(input.to_string()))
+    }
+
+    fn protocol_parser(&self) -> Option<Parser> {
+        Some(Parser::ResourceLocation)
+    }
+}
+
+/// Summonable entity argument — same namespace:path validation as
+/// `ResourceLocationArg` but tells the client to resolve tab-completion
+/// suggestions locally from its built-in `minecraft:summonable_entities` list.
+pub struct SummonableEntityArg;
+
+impl ArgParser for SummonableEntityArg {
+    fn type_name(&self) -> &str {
+        "resource_location"
+    }
+
+    fn parse(&self, input: &str) -> Result<Box<dyn Any + Send + Sync>, String> {
+        ResourceLocationArg.parse(input)
+    }
+
+    fn protocol_parser(&self) -> Option<Parser> {
+        Some(Parser::ResourceLocation)
+    }
+
+    fn suggestions_type(&self) -> Option<&str> {
+        Some("minecraft:summonable_entities")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_rl(s: &str) -> Result<String, String> {
+        let arg = ResourceLocationArg;
+        arg.parse(s).map(|v| *v.downcast::<String>().unwrap())
+    }
+
+    #[test]
+    fn accepts_valid_resource_location() {
+        assert_eq!(parse_rl("minecraft:creeper").unwrap(), "minecraft:creeper");
+        assert_eq!(parse_rl("mymod:some_entity").unwrap(), "mymod:some_entity");
+        assert_eq!(parse_rl("a:b/c").unwrap(), "a:b/c");
+    }
+
+    #[test]
+    fn rejects_missing_colon() {
+        assert!(parse_rl("creeper").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_namespace() {
+        assert!(parse_rl(":creeper").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_path() {
+        assert!(parse_rl("minecraft:").is_err());
+    }
+
+    #[test]
+    fn rejects_multiple_colons() {
+        assert!(parse_rl("a:b:c").is_err());
+    }
+
+    #[test]
+    fn rejects_uppercase() {
+        assert!(parse_rl("Minecraft:Creeper").is_err());
+    }
+
+    #[test]
+    fn protocol_parser_is_resource_location() {
+        use voidmc_protocol::clientbound::commands::Parser;
+        let arg = ResourceLocationArg;
+        assert!(matches!(
+            arg.protocol_parser(),
+            Some(Parser::ResourceLocation)
+        ));
+    }
+}
