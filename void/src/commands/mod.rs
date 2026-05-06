@@ -11,7 +11,7 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::commands::{CommandNode, Commands, Parser, StringType};
 
-use crate::components::{ClientId, PlayerName, PlayerReady};
+use crate::components::{ClientId, PlayerName, PlayerReady, Position};
 use crate::network::{NetworkChannels, OutgoingPacket};
 
 pub use error::ParseError;
@@ -43,6 +43,7 @@ struct RegisteredCommand {
     arguments: Vec<ArgumentDefinition>,
     flag_definitions: Vec<FlagDefinition>,
     handler: Arc<dyn Fn(&mut CommandContext) + Send + Sync>,
+    suggest_entity_types: bool,
 }
 
 /// The result of `CommandBuilder::build()` — a command ready to be registered.
@@ -54,6 +55,7 @@ pub struct Command {
     arguments: Vec<ArgumentDefinition>,
     flag_definitions: Vec<FlagDefinition>,
     handler: Arc<dyn Fn(&mut CommandContext) + Send + Sync>,
+    suggest_entity_types: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +71,7 @@ pub struct CommandBuilder {
     arguments: Vec<ArgumentDefinition>,
     flag_definitions: Vec<FlagDefinition>,
     handler: Option<Arc<dyn Fn(&mut CommandContext) + Send + Sync>>,
+    suggest_entity_types: bool,
 }
 
 impl CommandBuilder {
@@ -81,7 +84,15 @@ impl CommandBuilder {
             arguments: Vec::new(),
             flag_definitions: Vec::new(),
             handler: None,
+            suggest_entity_types: false,
         }
+    }
+
+    /// Mark this command as accepting entity type names as a target argument.
+    /// The suggestion handler will include `minecraft:*` entity type names in tab-completion.
+    pub fn suggest_entity_types(mut self) -> Self {
+        self.suggest_entity_types = true;
+        self
     }
 
     pub fn description(mut self, desc: &str) -> Self {
@@ -198,6 +209,7 @@ impl CommandBuilder {
             arguments: self.arguments,
             flag_definitions: self.flag_definitions,
             handler: self.handler.expect("Command must have a handler"),
+            suggest_entity_types: self.suggest_entity_types,
         }
     }
 }
@@ -384,8 +396,16 @@ impl CommandRegistry {
                 arguments: command.arguments,
                 flag_definitions: command.flag_definitions,
                 handler: command.handler,
+                suggest_entity_types: command.suggest_entity_types,
             },
         );
+    }
+
+    /// Returns `true` if the canonical command was built with `.suggest_entity_types()`.
+    pub fn accepts_entity_type_arg(&self, canonical_name: &str) -> bool {
+        self.commands
+            .get(canonical_name)
+            .map_or(false, |cmd| cmd.suggest_entity_types)
     }
 
     /// Resolve a command name (or alias) to its canonical name.
@@ -768,6 +788,7 @@ pub fn dispatch_command(
     command_name: &str,
     args: Vec<String>,
 ) {
+    tracing::info!("[DISPATCH_COMMAND_CALLED] command='{}', args={:?}", command_name, args);
     // Step 1: borrow registry immutably to clone handler + definitions
     let resolved = world
         .resource::<CommandRegistry>()
@@ -788,8 +809,43 @@ pub fn dispatch_command(
                 return;
             }
 
-            // Positional argument parsing
-            match parse_positional(&positional, &res.arguments) {
+            // Positional argument parsing with support for relative coordinates (`~`).
+            // Resolve any `~` tokens for `double` arguments relative to the executor's `Position`.
+            let resolved_positional = {
+                let mut tokens = positional.clone();
+                for (i, (arg_name, parser, _required, _variadic)) in res.arguments.iter().enumerate() {
+                    if i >= tokens.len() {
+                        break;
+                    }
+                    let token = &tokens[i];
+                    if token.starts_with('~') && parser.type_name() == "double" {
+                        // Attempt to read base position from executor entity
+                        if let Some(pos_comp) = world.get::<Position>(entity) {
+                            let base_val = match arg_name.as_str() {
+                                "x" => pos_comp.x,
+                                "y" => pos_comp.y,
+                                "z" => pos_comp.z,
+                                _ => pos_comp.x,
+                            };
+
+                            let offset_str = &token[1..];
+                            let offset = if offset_str.is_empty() {
+                                0.0
+                            } else {
+                                match offset_str.parse::<f64>() {
+                                    Ok(v) => v,
+                                    Err(_) => continue, // leave token unchanged; parse_positional will report error
+                                }
+                            };
+                            let abs = base_val + offset;
+                            tokens[i] = abs.to_string();
+                        }
+                    }
+                }
+                tokens
+            };
+
+            match parse_positional(&resolved_positional, &res.arguments) {
                 Ok(parsed_args) => {
                     let mut ctx = CommandContext {
                         world,
