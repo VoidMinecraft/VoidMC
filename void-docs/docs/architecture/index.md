@@ -6,30 +6,12 @@ For the full detailed architecture documentation, see the [Architecture Referenc
 
 ## System Architecture
 
-```
-+-------------------------------------------------------------+
-|                   Minecraft Client                           |
-+-------------------------------------------------------------+
-                            | TCP
-+-------------------------------------------------------------+
-|         void-net: Async TCP Socket Wrapper                   |
-|              (Tokio-based networking)                        |
-+-------------------------------------------------------------+
-                            |
-+-------------------------------------------------------------+
-|   void-codec: Binary Serialization/Deserialization          |
-|              (Encode/Decode Traits)                          |
-+-------------------------------------------------------------+
-                            |
-+-------------------------------------------------------------+
-|  void-protocol: Minecraft Protocol Definitions               |
-|   (Packets organized by state and direction)                 |
-+-------------------------------------------------------------+
-                            |
-+-------------------------------------------------------------+
-|          void: Core Server Application                        |
-|  (Client handling, game logic, state management)             |
-+-------------------------------------------------------------+
+```mermaid
+graph TD
+    Client[Minecraft Client] -->|TCP| Net[void-net: Async TCP Socket Wrapper<br/>Tokio-based networking]
+    Net --> Codec[void-codec: Binary Serialization/Deserialization<br/>Encode/Decode Traits]
+    Codec --> Protocol[void-protocol: Minecraft Protocol Definitions<br/>Packets by state and direction]
+    Protocol --> Core[void: Core Server Application<br/>Client handling, game logic, state management]
 ```
 
 ## Dual-Threaded Model
