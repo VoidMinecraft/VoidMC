@@ -168,6 +168,7 @@ fn handle_finish_configuration(
         EffectiveViewDistance(config.initial_chunk_radius),
         LoadedChunks(HashSet::new()),
         PlayerDimension(DimensionId::Overworld),
+        crate::components::HotbarSlot(0),
     ));
 
     // Send login success packet

@@ -222,6 +222,123 @@ impl ChunkSection {
         }
     }
 
+    /// Reads the block-state id at the given local section coordinates (0..16).
+    pub fn get_block_state(&self, x: u8, y: u8, z: u8) -> i32 {
+        debug_assert!(x < 16 && y < 16 && z < 16);
+        let idx = (y as usize) * 256 + (z as usize) * 16 + (x as usize);
+        match &self.block_state {
+            PaletteData::SingleValue(id) => *id,
+            PaletteData::Indirect {
+                bits_per_entry,
+                palette,
+                data,
+            } => {
+                let bits = *bits_per_entry as usize;
+                let entries_per_long = 64 / bits;
+                let long_idx = idx / entries_per_long;
+                let bit_offset = (idx % entries_per_long) * bits;
+                let mask = (1u64 << bits) - 1;
+                let palette_idx = ((data[long_idx] >> bit_offset) & mask) as usize;
+                palette.get(palette_idx).copied().unwrap_or(blocks::AIR)
+            }
+        }
+    }
+
+    /// Writes a block-state id at the given local section coordinates and returns
+    /// the previous value.
+    ///
+    /// Promotes a `SingleValue` palette to `Indirect` on the first heterogeneous
+    /// write, and grows `bits_per_entry` as the palette outgrows the current
+    /// width. The block count is updated to track the number of non-air blocks.
+    pub fn set_block_state(&mut self, x: u8, y: u8, z: u8, new_id: i32) -> i32 {
+        debug_assert!(x < 16 && y < 16 && z < 16);
+        let idx = (y as usize) * 256 + (z as usize) * 16 + (x as usize);
+
+        let old_id = self.get_block_state(x, y, z);
+        if old_id == new_id {
+            return old_id;
+        }
+
+        match &mut self.block_state {
+            PaletteData::SingleValue(cur) => {
+                let cur_id = *cur;
+                let bits_per_entry: u8 = 4;
+                let entries_per_long = 64 / bits_per_entry as usize;
+                let total_longs = 4096_usize.div_ceil(entries_per_long);
+                let palette = vec![cur_id, new_id];
+
+                // palette[0] = cur_id, so a zero-filled data buffer already maps
+                // every cell to the previous block — only the target needs to flip
+                // to palette index 1 (new_id).
+                let mut data = vec![0u64; total_longs];
+
+                let long_idx = idx / entries_per_long;
+                let bit_offset = (idx % entries_per_long) * bits_per_entry as usize;
+                let mask = (1u64 << bits_per_entry) - 1;
+                data[long_idx] &= !(mask << bit_offset);
+                data[long_idx] |= (1u64 & mask) << bit_offset;
+
+                self.block_state = PaletteData::Indirect {
+                    bits_per_entry,
+                    palette,
+                    data,
+                };
+            }
+            PaletteData::Indirect {
+                bits_per_entry,
+                palette,
+                data,
+            } => {
+                let palette_idx = match palette.iter().position(|&id| id == new_id) {
+                    Some(i) => i,
+                    None => {
+                        palette.push(new_id);
+                        palette.len() - 1
+                    }
+                };
+
+                let needed_bits = palette_bits_needed(palette.len());
+                if needed_bits > *bits_per_entry {
+                    let old_bits = *bits_per_entry as usize;
+                    let new_bits = needed_bits as usize;
+                    let old_per_long = 64 / old_bits;
+                    let new_per_long = 64 / new_bits;
+                    let new_total_longs = 4096_usize.div_ceil(new_per_long);
+                    let old_mask = (1u64 << old_bits) - 1;
+                    let new_mask = (1u64 << new_bits) - 1;
+
+                    let mut new_data = vec![0u64; new_total_longs];
+                    for i in 0..4096 {
+                        let old_long = i / old_per_long;
+                        let old_off = (i % old_per_long) * old_bits;
+                        let v = (data[old_long] >> old_off) & old_mask;
+                        let new_long = i / new_per_long;
+                        let new_off = (i % new_per_long) * new_bits;
+                        new_data[new_long] |= (v & new_mask) << new_off;
+                    }
+                    *data = new_data;
+                    *bits_per_entry = needed_bits;
+                }
+
+                let bits = *bits_per_entry as usize;
+                let entries_per_long = 64 / bits;
+                let long_idx = idx / entries_per_long;
+                let bit_offset = (idx % entries_per_long) * bits;
+                let mask = (1u64 << bits) - 1;
+                data[long_idx] &= !(mask << bit_offset);
+                data[long_idx] |= (palette_idx as u64 & mask) << bit_offset;
+            }
+        }
+
+        if old_id == blocks::AIR && new_id != blocks::AIR {
+            self.block_count = self.block_count.saturating_add(1);
+        } else if old_id != blocks::AIR && new_id == blocks::AIR {
+            self.block_count = self.block_count.saturating_sub(1);
+        }
+
+        old_id
+    }
+
     /// Encodes this section to bytes.
     ///
     /// Wire format (1.21.5+, `PalettedContainer.read`):
@@ -415,6 +532,20 @@ pub struct ChunkDataAndLight {
     pub empty_block_light_mask: Vec<u64>,
     pub sky_light_arrays: Vec<Vec<u8>>,
     pub block_light_arrays: Vec<Vec<u8>>,
+}
+
+/// Returns the indirect-palette `bits_per_entry` required to index `len` entries.
+/// Matches vanilla: 4 bits minimum, then ceil(log2(len)).
+fn palette_bits_needed(len: usize) -> u8 {
+    if len <= 16 {
+        4
+    } else {
+        let mut bits = 5u8;
+        while (1usize << bits) < len && bits < 8 {
+            bits += 1;
+        }
+        bits
+    }
 }
 
 fn write_varint(buf: &mut Vec<u8>, value: i32) {

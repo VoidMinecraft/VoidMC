@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use ussr_nbt::owned::Nbt;
 
 include!(concat!(env!("OUT_DIR"), "/registries.rs"));
+include!(concat!(env!("OUT_DIR"), "/blocks.rs"));
 
 /// A supported Minecraft version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
