@@ -23,6 +23,9 @@ Void is a modular Minecraft server framework in Rust. We prioritize performance,
 - Protocol/network improvements
 - Documentation and examples
 
+### Good First Issues
+If you are new to the project or to Rust, we highly encourage you to search the Issue tracker for the label **`good first issue`**. These are targeted tasks designed to be approachable and an excellent way to get familiar with our architecture. Don't hesitate to ask questions on the issues—we are happy to guide you!
+
 If a change is large, open an issue first to align on design.
 
 ## Project Principles

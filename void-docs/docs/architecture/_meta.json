@@ -3,5 +3,15 @@
     "type": "file",
     "name": "index",
     "label": "Overview"
+  },
+  {
+    "type": "file",
+    "name": "technology-evaluations",
+    "label": "Technology Evaluations"
+  },
+  {
+    "type": "file",
+    "name": "quality-standards",
+    "label": "Quality Standards"
   }
 ]
