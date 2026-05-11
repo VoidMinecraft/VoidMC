@@ -170,13 +170,13 @@ Common types referenced throughout this page are described in [data-types](./dat
 | Entity UUID | [UUID](./data-types#uuid) | Stable identifier; randomly generated for newly spawned entities. |
 | Type | [VarInt](./data-types#varint) | Registry id into the `minecraft:entity_type` registry. |
 | X / Y / Z | [Double](./data-types#double) × 3 | Spawn position in absolute world coordinates. |
-| Velocity X / Y / Z | [Short](./data-types#short) × 3 | Initial velocity, encoded as `clamp(value, -3.9, 3.9) * 8000`. |
+| Velocity | [LP Vec3](./data-types#lp-vec3) | Initial velocity. Encoded via `Vec3.LP_STREAM_CODEC` (`net.minecraft.network.LpVec3`): a single `0x00` byte for zero, otherwise 6 bytes packing three 15-bit axes plus a 2-bit scale, optionally followed by a VarInt for the upper scale bits. |
 | Pitch | [Angle](./data-types#angle) | Packed degrees (`degrees * 256/360`). |
 | Yaw | [Angle](./data-types#angle) | Packed degrees. |
 | Head Yaw | [Angle](./data-types#angle) | Packed degrees; relevant for mobs with an independent head. |
 | Data | [VarInt](./data-types#varint) | Object-specific data: e.g. block state id for falling blocks, shooter entity id for projectiles. Meaning depends on Type. |
 
-**Semantics.** Sent when a non-player entity becomes visible to the client. Players are introduced via [Player Info Update](#0x46---player-info-update) and entered into the world by their entry there. Velocity is sent in the `Vec3.LP_STREAM_CODEC` form (three shorts).
+**Semantics.** Sent when a non-player entity becomes visible to the client. Players are introduced via [Player Info Update](#0x46---player-info-update) and entered into the world by their entry there. Velocity uses the low-precision `Vec3.LP_STREAM_CODEC` format (variable-length, 1 byte when zero, 6+ bytes otherwise) — **not** three signed shorts as in pre-1.21.7 protocols.
 
 ## 0x02 - Animate
 
@@ -1364,7 +1364,7 @@ Per-action payload:
 | Field | Type | Notes |
 |-------|------|-------|
 | Entity Id | [VarInt](./data-types#varint) | Target. |
-| Velocity X / Y / Z | [Short](./data-types#short) × 3 | Encoded as for [Add Entity](#0x01---add-entity). |
+| Velocity | [LP Vec3](./data-types#lp-vec3) | Encoded via `Vec3.LP_STREAM_CODEC`, identical to [Add Entity](#0x01---add-entity). |
 
 **Semantics.** Sets the entity velocity directly.
 

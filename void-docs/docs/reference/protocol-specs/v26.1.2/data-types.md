@@ -144,6 +144,35 @@ Range: `x, z ∈ [-33_554_432, 33_554_431]`, `y ∈ [-2048, 2047]`.
 Single unsigned byte representing an angle in 1/256 of a full turn. To convert
 to degrees: `deg = byte * 360 / 256`. Wraps modulo 256.
 
+### LP Vec3
+Low-precision 3D vector used since 1.21.7 for entity movement/velocity fields
+(`net.minecraft.network.LpVec3`, exposed as `Vec3.LP_STREAM_CODEC`). Variable
+length:
+
+- If `|x|, |y|, |z|` are all below `3.051944088384301e-5` (`ABS_MIN`), the
+  vector is encoded as a single `0x00` byte.
+- Otherwise the encoder computes `scale = ceil(max(|x|,|y|,|z|))`, packs each
+  axis into 15 bits as `round((axis/scale * 0.5 + 0.5) * 32766)`, and emits a
+  64-bit buffer laid out as:
+
+  ```text
+  bits 0..1   : low 2 bits of scale
+  bit  2      : continuation flag (set when scale needs > 2 bits)
+  bits 3..17  : packed X (15 bits)
+  bits 18..32 : packed Y (15 bits)
+  bits 33..47 : packed Z (15 bits)
+  ```
+
+  Wire layout: 1 byte (bits 0..7), 1 byte (bits 8..15), 4 bytes big-endian
+  (bits 16..47) — 6 bytes total. When the continuation flag is set, a VarInt
+  carrying the upper bits of the scale (`scale >> 2`) follows.
+
+- Range per axis: `±1.7179869183e10`. `NaN` is sanitised to `0.0`.
+
+This format **replaces** the pre-1.21.7 `Velocity X / Y / Z` triple of signed
+shorts. Encoding velocity as three shorts produces the symptom *"packet larger
+than I expected, found 5 bytes extra"* on the vanilla client.
+
 ## Collections
 
 ### Byte Array
