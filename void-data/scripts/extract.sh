@@ -79,4 +79,45 @@ for REG in "${REGISTRIES[@]}" "${TAG_REGISTRIES[@]}"; do
   fi
 done
 
+echo "==> Copying Mojang block list report"
+REPORTS="$WORK_DIR/generated/reports"
+if [ -f "$REPORTS/blocks.json" ]; then
+  cp "$REPORTS/blocks.json" "$ASSETS_DIR/blocks.json"
+  printf '  %-32s %s blocks\n' "blocks.json" \
+    "$(grep -c '^  "minecraft:' "$ASSETS_DIR/blocks.json" || true)"
+else
+  echo "  WARNING: $REPORTS/blocks.json missing — block codegen will skip" >&2
+fi
+
+# ---- Prismarine block-collision shapes -----------------------------------
+# We pin a release branch / commit so the data is reproducible. The vendored
+# JSON ships next to blocks.json and is consumed by void-data/build.rs to
+# emit the typed `shapes` module. Override `PRISMARINE_REF` /
+# `PRISMARINE_SHAPE_VERSION` if you need a different snapshot.
+PRISMARINE_REPO="${PRISMARINE_REPO:-https://github.com/PrismarineJS/minecraft-data.git}"
+PRISMARINE_REF="${PRISMARINE_REF:-master}"
+PRISMARINE_SHAPE_VERSION="${PRISMARINE_SHAPE_VERSION:-1.21.9}"
+
+echo "==> Cloning prismarine ($PRISMARINE_REF) for collision shapes"
+git clone --depth 1 --branch "$PRISMARINE_REF" --quiet \
+  "$PRISMARINE_REPO" "$WORK_DIR/prismarine"
+PRISM_COMMIT="$(git -C "$WORK_DIR/prismarine" rev-parse HEAD)"
+SHAPE_SRC="$WORK_DIR/prismarine/data/pc/$PRISMARINE_SHAPE_VERSION/blockCollisionShapes.json"
+if [ -f "$SHAPE_SRC" ]; then
+  cp "$SHAPE_SRC" "$ASSETS_DIR/blockCollisionShapes.json"
+  printf '  %-32s %s\n' "blockCollisionShapes.json" \
+    "$(wc -c < "$ASSETS_DIR/blockCollisionShapes.json") bytes"
+else
+  echo "  WARNING: prismarine has no $PRISMARINE_SHAPE_VERSION shapes" >&2
+fi
+
+# ---- Provenance ----------------------------------------------------------
+cat > "$ASSETS_DIR/PROVENANCE.txt" <<EOF
+Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+Mojang server jar: $PAPER_URL
+Prismarine ref:    $PRISMARINE_REF
+Prismarine commit: $PRISM_COMMIT
+Shape source ver:  $PRISMARINE_SHAPE_VERSION
+EOF
+
 echo "==> Done. Run: cargo build -p void-data"

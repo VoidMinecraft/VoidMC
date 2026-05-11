@@ -92,9 +92,7 @@ impl VoidServer {
         .add_plugins(GameSystemsPlugin);
 
         if self.config.metrics_debug {
-            app.add_plugins(MetricsPlugin::new(
-                self.config.metrics_tps_output.clone(),
-            ));
+            app.add_plugins(MetricsPlugin::new(self.config.metrics_tps_output.clone()));
         }
 
         app.insert_resource(EntityIdCounter(1))

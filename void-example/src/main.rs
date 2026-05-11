@@ -1,8 +1,8 @@
 use std::env;
 
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::prelude::*;
 use tracing_flame::FlameLayer;
+use tracing_subscriber::prelude::*;
 use voidmc::components::PlayerName;
 use voidmc::events::PlayerStartDiggingEvent;
 use voidmc::{
@@ -30,8 +30,8 @@ impl MetricsEnv {
         let flame_output = env_string("VOID_FLAME_OUTPUT");
         let packet_debug = env_flag("VOID_PACKET_DEBUG");
         let metrics_mode = env::var("VOID_METRICS_MODE").ok();
-        let flame_enabled = matches!(metrics_mode.as_deref(), Some("flame"))
-            || flame_output.is_some();
+        let flame_enabled =
+            matches!(metrics_mode.as_deref(), Some("flame")) || flame_output.is_some();
 
         Self {
             metrics_debug,
@@ -64,23 +64,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     VoidServer::new(config_builder.build())
-    .add_plugin(|app| {
-        // Register all default commands
-        let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
-        register_default_commands(&mut registry, &[]);
+        .add_plugin(|app| {
+            // Register all default commands
+            let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
+            register_default_commands(&mut registry, &[]);
 
-        // Observe block-breaking events
-        app.add_observer(on_player_dig);
-    })
-    .add_command(
-        CommandBuilder::new("hello")
-            .description("Greet the player")
-            .handler(|ctx| {
-                ctx.reply("Hello from void-example!");
-            })
-            .build(),
-    )
-    .run();
+            // Observe block-breaking events
+            app.add_observer(on_player_dig);
+        })
+        .add_command(
+            CommandBuilder::new("hello")
+                .description("Greet the player")
+                .handler(|ctx| {
+                    ctx.reply("Hello from void-example!");
+                })
+                .build(),
+        )
+        .run();
 
     Ok(())
 }
@@ -127,10 +127,10 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
     let mut env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
-    if metrics_env.packet_debug {
-        if let Ok(directive) = "voidmc::network=debug".parse() {
-            env_filter = env_filter.add_directive(directive);
-        }
+    if metrics_env.packet_debug
+        && let Ok(directive) = "voidmc::network=debug".parse()
+    {
+        env_filter = env_filter.add_directive(directive);
     }
 
     let registry = tracing_subscriber::registry()

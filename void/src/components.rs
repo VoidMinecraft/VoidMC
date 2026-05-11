@@ -87,5 +87,10 @@ pub struct PlayerDimension(pub DimensionId);
 #[derive(Component)]
 pub struct Operator;
 
+/// The currently selected hotbar slot (0..9). Updated whenever the client
+/// sends a `SetHeldItem` packet.
+#[derive(Component, Clone, Copy)]
+pub struct HotbarSlot(pub i16);
+
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);

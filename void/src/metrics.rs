@@ -62,11 +62,7 @@ impl TpsMetrics {
             if writeln!(
                 writer,
                 "{},{:.2},{:.2},{:.2},{}",
-                timestamp_ms,
-                tps,
-                window_ms,
-                self.last_tick_ms,
-                self.total_ticks
+                timestamp_ms, tps, window_ms, self.last_tick_ms, self.total_ticks
             )
             .is_err()
             {
@@ -146,7 +142,12 @@ fn open_tps_writer(path: &Path) -> Option<BufWriter<File>> {
     match File::create(path) {
         Ok(file) => {
             let mut writer = BufWriter::new(file);
-            if writeln!(writer, "timestamp_ms,tps,window_ms,last_tick_ms,total_ticks").is_err() {
+            if writeln!(
+                writer,
+                "timestamp_ms,tps,window_ms,last_tick_ms,total_ticks"
+            )
+            .is_err()
+            {
                 tracing::warn!(path = %path.display(), "Failed to write TPS header");
                 return None;
             }
