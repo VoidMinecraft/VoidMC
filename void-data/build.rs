@@ -670,7 +670,10 @@ fn emit_state_struct(out: &mut String, def: &BlockDef) {
         let fname = rust_keyword_safe(&p.name);
         match &p.kind {
             PropKind::Bool => {
-                let _ = writeln!(out, "                let {fname} = rem.is_multiple_of({card});");
+                let _ = writeln!(
+                    out,
+                    "                let {fname} = rem.is_multiple_of({card});"
+                );
                 let _ = writeln!(out, "                rem /= {card};");
             }
             PropKind::Int { .. } => {
