@@ -1,6 +1,8 @@
 use bevy_ecs::prelude::*;
 use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 
+use crate::world::DimensionId;
+
 // Semantic game events — triggered via world.trigger() and handled by observers
 #[derive(Event)]
 pub struct PlayerJoinEvent {
@@ -152,4 +154,43 @@ pub struct PlayerToggleFlyEvent {
 pub struct PlayerCloseContainerEvent {
     pub entity: Entity,
     pub window_id: u8,
+}
+
+/// Fired after a block has been mutated in the world. Carries enough context
+/// for downstream systems (broadcasting, persistence, gameplay reactions) to
+/// react without re-reading chunk data.
+#[derive(Event)]
+pub struct BlockChangeEvent {
+    /// The dimension the change occurred in.
+    pub dimension: DimensionId,
+    /// World-space block position of the change.
+    pub position: BlockPosition,
+    /// Block-state id before the change.
+    pub old_state: i32,
+    /// Block-state id after the change.
+    pub new_state: i32,
+    /// The player entity that caused the change, when applicable.
+    pub source: Option<Entity>,
+}
+
+/// Fired when a player finishes breaking a block and the framework has
+/// committed the change. `BlockChangeEvent` is also fired for the same
+/// mutation; this event is the higher-level semantic signal.
+#[derive(Event)]
+pub struct BlockBreakEvent {
+    pub entity: Entity,
+    pub dimension: DimensionId,
+    pub position: BlockPosition,
+    pub broken_state: i32,
+}
+
+/// Fired when a player places a block via `UseItemOn` and the framework has
+/// committed the change.
+#[derive(Event)]
+pub struct BlockPlaceEvent {
+    pub entity: Entity,
+    pub dimension: DimensionId,
+    pub position: BlockPosition,
+    pub face: BlockFace,
+    pub placed_state: i32,
 }

@@ -1,12 +1,15 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_ecs::prelude::*;
 use flume::{Receiver, Sender};
+use tracing::instrument;
 use voidmc_net::socket::Packet;
 use voidmc_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
+use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
 
 pub struct IncomingPacket {
@@ -66,17 +69,70 @@ pub struct NetworkChannels {
 #[derive(Resource)]
 pub struct ClientToEntityMap(pub HashMap<u32, Entity>);
 
+#[instrument(level = "info", skip(world))]
 pub fn ingest_network_packets(world: &mut World) {
     // TODO: This batch-draining approach is simple but may lead to increased latency under high load.
     // Batch-drain all packets from channel
+    let (max_packets_per_tick, packet_budget_ms) = {
+        let config = world.resource::<ServerConfigResource>();
+        (config.max_packets_per_tick, config.packet_ingest_budget_ms)
+    };
+    let packet_limit = if max_packets_per_tick == 0 {
+        None
+    } else {
+        Some(max_packets_per_tick)
+    };
+    let packet_budget = if packet_budget_ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(packet_budget_ms))
+    };
+    let start = Instant::now();
+    let mut hit_limit = false;
+    let mut hit_budget = false;
+    let mut backlog = 0usize;
+
     let packets: Vec<IncomingPacket> =
         world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
             let mut packets = Vec::new();
-            while let Ok(packet) = channels.incoming.try_recv() {
-                packets.push(packet);
+            loop {
+                if let Some(limit) = packet_limit {
+                    if packets.len() >= limit {
+                        hit_limit = true;
+                        break;
+                    }
+                }
+                if let Some(budget) = packet_budget {
+                    if start.elapsed() >= budget {
+                        hit_budget = true;
+                        break;
+                    }
+                }
+
+                match channels.incoming.try_recv() {
+                    Ok(packet) => packets.push(packet),
+                    Err(_) => break,
+                }
             }
+
+            if hit_limit || hit_budget {
+                backlog = channels.incoming.len();
+            }
+
             packets
         });
+
+    if hit_limit || hit_budget {
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        tracing::warn!(
+            packets_processed = packets.len(),
+            backlog,
+            max_packets_per_tick,
+            packet_ingest_budget_ms = packet_budget_ms,
+            elapsed_ms,
+            "Packet ingest throttled"
+        );
+    }
 
     for incoming_packet in packets {
         let client_entity =

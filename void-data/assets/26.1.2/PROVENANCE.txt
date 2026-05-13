@@ -1,0 +1,14 @@
+Generated: 2026-05-05T18:00:55Z
+Mojang server jar: ../../../papermc/paper-server/.gradle/caches/paperweight/data/bundler/server.jar
+Prismarine ref:    master
+Prismarine commit: (pre-26.1.2 fork — branch pc_26_1_2 has only protocol/version)
+Shape source ver:  1.21.9
+
+Notes:
+  - blocks.json produced by net.minecraft.data.Main --reports on the bundled
+    server jar of Paper 26.1.2. Authoritative for block-state ids in this
+    Minecraft version.
+  - blockCollisionShapes.json vendored from prismarine 1.21.9 since the
+    pc_26_1_2 PR ships only protocol data. Block shapes change rarely
+    between minor versions; new 26.1.2 blocks fall back to FULL_CUBE.
+  - Re-run scripts/extract.sh once prismarine publishes 26.1.2.

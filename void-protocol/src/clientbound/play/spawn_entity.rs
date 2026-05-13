@@ -1,6 +1,11 @@
+use crate::types::LpVec3;
 use uuid::Uuid;
 use voidmc_codec::{Decode, Encode, LpVec3};
 
+/// Clientbound `add_entity` packet (1.21.7+).
+///
+/// Field order matches `net.minecraft.network.protocol.game.ClientboundAddEntityPacket`:
+/// `id, uuid, type, x, y, z, movement (LpVec3), xRot, yRot, yHeadRot, data`.
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SpawnEntity {
     #[codec(varint32)]

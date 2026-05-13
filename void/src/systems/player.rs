@@ -238,6 +238,7 @@ fn send_player_spawn(
                 x: pos.x,
                 y: pos.y,
                 z: pos.z,
+                velocity: voidmc_protocol::types::LpVec3::ZERO,
                 pitch,
                 yaw,
                 head_yaw: yaw,

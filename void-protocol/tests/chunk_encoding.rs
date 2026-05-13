@@ -354,3 +354,65 @@ fn test_full_chunk_24_sections_encoding() {
         chunk_data.len()
     );
 }
+
+#[test]
+fn set_block_state_promotes_single_to_indirect() {
+    let mut section = ChunkSection::filled(blocks::STONE, biomes::PLAINS);
+    let initial_count = section.block_count;
+
+    let old = section.set_block_state(3, 7, 11, blocks::DIRT);
+    assert_eq!(old, blocks::STONE);
+    assert_eq!(section.get_block_state(3, 7, 11), blocks::DIRT);
+    assert_eq!(section.get_block_state(0, 0, 0), blocks::STONE);
+    assert_eq!(section.block_count, initial_count); // both non-air
+    assert!(matches!(section.block_state, PaletteData::Indirect { .. }));
+}
+
+#[test]
+fn set_block_state_to_air_decrements_block_count() {
+    let mut section = ChunkSection::filled(blocks::STONE, biomes::PLAINS);
+    let before = section.block_count;
+    let old = section.set_block_state(1, 1, 1, blocks::AIR);
+    assert_eq!(old, blocks::STONE);
+    assert_eq!(section.block_count, before - 1);
+    assert_eq!(section.get_block_state(1, 1, 1), blocks::AIR);
+}
+
+#[test]
+fn set_block_state_grows_palette_bits() {
+    let mut section = ChunkSection::empty();
+    // 17 distinct non-air ids forces palette > 16, so bits_per_entry must
+    // grow past the starting 4-bit width.
+    for i in 0..17u8 {
+        let (x, z) = (i % 16, i / 16);
+        section.set_block_state(x, 0, z, 100 + i as i32);
+    }
+    for i in 0..17u8 {
+        let (x, z) = (i % 16, i / 16);
+        assert_eq!(section.get_block_state(x, 0, z), 100 + i as i32);
+    }
+    if let PaletteData::Indirect { bits_per_entry, .. } = section.block_state {
+        assert!(
+            bits_per_entry >= 5,
+            "expected bits >= 5, got {bits_per_entry}"
+        );
+    } else {
+        panic!("expected Indirect palette after multi-id writes");
+    }
+    assert_eq!(section.block_count, 17);
+}
+
+#[test]
+fn set_block_state_idempotent_on_same_id() {
+    let mut section = ChunkSection::filled(blocks::STONE, biomes::PLAINS);
+    let before = section.block_count;
+    let prev_kind = matches!(section.block_state, PaletteData::SingleValue(_));
+    let old = section.set_block_state(0, 0, 0, blocks::STONE);
+    assert_eq!(old, blocks::STONE);
+    assert_eq!(section.block_count, before);
+    assert_eq!(
+        prev_kind,
+        matches!(section.block_state, PaletteData::SingleValue(_)),
+        "no-op write must not promote palette representation"
+    );
+}
