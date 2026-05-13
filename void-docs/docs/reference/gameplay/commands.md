@@ -59,14 +59,14 @@ A third path exists: if the client types a command that is **not in its local co
 
 ### Key types at a glance
 
-| Type | Source file | Purpose |
-|------|-------------|---------|
-| `CommandRegistry` | `commands/mod.rs` | Stores all registered commands by name and alias |
-| `CommandBuilder` | `commands/mod.rs` | Fluent API to define and register commands |
-| `CommandContext` | `commands/mod.rs` | Passed to every handler — ECS world access + helpers |
-| `ArgParser` | `commands/parser.rs` | Trait: parse one string token into a typed value |
-| `CommandQueue` | `commands/mod.rs` | ECS resource — FIFO queue of pending commands |
-| `PacketEvent<T>` | `network.rs` | Bevy ECS event wrapping a decoded serverbound packet |
+| Type              | Source file          | Purpose                                              |
+| ----------------- | -------------------- | ---------------------------------------------------- |
+| `CommandRegistry` | `commands/mod.rs`    | Stores all registered commands by name and alias     |
+| `CommandBuilder`  | `commands/mod.rs`    | Fluent API to define and register commands           |
+| `CommandContext`  | `commands/mod.rs`    | Passed to every handler — ECS world access + helpers |
+| `ArgParser`       | `commands/parser.rs` | Trait: parse one string token into a typed value     |
+| `CommandQueue`    | `commands/mod.rs`    | ECS resource — FIFO queue of pending commands        |
+| `PacketEvent<T>`  | `network.rs`         | Bevy ECS event wrapping a decoded serverbound packet |
 
 ## CommandBuilder API
 
@@ -103,20 +103,20 @@ let command = CommandBuilder::new("greet")
 
 ### Builder Methods
 
-| Method | Description |
-|---|---|
-| `new(name)` | Create a command with the given name |
-| `description(desc)` | Set the help description |
-| `alias(alias)` | Add an alternative name (can be called multiple times) |
-| `usage(usage)` | Set a custom usage string (overrides auto-generation) |
-| `arg(name, parser)` | Add a required typed argument |
-| `arg_optional(name, parser)` | Add an optional typed argument |
-| `arg_variadic(name, parser)` | Add an optional variadic argument (consumes all remaining tokens; must be last) |
-| `arg_variadic_required(name, parser)` | Add a required variadic argument (at least one token; must be last) |
-| `flag(long, short, description)` | Add a boolean flag (`--long` / `-s`) |
-| `flag_value(long, short, desc, parser)` | Add a flag that takes a typed value (`--long value`) |
-| `handler(fn)` | Set the handler function |
-| `build()` | Consume the builder and produce a `Command` |
+| Method                                  | Description                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------- |
+| `new(name)`                             | Create a command with the given name                                            |
+| `description(desc)`                     | Set the help description                                                        |
+| `alias(alias)`                          | Add an alternative name (can be called multiple times)                          |
+| `usage(usage)`                          | Set a custom usage string (overrides auto-generation)                           |
+| `arg(name, parser)`                     | Add a required typed argument                                                   |
+| `arg_optional(name, parser)`            | Add an optional typed argument                                                  |
+| `arg_variadic(name, parser)`            | Add an optional variadic argument (consumes all remaining tokens; must be last) |
+| `arg_variadic_required(name, parser)`   | Add a required variadic argument (at least one token; must be last)             |
+| `flag(long, short, description)`        | Add a boolean flag (`--long` / `-s`)                                            |
+| `flag_value(long, short, desc, parser)` | Add a flag that takes a typed value (`--long value`)                            |
+| `handler(fn)`                           | Set the handler function                                                        |
+| `build()`                               | Consume the builder and produce a `Command`                                     |
 
 ## CommandContext
 
@@ -133,41 +133,41 @@ pub struct CommandContext<'a> {
 
 ### Methods
 
-| Method | Return Type | Description |
-|---|---|---|
-| `get::<T>(name)` | `Option<&T>` | Get a parsed argument by name and type |
-| `has_arg(name)` | `bool` | Check if an optional argument was provided |
-| `flag(name)` | `bool` | Check if a boolean flag is set |
-| `flag_value::<T>(name)` | `Option<&T>` | Get a typed flag value |
-| `reply(message)` | `()` | Send a white system message to the sender |
-| `reply_error(message)` | `()` | Send a red error message to the sender |
-| `broadcast(message)` | `()` | Send a system message to all ready players |
-| `player_name()` | `Option<String>` | Get the sender's player name |
-| `is_operator()` | `bool` | Check if the sender has the `Operator` component |
+| Method                  | Return Type      | Description                                      |
+| ----------------------- | ---------------- | ------------------------------------------------ |
+| `get::<T>(name)`        | `Option<&T>`     | Get a parsed argument by name and type           |
+| `has_arg(name)`         | `bool`           | Check if an optional argument was provided       |
+| `flag(name)`            | `bool`           | Check if a boolean flag is set                   |
+| `flag_value::<T>(name)` | `Option<&T>`     | Get a typed flag value                           |
+| `reply(message)`        | `()`             | Send a white system message to the sender        |
+| `reply_error(message)`  | `()`             | Send a red error message to the sender           |
+| `broadcast(message)`    | `()`             | Send a system message to all ready players       |
+| `player_name()`         | `Option<String>` | Get the sender's player name                     |
+| `is_operator()`         | `bool`           | Check if the sender has the `Operator` component |
 
 ## Argument Parsers
 
 Built-in parsers that implement the `ArgParser` trait:
 
-| Parser | Parsed Type | Protocol Hint | Description |
-|---|---|---|---|
-| `StringArg::single_word()` | `String` | `SingleWord` | Single whitespace-delimited word |
-| `StringArg::quotable()` | `String` | `QuotablePhrase` | Quoted or single word |
-| `StringArg::greedy()` | `String` | `GreedyPhrase` | All remaining input |
-| `IntegerArg::new(min, max)` | `i32` | `Integer { min, max }` | Bounded integer |
-| `IntegerArg::unbounded()` | `i32` | `Integer` | Unbounded integer |
-| `LongArg::new(min, max)` | `i64` | `Long { min, max }` | Bounded long integer |
-| `LongArg::unbounded()` | `i64` | `Long` | Unbounded long |
-| `FloatArg::new(min, max)` | `f32` | `Float { min, max }` | Bounded float |
-| `FloatArg::unbounded()` | `f32` | `Float` | Unbounded float |
-| `DoubleArg::new(min, max)` | `f64` | `Double { min, max }` | Bounded double |
-| `DoubleArg::unbounded()` | `f64` | `Double` | Unbounded double |
-| `BoolArg` | `bool` | `Bool` | Accepts `true/false/yes/no/1/0` |
-| `GreedyStringArg` | `String` | `GreedyPhrase` | All remaining input as text |
-| `GameProfileArg` | `String` | `GameProfile` | Player name with tab-completion (`minecraft:ask_server`) |
-| `EntityArg::single_player()` | `String` | `Entity { single, players_only }` | Entity selector |
-| `MessageArg` | `String` | `Message` | Chat message argument |
-| `ResourceLocationArg` | `String` | `ResourceLocation` | `namespace:path` identifier (e.g. `minecraft:creeper`) |
+| Parser                       | Parsed Type | Protocol Hint                     | Description                                              |
+| ---------------------------- | ----------- | --------------------------------- | -------------------------------------------------------- |
+| `StringArg::single_word()`   | `String`    | `SingleWord`                      | Single whitespace-delimited word                         |
+| `StringArg::quotable()`      | `String`    | `QuotablePhrase`                  | Quoted or single word                                    |
+| `StringArg::greedy()`        | `String`    | `GreedyPhrase`                    | All remaining input                                      |
+| `IntegerArg::new(min, max)`  | `i32`       | `Integer { min, max }`            | Bounded integer                                          |
+| `IntegerArg::unbounded()`    | `i32`       | `Integer`                         | Unbounded integer                                        |
+| `LongArg::new(min, max)`     | `i64`       | `Long { min, max }`               | Bounded long integer                                     |
+| `LongArg::unbounded()`       | `i64`       | `Long`                            | Unbounded long                                           |
+| `FloatArg::new(min, max)`    | `f32`       | `Float { min, max }`              | Bounded float                                            |
+| `FloatArg::unbounded()`      | `f32`       | `Float`                           | Unbounded float                                          |
+| `DoubleArg::new(min, max)`   | `f64`       | `Double { min, max }`             | Bounded double                                           |
+| `DoubleArg::unbounded()`     | `f64`       | `Double`                          | Unbounded double                                         |
+| `BoolArg`                    | `bool`      | `Bool`                            | Accepts `true/false/yes/no/1/0`                          |
+| `GreedyStringArg`            | `String`    | `GreedyPhrase`                    | All remaining input as text                              |
+| `GameProfileArg`             | `String`    | `GameProfile`                     | Player name with tab-completion (`minecraft:ask_server`) |
+| `EntityArg::single_player()` | `String`    | `Entity { single, players_only }` | Entity selector                                          |
+| `MessageArg`                 | `String`    | `Message`                         | Chat message argument                                    |
+| `ResourceLocationArg`        | `String`    | `ResourceLocation`                | `namespace:path` identifier (e.g. `minecraft:creeper`)   |
 
 ## Custom ArgParser
 
@@ -240,19 +240,19 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 
 ### Available Default Commands
 
-| Command | Aliases | Description | Arguments |
-|---|---|---|---|
-| `/help` | | List commands or show command details | `[command:string]` |
-| `/gamemode` | `/gm` | Change game mode | `<mode:integer(0..3)>` |
-| `/kick` | | Kick a player | `<player:player> [reason:text]...` |
-| `/ping` | | Pong! | (none) |
-| `/plugins` | `/pl` | List loaded plugins | (none) |
-| `/tp` | | Teleport to coordinates | `<x:double> <y:double> <z:double>` |
-| `/broadcast` | | Broadcast to all players | `<message:text>...` |
-| `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` |
-| `/list` | | Show online players | (none) |
-| `/say` | | Send a message as yourself | `<message:text>...` |
-| `/summon` | | Summon an entity at a position | `<entity:resource_location> [x:double] [y:double] [z:double] [--wander] [--gravity] [--block-checks]` |
+| Command      | Aliases | Description                           | Arguments                                                                                             |
+| ------------ | ------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `/help`      |         | List commands or show command details | `[command:string]`                                                                                    |
+| `/gamemode`  | `/gm`   | Change game mode                      | `<mode:integer(0..3)>`                                                                                |
+| `/kick`      |         | Kick a player                         | `<player:player> [reason:text]...`                                                                    |
+| `/ping`      |         | Pong!                                 | (none)                                                                                                |
+| `/plugins`   | `/pl`   | List loaded plugins                   | (none)                                                                                                |
+| `/tp`        |         | Teleport to coordinates               | `<x:double> <y:double> <z:double>`                                                                    |
+| `/broadcast` |         | Broadcast to all players              | `<message:text>...`                                                                                   |
+| `/tell`      | `/msg`  | Private message a player              | `<player:player> <message:text>...`                                                                   |
+| `/list`      |         | Show online players                   | (none)                                                                                                |
+| `/say`       |         | Send a message as yourself            | `<message:text>...`                                                                                   |
+| `/summon`    |         | Summon an entity at a position        | `<entity:resource_location> [x:double] [y:double] [z:double] [--wander] [--gravity] [--block-checks]` |
 
 The optional `--wander` flag attaches the demo random-walk behavior to the summoned entity. `--gravity` and `--block-checks` are stored on the entity as movement flags so the physics layer can enable them in the next movement slice. Use these flags with any valid summonable entity, such as `minecraft:pig` or `minecraft:zombie`.
 
