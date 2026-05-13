@@ -10,7 +10,7 @@ const Z_OFFSET: u64 = 33;
 const ABS_MAX_VALUE: f64 = 1.7179869183E10;
 const ABS_MIN_VALUE: f64 = 3.051944088384301E-5;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LpVec3 {
     pub x: f64,
     pub y: f64,

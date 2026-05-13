@@ -509,7 +509,7 @@ fn handle_summon(ctx: &mut CommandContext) {
                 yaw: 0,
                 head_yaw: 0,
                 data: 0,
-                velocity: voidmc_codec::LpVec3 {
+                velocity:voidmc_protocol::types::LpVec3 {
                     x: 0.0,
                     y: initial_velocity_y,
                     z: 0.0,
@@ -713,7 +713,7 @@ fn handle_circle(ctx: &mut CommandContext) {
                         yaw: 0,
                         head_yaw: 0,
                         data: 0,
-                        velocity: voidmc_codec::LpVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                        velocity: voidmc_protocol::types::LpVec3 { x: 0.0, y: 0.0, z: 0.0 },
                     },
                 ),
             );
