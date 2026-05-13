@@ -114,7 +114,7 @@ pub fn on_player_ready(
                         yaw,
                         head_yaw: yaw,
                         data: 0,
-                        velocity: voidmc_codec::LpVec3 {
+                        velocity: voidmc_protocol::types::LpVec3 {
                             x: vel.x / 8000.0,
                             y: vel.y / 8000.0,
                             z: vel.z / 8000.0,
@@ -243,7 +243,6 @@ fn send_player_spawn(
                 yaw,
                 head_yaw: yaw,
                 data: 0,
-                velocity: voidmc_codec::LpVec3::ZERO,
             },
         )),
     });

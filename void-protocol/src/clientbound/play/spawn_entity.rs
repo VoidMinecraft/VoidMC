@@ -1,6 +1,6 @@
 use crate::types::LpVec3;
 use uuid::Uuid;
-use voidmc_codec::{Decode, Encode, LpVec3};
+use voidmc_codec::{Decode, Encode};
 
 /// Clientbound `add_entity` packet (1.21.7+).
 ///

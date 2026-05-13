@@ -474,7 +474,7 @@ fn handle_summon(ctx: &mut CommandContext) {
                 yaw: 0,
                 head_yaw: 0,
                 data: 0,
-                velocity: voidmc_codec::LpVec3::ZERO,
+                velocity: voidmc_protocol::types::LpVec3::ZERO,
             },
         ),
     );
