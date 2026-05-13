@@ -11,6 +11,7 @@ Void is a Minecraft-compatible server framework written in Rust. It combines [Be
 | **`void-protocol`** | Minecraft protocol definitions — serverbound/clientbound packet enums and data types. |
 | **`void-codec`** | Binary `Encode`/`Decode` traits and primitive type implementations. |
 | **`void-codec-macros`** | Derive macros (`#[derive(Encode, Decode)]`) and field attributes for codec automation. |
+| **`voidmc-data`** | Vanilla registry, block-state, and collision-shape data — extracted at build time and exposed as compile-time constants and typed structs. |
 
 ## Quick Start
 
@@ -60,3 +61,7 @@ This starts a server on `127.0.0.1:25565` with default settings, all built-in co
 - [Player Management](/reference/gameplay/players) — Join/quit flow, visibility, position broadcasting, teleportation
 - [World & Chunks](/reference/gameplay/world) — Chunk system, dimensions, streaming, world generators
 - [Registry System](/reference/gameplay/registry) — `RegistryDataStore` API, default registries, customization
+
+## Vanilla Data
+
+- [Vanilla Data (`voidmc-data`)](/reference/data) — Build-time codegen for blocks, states, collision shapes, and registries

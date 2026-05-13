@@ -11,6 +11,7 @@ pub mod commands;
 pub mod components;
 pub mod config;
 pub mod events;
+mod metrics;
 pub mod network;
 pub mod plugins;
 pub mod registry;

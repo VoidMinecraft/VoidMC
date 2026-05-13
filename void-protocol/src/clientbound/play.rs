@@ -1,3 +1,5 @@
+mod block_changed_ack;
+mod block_update;
 pub mod chunk;
 mod command_suggestions_response;
 pub mod commands;
@@ -18,6 +20,8 @@ mod update_entity_position;
 mod update_entity_position_and_rotation;
 mod update_entity_rotation;
 
+pub use block_changed_ack::*;
+pub use block_update::*;
 pub use chunk::*;
 pub use command_suggestions_response::*;
 pub use commands::*;
@@ -44,6 +48,10 @@ use voidmc_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x01)]
     SpawnEntity(SpawnEntity),
+    #[codec(packet_id = 0x04)]
+    BlockChangedAck(BlockChangedAck),
+    #[codec(packet_id = 0x08)]
+    BlockUpdate(BlockUpdate),
     #[codec(packet_id = 0x20)]
     Disconnect(Disconnect),
     #[codec(packet_id = 0x25)]

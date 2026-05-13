@@ -87,6 +87,11 @@ pub struct PlayerDimension(pub DimensionId);
 #[derive(Component)]
 pub struct Operator;
 
+/// The currently selected hotbar slot (0..9). Updated whenever the client
+/// sends a `SetHeldItem` packet.
+#[derive(Component, Clone, Copy)]
+pub struct HotbarSlot(pub i16);
+
 /// Numeric entity type ID from the `minecraft:entity_type` registry.
 #[derive(Component)]
 pub struct EntityType(pub i32);

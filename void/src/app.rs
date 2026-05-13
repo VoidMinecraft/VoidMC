@@ -8,6 +8,7 @@ use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
 use crate::components::EntityIdCounter;
 use crate::config::{ServerConfig, ServerConfigResource};
+use crate::metrics::MetricsPlugin;
 use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
 use crate::plugins::DefaultPlugins;
 use crate::systems::GameSystemsPlugin;
@@ -88,13 +89,18 @@ impl VoidServer {
         ))
         .add_plugins(DefaultPlugins)
         .add_plugins(CommandPlugin)
-        .add_plugins(GameSystemsPlugin)
-        .insert_resource(EntityIdCounter(1))
-        .insert_resource(self.config.registries)
-        .insert_resource(config_resource)
-        .insert_resource(world_gen)
-        .init_resource::<ChunkIndex>()
-        .add_systems(Startup, init_world);
+        .add_plugins(GameSystemsPlugin);
+
+        if self.config.metrics_debug {
+            app.add_plugins(MetricsPlugin::new(self.config.metrics_tps_output.clone()));
+        }
+
+        app.insert_resource(EntityIdCounter(1))
+            .insert_resource(self.config.registries)
+            .insert_resource(config_resource)
+            .insert_resource(world_gen)
+            .init_resource::<ChunkIndex>()
+            .add_systems(Startup, init_world);
 
         // Apply user plugins first (so they can modify the registry)
         for plugin_fn in self.plugins {

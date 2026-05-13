@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
@@ -8,7 +9,7 @@ use crate::components::{
 };
 use crate::network::{NetworkChannels, OutgoingPacket};
 
-/// Broadcast player movement (originated from clients).
+#[instrument(level = "info", skip(channels, moved_query, all_players))]
 pub fn broadcast_player_position(
     channels: Res<NetworkChannels>,
     moved_query: Query<(
@@ -68,7 +69,6 @@ pub fn broadcast_player_position(
     }
 }
 
-/// Broadcast server-controlled spawned entity movement to all ready players.
 pub fn broadcast_spawned_position(
     channels: Res<NetworkChannels>,
     mut spawned_query: Query<(
@@ -139,6 +139,7 @@ fn send_position_update(
     }
 }
 
+#[instrument(level = "info", skip(query))]
 pub fn update_previous_player_positions(
     mut query: Query<(&Position, &mut PreviousPosition), (With<PlayerReady>, Or<(Changed<Position>, Changed<Rotation>)>)>,
 ) {
@@ -148,6 +149,7 @@ pub fn update_previous_player_positions(
         prev_pos.z = pos.z;
     }
 }
+
 
 pub fn update_previous_spawned_positions(
     mut query: Query<(&Position, &mut PreviousPosition), (With<SpawnedEntity>, Or<(Changed<Position>, Changed<Rotation>)>)>,

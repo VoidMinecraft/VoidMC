@@ -6,6 +6,11 @@
   },
   {
     "type": "file",
+    "name": "metrics-results",
+    "label": "Metrics & Results"
+  },
+  {
+    "type": "file",
     "name": "benchmarking",
     "label": "Benchmarking"
   }

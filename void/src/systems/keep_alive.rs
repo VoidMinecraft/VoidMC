@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{ClientId, KeepAliveState, PlayerReady};
@@ -21,6 +22,7 @@ impl Default for KeepAliveTicker {
     }
 }
 
+#[instrument(level = "info", skip(ticker, channels, query))]
 pub fn send_keep_alive(
     mut ticker: ResMut<KeepAliveTicker>,
     channels: Res<NetworkChannels>,
