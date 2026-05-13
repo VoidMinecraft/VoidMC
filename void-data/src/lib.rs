@@ -14,6 +14,9 @@ use ussr_nbt::owned::Nbt;
 include!(concat!(env!("OUT_DIR"), "/registries.rs"));
 include!(concat!(env!("OUT_DIR"), "/blocks.rs"));
 
+mod entity_types;
+use entity_types::*;
+
 /// A supported Minecraft version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
@@ -26,6 +29,17 @@ impl Version {
             Version::V26_1_2 => "26.1.2",
         }
     }
+}
+
+/// Returns the protocol numeric ID for a named entity type, or `None` if the
+/// name is not in the table for this version.
+///
+/// The table is populated by running `scripts/gen_entity_types.sh`.
+pub fn entity_type_id(version: Version, name: &str) -> Option<i32> {
+    let table = match version {
+        Version::V26_1_2 => ENTITY_TYPE_IDS_26_1_2,
+    };
+    table.iter().position(|&n| n == name).map(|i| i as i32)
 }
 
 /// Returns the raw `(entry_id, nbt_bytes)` slice for `(version, registry_id)`,

@@ -3,6 +3,7 @@ pub mod containers;
 pub mod fixed_length;
 pub mod floats;
 pub mod integers;
+pub mod lp_vec3;
 pub mod nbt;
 pub mod uuid;
 pub mod vari;
@@ -12,5 +13,6 @@ pub use fixed_length::{
     decode_fixed_length_vec, decode_fixed_length_vec_u8, decode_remaining_vec_u8,
     encode_fixed_length_vec, encode_fixed_length_vec_u8, encode_remaining_vec_u8,
 };
+pub use lp_vec3::LpVec3;
 pub use vari::VarI32;
 pub use vari64::VarI64;

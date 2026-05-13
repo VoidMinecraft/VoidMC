@@ -2,10 +2,16 @@ use std::sync::Arc;
 
 use bevy_ecs::prelude::With;
 
-use crate::components::{ClientId, PlayerName, PlayerReady, Position, Rotation, TeleportState};
+use crate::components::{
+    ClientId, EntityIdCounter, EntityType, EntityUuid, MinecraftEntityId, PlayerName, PlayerReady,
+    Position, Rotation, SpawnedEntity, TeleportState, Velocity,
+};
 use crate::network::{NetworkChannels, OutgoingPacket};
+use voidmc_data::{Version, entity_type_id};
 
-use super::parser::{DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, StringArg};
+use super::parser::{
+    DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, StringArg, SummonableEntityArg,
+};
 use super::{Command, CommandBuilder, CommandContext, CommandRegistry};
 
 /// Registers all default commands except those listed in `exclude`.
@@ -39,6 +45,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     }
     if !exclude.contains(&"say") {
         registry.register(say_command());
+    }
+    if !exclude.contains(&"summon") {
+        registry.register(summon_command());
     }
 }
 
@@ -386,6 +395,110 @@ fn handle_say(ctx: &mut CommandContext) {
     let name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
     let message = ctx.get::<String>("message").unwrap().clone();
     ctx.broadcast(&format!("[{}] {}", name, message));
+}
+
+pub fn summon_command() -> Command {
+    CommandBuilder::new("summon")
+        .description("Summon an entity at a position")
+        .arg("entity", Arc::new(SummonableEntityArg))
+        .arg_optional("x", DoubleArg::unbounded())
+        .arg_optional("y", DoubleArg::unbounded())
+        .arg_optional("z", DoubleArg::unbounded())
+        .handler(handle_summon)
+        .build()
+}
+
+fn handle_summon(ctx: &mut CommandContext) {
+    let entity_name = ctx.get::<String>("entity").unwrap().clone();
+
+    let entity_type_id = match entity_type_id(Version::V26_1_2, &entity_name) {
+        Some(id) => id,
+        None => {
+            ctx.reply_error(&format!("Unknown entity type: {}", entity_name));
+            return;
+        }
+    };
+
+    let executor = ctx.entity;
+    let (x, y, z) = match (
+        ctx.get::<f64>("x").copied(),
+        ctx.get::<f64>("y").copied(),
+        ctx.get::<f64>("z").copied(),
+    ) {
+        (Some(x), Some(y), Some(z)) => (x, y, z),
+        _ => ctx.with_world(|world| {
+            let pos = world
+                .get::<Position>(executor)
+                .expect("executor must have Position");
+            (pos.x, pos.y, pos.z)
+        }),
+    };
+
+    let entity_id = ctx.with_world_mut(|world| {
+        let mut counter = world.resource_mut::<EntityIdCounter>();
+        let id = counter.0;
+        counter.0 += 1;
+        id
+    });
+    let entity_uuid = uuid::Uuid::new_v4();
+
+    ctx.with_world_mut(|world| {
+        world.spawn((
+            MinecraftEntityId(entity_id),
+            EntityUuid(entity_uuid),
+            Position { x, y, z },
+            Rotation {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            Velocity {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            EntityType(entity_type_id),
+            SpawnedEntity,
+        ));
+    });
+
+    let spawn_packet = voidmc_protocol::clientbound::ClientboundPacket::Play(
+        voidmc_protocol::clientbound::PlayPacket::SpawnEntity(
+            voidmc_protocol::clientbound::SpawnEntity {
+                entity_id,
+                entity_uuid,
+                entity_type: entity_type_id,
+                x,
+                y,
+                z,
+                pitch: 0,
+                yaw: 0,
+                head_yaw: 0,
+                data: 0,
+                velocity: voidmc_protocol::types::LpVec3::ZERO,
+            },
+        ),
+    );
+
+    ctx.with_world_mut(|world| {
+        let ready_client_ids: Vec<u32> = world
+            .query_filtered::<&ClientId, With<PlayerReady>>()
+            .iter(world)
+            .map(|c| c.0)
+            .collect();
+
+        let channels = world.resource::<NetworkChannels>();
+        for cid in ready_client_ids {
+            let _ = channels.outgoing.send(OutgoingPacket {
+                client_id: cid,
+                packet: spawn_packet.clone(),
+            });
+        }
+    });
+
+    ctx.reply(&format!(
+        "Summoned {} at {:.1}, {:.1}, {:.1}",
+        entity_name, x, y, z
+    ));
 }
 
 /// Optional resource listing plugin names — can be inserted by the user.
