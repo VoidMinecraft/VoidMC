@@ -115,9 +115,9 @@ pub fn on_player_ready(
                         head_yaw: yaw,
                         data: 0,
                         velocity: voidmc_protocol::types::LpVec3 {
-                            x: vel.x / 8000.0,
-                            y: vel.y / 8000.0,
-                            z: vel.z / 8000.0,
+                            x: vel.x as f64 / 8000.0,
+                            y: vel.y as f64 / 8000.0,
+                            z: vel.z as f64 / 8000.0,
                         },
                     },
                 ),

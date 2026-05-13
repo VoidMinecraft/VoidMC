@@ -96,6 +96,10 @@ pub struct HotbarSlot(pub i16);
 #[derive(Component)]
 pub struct EntityType(pub i32);
 
+/// Which dimension a server-owned entity is in.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct EntityDimension(pub DimensionId);
+
 /// Marker component for non-player summoned entities.
 #[derive(Component)]
 pub struct SpawnedEntity;
@@ -107,10 +111,58 @@ pub struct EntityUuid(pub uuid::Uuid);
 /// Entity velocity in blocks/tick, matching the SpawnEntity packet LpVec3 format.
 #[derive(Component)]
 pub struct Velocity {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
+    pub x: i16,
+    pub y: i16,
+    pub z: i16,
+}
+
+/// Movement feature flags for a server-owned entity.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct MovementConfig {
+    pub wander: bool,
+    pub gravity_enabled: bool,
+    pub block_collision_enabled: bool,
+}
+
+/// Vertical physics velocity for server-controlled entities, in blocks per tick.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct VerticalVelocity(pub f64);
+
+/// Whether the entity is resting on a solid surface.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Grounded(pub bool);
+
+/// Per-entity movement update cooldown (ticks until next position packet).
+#[derive(Component)]
+pub struct MovementUpdateCooldown(pub u8);
+
+/// Marker tag for pigs spawned by the /circle command.
+#[derive(Component)]
+pub struct CirclePig;
+
+/// Orbital state for a circle pig.
+#[derive(Component)]
+pub struct CirclePigState {
+    pub angle: f32,
+    /// The player who spawned this circle (used for ownership / cleanup).
+    pub owner: Entity,
+    /// The entity being orbited (can differ from owner when a player targets another).
+    pub target: Entity,
+}
+
+/// Simple wander behavior state for random walking AI example.
+#[derive(Component, Clone)]
+pub struct Wander {
+    /// Ticks remaining until picking a new walk direction.
+    pub ticks: i32,
+    /// Movement speed in blocks per tick.
+    pub speed: f64,
+    /// Current yaw direction in degrees (0-360).
+    pub yaw: f32,
 }
 
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);
+
+#[derive(Component)]
+pub struct RecentlySpawned(pub u8);

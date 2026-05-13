@@ -31,6 +31,13 @@ impl Version {
     }
 }
 
+/// Returns every entity type name for `version` in protocol-ID order.
+pub fn entity_type_names(version: Version) -> &'static [&'static str] {
+    match version {
+        Version::V26_1_2 => ENTITY_TYPE_IDS_26_1_2,
+    }
+}
+
 /// Returns the protocol numeric ID for a named entity type, or `None` if the
 /// name is not in the table for this version.
 ///
