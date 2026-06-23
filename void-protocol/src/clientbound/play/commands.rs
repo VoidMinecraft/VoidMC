@@ -37,7 +37,7 @@ impl Parser {
             Parser::String(_) => 5,
             Parser::Entity { .. } => 6,
             Parser::GameProfile => 7,
-            Parser::ResourceLocation => 35,
+            Parser::ResourceLocation => 36,
             Parser::Message => 19,
         }
     }
@@ -193,8 +193,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resource_location_parser_id_is_35() {
-        assert_eq!(Parser::ResourceLocation.parser_id(), 35);
+    fn resource_location_parser_id_is_36() {
+        assert_eq!(Parser::ResourceLocation.parser_id(), 36);
     }
 
     #[test]
