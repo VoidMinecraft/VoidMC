@@ -53,6 +53,24 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `EffectiveViewDistance(i32)` | Distance | The capped view distance used for chunk streaming |
 | `LoadedChunks(HashSet<ChunkPos>)` | Loaded set | Chunks currently sent to this player |
 
+### Non-Player Entities
+
+Summoned entities are ordinary ECS entities without `ClientId` or player
+identity components. They are authoritative on the game thread and are synced
+to ready players by `systems::entities`.
+
+| Component | Fields | Description |
+|---|---|---|
+| `MinecraftEntityId(i32)` | Entity ID | Server-assigned ID used by entity packets |
+| `EntityUuid(Uuid)` | UUID | UUID sent once in `Add Entity` |
+| `EntityType(i32)` | Registry ID | Protocol ID from `minecraft:entity_type` |
+| `SpawnedEntity` | (marker) | Marks a non-player entity managed by the entity lifecycle systems |
+| `EntityDimension(DimensionId)` | Dimension | Dimension visibility filter for player recipients |
+| `Position { x, y, z }` | `f64` coords | Current world position |
+| `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |
+| `Rotation { yaw, pitch }` | `f32` angles | Current body/look rotation |
+| `Velocity { x, y, z }` | `f64` vector | Velocity encoded directly as protocol LP Vec3 |
+
 ### Chunk Entity Components
 
 Chunks are also ECS entities with these components:
@@ -103,3 +121,32 @@ When a client disconnects:
 2. `ingest_network_packets` removes the client from `ClientToEntityMap`
 3. If the player was ready (`PlayerReady` present), a `PlayerQuitEvent` is triggered
 4. The entity is despawned with `world.despawn(entity)`
+
+### Non-Player Entity Lifecycle
+
+Non-player entities use the same `MinecraftEntityId`, `Position`,
+`PreviousPosition`, and `Rotation` components as players, plus the dedicated
+components listed above.
+
+1. Spawn an entity with `SpawnedEntity`, `EntityType`, `EntityUuid`,
+   `EntityDimension`, `Velocity`, and position/rotation components. The
+   default `/summon` command does this after validating the entity type through
+   `voidmc-data`.
+2. During `PostUpdate`, `broadcast_entity_spawns` detects newly added
+   `SpawnedEntity` entities and sends `Add Entity` to ready players in the same
+   dimension.
+3. When a player becomes ready, `on_player_ready_spawn_entities` replays all
+   currently visible spawned entities to that player.
+4. Position or rotation changes are broadcast by `broadcast_entity_movement`.
+   Small movements use relative move packets; moves outside the ±8 block delta
+   budget use `Teleport Entity`. Rotation changes also send `Rotate Head`.
+5. Velocity changes are broadcast by `broadcast_entity_motion` using `Set Entity
+   Motion`. LP Vec3 values are used directly; the old `velocity * 8000` short
+   encoding is not used by protocol 26.1.2.
+6. Trigger `EntityDespawnEvent { entity }` to remove a spawned entity through
+   the lifecycle system. Observers send `Remove Entities` to visible players and
+   then despawn the ECS entity.
+
+This lifecycle currently handles visibility, spawn/replay, motion, movement,
+and removal. It does not yet implement AI, metadata (`Set Entity Data`),
+equipment, passengers, or per-entity view-distance culling.

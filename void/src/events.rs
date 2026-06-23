@@ -41,6 +41,11 @@ pub struct PlayerReadyEvent {
 }
 
 #[derive(Event)]
+pub struct EntityDespawnEvent {
+    pub entity: Entity,
+}
+
+#[derive(Event)]
 pub struct ChatCommandEvent {
     pub entity: Entity,
     pub client_id: u32,

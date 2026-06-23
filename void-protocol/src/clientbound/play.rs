@@ -11,10 +11,12 @@ mod ping;
 mod player_info_remove;
 mod player_info_update;
 mod remove_entities;
+mod set_entity_motion;
 mod set_head_rotation;
 mod spawn_entity;
 mod synchronize_player_position;
 mod system_chat;
+mod teleport_entity;
 mod unload_chunk;
 mod update_entity_position;
 mod update_entity_position_and_rotation;
@@ -33,10 +35,12 @@ pub use ping::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
 pub use remove_entities::*;
+pub use set_entity_motion::*;
 pub use set_head_rotation::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
 pub use system_chat::*;
+pub use teleport_entity::*;
 pub use unload_chunk::*;
 pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
@@ -74,10 +78,14 @@ pub enum PlayPacket {
     SynchronizePlayerPosition(SynchronizePlayerPosition),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
+    #[codec(packet_id = 0x65)]
+    SetEntityMotion(SetEntityMotion),
     #[codec(packet_id = 0x5E)]
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x79)]
     SystemChat(SystemChat),
+    #[codec(packet_id = 0x7D)]
+    TeleportEntity(TeleportEntity),
 }
 
 /// Packets with manual Encode impls that can't be in the tagged enum.

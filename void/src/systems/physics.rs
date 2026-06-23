@@ -1,10 +1,12 @@
 use bevy_ecs::prelude::*;
 
 use crate::components::{
-    EntityDimension, Grounded, MovementConfig, Position, PreviousPosition, SpawnedEntity,
+    EntityDimension, Grounded, MovementConfig, Position, PreviousPosition, SpawnedEntity, Velocity,
     VerticalVelocity,
 };
-use crate::world::{block_state_at_world, is_solid_block_state, ChunkData, ChunkIndex, ChunkPosition};
+use crate::world::{
+    ChunkData, ChunkIndex, ChunkPosition, block_state_at_world, is_solid_block_state,
+};
 
 const GRAVITY_STEP: f64 = 0.08;
 const TERMINAL_VELOCITY: f64 = -3.92;
@@ -13,17 +15,28 @@ const TERMINAL_VELOCITY: f64 = -3.92;
 pub fn apply_spawned_entity_physics(
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
-    mut query: Query<(
-        &mut Position,
-        &mut PreviousPosition,
-        &MovementConfig,
-        &EntityDimension,
-        &mut VerticalVelocity,
-        &mut Grounded,
-    ), With<SpawnedEntity>>,
+    mut query: Query<
+        (
+            &mut Position,
+            &mut PreviousPosition,
+            &MovementConfig,
+            &EntityDimension,
+            &mut Velocity,
+            &mut VerticalVelocity,
+            &mut Grounded,
+        ),
+        With<SpawnedEntity>,
+    >,
 ) {
-    for (mut position, mut previous_position, movement, dimension, mut vertical_velocity, mut grounded) in
-        query.iter_mut()
+    for (
+        mut position,
+        mut previous_position,
+        movement,
+        dimension,
+        mut velocity,
+        mut vertical_velocity,
+        mut grounded,
+    ) in query.iter_mut()
     {
         let mut next_x = position.x;
         let mut next_y = position.y;
@@ -44,8 +57,15 @@ pub fn apply_spawned_entity_physics(
             let check_y = prev_y.floor() as i32;
             let check_z = prev_z.floor() as i32;
 
-            if block_state_at_world(&chunk_index, &chunks, dimension.0, check_x, check_y, check_z)
-                .is_some_and(is_solid_block_state)
+            if block_state_at_world(
+                &chunk_index,
+                &chunks,
+                dimension.0,
+                check_x,
+                check_y,
+                check_z,
+            )
+            .is_some_and(is_solid_block_state)
             {
                 // Revert X movement
                 next_x = prev_x;
@@ -57,8 +77,15 @@ pub fn apply_spawned_entity_physics(
             let check_x2 = next_x.floor() as i32;
             let check_z2 = prop_z.floor() as i32;
 
-            if block_state_at_world(&chunk_index, &chunks, dimension.0, check_x2, check_y, check_z2)
-                .is_some_and(is_solid_block_state)
+            if block_state_at_world(
+                &chunk_index,
+                &chunks,
+                dimension.0,
+                check_x2,
+                check_y,
+                check_z2,
+            )
+            .is_some_and(is_solid_block_state)
             {
                 // Revert Z movement
                 next_z = prev_z;
@@ -125,6 +152,8 @@ pub fn apply_spawned_entity_physics(
                 next_y = proposed_y;
                 grounded.0 = false;
             }
+
+            velocity.y = vertical_velocity.0;
         }
 
         position.x = next_x;

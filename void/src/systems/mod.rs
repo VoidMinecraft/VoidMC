@@ -1,5 +1,6 @@
 pub mod chunk;
 pub mod circle;
+pub mod entities;
 pub mod keep_alive;
 pub mod physics;
 pub mod player;
@@ -20,6 +21,8 @@ impl Plugin for GameSystemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KeepAliveTicker>()
             .add_observer(player::on_player_ready)
+            .add_observer(entities::on_player_ready_spawn_entities)
+            .add_observer(entities::on_entity_despawn)
             .add_observer(player::on_player_quit)
             .add_systems(
                 Update,
@@ -29,17 +32,18 @@ impl Plugin for GameSystemsPlugin {
                     physics::apply_spawned_entity_physics.after(wander::wander_system),
                     circle::circle_system.after(keep_alive::send_keep_alive),
                     settle::settle_recent_spawns.after(physics::apply_spawned_entity_physics),
-                    position::decrement_movement_cooldowns.after(physics::apply_spawned_entity_physics),
                 ),
             )
             .add_systems(
                 PostUpdate,
                 (
-                    position::force_updates_for_recently_spawned,
-                    position::broadcast_player_position,
-                    position::broadcast_spawned_position.after(position::force_updates_for_recently_spawned),
-                    position::update_previous_player_positions.after(position::broadcast_player_position),
-                    position::update_previous_spawned_positions.after(position::broadcast_spawned_position),
+                    entities::broadcast_entity_spawns,
+                    entities::broadcast_entity_movement,
+                    entities::broadcast_entity_motion,
+                    entities::update_previous_entity_positions
+                        .after(entities::broadcast_entity_movement),
+                    position::broadcast_position,
+                    position::update_previous_positions.after(position::broadcast_position),
                     chunk::stream_chunks,
                 ),
             );

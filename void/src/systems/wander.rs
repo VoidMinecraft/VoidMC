@@ -1,11 +1,14 @@
 use bevy_ecs::prelude::*;
 use rand::Rng;
 
-use crate::components::{Position, Rotation, Velocity, Wander, SpawnedEntity};
+use crate::components::{Position, Rotation, SpawnedEntity, Velocity, Wander};
 
 /// Very small, deterministic-seeming wander AI for demonstration.
 pub fn wander_system(
-    mut query: Query<(&mut Position, &mut Rotation, &mut Velocity, &mut Wander), With<SpawnedEntity>>,
+    mut query: Query<
+        (&mut Position, &mut Rotation, &mut Velocity, &mut Wander),
+        With<SpawnedEntity>,
+    >,
 ) {
     for (mut pos, mut rot, mut vel, mut wander) in query.iter_mut() {
         // tick down
@@ -37,13 +40,8 @@ pub fn wander_system(
             rot.yaw = wander.yaw;
         }
 
-        // Write velocity in protocol units: 1/8000 blocks per tick mapped to i16
-        let vx = (dx * 8000.0).round() as i16;
-        let vy = 0i16;
-        let vz = (dz * 8000.0).round() as i16;
-
-        vel.x = vx;
-        vel.y = vy;
-        vel.z = vz;
+        vel.x = dx;
+        vel.y = 0.0;
+        vel.z = dz;
     }
 }

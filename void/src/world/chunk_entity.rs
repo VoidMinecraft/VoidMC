@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::chunk::{
-    blocks, Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData,
-    PaletteData,
+    Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData,
+    PaletteData, blocks,
 };
 
 use super::chunk_pos::ChunkPos;
@@ -107,7 +107,12 @@ pub fn is_solid_block_state(block_state: i32) -> bool {
 }
 
 /// Reads a block state from a section at local coordinates.
-fn block_state_in_section(section: &ChunkSection, local_x: usize, local_y: usize, local_z: usize) -> i32 {
+fn block_state_in_section(
+    section: &ChunkSection,
+    local_x: usize,
+    local_y: usize,
+    local_z: usize,
+) -> i32 {
     match &section.block_state {
         PaletteData::SingleValue(id) => *id,
         PaletteData::Indirect {
@@ -120,7 +125,11 @@ fn block_state_in_section(section: &ChunkSection, local_x: usize, local_y: usize
             let bit_index = block_index * bits;
             let long_idx = bit_index / 64;
             let bit_offset = bit_index % 64;
-            let mask = if bits == 64 { u64::MAX } else { (1u64 << bits) - 1 };
+            let mask = if bits == 64 {
+                u64::MAX
+            } else {
+                (1u64 << bits) - 1
+            };
 
             let raw = if bit_offset + bits <= 64 {
                 (data.get(long_idx).copied().unwrap_or(0) >> bit_offset) & mask

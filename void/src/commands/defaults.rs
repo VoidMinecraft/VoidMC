@@ -5,13 +5,14 @@ use rand::Rng;
 
 use crate::components::{
     CirclePig, CirclePigState, ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid,
-    Grounded, MinecraftEntityId, MovementConfig, MovementUpdateCooldown, PlayerName, PlayerReady,
-    Position, PreviousPosition, Rotation, SpawnedEntity, TeleportState, Velocity, VerticalVelocity,
-    Wander,
+    Grounded, MinecraftEntityId, MovementConfig, PlayerDimension, PlayerName, PlayerReady,
+    Position, PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, TeleportState, Velocity,
+    VerticalVelocity, Wander,
 };
-use crate::world::DimensionId;
+use crate::events::EntityDespawnEvent;
 use crate::network::{NetworkChannels, OutgoingPacket};
-use voidmc_data::{Version, entity_type_id};
+use crate::world::DimensionId;
+use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
 
 use super::parser::{
     DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, StringArg, SummonableEntityArg,
@@ -412,8 +413,16 @@ pub fn summon_command() -> Command {
         .arg_optional("y", DoubleArg::unbounded())
         .arg_optional("z", DoubleArg::unbounded())
         .flag("wander", Some('w'), "Attach the demo random-walk behavior")
-        .flag("gravity", Some('g'), "Enable gravity for the summoned entity")
-        .flag("block-checks", Some('b'), "Enable block-collision checks for the summoned entity")
+        .flag(
+            "gravity",
+            Some('g'),
+            "Enable gravity for the summoned entity",
+        )
+        .flag(
+            "block-checks",
+            Some('b'),
+            "Enable block-collision checks for the summoned entity",
+        )
         .handler(handle_summon)
         .build()
 }
@@ -429,19 +438,27 @@ fn handle_summon(ctx: &mut CommandContext) {
         }
     };
 
+    if !is_summonable_entity_type(Version::V26_1_2, &entity_name) {
+        ctx.reply_error(&format!("Entity type is not summonable: {}", entity_name));
+        return;
+    }
+
     let executor = ctx.entity;
-    let (x, y, z) = match (
-        ctx.get::<f64>("x").copied(),
-        ctx.get::<f64>("y").copied(),
-        ctx.get::<f64>("z").copied(),
-    ) {
+    let x_arg = ctx.get::<f64>("x").copied();
+    let y_arg = ctx.get::<f64>("y").copied();
+    let z_arg = ctx.get::<f64>("z").copied();
+    let (x, y, z) = match (x_arg, y_arg, z_arg) {
         (Some(x), Some(y), Some(z)) => (x, y, z),
-        _ => ctx.with_world(|world| {
+        (None, None, None) => ctx.with_world(|world| {
             let pos = world
                 .get::<Position>(executor)
                 .expect("executor must have Position");
             (pos.x, pos.y, pos.z)
         }),
+        _ => {
+            ctx.reply_error("Expected either no coordinates or all of x, y and z");
+            return;
+        }
     };
 
     let entity_id = ctx.with_world_mut(|world| {
@@ -453,7 +470,7 @@ fn handle_summon(ctx: &mut CommandContext) {
     let entity_uuid = uuid::Uuid::new_v4();
     let entity_dimension = ctx.with_world(|world| {
         world
-            .get::<crate::components::PlayerDimension>(executor)
+            .get::<PlayerDimension>(executor)
             .map(|dimension| dimension.0)
             .unwrap_or(DimensionId::Overworld)
     });
@@ -464,7 +481,11 @@ fn handle_summon(ctx: &mut CommandContext) {
         block_collision_enabled: ctx.flag("block-checks"),
     };
 
-    let initial_velocity_y = if movement_config.gravity_enabled { -0.08 } else { 0.0 };
+    let initial_velocity_y = if movement_config.gravity_enabled {
+        -0.08
+    } else {
+        0.0
+    };
 
     ctx.with_world_mut(|world| {
         let mut e = world.spawn((
@@ -476,15 +497,18 @@ fn handle_summon(ctx: &mut CommandContext) {
                 yaw: 0.0,
                 pitch: 0.0,
             },
-            Velocity { x: 0, y: 0, z: 0 },
+            Velocity {
+                x: 0.0,
+                y: initial_velocity_y,
+                z: 0.0,
+            },
             EntityType(entity_type_id),
             EntityDimension(entity_dimension),
             SpawnedEntity,
             movement_config,
             VerticalVelocity(0.0),
-            Grounded(false),
-            MovementUpdateCooldown(0),
-            crate::components::RecentlySpawned(15),
+            Grounded(!movement_config.gravity_enabled),
+            RecentlySpawned(15),
         ));
 
         // Attach simple Wander AI only when explicitly requested.
@@ -492,44 +516,10 @@ fn handle_summon(ctx: &mut CommandContext) {
             let mut rng = rand::thread_rng();
             let yaw = rng.gen_range(0.0..360.0) as f32;
             let ticks = rng.gen_range(40..140);
-            e.insert(Wander { ticks, speed: 0.08, yaw });
-        }
-    });
-
-    let spawn_packet = voidmc_protocol::clientbound::ClientboundPacket::Play(
-        voidmc_protocol::clientbound::PlayPacket::SpawnEntity(
-            voidmc_protocol::clientbound::SpawnEntity {
-                entity_id,
-                entity_uuid,
-                entity_type: entity_type_id,
-                x,
-                y,
-                z,
-                pitch: 0,
-                yaw: 0,
-                head_yaw: 0,
-                data: 0,
-                velocity:voidmc_protocol::types::LpVec3 {
-                    x: 0.0,
-                    y: initial_velocity_y,
-                    z: 0.0,
-                },
-            },
-        ),
-    );
-
-    ctx.with_world_mut(|world| {
-        let ready_client_ids: Vec<u32> = world
-            .query_filtered::<&ClientId, With<PlayerReady>>()
-            .iter(world)
-            .map(|c| c.0)
-            .collect();
-
-        let channels = world.resource::<NetworkChannels>();
-        for cid in ready_client_ids {
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: cid,
-                packet: spawn_packet.clone(),
+            e.insert(Wander {
+                ticks,
+                speed: 0.08,
+                yaw,
             });
         }
     });
@@ -551,13 +541,11 @@ pub fn circle_command() -> Command {
 }
 
 fn dismiss_circle(ctx: &mut CommandContext, executor: bevy_ecs::prelude::Entity) -> bool {
-    let existing: Vec<(bevy_ecs::prelude::Entity, i32)> = ctx.with_world_mut(|world| {
+    let existing: Vec<bevy_ecs::prelude::Entity> = ctx.with_world_mut(|world| {
         world
-            .query_filtered::<(bevy_ecs::prelude::Entity, &MinecraftEntityId, &CirclePigState), With<CirclePig>>()
+            .query_filtered::<(bevy_ecs::prelude::Entity, &CirclePigState), With<CirclePig>>()
             .iter(world)
-            .filter_map(|(e, mc_id, state)| {
-                if state.owner == executor { Some((e, mc_id.0)) } else { None }
-            })
+            .filter_map(|(entity, state)| (state.owner == executor).then_some(entity))
             .collect()
     });
 
@@ -565,26 +553,9 @@ fn dismiss_circle(ctx: &mut CommandContext, executor: bevy_ecs::prelude::Entity)
         return false;
     }
 
-    let mc_ids: Vec<i32> = existing.iter().map(|(_, id)| *id).collect();
     ctx.with_world_mut(|world| {
-        for (entity, _) in &existing {
-            world.despawn(*entity);
-        }
-
-        let ready_cids: Vec<u32> = world
-            .query_filtered::<&ClientId, With<PlayerReady>>()
-            .iter(world)
-            .map(|c| c.0)
-            .collect();
-
-        let channels = world.resource::<NetworkChannels>();
-        let packet = voidmc_protocol::clientbound::ClientboundPacket::ManualPlay(
-            voidmc_protocol::clientbound::ManualPlayPacket::RemoveEntities(
-                voidmc_protocol::clientbound::RemoveEntities { entity_ids: mc_ids },
-            ),
-        );
-        for cid in ready_cids {
-            let _ = channels.outgoing.send(OutgoingPacket { client_id: cid, packet: packet.clone() });
+        for entity in existing {
+            world.trigger(EntityDespawnEvent { entity });
         }
     });
     true
@@ -604,7 +575,9 @@ fn handle_circle(ctx: &mut CommandContext) {
     }
 
     // Which entity type to spawn (defaults to pig).
-    let entity_name = ctx.get::<String>("entity").cloned()
+    let entity_name = ctx
+        .get::<String>("entity")
+        .cloned()
         .unwrap_or_else(|| "minecraft:pig".to_string());
 
     let pig_type_id = match entity_type_id(Version::V26_1_2, &entity_name) {
@@ -615,30 +588,39 @@ fn handle_circle(ctx: &mut CommandContext) {
         }
     };
 
+    if !is_summonable_entity_type(Version::V26_1_2, &entity_name) {
+        ctx.reply_error(&format!("Entity type is not summonable: {}", entity_name));
+        return;
+    }
+
     // Which player to orbit (defaults to self).
-    let target: bevy_ecs::prelude::Entity = if let Some(player_name) = ctx.get::<String>("player").cloned() {
-        let found = ctx.with_world_mut(|world| {
-            world
-                .query_filtered::<(bevy_ecs::prelude::Entity, &PlayerName), With<PlayerReady>>()
-                .iter(world)
-                .find_map(|(e, name)| if name.0 == player_name { Some(e) } else { None })
-        });
-        match found {
-            Some(e) => e,
-            None => {
-                ctx.reply_error(&format!("Player '{}' is not online.", player_name));
-                return;
+    let target: bevy_ecs::prelude::Entity =
+        if let Some(player_name) = ctx.get::<String>("player").cloned() {
+            let found = ctx.with_world_mut(|world| {
+                world
+                    .query_filtered::<(bevy_ecs::prelude::Entity, &PlayerName), With<PlayerReady>>()
+                    .iter(world)
+                    .find_map(|(e, name)| if name.0 == player_name { Some(e) } else { None })
+            });
+            match found {
+                Some(e) => e,
+                None => {
+                    ctx.reply_error(&format!("Player '{}' is not online.", player_name));
+                    return;
+                }
             }
-        }
-    } else {
-        executor
-    };
+        } else {
+            executor
+        };
 
     // Remove any existing circle this player owns, then spawn a fresh one.
     dismiss_circle(ctx, executor);
 
     let (target_pos, player_dimension) = ctx.with_world_mut(|world| {
-        let pos = world.get::<Position>(target).expect("target has Position").clone();
+        let pos = world
+            .get::<Position>(target)
+            .expect("target has Position")
+            .clone();
         let dim = world
             .get::<crate::components::PlayerDimension>(executor)
             .map(|d| d.0)
@@ -647,7 +629,6 @@ fn handle_circle(ctx: &mut CommandContext) {
     });
 
     const RADIUS: f64 = 2.0;
-    let mut spawned: Vec<(i32, uuid::Uuid, f64, f64, f64)> = Vec::with_capacity(36);
 
     for i in 0..36u32 {
         let angle_deg = (i * 10) as f32;
@@ -671,66 +652,196 @@ fn handle_circle(ctx: &mut CommandContext) {
                     EntityUuid(entity_uuid),
                     Position { x, y, z },
                     PreviousPosition { x, y, z },
-                    Rotation { yaw: 0.0, pitch: 0.0 },
-                    Velocity { x: 0, y: 0, z: 0 },
+                    Rotation {
+                        yaw: 0.0,
+                        pitch: 0.0,
+                    },
+                    Velocity {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
                     EntityType(pig_type_id),
                     EntityDimension(player_dimension),
                     SpawnedEntity,
                     MovementConfig::default(),
                     VerticalVelocity(0.0),
                     Grounded(true),
-                    MovementUpdateCooldown(0),
-                    crate::components::RecentlySpawned(5),
+                    RecentlySpawned(5),
                 ),
-                (CirclePig, CirclePigState { angle: angle_deg, owner: executor, target }),
-            ));
-        });
-
-        spawned.push((entity_id, entity_uuid, x, y, z));
-    }
-
-    // Broadcast SpawnEntity to all ready players.
-    ctx.with_world_mut(|world| {
-        let ready_cids: Vec<u32> = world
-            .query_filtered::<&ClientId, With<PlayerReady>>()
-            .iter(world)
-            .map(|c| c.0)
-            .collect();
-
-        let channels = world.resource::<NetworkChannels>();
-
-        for (entity_id, entity_uuid, x, y, z) in &spawned {
-            let packet = voidmc_protocol::clientbound::ClientboundPacket::Play(
-                voidmc_protocol::clientbound::PlayPacket::SpawnEntity(
-                    voidmc_protocol::clientbound::SpawnEntity {
-                        entity_id: *entity_id,
-                        entity_uuid: *entity_uuid,
-                        entity_type: pig_type_id,
-                        x: *x,
-                        y: *y,
-                        z: *z,
-                        pitch: 0,
-                        yaw: 0,
-                        head_yaw: 0,
-                        data: 0,
-                        velocity: voidmc_protocol::types::LpVec3 { x: 0.0, y: 0.0, z: 0.0 },
+                (
+                    CirclePig,
+                    CirclePigState {
+                        angle: angle_deg,
+                        owner: executor,
+                        target,
                     },
                 ),
-            );
-            for &cid in &ready_cids {
-                let _ = channels.outgoing.send(OutgoingPacket { client_id: cid, packet: packet.clone() });
-            }
-        }
-    });
+            ));
+        });
+    }
 
     let label = if target == executor {
         "you".to_string()
     } else {
-        ctx.get::<String>("target").cloned().unwrap_or_else(|| "the target".to_string())
+        ctx.get::<String>("player")
+            .cloned()
+            .unwrap_or_else(|| "the target".to_string())
     };
-    ctx.reply(&format!("36 pigs now orbit around {}. Use /circle --stop to dismiss them.", label));
+    ctx.reply(&format!(
+        "36 entities now orbit around {}. Use /circle --stop to dismiss them.",
+        label
+    ));
 }
 
 /// Optional resource listing plugin names — can be inserted by the user.
 #[derive(Clone, bevy_ecs::prelude::Resource)]
 pub struct PluginList(pub Vec<String>);
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::prelude::*;
+    use flume::Receiver;
+
+    use super::*;
+    use crate::commands::dispatch_command;
+    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+
+    fn command_world() -> (World, Entity, Receiver<OutgoingPacket>) {
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
+
+        let mut world = World::new();
+        world.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        });
+        world.insert_resource(EntityIdCounter(1000));
+
+        let mut registry = CommandRegistry::new();
+        registry.register(summon_command());
+        world.insert_resource(registry);
+
+        let player = world
+            .spawn((
+                ClientId(7),
+                PlayerReady,
+                Position {
+                    x: 12.0,
+                    y: 64.0,
+                    z: -8.0,
+                },
+                Rotation {
+                    yaw: 0.0,
+                    pitch: 0.0,
+                },
+                PlayerDimension(DimensionId::Overworld),
+            ))
+            .id();
+
+        (world, player, outgoing_rx)
+    }
+
+    fn spawned_entities(world: &mut World) -> Vec<(Position, PreviousPosition, EntityType)> {
+        world
+            .query_filtered::<(&Position, &PreviousPosition, &EntityType), With<SpawnedEntity>>()
+            .iter(world)
+            .map(|(pos, prev, entity_type)| {
+                (
+                    Position {
+                        x: pos.x,
+                        y: pos.y,
+                        z: pos.z,
+                    },
+                    PreviousPosition {
+                        x: prev.x,
+                        y: prev.y,
+                        z: prev.z,
+                    },
+                    EntityType(entity_type.0),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn summon_without_coordinates_uses_executor_position() {
+        let (mut world, player, _outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec!["minecraft:zombie".to_string()],
+        );
+
+        let entities = spawned_entities(&mut world);
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].0.x, 12.0);
+        assert_eq!(entities[0].0.y, 64.0);
+        assert_eq!(entities[0].0.z, -8.0);
+        assert_eq!(entities[0].1.x, 12.0);
+        assert_eq!(entities[0].2.0, 150);
+    }
+
+    #[test]
+    fn summon_with_all_coordinates_uses_provided_position() {
+        let (mut world, player, _outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec![
+                "minecraft:zombie".to_string(),
+                "10".to_string(),
+                "70".to_string(),
+                "-3".to_string(),
+            ],
+        );
+
+        let entities = spawned_entities(&mut world);
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].0.x, 10.0);
+        assert_eq!(entities[0].0.y, 70.0);
+        assert_eq!(entities[0].0.z, -3.0);
+    }
+
+    #[test]
+    fn summon_rejects_partial_coordinates() {
+        let (mut world, player, outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec!["minecraft:zombie".to_string(), "10".to_string()],
+        );
+
+        assert!(spawned_entities(&mut world).is_empty());
+        assert_eq!(outgoing_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn summon_rejects_non_summonable_entity_types() {
+        let (mut world, player, outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec!["minecraft:player".to_string()],
+        );
+
+        assert!(spawned_entities(&mut world).is_empty());
+        assert_eq!(outgoing_rx.try_iter().count(), 1);
+    }
+}

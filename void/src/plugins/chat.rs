@@ -103,11 +103,17 @@ fn handle_chat_message(
     player_names: Query<&PlayerName>,
     ready_clients: Query<&ClientId, With<PlayerReady>>,
 ) {
-    tracing::info!("[HANDLE_CHAT_MESSAGE_CALLED] message='{}', client_id={}", event.packet.message, event.client_id);
+    tracing::info!(
+        "[HANDLE_CHAT_MESSAGE_CALLED] message='{}', client_id={}",
+        event.packet.message,
+        event.client_id
+    );
     // If the client doesn't recognise a command in its tree, it sends
     // "/command args" as a ChatMessage instead of ChatCommand.  Intercept that.
     if let Some(cmd) = event.packet.message.strip_prefix('/') {
-        tracing::info!("[HANDLE_CHAT_MESSAGE_COMMAND_PREFIX] detected command prefix, routing to handle_command");
+        tracing::info!(
+            "[HANDLE_CHAT_MESSAGE_COMMAND_PREFIX] detected command prefix, routing to handle_command"
+        );
         handle_command(
             event.client_id,
             event.entity,
@@ -187,7 +193,9 @@ fn handle_command_suggestions(
         .collect();
 
     // For commands that accept entity types, also suggest all known entity type names.
-    let canonical = command_registry.resolve(command_name).unwrap_or(command_name);
+    let canonical = command_registry
+        .resolve(command_name)
+        .unwrap_or(command_name);
     if command_registry.accepts_entity_type_arg(canonical) {
         names.extend(
             voidmc_data::entity_type_names(voidmc_data::Version::V26_1_2)

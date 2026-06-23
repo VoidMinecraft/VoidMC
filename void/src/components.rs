@@ -96,24 +96,24 @@ pub struct HotbarSlot(pub i16);
 #[derive(Component)]
 pub struct EntityType(pub i32);
 
-/// Which dimension a server-owned entity is in.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct EntityDimension(pub DimensionId);
-
 /// Marker component for non-player summoned entities.
 #[derive(Component)]
 pub struct SpawnedEntity;
+
+/// Which dimension a non-player entity belongs to.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct EntityDimension(pub DimensionId);
 
 /// UUID for a non-player summoned entity, matching the UUID sent in SpawnEntity.
 #[derive(Component)]
 pub struct EntityUuid(pub uuid::Uuid);
 
-/// Entity velocity in blocks/tick, matching the SpawnEntity packet LpVec3 format.
+/// Entity velocity in blocks/tick, encoded directly as protocol LP Vec3.
 #[derive(Component)]
 pub struct Velocity {
-    pub x: i16,
-    pub y: i16,
-    pub z: i16,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
 /// Movement feature flags for a server-owned entity.
@@ -131,10 +131,6 @@ pub struct VerticalVelocity(pub f64);
 /// Whether the entity is resting on a solid surface.
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Grounded(pub bool);
-
-/// Per-entity movement update cooldown (ticks until next position packet).
-#[derive(Component)]
-pub struct MovementUpdateCooldown(pub u8);
 
 /// Marker tag for pigs spawned by the /circle command.
 #[derive(Component)]

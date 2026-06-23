@@ -149,25 +149,26 @@ pub struct CommandContext<'a> {
 
 Built-in parsers that implement the `ArgParser` trait:
 
-| Parser                       | Parsed Type | Protocol Hint                     | Description                                              |
-| ---------------------------- | ----------- | --------------------------------- | -------------------------------------------------------- |
-| `StringArg::single_word()`   | `String`    | `SingleWord`                      | Single whitespace-delimited word                         |
-| `StringArg::quotable()`      | `String`    | `QuotablePhrase`                  | Quoted or single word                                    |
-| `StringArg::greedy()`        | `String`    | `GreedyPhrase`                    | All remaining input                                      |
-| `IntegerArg::new(min, max)`  | `i32`       | `Integer { min, max }`            | Bounded integer                                          |
-| `IntegerArg::unbounded()`    | `i32`       | `Integer`                         | Unbounded integer                                        |
-| `LongArg::new(min, max)`     | `i64`       | `Long { min, max }`               | Bounded long integer                                     |
-| `LongArg::unbounded()`       | `i64`       | `Long`                            | Unbounded long                                           |
-| `FloatArg::new(min, max)`    | `f32`       | `Float { min, max }`              | Bounded float                                            |
-| `FloatArg::unbounded()`      | `f32`       | `Float`                           | Unbounded float                                          |
-| `DoubleArg::new(min, max)`   | `f64`       | `Double { min, max }`             | Bounded double                                           |
-| `DoubleArg::unbounded()`     | `f64`       | `Double`                          | Unbounded double                                         |
-| `BoolArg`                    | `bool`      | `Bool`                            | Accepts `true/false/yes/no/1/0`                          |
-| `GreedyStringArg`            | `String`    | `GreedyPhrase`                    | All remaining input as text                              |
-| `GameProfileArg`             | `String`    | `GameProfile`                     | Player name with tab-completion (`minecraft:ask_server`) |
-| `EntityArg::single_player()` | `String`    | `Entity { single, players_only }` | Entity selector                                          |
-| `MessageArg`                 | `String`    | `Message`                         | Chat message argument                                    |
-| `ResourceLocationArg`        | `String`    | `ResourceLocation`                | `namespace:path` identifier (e.g. `minecraft:creeper`)   |
+| Parser | Parsed Type | Protocol Hint | Description |
+|---|---|---|---|
+| `StringArg::single_word()` | `String` | `SingleWord` | Single whitespace-delimited word |
+| `StringArg::quotable()` | `String` | `QuotablePhrase` | Quoted or single word |
+| `StringArg::greedy()` | `String` | `GreedyPhrase` | All remaining input |
+| `IntegerArg::new(min, max)` | `i32` | `Integer { min, max }` | Bounded integer |
+| `IntegerArg::unbounded()` | `i32` | `Integer` | Unbounded integer |
+| `LongArg::new(min, max)` | `i64` | `Long { min, max }` | Bounded long integer |
+| `LongArg::unbounded()` | `i64` | `Long` | Unbounded long |
+| `FloatArg::new(min, max)` | `f32` | `Float { min, max }` | Bounded float |
+| `FloatArg::unbounded()` | `f32` | `Float` | Unbounded float |
+| `DoubleArg::new(min, max)` | `f64` | `Double { min, max }` | Bounded double |
+| `DoubleArg::unbounded()` | `f64` | `Double` | Unbounded double |
+| `BoolArg` | `bool` | `Bool` | Accepts `true/false/yes/no/1/0` |
+| `GreedyStringArg` | `String` | `GreedyPhrase` | All remaining input as text |
+| `GameProfileArg` | `String` | `GameProfile` | Player name with tab-completion (`minecraft:ask_server`) |
+| `EntityArg::single_player()` | `String` | `Entity { single, players_only }` | Entity selector |
+| `ResourceLocationArg` | `String` | `ResourceLocation` | Namespaced identifier such as `minecraft:zombie` |
+| `SummonableEntityArg` | `String` | `ResourceLocation` | Entity identifier with client suggestions from `minecraft:summonable_entities` |
+| `MessageArg` | `String` | `Message` | Chat message argument |
 
 ## Custom ArgParser
 
@@ -240,21 +241,36 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 
 ### Available Default Commands
 
-| Command      | Aliases | Description                           | Arguments                                                                                             |
-| ------------ | ------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `/help`      |         | List commands or show command details | `[command:string]`                                                                                    |
-| `/gamemode`  | `/gm`   | Change game mode                      | `<mode:integer(0..3)>`                                                                                |
-| `/kick`      |         | Kick a player                         | `<player:player> [reason:text]...`                                                                    |
-| `/ping`      |         | Pong!                                 | (none)                                                                                                |
-| `/plugins`   | `/pl`   | List loaded plugins                   | (none)                                                                                                |
-| `/tp`        |         | Teleport to coordinates               | `<x:double> <y:double> <z:double>`                                                                    |
-| `/broadcast` |         | Broadcast to all players              | `<message:text>...`                                                                                   |
-| `/tell`      | `/msg`  | Private message a player              | `<player:player> <message:text>...`                                                                   |
-| `/list`      |         | Show online players                   | (none)                                                                                                |
-| `/say`       |         | Send a message as yourself            | `<message:text>...`                                                                                   |
-| `/summon`    |         | Summon an entity at a position        | `<entity:resource_location> [x:double] [y:double] [z:double] [--wander] [--gravity] [--block-checks]` |
+| Command | Aliases | Description | Arguments |
+|---|---|---|---|
+| `/help` | | List commands or show command details | `[command:string]` |
+| `/gamemode` | `/gm` | Change game mode | `<mode:integer(0..3)>` |
+| `/kick` | | Kick a player | `<player:player> [reason:text]...` |
+| `/ping` | | Pong! | (none) |
+| `/plugins` | `/pl` | List loaded plugins | (none) |
+| `/tp` | | Teleport to coordinates | `<x:double> <y:double> <z:double>` |
+| `/broadcast` | | Broadcast to all players | `<message:text>...` |
+| `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` |
+| `/list` | | Show online players | (none) |
+| `/say` | | Send a message as yourself | `<message:text>...` |
+| `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double] [--wander] [--gravity] [--block-checks]` |
+| `/circle` | | Spawn or remove an orbiting entity ring | `[entity:resource_location] [player:player] [--stop]` |
 
-The optional `--wander` flag attaches the demo random-walk behavior to the summoned entity. `--gravity` and `--block-checks` are stored on the entity as movement flags so the physics layer can enable them in the next movement slice. Use these flags with any valid summonable entity, such as `minecraft:pig` or `minecraft:zombie`.
+`/summon` accepts only full namespaced entity IDs and validates them against
+the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
+either omit all three to use the executor position, or provide `x`, `y`, and
+`z` together. Partial coordinate input is rejected instead of being silently
+ignored.
+
+The optional `--wander` flag attaches the demo random-walk behavior to the
+summoned entity. `--gravity` enables the simple server-side vertical physics,
+and `--block-checks` enables world block collision checks for that physics
+step. These flags are stored as ECS movement components and synchronized by the
+non-player entity lifecycle.
+
+`/circle` defaults to `minecraft:pig` and the executor. `/circle --stop`
+removes the executor's active ring through `EntityDespawnEvent`, so clients see
+the same `RemoveEntities` lifecycle path as other spawned entities.
 
 ### PluginList Resource
 
@@ -279,6 +295,7 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
 - Command name completion (typing `/` shows all commands)
 - Argument type hints (integers, strings, players, etc.)
 - Player name suggestions for `GameProfileArg` arguments (via `minecraft:ask_server`)
+- Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
 - Alias support (aliases appear as separate entries pointing to the same argument chain)
 
 The command tree is rebuilt from the registry each time a client joins.

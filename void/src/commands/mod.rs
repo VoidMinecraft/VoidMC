@@ -405,7 +405,7 @@ impl CommandRegistry {
     pub fn accepts_entity_type_arg(&self, canonical_name: &str) -> bool {
         self.commands
             .get(canonical_name)
-            .map_or(false, |cmd| cmd.suggest_entity_types)
+            .is_some_and(|cmd| cmd.suggest_entity_types)
     }
 
     /// Resolve a command name (or alias) to its canonical name.
@@ -788,7 +788,11 @@ pub fn dispatch_command(
     command_name: &str,
     args: Vec<String>,
 ) {
-    tracing::info!("[DISPATCH_COMMAND_CALLED] command='{}', args={:?}", command_name, args);
+    tracing::info!(
+        "[DISPATCH_COMMAND_CALLED] command='{}', args={:?}",
+        command_name,
+        args
+    );
     // Step 1: borrow registry immutably to clone handler + definitions
     let resolved = world
         .resource::<CommandRegistry>()
@@ -813,7 +817,9 @@ pub fn dispatch_command(
             // Resolve any `~` tokens for `double` arguments relative to the executor's `Position`.
             let resolved_positional = {
                 let mut tokens = positional.clone();
-                for (i, (arg_name, parser, _required, _variadic)) in res.arguments.iter().enumerate() {
+                for (i, (arg_name, parser, _required, _variadic)) in
+                    res.arguments.iter().enumerate()
+                {
                     if i >= tokens.len() {
                         break;
                     }
