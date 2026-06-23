@@ -2,10 +2,18 @@ use std::sync::Arc;
 
 use bevy_ecs::prelude::With;
 
-use crate::components::{ClientId, PlayerName, PlayerReady, Position, Rotation, TeleportState};
+use crate::components::{
+    ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid, MinecraftEntityId,
+    PlayerDimension, PlayerName, PlayerReady, Position, PreviousPosition, Rotation, SpawnedEntity,
+    TeleportState, Velocity,
+};
 use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::world::DimensionId;
+use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
 
-use super::parser::{DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, StringArg};
+use super::parser::{
+    DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, StringArg, SummonableEntityArg,
+};
 use super::{Command, CommandBuilder, CommandContext, CommandRegistry};
 
 /// Registers all default commands except those listed in `exclude`.
@@ -39,6 +47,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     }
     if !exclude.contains(&"say") {
         registry.register(say_command());
+    }
+    if !exclude.contains(&"summon") {
+        registry.register(summon_command());
     }
 }
 
@@ -388,6 +399,241 @@ fn handle_say(ctx: &mut CommandContext) {
     ctx.broadcast(&format!("[{}] {}", name, message));
 }
 
+pub fn summon_command() -> Command {
+    CommandBuilder::new("summon")
+        .description("Summon an entity at a position")
+        .arg("entity", Arc::new(SummonableEntityArg))
+        .arg_optional("x", DoubleArg::unbounded())
+        .arg_optional("y", DoubleArg::unbounded())
+        .arg_optional("z", DoubleArg::unbounded())
+        .handler(handle_summon)
+        .build()
+}
+
+fn handle_summon(ctx: &mut CommandContext) {
+    let entity_name = ctx.get::<String>("entity").unwrap().clone();
+
+    let entity_type_id = match entity_type_id(Version::V26_1_2, &entity_name) {
+        Some(id) => id,
+        None => {
+            ctx.reply_error(&format!("Unknown entity type: {}", entity_name));
+            return;
+        }
+    };
+
+    if !is_summonable_entity_type(Version::V26_1_2, &entity_name) {
+        ctx.reply_error(&format!("Entity type is not summonable: {}", entity_name));
+        return;
+    }
+
+    let executor = ctx.entity;
+    let x_arg = ctx.get::<f64>("x").copied();
+    let y_arg = ctx.get::<f64>("y").copied();
+    let z_arg = ctx.get::<f64>("z").copied();
+    let (x, y, z) = match (x_arg, y_arg, z_arg) {
+        (Some(x), Some(y), Some(z)) => (x, y, z),
+        (None, None, None) => ctx.with_world(|world| {
+            let pos = world
+                .get::<Position>(executor)
+                .expect("executor must have Position");
+            (pos.x, pos.y, pos.z)
+        }),
+        _ => {
+            ctx.reply_error("Expected either no coordinates or all of x, y and z");
+            return;
+        }
+    };
+
+    let dimension = ctx.with_world(|world| {
+        world
+            .get::<PlayerDimension>(executor)
+            .map(|dimension| dimension.0)
+            .unwrap_or(DimensionId::Overworld)
+    });
+
+    let entity_id = ctx.with_world_mut(|world| {
+        let mut counter = world.resource_mut::<EntityIdCounter>();
+        let id = counter.0;
+        counter.0 += 1;
+        id
+    });
+    let entity_uuid = uuid::Uuid::new_v4();
+
+    ctx.with_world_mut(|world| {
+        world.spawn((
+            MinecraftEntityId(entity_id),
+            EntityUuid(entity_uuid),
+            Position { x, y, z },
+            PreviousPosition { x, y, z },
+            Rotation {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            Velocity {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            EntityType(entity_type_id),
+            EntityDimension(dimension),
+            SpawnedEntity,
+        ));
+    });
+
+    ctx.reply(&format!(
+        "Summoned {} at {:.1}, {:.1}, {:.1}",
+        entity_name, x, y, z
+    ));
+}
+
 /// Optional resource listing plugin names — can be inserted by the user.
 #[derive(Clone, bevy_ecs::prelude::Resource)]
 pub struct PluginList(pub Vec<String>);
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::prelude::*;
+    use flume::Receiver;
+
+    use super::*;
+    use crate::commands::dispatch_command;
+    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+
+    fn command_world() -> (World, Entity, Receiver<OutgoingPacket>) {
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
+
+        let mut world = World::new();
+        world.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        });
+        world.insert_resource(EntityIdCounter(1000));
+
+        let mut registry = CommandRegistry::new();
+        registry.register(summon_command());
+        world.insert_resource(registry);
+
+        let player = world
+            .spawn((
+                ClientId(7),
+                PlayerReady,
+                Position {
+                    x: 12.0,
+                    y: 64.0,
+                    z: -8.0,
+                },
+                Rotation {
+                    yaw: 0.0,
+                    pitch: 0.0,
+                },
+                PlayerDimension(DimensionId::Overworld),
+            ))
+            .id();
+
+        (world, player, outgoing_rx)
+    }
+
+    fn spawned_entities(world: &mut World) -> Vec<(Position, PreviousPosition, EntityType)> {
+        world
+            .query_filtered::<(&Position, &PreviousPosition, &EntityType), With<SpawnedEntity>>()
+            .iter(world)
+            .map(|(pos, prev, entity_type)| {
+                (
+                    Position {
+                        x: pos.x,
+                        y: pos.y,
+                        z: pos.z,
+                    },
+                    PreviousPosition {
+                        x: prev.x,
+                        y: prev.y,
+                        z: prev.z,
+                    },
+                    EntityType(entity_type.0),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn summon_without_coordinates_uses_executor_position() {
+        let (mut world, player, _outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec!["minecraft:zombie".to_string()],
+        );
+
+        let entities = spawned_entities(&mut world);
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].0.x, 12.0);
+        assert_eq!(entities[0].0.y, 64.0);
+        assert_eq!(entities[0].0.z, -8.0);
+        assert_eq!(entities[0].1.x, 12.0);
+        assert_eq!(entities[0].2.0, 150);
+    }
+
+    #[test]
+    fn summon_with_all_coordinates_uses_provided_position() {
+        let (mut world, player, _outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec![
+                "minecraft:zombie".to_string(),
+                "10".to_string(),
+                "70".to_string(),
+                "-3".to_string(),
+            ],
+        );
+
+        let entities = spawned_entities(&mut world);
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].0.x, 10.0);
+        assert_eq!(entities[0].0.y, 70.0);
+        assert_eq!(entities[0].0.z, -3.0);
+    }
+
+    #[test]
+    fn summon_rejects_partial_coordinates() {
+        let (mut world, player, outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec!["minecraft:zombie".to_string(), "10".to_string()],
+        );
+
+        assert!(spawned_entities(&mut world).is_empty());
+        assert_eq!(outgoing_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn summon_rejects_non_summonable_entity_types() {
+        let (mut world, player, outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec!["minecraft:player".to_string()],
+        );
+
+        assert!(spawned_entities(&mut world).is_empty());
+        assert_eq!(outgoing_rx.try_iter().count(), 1);
+    }
+}

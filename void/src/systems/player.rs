@@ -192,7 +192,7 @@ fn send_player_spawn(
             clientbound::SpawnEntity {
                 entity_id,
                 entity_uuid: uuid,
-                entity_type: 147, // Player
+                entity_type: 155, // minecraft:player
                 x: pos.x,
                 y: pos.y,
                 z: pos.z,

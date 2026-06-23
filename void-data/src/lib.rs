@@ -28,6 +28,49 @@ impl Version {
     }
 }
 
+/// Returns the protocol numeric ID for a named entity type, or `None` if the
+/// name is not in the table for this version.
+pub fn entity_type_id(version: Version, name: &str) -> Option<i32> {
+    protocol_registry_index(version, "minecraft:entity_type", name)
+}
+
+/// Returns whether `name` is a valid runtime target for `/summon`.
+pub fn is_summonable_entity_type(version: Version, name: &str) -> bool {
+    entity_type_id(version, name).is_some() && !non_summonable_entity_types(version).contains(&name)
+}
+
+/// Returns the raw `(entry_id, protocol_id)` slice for protocol registry IDs
+/// from Mojang's `reports/registries.json` data generator output.
+pub fn protocol_registry(
+    version: Version,
+    registry_id: &str,
+) -> Option<&'static [(&'static str, i32)]> {
+    let (_, registries) = PROTOCOL_REGISTRIES
+        .iter()
+        .find(|(v, _)| *v == version.id())?;
+    let (_, entries) = registries.iter().find(|(id, _)| *id == registry_id)?;
+    Some(*entries)
+}
+
+/// Returns the protocol numeric ID of `entry_id` in `registry_id` for
+/// `version`, or `None` if it is not present in `reports/registries.json`.
+pub fn protocol_registry_index(version: Version, registry_id: &str, entry_id: &str) -> Option<i32> {
+    protocol_registry(version, registry_id)?
+        .iter()
+        .find(|(id, _)| *id == entry_id)
+        .map(|(_, protocol_id)| *protocol_id)
+}
+
+/// Returns entity types known by the versioned data to be excluded from
+/// Minecraft's `minecraft:summonable_entities` suggestion provider.
+pub fn non_summonable_entity_types(version: Version) -> &'static [&'static str] {
+    NON_SUMMONABLE_ENTITY_TYPES
+        .iter()
+        .find(|(v, _)| *v == version.id())
+        .map(|(_, entity_types)| *entity_types)
+        .unwrap_or(&[])
+}
+
 /// Returns the raw `(entry_id, nbt_bytes)` slice for `(version, registry_id)`,
 /// or `None` if the registry is not shipped for this version.
 pub fn registry(
@@ -117,4 +160,46 @@ fn parse_cached(bytes: &'static [u8]) -> &'static Nbt {
 
     let mut guard = cache.lock().unwrap();
     guard.entry(key).or_insert(leaked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entity_type_protocol_ids_come_from_protocol_registry_data() {
+        assert_eq!(
+            entity_type_id(Version::V26_1_2, "minecraft:creeper"),
+            Some(32)
+        );
+        assert_eq!(
+            entity_type_id(Version::V26_1_2, "minecraft:zombie"),
+            Some(150)
+        );
+        assert_eq!(
+            entity_type_id(Version::V26_1_2, "minecraft:player"),
+            Some(155)
+        );
+        assert_eq!(entity_type_id(Version::V26_1_2, "minecraft:not_real"), None);
+    }
+
+    #[test]
+    fn summonable_entity_validation_rejects_special_runtime_types() {
+        assert!(is_summonable_entity_type(
+            Version::V26_1_2,
+            "minecraft:zombie"
+        ));
+        assert!(!is_summonable_entity_type(
+            Version::V26_1_2,
+            "minecraft:player"
+        ));
+        assert!(!is_summonable_entity_type(
+            Version::V26_1_2,
+            "minecraft:fishing_bobber"
+        ));
+        assert!(!is_summonable_entity_type(
+            Version::V26_1_2,
+            "minecraft:not_real"
+        ));
+    }
 }

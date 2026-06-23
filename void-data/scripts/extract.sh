@@ -39,13 +39,22 @@ REGISTRIES=(
   zombie_nautilus_variant
   timeline
   world_clock
+  trim_material
+  trim_pattern
+  banner_pattern
+  instrument
+  chat_type
+  jukebox_song
 )
 
 TAG_REGISTRIES=(
   tags/damage_type
+  tags/entity_type
   tags/painting_variant
   tags/timeline
   tags/worldgen/biome
+  tags/banner_pattern
+  tags/instrument
 )
 
 echo "==> Downloading Paper $VERSION"
@@ -87,6 +96,15 @@ if [ -f "$REPORTS/blocks.json" ]; then
     "$(grep -c '^  "minecraft:' "$ASSETS_DIR/blocks.json" || true)"
 else
   echo "  WARNING: $REPORTS/blocks.json missing — block codegen will skip" >&2
+fi
+
+echo "==> Copying Mojang protocol registry report"
+if [ -f "$REPORTS/registries.json" ]; then
+  cp "$REPORTS/registries.json" "$ASSETS_DIR/registries.json"
+  printf '  %-32s %s registries\n' "registries.json" \
+    "$(grep -c '^  \"minecraft:' "$ASSETS_DIR/registries.json" || true)"
+else
+  echo "  WARNING: $REPORTS/registries.json missing — protocol registry codegen will skip" >&2
 fi
 
 # ---- Prismarine block-collision shapes -----------------------------------

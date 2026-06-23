@@ -102,6 +102,8 @@ Built-in parsers that implement the `ArgParser` trait:
 | `GreedyStringArg` | `String` | `GreedyPhrase` | All remaining input as text |
 | `GameProfileArg` | `String` | `GameProfile` | Player name with tab-completion (`minecraft:ask_server`) |
 | `EntityArg::single_player()` | `String` | `Entity { single, players_only }` | Entity selector |
+| `ResourceLocationArg` | `String` | `ResourceLocation` | Namespaced identifier such as `minecraft:zombie` |
+| `SummonableEntityArg` | `String` | `ResourceLocation` | Entity identifier with client suggestions from `minecraft:summonable_entities` |
 | `MessageArg` | `String` | `Message` | Chat message argument |
 
 ## Custom ArgParser
@@ -187,6 +189,13 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` |
 | `/list` | | Show online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
+| `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double]` |
+
+`/summon` accepts only full namespaced entity IDs and validates them against
+the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
+either omit all three to use the executor position, or provide `x`, `y`, and
+`z` together. Partial coordinate input is rejected instead of being silently
+ignored.
 
 ### PluginList Resource
 
@@ -211,6 +220,7 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
 - Command name completion (typing `/` shows all commands)
 - Argument type hints (integers, strings, players, etc.)
 - Player name suggestions for `GameProfileArg` arguments (via `minecraft:ask_server`)
+- Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
 - Alias support (aliases appear as separate entries pointing to the same argument chain)
 
 The command tree is rebuilt from the registry each time a client joins.

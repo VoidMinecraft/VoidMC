@@ -61,6 +61,7 @@ const REGISTRIES: &[(&str, &str)] = &[
 /// is the path under that subpath, prefixed with `minecraft:`.
 const TAG_REGISTRIES: &[(&str, &str)] = &[
     ("minecraft:damage_type", "tags/damage_type"),
+    ("minecraft:entity_type", "tags/entity_type"),
     ("minecraft:painting_variant", "tags/painting_variant"),
     ("minecraft:timeline", "tags/timeline"),
     ("minecraft:worldgen/biome", "tags/worldgen/biome"),
@@ -169,6 +170,12 @@ fn main() {
         codegen.push_str("    ]),\n");
     }
     codegen.push_str("];\n");
+
+    // ---- Protocol registry IDs static ------------------------------------
+    emit_protocol_registries(&crate_dir, &mut codegen);
+
+    // ---- Non-summonable entity type static --------------------------------
+    emit_non_summonable_entity_types(&crate_dir, &mut codegen);
 
     let out_file = out_dir.join("registries.rs");
     fs::write(&out_file, codegen).unwrap();
@@ -884,6 +891,130 @@ fn collect_jsons(root: &Path, dir: &Path, out: &mut BTreeMap<String, PathBuf>) {
             out.insert(id, path);
         }
     }
+}
+
+fn emit_protocol_registries(crate_dir: &Path, codegen: &mut String) {
+    codegen.push('\n');
+    codegen.push_str("pub static PROTOCOL_REGISTRIES: &[(&str, &[(&str, &[(&str, i32)])])] = &[\n");
+
+    for version in VERSIONS {
+        let registries_path = crate_dir
+            .join("assets")
+            .join(version)
+            .join("registries.json");
+        let _ = writeln!(codegen, "    ({version:?}, &[");
+
+        if registries_path.is_file() {
+            let json_text = fs::read_to_string(&registries_path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", registries_path.display()));
+            let value: Value = serde_json::from_str(&json_text)
+                .unwrap_or_else(|e| panic!("parse {}: {e}", registries_path.display()));
+            let registries = value
+                .as_object()
+                .unwrap_or_else(|| panic!("{} root is not an object", registries_path.display()));
+
+            for (registry_id, entries) in parse_protocol_registries(registries, &registries_path) {
+                let _ = writeln!(codegen, "        ({registry_id:?}, &[");
+                for (entry_id, protocol_id) in entries {
+                    let _ = writeln!(codegen, "            ({entry_id:?}, {protocol_id}),");
+                }
+                codegen.push_str("        ]),\n");
+            }
+        }
+
+        codegen.push_str("    ]),\n");
+    }
+
+    codegen.push_str("];\n");
+}
+
+fn parse_protocol_registries(
+    registries: &Map<String, Value>,
+    path: &Path,
+) -> Vec<(String, Vec<(String, i32)>)> {
+    let mut out = Vec::new();
+
+    for (registry_id, registry_value) in registries {
+        let entries = registry_value
+            .get("entries")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| {
+                panic!(
+                    "registry {registry_id} in {} has no entries object",
+                    path.display()
+                )
+            });
+        let mut parsed_entries = Vec::new();
+
+        for (entry_id, entry_value) in entries {
+            let Some(protocol_id) = entry_value.get("protocol_id").and_then(Value::as_i64) else {
+                continue;
+            };
+            let protocol_id = i32::try_from(protocol_id).unwrap_or_else(|_| {
+                panic!(
+                    "protocol_id for {entry_id} in {} is out of range",
+                    path.display()
+                )
+            });
+            parsed_entries.push((entry_id.clone(), protocol_id));
+        }
+
+        if !parsed_entries.is_empty() {
+            parsed_entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            out.push((registry_id.clone(), parsed_entries));
+        }
+    }
+
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn emit_non_summonable_entity_types(crate_dir: &Path, codegen: &mut String) {
+    codegen.push('\n');
+    codegen.push_str("pub static NON_SUMMONABLE_ENTITY_TYPES: &[(&str, &[&str])] = &[\n");
+
+    for version in VERSIONS {
+        let path = crate_dir
+            .join("assets")
+            .join(version)
+            .join("non_summonable_entity_types.json");
+        let entity_types = if path.is_file() {
+            parse_string_array_file(&path)
+        } else {
+            Vec::new()
+        };
+
+        let _ = write!(codegen, "    ({version:?}, &[");
+        for (index, entity_type) in entity_types.iter().enumerate() {
+            if index > 0 {
+                codegen.push_str(", ");
+            }
+            let _ = write!(codegen, "{entity_type:?}");
+        }
+        codegen.push_str("]),\n");
+    }
+
+    codegen.push_str("];\n");
+}
+
+fn parse_string_array_file(path: &Path) -> Vec<String> {
+    let json_text =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let value: Value = serde_json::from_str(&json_text)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let array = value
+        .as_array()
+        .unwrap_or_else(|| panic!("{} root is not an array", path.display()));
+    let mut out = BTreeSet::new();
+
+    for item in array {
+        let item = item
+            .as_str()
+            .unwrap_or_else(|| panic!("{} contains a non-string item", path.display()));
+        out.insert(item.to_string());
+    }
+
+    out.into_iter().collect()
 }
 
 // ---------------------------------------------------------------------------
