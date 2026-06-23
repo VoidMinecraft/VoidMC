@@ -2,8 +2,7 @@ use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    ClientId, EntityType, EntityUuid, MinecraftEntityId, PlayerName, PlayerReady, PlayerUuid,
-    Position, Rotation, SpawnedEntity, Velocity,
+    ClientId, MinecraftEntityId, PlayerName, PlayerReady, PlayerUuid, Position, Rotation,
 };
 use crate::config::ServerConfigResource;
 use crate::events::{PlayerQuitEvent, PlayerReadyEvent};
@@ -32,17 +31,6 @@ pub fn on_player_ready(
             &Rotation,
         ),
         With<PlayerReady>,
-    >,
-    spawned_entities: Query<
-        (
-            &MinecraftEntityId,
-            &EntityUuid,
-            &Position,
-            &Rotation,
-            &Velocity,
-            &EntityType,
-        ),
-        With<SpawnedEntity>,
     >,
 ) {
     let new_entity = event.entity;
@@ -93,36 +81,6 @@ pub fn on_player_ready(
             new_rot,
             game_mode,
         );
-    }
-
-    // Send the new player all pre-existing summoned entities.
-    for (mc_id, entity_uuid, pos, rot, vel, entity_type) in spawned_entities.iter() {
-        let yaw = (rot.yaw / 360.0 * 256.0) as u8;
-        let pitch = (rot.pitch / 360.0 * 256.0) as u8;
-        let _ = channels.outgoing.send(OutgoingPacket {
-            client_id: new_client_id.0,
-            packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
-                voidmc_protocol::clientbound::PlayPacket::SpawnEntity(
-                    voidmc_protocol::clientbound::SpawnEntity {
-                        entity_id: mc_id.0,
-                        entity_uuid: entity_uuid.0,
-                        entity_type: entity_type.0,
-                        x: pos.x,
-                        y: pos.y,
-                        z: pos.z,
-                        pitch,
-                        yaw,
-                        head_yaw: yaw,
-                        data: 0,
-                        velocity: voidmc_protocol::types::LpVec3 {
-                            x: vel.x / 8000.0,
-                            y: vel.y / 8000.0,
-                            z: vel.z / 8000.0,
-                        },
-                    },
-                ),
-            ),
-        });
     }
 }
 

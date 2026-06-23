@@ -100,11 +100,15 @@ pub struct EntityType(pub i32);
 #[derive(Component)]
 pub struct SpawnedEntity;
 
+/// Which dimension a non-player entity belongs to.
+#[derive(Component, Clone, Copy)]
+pub struct EntityDimension(pub DimensionId);
+
 /// UUID for a non-player summoned entity, matching the UUID sent in SpawnEntity.
 #[derive(Component)]
 pub struct EntityUuid(pub uuid::Uuid);
 
-/// Entity velocity in blocks/tick, matching the SpawnEntity packet LpVec3 format.
+/// Entity velocity in blocks/tick, encoded directly as protocol LP Vec3.
 #[derive(Component)]
 pub struct Velocity {
     pub x: f64,
