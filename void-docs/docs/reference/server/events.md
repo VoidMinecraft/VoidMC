@@ -42,6 +42,18 @@ pub struct PlayerQuitEvent {
 
 Triggered when a ready player disconnects. Observers broadcast entity removal and tab-list updates to remaining players. The entity is despawned after the event is fully processed.
 
+### EntityDespawnEvent
+
+```rust
+pub struct EntityDespawnEvent {
+    pub entity: Entity,
+}
+```
+
+Triggered by gameplay code that wants to remove a non-player `SpawnedEntity`.
+The built-in observer sends `Remove Entities` to ready players that can see the
+entity, then despawns the ECS entity.
+
 ### PlayerMoveEvent
 
 ```rust

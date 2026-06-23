@@ -16,8 +16,10 @@ void-data/
 ├── src/lib.rs               # include!(...) the generated files
 ├── scripts/extract.sh       # Refresh assets from a server jar + prismarine
 ├── tests/blocks.rs          # Round-trip + sanity tests for the codegen
-└── assets/<version>/
+    └── assets/<version>/
     ├── blocks.json                    # Mojang block-state report
+    ├── registries.json                # Mojang protocol registry ID report
+    ├── non_summonable_entity_types.json # Server-maintained summon exclusions
     ├── blockCollisionShapes.json      # Prismarine collision boxes
     ├── PROVENANCE.txt                 # Source provenance audit trail
     ├── damage_type/<entry>.json       # Per-registry, per-entry data
@@ -31,7 +33,7 @@ void-data/
 
 | File | Contents |
 |---|---|
-| `registries.rs` | `REGISTRIES`, `TAGS` static slices — NBT blobs for every entry. |
+| `registries.rs` | `REGISTRIES`, `TAGS`, `PROTOCOL_REGISTRIES`, `NON_SUMMONABLE_ENTITY_TYPES` static slices. |
 | `blocks.rs` | `vXX_Y_Z::{props, blocks, state, shapes}` modules per version. |
 
 `src/lib.rs` includes both via `include!`. The compiler sees them as ordinary
@@ -69,6 +71,27 @@ for (entry_id, _nbt_bytes) in registry(Version::V26_1_2, "minecraft:dimension_ty
     println!("dimension: {entry_id}");
 }
 ```
+
+### Protocol registry IDs
+
+Some protocol fields need Mojang's numeric registry IDs directly instead of the
+NBT payload sent during configuration. `build.rs` reads
+`assets/<version>/registries.json`, the data-generator report, and exposes it
+through `protocol_registry` / `protocol_registry_index`. Focused helpers such
+as `entity_type_id` are thin wrappers over this generic table.
+
+```rust
+use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
+
+assert_eq!(entity_type_id(Version::V26_1_2, "minecraft:zombie"), Some(150));
+assert!(is_summonable_entity_type(Version::V26_1_2, "minecraft:zombie"));
+assert!(!is_summonable_entity_type(Version::V26_1_2, "minecraft:player"));
+```
+
+`non_summonable_entity_types.json` is a small versioned exclusion list for
+runtime `/summon` validation. The protocol registry report provides IDs, but it
+does not encode Minecraft's `EntityType::canSummon` predicate, so this curated
+asset keeps non-summonable special types such as players out of the command.
 
 ## Blocks, States, and Shapes
 
@@ -211,14 +234,16 @@ What `extract.sh` does:
 1. Downloads the bundled Paper jar (Mojang server jar with all libs).
 2. Runs `net.minecraft.data.Main --all` to produce both
    `generated/data/minecraft/...` (registries, tags) and
-   `generated/reports/blocks.json` (block-state palette).
+   `generated/reports/*.json` (block-state palette and protocol registry IDs).
 3. Copies every shipped registry directory into `assets/<version>/`.
-4. Copies `blocks.json` straight from the report.
-5. Clones the prismarine fork pinned by `PRISMARINE_REF`
+4. Copies `blocks.json` and `registries.json` straight from the reports.
+5. Keeps versioned hand-maintained validation assets such as
+   `non_summonable_entity_types.json` next to the generated data.
+6. Clones the prismarine fork pinned by `PRISMARINE_REF`
    (default: `master`, override per-call) and copies
    `data/pc/$PRISMARINE_SHAPE_VERSION/blockCollisionShapes.json` into the
    asset directory.
-6. Writes `PROVENANCE.txt` with timestamps, the jar URL, the prismarine
+7. Writes `PROVENANCE.txt` with timestamps, the jar URL, the prismarine
    commit hash, and the shape-source version — this file is committed
    alongside the JSONs so future maintainers can audit how the data was
    produced.
