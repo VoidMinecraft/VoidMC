@@ -254,7 +254,6 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | `/list` | | Show online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
 | `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double] [--wander] [--gravity] [--block-checks]` |
-| `/circle` | | Spawn or remove an orbiting entity ring | `[entity:resource_location] [player:player] [--stop]` |
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
@@ -267,10 +266,6 @@ summoned entity. `--gravity` enables the simple server-side vertical physics,
 and `--block-checks` enables world block collision checks for that physics
 step. These flags are stored as ECS movement components and synchronized by the
 non-player entity lifecycle.
-
-`/circle` defaults to `minecraft:pig` and the executor. `/circle --stop`
-removes the executor's active ring through `EntityDespawnEvent`, so clients see
-the same `RemoveEntities` lifecycle path as other spawned entities.
 
 ### PluginList Resource
 
@@ -287,6 +282,22 @@ VoidServer::new(config)
         ]));
     })
 ```
+
+### Example-only Commands
+
+`void-example` registers an additional `/circle` command outside of
+`register_default_commands` to demonstrate that gameplay commands can live in an
+application/plugin crate instead of in `void` itself.
+
+| Command | Description | Arguments |
+|---|---|---|
+| `/circle` | Spawn or remove an orbiting entity ring | `[entity:resource_location] [player:player] [--stop]` |
+
+`/circle` defaults to `minecraft:pig` and the executor. `/circle --stop`
+removes the executor's active ring through `EntityDespawnEvent`, so clients see
+the same `RemoveEntities` lifecycle path as other spawned entities. The command
+uses the public command API plus public ECS components from `void`, while its
+own marker components and movement system stay local to `void-example`.
 
 ## Tab-Completion
 

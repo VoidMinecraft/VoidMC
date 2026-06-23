@@ -1,5 +1,6 @@
 use std::env;
 
+use bevy_app::Update;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_flame::FlameLayer;
 use tracing_subscriber::prelude::*;
@@ -9,6 +10,8 @@ use voidmc::{
     CommandBuilder, CommandRegistry, On, Query, ServerConfigBuilder, VoidServer,
     register_default_commands,
 };
+
+mod circle;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -68,9 +71,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Register all default commands
             let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
             register_default_commands(&mut registry, &[]);
+            registry.register(circle::circle_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);
+            app.add_systems(Update, circle::circle_system);
         })
         .add_command(
             CommandBuilder::new("hello")

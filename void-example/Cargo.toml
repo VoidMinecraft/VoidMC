@@ -12,7 +12,11 @@ keywords.workspace = true
 
 [dependencies]
 voidmc = { version = "0.1.0", path = "../void" }
+voidmc-data = { version = "0.1.0", path = "../void-data" }
+bevy_app = "0.18.0"
+bevy_ecs = "0.18.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.3"
 tracing-flame = "0.2.0"
+uuid = { version = "1.16.0", features = ["v4"] }

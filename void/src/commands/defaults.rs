@@ -4,12 +4,11 @@ use bevy_ecs::prelude::With;
 use rand::Rng;
 
 use crate::components::{
-    CirclePig, CirclePigState, ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid,
-    Grounded, MinecraftEntityId, MovementConfig, PlayerDimension, PlayerName, PlayerReady,
-    Position, PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, TeleportState, Velocity,
+    ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
+    MinecraftEntityId, MovementConfig, PlayerDimension, PlayerName, PlayerReady, Position,
+    PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, TeleportState, Velocity,
     VerticalVelocity, Wander,
 };
-use crate::events::EntityDespawnEvent;
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::world::DimensionId;
 use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
@@ -53,9 +52,6 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     }
     if !exclude.contains(&"summon") {
         registry.register(summon_command());
-    }
-    if !exclude.contains(&"circle") {
-        registry.register(circle_command());
     }
 }
 
@@ -527,170 +523,6 @@ fn handle_summon(ctx: &mut CommandContext) {
     ctx.reply(&format!(
         "Summoned {} at {:.1}, {:.1}, {:.1}",
         entity_name, x, y, z
-    ));
-}
-
-pub fn circle_command() -> Command {
-    CommandBuilder::new("circle")
-        .description("Spawn a ring of 36 entities around you or a player")
-        .arg_optional("entity", Arc::new(SummonableEntityArg))
-        .arg_optional("player", Arc::new(GameProfileArg))
-        .flag("stop", Some('s'), "Remove your active circle")
-        .handler(handle_circle)
-        .build()
-}
-
-fn dismiss_circle(ctx: &mut CommandContext, executor: bevy_ecs::prelude::Entity) -> bool {
-    let existing: Vec<bevy_ecs::prelude::Entity> = ctx.with_world_mut(|world| {
-        world
-            .query_filtered::<(bevy_ecs::prelude::Entity, &CirclePigState), With<CirclePig>>()
-            .iter(world)
-            .filter_map(|(entity, state)| (state.owner == executor).then_some(entity))
-            .collect()
-    });
-
-    if existing.is_empty() {
-        return false;
-    }
-
-    ctx.with_world_mut(|world| {
-        for entity in existing {
-            world.trigger(EntityDespawnEvent { entity });
-        }
-    });
-    true
-}
-
-fn handle_circle(ctx: &mut CommandContext) {
-    let executor = ctx.entity;
-
-    // --stop: remove any active circle and exit.
-    if ctx.flag("stop") {
-        if dismiss_circle(ctx, executor) {
-            ctx.reply("Your circle has dispersed.");
-        } else {
-            ctx.reply("You have no active circle.");
-        }
-        return;
-    }
-
-    // Which entity type to spawn (defaults to pig).
-    let entity_name = ctx
-        .get::<String>("entity")
-        .cloned()
-        .unwrap_or_else(|| "minecraft:pig".to_string());
-
-    let pig_type_id = match entity_type_id(Version::V26_1_2, &entity_name) {
-        Some(id) => id,
-        None => {
-            ctx.reply_error(&format!("Unknown entity type '{}'.", entity_name));
-            return;
-        }
-    };
-
-    if !is_summonable_entity_type(Version::V26_1_2, &entity_name) {
-        ctx.reply_error(&format!("Entity type is not summonable: {}", entity_name));
-        return;
-    }
-
-    // Which player to orbit (defaults to self).
-    let target: bevy_ecs::prelude::Entity =
-        if let Some(player_name) = ctx.get::<String>("player").cloned() {
-            let found = ctx.with_world_mut(|world| {
-                world
-                    .query_filtered::<(bevy_ecs::prelude::Entity, &PlayerName), With<PlayerReady>>()
-                    .iter(world)
-                    .find_map(|(e, name)| if name.0 == player_name { Some(e) } else { None })
-            });
-            match found {
-                Some(e) => e,
-                None => {
-                    ctx.reply_error(&format!("Player '{}' is not online.", player_name));
-                    return;
-                }
-            }
-        } else {
-            executor
-        };
-
-    // Remove any existing circle this player owns, then spawn a fresh one.
-    dismiss_circle(ctx, executor);
-
-    let (target_pos, player_dimension) = ctx.with_world_mut(|world| {
-        let pos = world
-            .get::<Position>(target)
-            .expect("target has Position")
-            .clone();
-        let dim = world
-            .get::<crate::components::PlayerDimension>(executor)
-            .map(|d| d.0)
-            .unwrap_or(DimensionId::Overworld);
-        (pos, dim)
-    });
-
-    const RADIUS: f64 = 2.0;
-
-    for i in 0..36u32 {
-        let angle_deg = (i * 10) as f32;
-        let angle_rad = angle_deg.to_radians() as f64;
-        let x = target_pos.x + angle_rad.sin() * RADIUS;
-        let y = target_pos.y;
-        let z = target_pos.z + angle_rad.cos() * RADIUS;
-
-        let entity_id = ctx.with_world_mut(|world| {
-            let mut counter = world.resource_mut::<EntityIdCounter>();
-            let id = counter.0;
-            counter.0 += 1;
-            id
-        });
-        let entity_uuid = uuid::Uuid::new_v4();
-
-        ctx.with_world_mut(|world| {
-            world.spawn((
-                (
-                    MinecraftEntityId(entity_id),
-                    EntityUuid(entity_uuid),
-                    Position { x, y, z },
-                    PreviousPosition { x, y, z },
-                    Rotation {
-                        yaw: 0.0,
-                        pitch: 0.0,
-                    },
-                    Velocity {
-                        x: 0.0,
-                        y: 0.0,
-                        z: 0.0,
-                    },
-                    EntityType(pig_type_id),
-                    EntityDimension(player_dimension),
-                    SpawnedEntity,
-                    MovementConfig::default(),
-                    VerticalVelocity(0.0),
-                    Grounded(true),
-                    RecentlySpawned(5),
-                ),
-                (
-                    CirclePig,
-                    CirclePigState {
-                        angle: angle_deg,
-                        owner: executor,
-                        target,
-                    },
-                ),
-            ));
-        });
-    }
-
-    let label = if target == executor {
-        "you".to_string()
-    } else {
-        ctx.get::<String>("player")
-            .cloned()
-            .unwrap_or_else(|| "the target".to_string())
-    };
-    ctx.reply(&format!(
-        "36 entities now orbit around {}. Use /circle --stop to dismiss them.",
-        label
     ));
 }
 

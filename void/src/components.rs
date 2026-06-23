@@ -132,20 +132,6 @@ pub struct VerticalVelocity(pub f64);
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Grounded(pub bool);
 
-/// Marker tag for pigs spawned by the /circle command.
-#[derive(Component)]
-pub struct CirclePig;
-
-/// Orbital state for a circle pig.
-#[derive(Component)]
-pub struct CirclePigState {
-    pub angle: f32,
-    /// The player who spawned this circle (used for ownership / cleanup).
-    pub owner: Entity,
-    /// The entity being orbited (can differ from owner when a player targets another).
-    pub target: Entity,
-}
-
 /// Simple wander behavior state for random walking AI example.
 #[derive(Component, Clone)]
 pub struct Wander {

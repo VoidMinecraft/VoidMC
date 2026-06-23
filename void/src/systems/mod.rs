@@ -1,5 +1,4 @@
 pub mod chunk;
-pub mod circle;
 pub mod entities;
 pub mod keep_alive;
 pub mod physics;
@@ -30,7 +29,6 @@ impl Plugin for GameSystemsPlugin {
                     keep_alive::send_keep_alive.after(CommandSystems::DrainQueue),
                     wander::wander_system.after(keep_alive::send_keep_alive),
                     physics::apply_spawned_entity_physics.after(wander::wander_system),
-                    circle::circle_system.after(keep_alive::send_keep_alive),
                     settle::settle_recent_spawns.after(physics::apply_spawned_entity_physics),
                 ),
             )
