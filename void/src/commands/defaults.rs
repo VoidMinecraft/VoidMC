@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use bevy_ecs::prelude::With;
+use rand::Rng;
 
 use crate::components::{
-    ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid, MinecraftEntityId,
-    PlayerDimension, PlayerName, PlayerReady, Position, PreviousPosition, Rotation, SpawnedEntity,
-    TeleportState, Velocity,
+    ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
+    MinecraftEntityId, MovementConfig, PlayerDimension, PlayerName, PlayerReady, Position,
+    PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, TeleportState, Velocity,
+    VerticalVelocity, Wander,
 };
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::world::DimensionId;
@@ -406,6 +408,17 @@ pub fn summon_command() -> Command {
         .arg_optional("x", DoubleArg::unbounded())
         .arg_optional("y", DoubleArg::unbounded())
         .arg_optional("z", DoubleArg::unbounded())
+        .flag("wander", Some('w'), "Attach the demo random-walk behavior")
+        .flag(
+            "gravity",
+            Some('g'),
+            "Enable gravity for the summoned entity",
+        )
+        .flag(
+            "block-checks",
+            Some('b'),
+            "Enable block-collision checks for the summoned entity",
+        )
         .handler(handle_summon)
         .build()
 }
@@ -444,13 +457,6 @@ fn handle_summon(ctx: &mut CommandContext) {
         }
     };
 
-    let dimension = ctx.with_world(|world| {
-        world
-            .get::<PlayerDimension>(executor)
-            .map(|dimension| dimension.0)
-            .unwrap_or(DimensionId::Overworld)
-    });
-
     let entity_id = ctx.with_world_mut(|world| {
         let mut counter = world.resource_mut::<EntityIdCounter>();
         let id = counter.0;
@@ -458,9 +464,27 @@ fn handle_summon(ctx: &mut CommandContext) {
         id
     });
     let entity_uuid = uuid::Uuid::new_v4();
+    let entity_dimension = ctx.with_world(|world| {
+        world
+            .get::<PlayerDimension>(executor)
+            .map(|dimension| dimension.0)
+            .unwrap_or(DimensionId::Overworld)
+    });
+
+    let movement_config = MovementConfig {
+        wander: ctx.flag("wander"),
+        gravity_enabled: ctx.flag("gravity"),
+        block_collision_enabled: ctx.flag("block-checks"),
+    };
+
+    let initial_velocity_y = if movement_config.gravity_enabled {
+        -0.08
+    } else {
+        0.0
+    };
 
     ctx.with_world_mut(|world| {
-        world.spawn((
+        let mut e = world.spawn((
             MinecraftEntityId(entity_id),
             EntityUuid(entity_uuid),
             Position { x, y, z },
@@ -471,13 +495,29 @@ fn handle_summon(ctx: &mut CommandContext) {
             },
             Velocity {
                 x: 0.0,
-                y: 0.0,
+                y: initial_velocity_y,
                 z: 0.0,
             },
             EntityType(entity_type_id),
-            EntityDimension(dimension),
+            EntityDimension(entity_dimension),
             SpawnedEntity,
+            movement_config,
+            VerticalVelocity(0.0),
+            Grounded(!movement_config.gravity_enabled),
+            RecentlySpawned(15),
         ));
+
+        // Attach simple Wander AI only when explicitly requested.
+        if movement_config.wander {
+            let mut rng = rand::thread_rng();
+            let yaw = rng.gen_range(0.0..360.0) as f32;
+            let ticks = rng.gen_range(40..140);
+            e.insert(Wander {
+                ticks,
+                speed: 0.08,
+                yaw,
+            });
+        }
     });
 
     ctx.reply(&format!(

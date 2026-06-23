@@ -3,8 +3,8 @@ use voidmc_protocol::clientbound;
 use voidmc_protocol::types::LpVec3;
 
 use crate::components::{
-    ClientId, EntityDimension, EntityType, EntityUuid, MinecraftEntityId, PlayerDimension,
-    PlayerReady, Position, PreviousPosition, Rotation, SpawnedEntity, Velocity,
+    ClientId, EntityDimension, EntityType, EntityUuid, Grounded, MinecraftEntityId,
+    PlayerDimension, PlayerReady, Position, PreviousPosition, Rotation, SpawnedEntity, Velocity,
 };
 use crate::events::{EntityDespawnEvent, PlayerReadyEvent};
 use crate::network::{NetworkChannels, OutgoingPacket};
@@ -99,6 +99,7 @@ pub fn broadcast_entity_movement(
             &PreviousPosition,
             Ref<Rotation>,
             &Velocity,
+            Option<&Grounded>,
             Option<&EntityDimension>,
         ),
         (
@@ -108,7 +109,7 @@ pub fn broadcast_entity_movement(
     >,
     ready_players: Query<(&ClientId, Option<&PlayerDimension>), With<PlayerReady>>,
 ) {
-    for (entity_id, position, previous_position, rotation, velocity, entity_dimension) in
+    for (entity_id, position, previous_position, rotation, velocity, grounded, entity_dimension) in
         moved_entities.iter()
     {
         if position.is_added() || rotation.is_added() {
@@ -127,6 +128,7 @@ pub fn broadcast_entity_movement(
             previous_position,
             &rotation,
             velocity,
+            grounded.map(|grounded| grounded.0).unwrap_or(true),
             position_changed,
             rotation_changed,
         );
@@ -250,6 +252,7 @@ fn movement_packet(
     previous_position: &PreviousPosition,
     rotation: &Rotation,
     velocity: &Velocity,
+    on_ground: bool,
     position_changed: bool,
     rotation_changed: bool,
 ) -> clientbound::ClientboundPacket {
@@ -272,7 +275,7 @@ fn movement_packet(
                             delta_z,
                             yaw,
                             pitch,
-                            on_ground: true,
+                            on_ground,
                         },
                     ),
                 );
@@ -284,7 +287,7 @@ fn movement_packet(
                     delta_x,
                     delta_y,
                     delta_z,
-                    on_ground: true,
+                    on_ground,
                 }),
             );
         }
@@ -301,7 +304,7 @@ fn movement_packet(
                 yaw: rotation.yaw,
                 pitch: rotation.pitch,
                 relatives: clientbound::TeleportFlags::empty(),
-                on_ground: true,
+                on_ground,
             },
         ));
     }
@@ -311,7 +314,7 @@ fn movement_packet(
             entity_id,
             yaw,
             pitch,
-            on_ground: true,
+            on_ground,
         },
     ))
 }

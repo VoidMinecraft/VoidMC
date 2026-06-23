@@ -1,8 +1,11 @@
 pub mod chunk;
 pub mod entities;
 pub mod keep_alive;
+pub mod physics;
 pub mod player;
 pub mod position;
+pub mod settle;
+pub mod wander;
 
 use bevy_app::{App, Plugin, PostUpdate, Update};
 use bevy_ecs::schedule::IntoScheduleConfigs;
@@ -22,7 +25,12 @@ impl Plugin for GameSystemsPlugin {
             .add_observer(player::on_player_quit)
             .add_systems(
                 Update,
-                keep_alive::send_keep_alive.after(CommandSystems::DrainQueue),
+                (
+                    keep_alive::send_keep_alive.after(CommandSystems::DrainQueue),
+                    wander::wander_system.after(keep_alive::send_keep_alive),
+                    physics::apply_spawned_entity_physics.after(wander::wander_system),
+                    settle::settle_recent_spawns.after(physics::apply_spawned_entity_physics),
+                ),
             )
             .add_systems(
                 PostUpdate,

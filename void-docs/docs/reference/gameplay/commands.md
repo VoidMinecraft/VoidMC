@@ -4,6 +4,70 @@
 
 Void includes a full command system with typed argument parsing, flag support, auto-generated usage strings, and client-side tab-completion via the Minecraft protocol command tree.
 
+## Command Pipeline
+
+This diagram traces the full lifecycle of a chat command — from the client pressing Enter to the handler running.
+
+```
+Client presses Enter
+       │
+       ▼
+  TCP frame → void-net decodes bytes → raw Packet
+       │
+       ▼
+  void/src/network.rs  ingest_network_packets  (PreUpdate system)
+       │  decodes to serverbound::PlayPacket
+       │  calls world.trigger(PacketEvent<T>)
+       ▼
+  void/src/plugins/chat.rs  observers
+  ├── handle_chat_command        (ChatCommand 0x07)
+  ├── handle_signed_chat_command (SignedChatCommand 0x08)
+  └── handle_chat_message        (ChatMessage 0x09 starting with '/')
+       │  all three call handle_command()
+       ▼
+  handle_command()
+  ├── splits raw string → [command_name, args...]
+  ├── enqueue_command() → pushes QueuedCommand to CommandQueue resource
+  └── commands.trigger(ChatCommandEvent)  ← external observers hook here
+       │
+       ▼
+  void/src/commands/plugin.rs  drain_command_queue  (Update system)
+       │  pops each QueuedCommand in FIFO order
+       ▼
+  dispatch_command()  in  void/src/commands/mod.rs
+  ├── resolves name/alias in CommandRegistry
+  ├── flags::extract_flags() — peels off --flags / -f tokens
+  ├── parse_positional()     — calls ArgParser::parse() per argument
+  │   └── on error → sends red usage message, returns early
+  └── calls handler(&mut CommandContext)
+       │
+       ▼
+  Command handler  (e.g. handle_summon in commands/defaults.rs)
+  └── ctx.get::<T>("arg_name"), ctx.reply(), ctx.with_world_mut(...)
+```
+
+### Why two packet types?
+
+The client sends commands via two different packets:
+
+- **`ChatCommand` (0x07)** — unsigned, sent for most commands.
+- **`SignedChatCommand` (0x08)** — cryptographically signed when the client has chat signing enabled.
+
+Both are routed through the same `handle_command()` function, so the server treats them identically.
+
+A third path exists: if the client types a command that is **not in its local command tree** (i.e. a command the server registered after the client received the tree), it sends a **`ChatMessage` (0x09)** prefixed with `/`. `handle_chat_message` intercepts that case and routes it through `handle_command()` as well.
+
+### Key types at a glance
+
+| Type              | Source file          | Purpose                                              |
+| ----------------- | -------------------- | ---------------------------------------------------- |
+| `CommandRegistry` | `commands/mod.rs`    | Stores all registered commands by name and alias     |
+| `CommandBuilder`  | `commands/mod.rs`    | Fluent API to define and register commands           |
+| `CommandContext`  | `commands/mod.rs`    | Passed to every handler — ECS world access + helpers |
+| `ArgParser`       | `commands/parser.rs` | Trait: parse one string token into a typed value     |
+| `CommandQueue`    | `commands/mod.rs`    | ECS resource — FIFO queue of pending commands        |
+| `PacketEvent<T>`  | `network.rs`         | Bevy ECS event wrapping a decoded serverbound packet |
+
 ## CommandBuilder API
 
 Build commands using the fluent `CommandBuilder`:
@@ -39,20 +103,20 @@ let command = CommandBuilder::new("greet")
 
 ### Builder Methods
 
-| Method | Description |
-|---|---|
-| `new(name)` | Create a command with the given name |
-| `description(desc)` | Set the help description |
-| `alias(alias)` | Add an alternative name (can be called multiple times) |
-| `usage(usage)` | Set a custom usage string (overrides auto-generation) |
-| `arg(name, parser)` | Add a required typed argument |
-| `arg_optional(name, parser)` | Add an optional typed argument |
-| `arg_variadic(name, parser)` | Add an optional variadic argument (consumes all remaining tokens; must be last) |
-| `arg_variadic_required(name, parser)` | Add a required variadic argument (at least one token; must be last) |
-| `flag(long, short, description)` | Add a boolean flag (`--long` / `-s`) |
-| `flag_value(long, short, desc, parser)` | Add a flag that takes a typed value (`--long value`) |
-| `handler(fn)` | Set the handler function |
-| `build()` | Consume the builder and produce a `Command` |
+| Method                                  | Description                                                                     |
+| --------------------------------------- | ------------------------------------------------------------------------------- |
+| `new(name)`                             | Create a command with the given name                                            |
+| `description(desc)`                     | Set the help description                                                        |
+| `alias(alias)`                          | Add an alternative name (can be called multiple times)                          |
+| `usage(usage)`                          | Set a custom usage string (overrides auto-generation)                           |
+| `arg(name, parser)`                     | Add a required typed argument                                                   |
+| `arg_optional(name, parser)`            | Add an optional typed argument                                                  |
+| `arg_variadic(name, parser)`            | Add an optional variadic argument (consumes all remaining tokens; must be last) |
+| `arg_variadic_required(name, parser)`   | Add a required variadic argument (at least one token; must be last)             |
+| `flag(long, short, description)`        | Add a boolean flag (`--long` / `-s`)                                            |
+| `flag_value(long, short, desc, parser)` | Add a flag that takes a typed value (`--long value`)                            |
+| `handler(fn)`                           | Set the handler function                                                        |
+| `build()`                               | Consume the builder and produce a `Command`                                     |
 
 ## CommandContext
 
@@ -69,17 +133,17 @@ pub struct CommandContext<'a> {
 
 ### Methods
 
-| Method | Return Type | Description |
-|---|---|---|
-| `get::<T>(name)` | `Option<&T>` | Get a parsed argument by name and type |
-| `has_arg(name)` | `bool` | Check if an optional argument was provided |
-| `flag(name)` | `bool` | Check if a boolean flag is set |
-| `flag_value::<T>(name)` | `Option<&T>` | Get a typed flag value |
-| `reply(message)` | `()` | Send a white system message to the sender |
-| `reply_error(message)` | `()` | Send a red error message to the sender |
-| `broadcast(message)` | `()` | Send a system message to all ready players |
-| `player_name()` | `Option<String>` | Get the sender's player name |
-| `is_operator()` | `bool` | Check if the sender has the `Operator` component |
+| Method                  | Return Type      | Description                                      |
+| ----------------------- | ---------------- | ------------------------------------------------ |
+| `get::<T>(name)`        | `Option<&T>`     | Get a parsed argument by name and type           |
+| `has_arg(name)`         | `bool`           | Check if an optional argument was provided       |
+| `flag(name)`            | `bool`           | Check if a boolean flag is set                   |
+| `flag_value::<T>(name)` | `Option<&T>`     | Get a typed flag value                           |
+| `reply(message)`        | `()`             | Send a white system message to the sender        |
+| `reply_error(message)`  | `()`             | Send a red error message to the sender           |
+| `broadcast(message)`    | `()`             | Send a system message to all ready players       |
+| `player_name()`         | `Option<String>` | Get the sender's player name                     |
+| `is_operator()`         | `bool`           | Check if the sender has the `Operator` component |
 
 ## Argument Parsers
 
@@ -189,13 +253,19 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` |
 | `/list` | | Show online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
-| `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double]` |
+| `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double] [--wander] [--gravity] [--block-checks]` |
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
 either omit all three to use the executor position, or provide `x`, `y`, and
 `z` together. Partial coordinate input is rejected instead of being silently
 ignored.
+
+The optional `--wander` flag attaches the demo random-walk behavior to the
+summoned entity. `--gravity` enables the simple server-side vertical physics,
+and `--block-checks` enables world block collision checks for that physics
+step. These flags are stored as ECS movement components and synchronized by the
+non-player entity lifecycle.
 
 ### PluginList Resource
 
@@ -212,6 +282,22 @@ VoidServer::new(config)
         ]));
     })
 ```
+
+### Example-only Commands
+
+`void-example` registers an additional `/circle` command outside of
+`register_default_commands` to demonstrate that gameplay commands can live in an
+application/plugin crate instead of in `void` itself.
+
+| Command | Description | Arguments |
+|---|---|---|
+| `/circle` | Spawn or remove an orbiting entity ring | `[entity:resource_location] [player:player] [--stop]` |
+
+`/circle` defaults to `minecraft:pig` and the executor. `/circle --stop`
+removes the executor's active ring through `EntityDespawnEvent`, so clients see
+the same `RemoveEntities` lifecycle path as other spawned entities. The command
+uses the public command API plus public ECS components from `void`, while its
+own marker components and movement system stay local to `void-example`.
 
 ## Tab-Completion
 

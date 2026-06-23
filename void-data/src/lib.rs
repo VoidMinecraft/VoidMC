@@ -28,6 +28,13 @@ impl Version {
     }
 }
 
+/// Returns every entity type name for `version` in protocol-ID order.
+pub fn entity_type_names(version: Version) -> Vec<&'static str> {
+    protocol_registry(version, "minecraft:entity_type")
+        .map(|entries| entries.iter().map(|(name, _)| *name).collect())
+        .unwrap_or_default()
+}
+
 /// Returns the protocol numeric ID for a named entity type, or `None` if the
 /// name is not in the table for this version.
 pub fn entity_type_id(version: Version, name: &str) -> Option<i32> {

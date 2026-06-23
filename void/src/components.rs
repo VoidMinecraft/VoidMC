@@ -101,7 +101,7 @@ pub struct EntityType(pub i32);
 pub struct SpawnedEntity;
 
 /// Which dimension a non-player entity belongs to.
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Debug)]
 pub struct EntityDimension(pub DimensionId);
 
 /// UUID for a non-player summoned entity, matching the UUID sent in SpawnEntity.
@@ -116,5 +116,35 @@ pub struct Velocity {
     pub z: f64,
 }
 
+/// Movement feature flags for a server-owned entity.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct MovementConfig {
+    pub wander: bool,
+    pub gravity_enabled: bool,
+    pub block_collision_enabled: bool,
+}
+
+/// Vertical physics velocity for server-controlled entities, in blocks per tick.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct VerticalVelocity(pub f64);
+
+/// Whether the entity is resting on a solid surface.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Grounded(pub bool);
+
+/// Simple wander behavior state for random walking AI example.
+#[derive(Component, Clone)]
+pub struct Wander {
+    /// Ticks remaining until picking a new walk direction.
+    pub ticks: i32,
+    /// Movement speed in blocks per tick.
+    pub speed: f64,
+    /// Current yaw direction in degrees (0-360).
+    pub yaw: f32,
+}
+
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);
+
+#[derive(Component)]
+pub struct RecentlySpawned(pub u8);
