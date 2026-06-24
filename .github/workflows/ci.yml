@@ -44,3 +44,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage
+        run: |
+          mkdir -p target/coverage
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --workspace --all-features --no-report
+          cargo llvm-cov report --summary-only | tee target/coverage/summary.txt
+          cargo llvm-cov report --lcov --output-path target/coverage/lcov.info
+
+      - name: Add coverage summary
+        run: |
+          {
+            echo "## Code coverage"
+            echo
+            echo "Full text and LCOV reports are available in the \`coverage-report\` artifact."
+            echo
+            echo '```text'
+            grep '^TOTAL' target/coverage/summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            target/coverage/summary.txt
+            target/coverage/lcov.info
+          if-no-files-found: error
