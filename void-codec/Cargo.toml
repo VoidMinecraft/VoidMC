@@ -13,3 +13,10 @@ keywords.workspace = true
 voidmc-codec-macros = { version = "0.1.0", path = "../void-codec-macros" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"
+
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "codec_comparison"
+harness = false

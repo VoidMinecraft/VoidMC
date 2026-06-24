@@ -1,0 +1,14 @@
+[package]
+name = "voidmc-tech-watch-pocs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+async-std = { version = "1.13", features = ["attributes"] }
+bevy_app = "=0.18.0"
+bevy_ecs = "=0.18.0"
+smol = "2.0"
+tokio = { version = "=1.44.1", features = ["rt-multi-thread", "time"] }

@@ -1,0 +1,37 @@
+[
+  {
+    "type": "file",
+    "name": "index",
+    "label": "Overview"
+  },
+  {
+    "type": "file",
+    "name": "sources",
+    "label": "Sources"
+  },
+  {
+    "type": "file",
+    "name": "decision-log",
+    "label": "Decision Log"
+  },
+  {
+    "type": "file",
+    "name": "experiments",
+    "label": "Experiments"
+  },
+  {
+    "type": "file",
+    "name": "integration-impact",
+    "label": "Integration Impact"
+  },
+  {
+    "type": "file",
+    "name": "sharing",
+    "label": "Sharing"
+  },
+  {
+    "type": "file",
+    "name": "requirement-checklist",
+    "label": "Requirement Checklist"
+  }
+]

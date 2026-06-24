@@ -10,6 +10,11 @@
     "label": "Technology Evaluations"
   },
   {
+    "type": "dir",
+    "name": "tech-watch",
+    "label": "Tech Watch"
+  },
+  {
     "type": "file",
     "name": "quality-standards",
     "label": "Quality Standards"
