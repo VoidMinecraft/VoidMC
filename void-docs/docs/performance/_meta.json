@@ -13,5 +13,15 @@
     "type": "file",
     "name": "benchmarking",
     "label": "Benchmarking"
+  },
+  {
+    "type": "file",
+    "name": "optimization-log",
+    "label": "Optimization Log"
+  },
+  {
+    "type": "file",
+    "name": "requirement-checklist",
+    "label": "Requirement Checklist"
   }
 ]

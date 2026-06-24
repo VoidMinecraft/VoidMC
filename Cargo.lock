@@ -1863,6 +1863,7 @@ name = "voidmc-protocol"
 version = "0.2.0"
 dependencies = [
  "bitflags",
+ "criterion",
  "serde",
  "serde_json",
  "ussr-nbt",

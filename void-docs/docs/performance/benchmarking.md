@@ -1,229 +1,116 @@
 # Benchmarking & Profiling
 
-Deep dive into measuring and optimizing Void's performance.
+This page documents the exact commands used to collect performance evidence.
 
-## Benchmark Tools
+## Correctness Before Performance
 
-### Cargo Bench
-
-Built-in benchmarking framework:
+Run correctness checks before trusting benchmark results:
 
 ```bash
-# Run all benchmarks
-cargo bench
-
-# Run specific benchmark
-cargo bench -- bench_name
-
-# Save baseline for comparison
-cargo bench -- --save-baseline baseline1
-
-# Compare against baseline
-cargo bench -- --baseline baseline1
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 ```
 
-**Example benchmark:**
-
-```rust
-#![feature(test)]
-extern crate test;
-
-use test::Bencher;
-
-#[bench]
-fn bench_packet_encode(b: &mut Bencher) {
-    let packet = SpawnEntity { /* ... */ };
-    b.iter(|| {
-        let mut buf = Vec::new();
-        packet.encode(&mut buf);
-    })
-}
-```
-
-### Criterion.rs
-
-More advanced benchmarking library (requires setup):
+For the standalone POC crate:
 
 ```bash
-cargo install criterion
+cargo fmt --manifest-path pocs/performance/Cargo.toml -- --check
+cargo clippy --manifest-path pocs/performance/Cargo.toml --all-targets -- -D warnings
 ```
 
-### Flame Graphs
+## Criterion Benchmarks
 
-Visualize CPU time distribution:
+Codec comparison:
 
 ```bash
-# Install
-cargo install flamegraph
-
-# Generate
-cargo flamegraph
-
-# View
-open flamegraph.svg
+cargo bench -p voidmc-codec --bench codec_comparison
 ```
 
-## Profiling Tools
-
-### Linux: Perf
-
-System-level profiling:
+Network-to-ECS handoff comparison:
 
 ```bash
-# Record
-sudo perf record -F 99 cargo run --release
-
-# Report
-sudo perf report
-
-# Generate flame graph
-sudo perf script > /tmp/perf.out
-~/FlameGraph/stackcollapse-perf.pl /tmp/perf.out > /tmp/perf.folded
-~/FlameGraph/flamegraph.pl /tmp/perf.folded > perf.svg
+cargo bench -p voidmc --bench channel_handoff
 ```
 
-### macOS: Instruments
-
-GUI profiling tool:
+Chunk and representative packet serialization:
 
 ```bash
-# Time profiler
-instruments -t 'Time Profiler' target/release/void
-
-# Allocations
-instruments -t 'Allocations' target/release/void
+cargo bench -p voidmc-protocol --bench packet_chunk
 ```
 
-### Memory Profiling
+Save a local baseline when preparing an optimization:
 
 ```bash
-# DHAT (Linux)
-cargo install valgrind
-valgrind --tool=dhat target/release/void
-
-# Heaptrack (Linux)
-heaptrack target/release/void
-heaptrack_gui heaptrack.out.2024…
+cargo bench -p voidmc-protocol --bench packet_chunk -- --save-baseline before
 ```
 
-## Performance Testing Scenarios
-
-### Scenario 1: Idle Server
-
-Measure baseline resource usage:
-
-```rust
-#[tokio::test]
-async fn measure_idle_memory() {
-    let server = Server::new().await;
-
-    // Wait and measure
-    tokio::time::sleep(Duration::from_secs(10)).await;
-
-    let memory = get_current_memory_usage();
-    println!("Idle memory: {} MB", memory);
-}
-```
-
-### Scenario 2: Rapid Connections
-
-Measure connection acceptance performance:
-
-```rust
-#[tokio::test]
-async fn measure_connection_rate() {
-    let server = Server::new().await;
-    let start = Instant::now();
-
-    let mut handles = vec![];
-    for _ in 0..1000 {
-        handles.push(tokio::spawn(async {
-            TcpStream::connect(server.addr()).await
-        }));
-    }
-
-    futures::future::join_all(handles).await;
-    let elapsed = start.elapsed();
-
-    let rate = 1000.0 / elapsed.as_secs_f64();
-    println!("Connections/sec: {}", rate);
-}
-```
-
-### Scenario 3: Sustained Load
-
-Measure under constant traffic:
-
-```rust
-#[tokio::test]
-async fn sustained_load_test() {
-    let server = Server::new().await;
-    let start = Instant::now();
-
-    // Spawn 100 virtual clients
-    let clients: Vec<_> = (0..100)
-        .map(|_| {
-            let addr = server.addr();
-            tokio::spawn(async move {
-                let mut conn = TcpStream::connect(addr).await.unwrap();
-
-                // Send packets for 60 seconds
-                let deadline = Instant::now() + Duration::from_secs(60);
-                while Instant::now() < deadline {
-                    // Send packet and measure latency
-                }
-            })
-        })
-        .collect();
-
-    futures::future::join_all(clients).await;
-    let elapsed = start.elapsed();
-
-    println!("Test completed in: {:?}", elapsed);
-}
-```
-
-## Analyzing Results
-
-### Identifying Bottlenecks
-
-1. **Look at hot functions**: Functions taking most time
-2. **Check allocations**: High allocation = potential speedup
-3. **Review I/O**: Network and disk operations
-4. **Inspect algorithms**: O(n²) where O(n) possible?
-
-### Creating Benchmarks
-
-Before optimization:
+Compare after the change:
 
 ```bash
-cargo bench --bench '*' -- --save-baseline before
+cargo bench -p voidmc-protocol --bench packet_chunk -- --baseline before
 ```
 
-After optimization:
+Criterion writes detailed reports under `target/criterion/`. Do not commit that directory; summarize the relevant median estimates in [Metrics & Results](./metrics-results.md).
+
+## TPS Collection
+
+Run the example server in release mode with metrics enabled:
 
 ```bash
-cargo bench --bench '*' -- --baseline before
+VOID_METRICS_DEBUG=1 VOID_TPS_OUTPUT=logs/tps-demo.csv cargo run --release -p voidmc-example
 ```
 
-Compare results automatically.
+The CSV columns are:
 
-### Regression Prevention
+| Column | Meaning |
+| --- | --- |
+| `timestamp_ms` | Unix timestamp in milliseconds |
+| `tps` | Ticks per second over the metrics window |
+| `window_ms` | Actual elapsed measurement window |
+| `last_tick_ms` | Duration of the latest completed tick |
+| `total_ticks` | Total ticks since startup |
 
-- Keep baseline benchmarks in CI/CD
-- Alert if performance degrades > 5%
-- Document why when optimizations trade off with readability
+For a short local sample without committing generated files:
 
-## Performance Checklist
+```bash
+rm -f /tmp/voidmc-tps-demo.csv
+timeout 45s env VOID_METRICS_DEBUG=1 VOID_TPS_OUTPUT=/tmp/voidmc-tps-demo.csv cargo run --release -p voidmc-example || test $? -eq 124
+head /tmp/voidmc-tps-demo.csv
+```
 
-- [ ] Measured baseline performance
-- [ ] Identified bottlenecks with profiling
-- [ ] Optimized critical paths
-- [ ] Verified improvements with benchmarks
-- [ ] No performance regressions introduced
-- [ ] Code clarity maintained
-- [ ] Results documented
+## TCP Connect Stress
 
----
+Start the server:
 
-Remember: **Profile before optimizing, and verify improvements after.**
+```bash
+cargo run --release -p voidmc-example
+```
+
+Run the POC from another shell:
+
+```bash
+cargo run --manifest-path pocs/performance/Cargo.toml --release --bin tcp_connect_stress -- --addr 127.0.0.1:25565 --clients 64 --timeout-ms 1000
+```
+
+The tool reports connection attempts, successful connects, failures, timeouts, total elapsed time, and basic latency statistics. It tests listener responsiveness only; it does not perform the Minecraft handshake, authentication, encryption, or play-state traffic.
+
+## Flame Tracing
+
+Run the example server with flame output:
+
+```bash
+VOID_METRICS_MODE=flame VOID_FLAME_OUTPUT=logs/void-flame.folded cargo run --release -p voidmc-example
+```
+
+Use the folded output with a flamegraph tool locally, then summarize hotspots and optimization decisions in [Optimization Log](./optimization-log.md). Keep `logs/void-flame.folded` out of git.
+
+## Memory Sampling
+
+Use `/usr/bin/time` for coarse memory evidence:
+
+```bash
+/usr/bin/time -v cargo run --release -p voidmc-example
+```
+
+Record at least the command, duration, player/client scenario, maximum resident set size, and commit hash in the result table.
