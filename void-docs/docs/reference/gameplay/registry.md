@@ -58,14 +58,14 @@ The `data` field contains an NBT compound (`ussr_nbt::owned::Nbt`) whose tags va
 
 ### At Build Time
 
-Use `ServerBuilder::configure_registries` to modify registries before the server starts:
+Use `ServerConfigBuilder::configure_registries` to modify registries before the server starts:
 
 ```rust
-use voidmc::ServerBuilder;
+use voidmc::ServerConfigBuilder;
 use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 use ussr_nbt::owned::{Nbt, Tag, Compound};
 
-let config = ServerBuilder::new()
+let config = ServerConfigBuilder::new()
     .configure_registries(|registries| {
         // Add a custom biome
         registries.add_entry(

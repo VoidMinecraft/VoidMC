@@ -1,0 +1,22 @@
+[
+  {
+    "type": "file",
+    "name": "deployment",
+    "label": "Deployment"
+  },
+  {
+    "type": "file",
+    "name": "configuration-example",
+    "label": "Configuration Examples"
+  },
+  {
+    "type": "file",
+    "name": "security-reliability",
+    "label": "Security & Reliability"
+  },
+  {
+    "type": "file",
+    "name": "requirement-checklist",
+    "label": "Requirement Checklist"
+  }
+]

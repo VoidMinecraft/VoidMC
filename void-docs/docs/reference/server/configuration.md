@@ -1,13 +1,13 @@
 # Server Configuration
 
-## ServerBuilder
+## ServerConfigBuilder
 
-`ServerBuilder` provides a fluent API for constructing a `ServerConfig`:
+`ServerConfigBuilder` provides a fluent API for constructing a `ServerConfig`:
 
 ```rust
-use voidmc::{ServerBuilder, SpawnPosition};
+use voidmc::{ServerConfigBuilder, SpawnPosition};
 
-let config = ServerBuilder::new()
+let config = ServerConfigBuilder::new()
     .address("0.0.0.0:25565")
     .tick_rate(20)
     .max_players(100)

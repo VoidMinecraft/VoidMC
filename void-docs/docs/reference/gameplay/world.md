@@ -140,7 +140,7 @@ The generator uses `ChunkBuilder` from `void-protocol` with:
 Implement `WorldGenerator` and pass it to the builder:
 
 ```rust
-use voidmc::{DefaultWorldGenerator, ServerBuilder, WorldGenerator};
+use voidmc::{DefaultWorldGenerator, ServerConfigBuilder, WorldGenerator};
 use voidmc::world::ChunkPos;
 
 struct FlatWorldGenerator;
@@ -157,7 +157,7 @@ impl WorldGenerator for FlatWorldGenerator {
     }
 }
 
-let config = ServerBuilder::new()
+let config = ServerConfigBuilder::new()
     .world_generator(FlatWorldGenerator)
     .build();
 ```
