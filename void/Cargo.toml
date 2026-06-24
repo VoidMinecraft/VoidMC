@@ -13,8 +13,8 @@ keywords.workspace = true
 tokio = { version = "1.44.1", features = ["full"] }
 voidmc-net = { version = "0.1.0", path = "../void-net" }
 voidmc-codec = { version = "0.1.0", path = "../void-codec" }
-voidmc-protocol = { version = "0.1.0", path = "../void-protocol" }
-voidmc-data = { version = "0.1.0", path = "../void-data" }
+voidmc-protocol = { version = "0.2.0", path = "../void-protocol" }
+voidmc-data = { version = "0.1.1", path = "../void-data" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"
 tracing = "0.1.44"
