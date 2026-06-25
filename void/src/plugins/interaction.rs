@@ -3,8 +3,8 @@ use bevy_ecs::{observer::On, system::Commands};
 use voidmc_codec::Decode;
 use voidmc_protocol::{
     serverbound::{
-        CloseContainer, Interact, PlayerAction, PlayerCommand, SetHeldItem, SwingArm, UseItem,
-        UseItemOn,
+        CloseContainer, Interact, PlayerAction, PlayerCommand, PlayerInput, SetHeldItem, SwingArm,
+        UseItem, UseItemOn,
     },
     types::{Hand, PlayerActionStatus, PlayerCommandAction},
 };
@@ -12,9 +12,9 @@ use voidmc_protocol::{
 use crate::{
     events::{
         PlayerCancelDiggingEvent, PlayerChangeSlotEvent, PlayerCloseContainerEvent,
-        PlayerDropItemEvent, PlayerFinishDiggingEvent, PlayerInteractEntityEvent, PlayerSneakEvent,
-        PlayerSprintEvent, PlayerStartDiggingEvent, PlayerSwapHandsEvent, PlayerSwingArmEvent,
-        PlayerUseItemEvent, PlayerUseItemOnBlockEvent,
+        PlayerDropItemEvent, PlayerFinishDiggingEvent, PlayerInputEvent, PlayerInteractEntityEvent,
+        PlayerSneakEvent, PlayerSprintEvent, PlayerStartDiggingEvent, PlayerSwapHandsEvent,
+        PlayerSwingArmEvent, PlayerUseItemEvent, PlayerUseItemOnBlockEvent,
     },
     network::PacketEvent,
 };
@@ -27,11 +27,26 @@ impl Plugin for InteractionPlugin {
         app.add_observer(handle_set_held_item);
         app.add_observer(handle_close_container);
         app.add_observer(handle_player_command);
+        app.add_observer(handle_player_input);
         app.add_observer(handle_player_action);
         app.add_observer(handle_use_item);
         app.add_observer(handle_use_item_on);
         app.add_observer(handle_interact);
     }
+}
+
+fn handle_player_input(event: On<PacketEvent<PlayerInput>>, mut commands: Commands) {
+    let input = event.packet;
+    commands.trigger(PlayerInputEvent {
+        entity: event.entity,
+        forward: input.forward(),
+        backward: input.backward(),
+        left: input.left(),
+        right: input.right(),
+        jump: input.jump(),
+        sneak: input.sneak(),
+        sprint: input.sprint(),
+    });
 }
 
 fn handle_swing_arm(event: On<PacketEvent<SwingArm>>, mut commands: Commands) {
