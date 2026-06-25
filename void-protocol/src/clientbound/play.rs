@@ -14,6 +14,7 @@ mod remove_entities;
 mod set_container_content;
 mod set_container_slot;
 mod set_cursor_item;
+mod set_entity_data;
 mod set_entity_motion;
 mod set_head_rotation;
 mod set_held_slot;
@@ -42,6 +43,7 @@ pub use remove_entities::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cursor_item::*;
+pub use set_entity_data::*;
 pub use set_entity_motion::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
@@ -96,6 +98,8 @@ pub enum PlayPacket {
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]
     SetCursorItem(SetCursorItem),
+    #[codec(packet_id = 0x63)]
+    SetEntityData(SetEntityData),
     #[codec(packet_id = 0x69)]
     SetHeldSlot(SetHeldSlot),
     #[codec(packet_id = 0x79)]

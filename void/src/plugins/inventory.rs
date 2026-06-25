@@ -46,8 +46,13 @@ fn handle_container_click(
         return;
     }
     if let Ok(mut inv) = inventories.get_mut(event.entity) {
-        let _dropped = inv.apply_click(event.packet.slot, event.packet.button, event.packet.mode);
-        // M5: spawn `_dropped` as item entities in the world.
+        let dropped = inv.apply_click(event.packet.slot, event.packet.button, event.packet.mode);
+        for stack in dropped {
+            commands.trigger(crate::events::ItemDropEvent {
+                dropper: event.entity,
+                stack,
+            });
+        }
         commands.entity(event.entity).insert(InventoryDirty);
     }
 }

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use bevy_ecs::prelude::*;
 use uuid::Uuid;
 
+use crate::item::ItemStack;
 use crate::world::{ChunkPos, DimensionId};
 
 #[derive(Component)]
@@ -158,6 +159,18 @@ pub struct Wander {
     /// Current yaw direction in degrees (0-360).
     pub yaw: f32,
 }
+
+/// A dropped item floating in the world. The entity also carries the standard
+/// `SpawnedEntity` / `EntityType(item)` / physics components.
+#[derive(Component, Clone)]
+pub struct ItemEntity {
+    pub stack: ItemStack,
+}
+
+/// Ticks remaining before a dropped item can be picked up (prevents instantly
+/// re-collecting an item you just threw).
+#[derive(Component)]
+pub struct PickupDelay(pub u8);
 
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);

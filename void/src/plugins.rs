@@ -5,6 +5,7 @@ pub mod configuration;
 pub mod handshake;
 pub mod interaction;
 pub mod inventory;
+pub mod item_drops;
 pub mod item_use;
 pub mod login;
 pub mod movement;
@@ -26,6 +27,7 @@ impl Plugin for DefaultPlugins {
             interaction::InteractionPlugin,
             item_use::ItemUsePlugin,
             inventory::InventoryPlugin,
+            item_drops::ItemDropsPlugin,
         ));
     }
 }
