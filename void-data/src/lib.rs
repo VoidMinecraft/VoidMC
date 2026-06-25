@@ -14,6 +14,8 @@ use ussr_nbt::owned::Nbt;
 include!(concat!(env!("OUT_DIR"), "/registries.rs"));
 include!(concat!(env!("OUT_DIR"), "/blocks.rs"));
 
+mod stack_sizes;
+
 /// A supported Minecraft version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
@@ -108,6 +110,18 @@ pub fn item_names(version: Version) -> Vec<&'static str> {
         Version::V26_1_2 => v26_1_2::items::ITEM_IDS,
     };
     table.iter().map(|(n, _)| *n).collect()
+}
+
+/// Returns the maximum stack size for an item id (defaults to 64 for the vast
+/// majority of items; tools/armor are 1, a handful of items are 16).
+pub fn item_max_stack(version: Version, item_id: i32) -> u8 {
+    let table = match version {
+        Version::V26_1_2 => stack_sizes::ITEM_STACK_SIZES,
+    };
+    table
+        .binary_search_by(|(id, _)| id.cmp(&item_id))
+        .map(|i| table[i].1)
+        .unwrap_or(64)
 }
 
 /// Returns entity types known by the versioned data to be excluded from
@@ -239,6 +253,19 @@ mod tests {
         assert_eq!(item_id(Version::V26_1_2, "minecraft:not_real"), None);
         assert_eq!(item_name(Version::V26_1_2, 1), Some("minecraft:stone"));
         assert_eq!(item_name(Version::V26_1_2, -1), None);
+    }
+
+    #[test]
+    fn item_max_stack_sizes() {
+        // Default for most items.
+        let stone = item_id(Version::V26_1_2, "minecraft:stone").unwrap();
+        assert_eq!(item_max_stack(Version::V26_1_2, stone), 64);
+        // Tools are unstackable.
+        let sword = item_id(Version::V26_1_2, "minecraft:diamond_sword").unwrap();
+        assert_eq!(item_max_stack(Version::V26_1_2, sword), 1);
+        // Ender pearls stack to 16.
+        let pearl = item_id(Version::V26_1_2, "minecraft:ender_pearl").unwrap();
+        assert_eq!(item_max_stack(Version::V26_1_2, pearl), 16);
     }
 
     #[test]

@@ -88,6 +88,7 @@ impl ItemUseContext<'_> {
             target.face,
             BlockMutation::Place,
         )
+        .is_some()
     }
 
     /// Sets an arbitrary block in the player's dimension.
@@ -104,6 +105,7 @@ impl ItemUseContext<'_> {
             BlockFace::Top,
             BlockMutation::Place,
         )
+        .is_some()
     }
 
     /// Removes `n` from the held stack (server-authoritative) and resyncs.
@@ -166,6 +168,50 @@ pub trait ItemBehavior: Send + Sync + 'static {
     /// Right-click while not pointing at a block.
     fn on_use(&self, _ctx: &mut ItemUseContext) -> UseResult {
         UseResult::Pass
+    }
+    /// Called when the player finishes breaking a block while holding this item
+    /// (after the block is removed). Use it for tool side effects — custom drops,
+    /// durability, messages. The return value is reserved for suppressing default
+    /// loot once loot tables exist.
+    fn on_break_block(&self, _ctx: &mut BlockBreakContext) -> UseResult {
+        UseResult::Pass
+    }
+}
+
+/// Context passed to [`ItemBehavior::on_break_block`], with full world access.
+pub struct BlockBreakContext<'a> {
+    world: &'a mut World,
+    pub player: Entity,
+    pub client_id: u32,
+    /// The item that was in hand when the block broke.
+    pub held: ItemStack,
+    pub position: BlockPosition,
+    /// The block-state id that was removed.
+    pub broken_state: i32,
+}
+
+impl BlockBreakContext<'_> {
+    /// Gives the player an item stack (e.g. a tool-specific drop) and resyncs.
+    pub fn give(&mut self, stack: ItemStack) {
+        if let Some(mut inv) = self.world.get_mut::<Inventory>(self.player) {
+            inv.give(stack);
+        }
+        self.world.entity_mut(self.player).insert(InventoryDirty);
+    }
+
+    /// Sends a chat message to the breaking player.
+    pub fn reply(&self, message: &str) {
+        crate::commands::send_system_chat(self.world, self.client_id, message, "white");
+    }
+
+    /// Read-only world access.
+    pub fn with_world<R>(&self, f: impl FnOnce(&World) -> R) -> R {
+        f(self.world)
+    }
+
+    /// Mutable world access.
+    pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
+        f(self.world)
     }
 }
 
@@ -287,8 +333,8 @@ pub fn drain_item_use_queue(world: &mut World) {
 
         match queued.action {
             UseAction::BreakBlock { position, face } => {
-                if let Some(dimension) = world.get::<PlayerDimension>(queued.player).map(|d| d.0) {
-                    mutate_block(
+                if let Some(dimension) = world.get::<PlayerDimension>(queued.player).map(|d| d.0)
+                    && let Some(broken_state) = mutate_block(
                         world,
                         queued.player,
                         dimension,
@@ -296,7 +342,24 @@ pub fn drain_item_use_queue(world: &mut World) {
                         0,
                         face,
                         BlockMutation::Break,
-                    );
+                    )
+                {
+                    let held = world
+                        .get::<Inventory>(queued.player)
+                        .map(|inv| inv.held().clone())
+                        .unwrap_or(ItemStack::EMPTY);
+                    if let Some(behavior) = world.resource::<ItemBehaviorRegistry>().get(held.item)
+                    {
+                        let mut ctx = BlockBreakContext {
+                            world,
+                            player: queued.player,
+                            client_id: queued.client_id,
+                            held,
+                            position,
+                            broken_state,
+                        };
+                        behavior.on_break_block(&mut ctx);
+                    }
                 }
             }
             UseAction::UseOnBlock(_) | UseAction::UseInAir => {

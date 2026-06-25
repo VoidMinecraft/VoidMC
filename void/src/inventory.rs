@@ -132,7 +132,7 @@ impl Inventory {
         if stack.is_empty() {
             return ItemStack::EMPTY;
         }
-        let max = Self::DEFAULT_MAX_STACK;
+        let max = Self::max_stack(&stack);
 
         // Stack onto existing matching slots.
         for i in Self::storage_order() {
@@ -226,8 +226,12 @@ impl Inventory {
         }
     }
 
-    fn stack_cap() -> u8 {
-        Self::DEFAULT_MAX_STACK
+    /// The maximum stack size for the given stack's item (64 by default).
+    fn max_stack(stack: &ItemStack) -> u8 {
+        if stack.is_empty() {
+            return Self::DEFAULT_MAX_STACK;
+        }
+        voidmc_data::item_max_stack(voidmc_data::Version::V26_1_2, stack.item.0)
     }
 
     fn same_item(a: &ItemStack, b: &ItemStack) -> bool {
@@ -235,7 +239,11 @@ impl Inventory {
     }
 
     fn click_pickup(&mut self, slot: usize, right: bool) -> Vec<ItemStack> {
-        let max = Self::stack_cap();
+        let max = Self::max_stack(if self.cursor.is_empty() {
+            &self.slots[slot]
+        } else {
+            &self.cursor
+        });
         if self.cursor.is_empty() {
             if self.slots[slot].is_empty() {
                 return Vec::new();
@@ -294,7 +302,7 @@ impl Inventory {
 
     /// Merges/fills `stack` into the given slot indices (merge first, then empties).
     fn deposit(&mut self, stack: &mut ItemStack, indices: &[usize]) {
-        let max = Self::stack_cap();
+        let max = Self::max_stack(stack);
         for &i in indices {
             if stack.count == 0 {
                 return;
@@ -361,7 +369,7 @@ impl Inventory {
         if self.cursor.is_empty() && !self.slots[slot].is_empty() {
             self.cursor = ItemStack {
                 item: self.slots[slot].item,
-                count: Self::stack_cap(),
+                count: Self::max_stack(&self.slots[slot]),
                 components: self.slots[slot].components.clone(),
             };
         }
@@ -408,7 +416,7 @@ impl Inventory {
         if self.cursor.is_empty() {
             return;
         }
-        let max = Self::stack_cap();
+        let max = Self::max_stack(&self.cursor);
         let item = self.cursor.item;
         let components = self.cursor.components.clone();
         for i in 0..Self::SIZE {
@@ -467,7 +475,7 @@ impl Inventory {
         if self.cursor.is_empty() || drag.slots.is_empty() {
             return;
         }
-        let max = Self::stack_cap();
+        let max = Self::max_stack(&self.cursor);
         let item = self.cursor.item;
         let components = self.cursor.components.clone();
         let eligible: Vec<usize> = drag
@@ -681,6 +689,16 @@ mod tests {
         inv.apply_click((Inventory::MAIN_START + 2) as i16, 0, 0); // cursor = 5
         inv.apply_click((Inventory::MAIN_START + 2) as i16, 0, 6); // pickup-all
         assert_eq!(inv.cursor().count, 35);
+    }
+
+    #[test]
+    fn give_respects_per_item_max_stack() {
+        let mut inv = Inventory::new();
+        // Ender pearls cap at 16, not 64.
+        let left = inv.give(ItemStack::of("minecraft:ender_pearl", 20).unwrap());
+        assert!(left.is_empty());
+        assert_eq!(inv.get(Inventory::HOTBAR_START).count, 16);
+        assert_eq!(inv.get(Inventory::HOTBAR_START + 1).count, 4);
     }
 
     #[test]

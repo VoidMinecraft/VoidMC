@@ -26,9 +26,10 @@ pub enum BlockMutation {
 /// dirty, broadcasts `BlockUpdate` to observers, and fires `BlockChangeEvent`
 /// plus `BlockBreakEvent`/`BlockPlaceEvent`.
 ///
-/// Returns `true` if the block actually changed. Does **not** acknowledge the
-/// client prediction sequence — the caller owns that (so an action acks exactly
-/// once even when it mutates several blocks or none); use [`send_ack`].
+/// Returns the previous block-state id if the block actually changed, else
+/// `None`. Does **not** acknowledge the client prediction sequence — the caller
+/// owns that (so an action acks exactly once even when it mutates several blocks
+/// or none); use [`send_ack`].
 pub fn mutate_block(
     world: &mut World,
     actor: Entity,
@@ -37,34 +38,25 @@ pub fn mutate_block(
     new_state: i32,
     face: BlockFace,
     mutation: BlockMutation,
-) -> bool {
+) -> Option<i32> {
     let chunk_pos = ChunkPos::new(position.x >> 4, position.z >> 4);
 
-    let Some(chunk_entity) = world
+    let chunk_entity = world
         .resource::<ChunkIndex>()
         .0
         .get(&(dimension, chunk_pos))
-        .copied()
-    else {
-        return false;
-    };
+        .copied()?;
 
     let local_x = position.x.rem_euclid(16) as u8;
     let local_z = position.z.rem_euclid(16) as u8;
     let world_y = position.y as i32;
 
-    let old_state = {
-        let Some(mut chunk_data) = world.get_mut::<ChunkData>(chunk_entity) else {
-            return false;
-        };
-        match chunk_data.set_block(local_x, world_y, local_z, new_state) {
-            Some(prev) => prev,
-            None => return false,
-        }
-    };
+    let old_state = world
+        .get_mut::<ChunkData>(chunk_entity)?
+        .set_block(local_x, world_y, local_z, new_state)?;
 
     if old_state == new_state {
-        return false;
+        return None;
     }
 
     world.entity_mut(chunk_entity).insert(ChunkDirty);
@@ -114,7 +106,7 @@ pub fn mutate_block(
         }),
     }
 
-    true
+    Some(old_state)
 }
 
 /// Sends a `BlockChangedAck` for the given prediction sequence to `actor`.

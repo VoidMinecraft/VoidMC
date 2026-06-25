@@ -6,6 +6,11 @@
   },
   {
     "type": "file",
+    "name": "items",
+    "label": "Items & Inventory"
+  },
+  {
+    "type": "file",
     "name": "players",
     "label": "Player Management"
   },

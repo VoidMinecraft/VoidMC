@@ -39,7 +39,8 @@ pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnP
 pub use inventory::Inventory;
 pub use item::{ItemId, ItemStack};
 pub use item_behavior::{
-    BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult,
+    BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
+    UseResult,
 };
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
