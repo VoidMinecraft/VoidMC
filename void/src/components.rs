@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use bevy_ecs::prelude::*;
 use uuid::Uuid;
 
+use crate::item::ItemStack;
 use crate::world::{ChunkPos, DimensionId};
 
 #[derive(Component)]
@@ -92,6 +93,22 @@ pub struct Operator;
 #[derive(Component, Clone, Copy)]
 pub struct HotbarSlot(pub i16);
 
+/// Per-player container-sync counter. Incremented before each container packet
+/// so the vanilla client can reconcile its predicted inventory against the
+/// server's authoritative state.
+#[derive(Component, Default)]
+pub struct ContainerSync {
+    pub state_id: i32,
+}
+
+impl ContainerSync {
+    /// Advances and returns the next state id.
+    pub fn advance(&mut self) -> i32 {
+        self.state_id = self.state_id.wrapping_add(1);
+        self.state_id
+    }
+}
+
 /// Numeric entity type ID from the `minecraft:entity_type` registry.
 #[derive(Component)]
 pub struct EntityType(pub i32);
@@ -142,6 +159,18 @@ pub struct Wander {
     /// Current yaw direction in degrees (0-360).
     pub yaw: f32,
 }
+
+/// A dropped item floating in the world. The entity also carries the standard
+/// `SpawnedEntity` / `EntityType(item)` / physics components.
+#[derive(Component, Clone)]
+pub struct ItemEntity {
+    pub stack: ItemStack,
+}
+
+/// Ticks remaining before a dropped item can be picked up (prevents instantly
+/// re-collecting an item you just threw).
+#[derive(Component)]
+pub struct PickupDelay(pub u8);
 
 #[derive(Resource)]
 pub struct EntityIdCounter(pub i32);

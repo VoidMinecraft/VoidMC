@@ -169,6 +169,10 @@ fn handle_finish_configuration(
         LoadedChunks(HashSet::new()),
         PlayerDimension(DimensionId::Overworld),
         crate::components::HotbarSlot(0),
+        (
+            crate::inventory::Inventory::new(),
+            crate::components::ContainerSync::default(),
+        ),
     ));
 
     // Send login success packet

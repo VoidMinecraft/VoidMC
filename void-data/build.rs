@@ -204,11 +204,13 @@ fn main() {
         let txt = fs::read_to_string(&blocks_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", blocks_path.display()));
         let blocks_json: Value = serde_json::from_str(&txt).expect("parse blocks.json");
+        let items = load_item_entries(&crate_dir, version);
         emit_blocks_module(
             &mut blocks_code,
             version,
             &blocks_json,
             shapes_value.as_ref(),
+            &items,
         );
     }
     fs::write(out_dir.join("blocks.rs"), blocks_code).unwrap();
@@ -258,11 +260,47 @@ struct BlockDef {
     shape_per_state: Option<Vec<u32>>,
 }
 
+/// Reads the `minecraft:item` registry from `assets/<version>/registries.json`
+/// and returns `(full_id, protocol_id)` pairs sorted by protocol id. Returns an
+/// empty vec if the file or registry is absent so the build never fails when the
+/// item data has not been extracted yet.
+fn load_item_entries(crate_dir: &Path, version: &str) -> Vec<(String, i32)> {
+    let registries_path = crate_dir
+        .join("assets")
+        .join(version)
+        .join("registries.json");
+    if !registries_path.is_file() {
+        return Vec::new();
+    }
+    let json_text = fs::read_to_string(&registries_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", registries_path.display()));
+    let value: Value = serde_json::from_str(&json_text)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", registries_path.display()));
+    let Some(entries) = value
+        .get("minecraft:item")
+        .and_then(|r| r.get("entries"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for (entry_id, entry_value) in entries {
+        let Some(protocol_id) = entry_value.get("protocol_id").and_then(Value::as_i64) else {
+            continue;
+        };
+        out.push((entry_id.clone(), protocol_id as i32));
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    out
+}
+
 fn emit_blocks_module(
     out: &mut String,
     version: &str,
     blocks_json: &Value,
     shapes_json: Option<&Value>,
+    items: &[(String, i32)],
 ) {
     let blocks_obj = blocks_json
         .as_object()
@@ -487,7 +525,70 @@ fn emit_blocks_module(
         emit_shapes_module(out, &defs, shapes);
     }
 
+    // ---- items module
+    emit_items_module(out, &defs, items);
+
     let _ = writeln!(out, "}}");
+}
+
+/// Emits the `items` submodule: one `const` per item (id), a name→id lookup
+/// table, and an item→default-block-state table for block items (computed by
+/// matching item ids against the block of the same name).
+fn emit_items_module(out: &mut String, defs: &[BlockDef], items: &[(String, i32)]) {
+    use std::collections::HashMap;
+
+    // full block name -> default state id
+    let block_default: HashMap<&str, i32> = defs
+        .iter()
+        .map(|d| (d.full_name.as_str(), d.default_state_id))
+        .collect();
+
+    let _ = writeln!(out, "    /// Item registry ids and block-item mapping.");
+    let _ = writeln!(out, "    pub mod items {{");
+
+    // const per item (id ordered)
+    for (full_name, id) in items {
+        let short = full_name
+            .strip_prefix("minecraft:")
+            .unwrap_or(full_name.as_str());
+        let _ = writeln!(out, "        /// `{full_name}`.");
+        let _ = writeln!(
+            out,
+            "        pub const {}: i32 = {id};",
+            short.to_ascii_uppercase()
+        );
+    }
+
+    // name -> id table, sorted by name for binary search
+    let mut by_name: Vec<&(String, i32)> = items.iter().collect();
+    by_name.sort_by(|a, b| a.0.cmp(&b.0));
+    let _ = writeln!(
+        out,
+        "        /// `(item_id_name, item_id)` sorted by name for binary search."
+    );
+    let _ = writeln!(out, "        pub static ITEM_IDS: &[(&str, i32)] = &[");
+    for (full_name, id) in by_name {
+        let _ = writeln!(out, "            ({full_name:?}, {id}),");
+    }
+    let _ = writeln!(out, "        ];");
+
+    // item id -> default block state, sorted by item id
+    let _ = writeln!(
+        out,
+        "        /// `(item_id, default_block_state_id)` for block items, sorted by item id."
+    );
+    let _ = writeln!(
+        out,
+        "        pub static ITEM_TO_BLOCK_STATE: &[(i32, i32)] = &["
+    );
+    for (full_name, id) in items {
+        if let Some(state) = block_default.get(full_name.as_str()) {
+            let _ = writeln!(out, "            ({id}, {state}),");
+        }
+    }
+    let _ = writeln!(out, "        ];");
+
+    let _ = writeln!(out, "    }}");
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

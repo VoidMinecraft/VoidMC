@@ -1,5 +1,6 @@
 mod chat_command;
 mod chat_message;
+mod click_container;
 mod client_information;
 mod close_container;
 mod command_suggestions_request;
@@ -12,6 +13,7 @@ mod player_command;
 mod player_input;
 mod player_loaded;
 mod pong;
+mod set_creative_mode_slot;
 mod set_held_item;
 mod set_player_pos;
 mod set_player_pos_and_rot;
@@ -24,6 +26,7 @@ mod use_item_on;
 
 pub use chat_command::*;
 pub use chat_message::*;
+pub use click_container::*;
 pub use client_information::*;
 pub use close_container::*;
 pub use command_suggestions_request::*;
@@ -36,6 +39,7 @@ pub use player_command::*;
 pub use player_input::*;
 pub use player_loaded::*;
 pub use pong::*;
+pub use set_creative_mode_slot::*;
 pub use set_held_item::*;
 pub use set_player_pos::*;
 pub use set_player_pos_and_rot::*;
@@ -64,6 +68,8 @@ pub enum PlayPacket {
     ClientInformation(ClientInformation),
     #[codec(packet_id = 0x0F)]
     CommandSuggestionsRequest(CommandSuggestionsRequest),
+    #[codec(packet_id = 0x12)]
+    ClickContainer(ClickContainer),
     #[codec(packet_id = 0x13)]
     CloseContainer(CloseContainer),
     #[codec(packet_id = 0x1A)]
@@ -90,6 +96,8 @@ pub enum PlayPacket {
     Pong(Pong),
     #[codec(packet_id = 0x35)]
     SetHeldItem(SetHeldItem),
+    #[codec(packet_id = 0x38)]
+    SetCreativeModeSlot(SetCreativeModeSlot),
     #[codec(packet_id = 0x3F)]
     SwingArm(SwingArm),
     #[codec(packet_id = 0x42)]

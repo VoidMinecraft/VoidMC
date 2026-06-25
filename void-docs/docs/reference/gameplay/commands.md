@@ -254,6 +254,8 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | `/list` | | Show online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
 | `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double] [--wander] [--gravity] [--block-checks]` |
+| `/give` | | Give yourself an item | `<item:item> [count:integer(1..64)]` |
+| `/clear` | | Empty your inventory | (none) |
 | `/stop` | | Gracefully stop the server | (none) |
 
 `/stop` emits an `AppExit`, so the server finishes the current tick and shuts
