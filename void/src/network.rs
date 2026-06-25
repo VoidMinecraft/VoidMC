@@ -158,11 +158,21 @@ pub fn ingest_network_packets(world: &mut World) {
             client_entity,
             incoming_packet.packet,
         ) {
-            tracing::error!(
-                "Failed to handle packet from client {}: {}",
-                incoming_packet.client_id,
-                e
-            );
+            if e.kind() == std::io::ErrorKind::Unsupported {
+                // Unrecognized packet (e.g. one we don't handle yet): expected and
+                // non-fatal, so warn instead of error.
+                tracing::warn!(
+                    "Unrecognized packet from client {}: {}",
+                    incoming_packet.client_id,
+                    e
+                );
+            } else {
+                tracing::error!(
+                    "Failed to handle packet from client {}: {}",
+                    incoming_packet.client_id,
+                    e
+                );
+            }
         }
     }
 

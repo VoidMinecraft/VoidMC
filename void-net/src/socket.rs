@@ -1,15 +1,24 @@
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use voidmc_codec::{Decode, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, Encode, VarI32};
 
 pub struct Packet(Vec<u8>);
 
 impl Packet {
     pub fn decode<T: Decode>(&self) -> std::io::Result<T> {
         let mut slice = self.0.as_slice();
-        T::decode(&mut slice)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+        T::decode(&mut slice).map_err(|e| {
+            // An unrecognized packet id is an expected, non-fatal condition (e.g. a
+            // packet we don't handle yet), so flag it distinctly from genuine decode
+            // failures. Callers can match on `ErrorKind::Unsupported` to log it as a
+            // warning rather than an error.
+            let kind = match e {
+                DecodeError::InvalidPacketId(_) => std::io::ErrorKind::Unsupported,
+                _ => std::io::ErrorKind::InvalidData,
+            };
+            std::io::Error::new(kind, e.to_string())
+        })
     }
 }
 
