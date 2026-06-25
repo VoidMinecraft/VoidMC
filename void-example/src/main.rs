@@ -1,14 +1,17 @@
 use std::env;
 
 use bevy_app::Update;
+use bevy_ecs::prelude::Commands;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_flame::FlameLayer;
 use tracing_subscriber::prelude::*;
 use voidmc::components::PlayerName;
-use voidmc::events::PlayerStartDiggingEvent;
+use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
+use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
+use voidmc::plugins::inventory::InventoryDirty;
 use voidmc::{
-    CommandBuilder, CommandRegistry, On, Query, ServerConfigBuilder, VoidServer,
-    register_default_commands,
+    CommandBuilder, CommandRegistry, Inventory, ItemStack, On, Query, ServerConfigBuilder,
+    VoidServer, register_default_commands,
 };
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
@@ -83,6 +86,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Observe block-breaking events
             app.add_observer(on_player_dig);
             app.add_systems(Update, circle::circle_system);
+        })
+        .add_plugin(|app| {
+            // Demo of the item-behaviour API: a stick becomes a "glowstone wand",
+            // overriding the default right-click action.
+            app.world_mut()
+                .resource_mut::<ItemBehaviorRegistry>()
+                .register_for("minecraft:stick", WandBehavior);
+
+            // Give every player a small starter kit when they join.
+            app.add_observer(give_starter_kit);
         })
         .add_command(
             CommandBuilder::new("hello")
@@ -176,6 +189,44 @@ fn env_string(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+/// Example [`ItemBehavior`]: holding a stick and right-clicking a block places
+/// glowstone and messages the player, instead of the default (a stick has no
+/// default block action).
+struct WandBehavior;
+
+impl ItemBehavior for WandBehavior {
+    fn on_use_on_block(&self, ctx: &mut ItemUseContext) -> UseResult {
+        ctx.reply("zap! placed glowstone");
+        ctx.place_block(voidmc_data::v26_1_2::blocks::GLOWSTONE);
+        UseResult::Handled
+    }
+}
+
+/// Gives each joining player a few stacks to build with, then flags the
+/// inventory for re-sync.
+fn give_starter_kit(
+    event: On<PlayerReadyEvent>,
+    mut inventories: Query<&mut Inventory>,
+    mut commands: Commands,
+) {
+    let Ok(mut inventory) = inventories.get_mut(event.entity) else {
+        return;
+    };
+    for name in [
+        "minecraft:stone",
+        "minecraft:oak_planks",
+        "minecraft:cobblestone",
+        "minecraft:glass",
+        "minecraft:glowstone",
+        "minecraft:stick",
+    ] {
+        if let Some(stack) = ItemStack::of(name, 64) {
+            inventory.give(stack);
+        }
+    }
+    commands.entity(event.entity).insert(InventoryDirty);
 }
 
 fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) {
