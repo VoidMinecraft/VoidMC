@@ -1,6 +1,54 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.0](https://github.com/VoidMinecraft/VoidMC/releases/tag/voidmc-world-io-v0.1.0) - 2026-06-25
+
+### Documentation
+
+- Added root README.md
+- Add architecture readiness evidence
+
+### Features
+
+- World serialization (F8) and graceful /stop command
+
+### Refactor
+
+- Rename crates to voidmc-* prefix
+
+## [0.2.0](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-v0.1.0...voidmc-v0.2.0) - 2026-06-25
+
+### Bug Fixes
+
+- *(net)* Log unrecognized packets as warning instead of error
+
+### Features
+
+- World serialization (F8) and graceful /stop command
+
+## [0.3.0](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-protocol-v0.2.0...voidmc-protocol-v0.3.0) - 2026-06-25
+
+## [0.1.1](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-net-v0.1.0...voidmc-net-v0.1.1) - 2026-06-25
+
+### Bug Fixes
+
+- *(net)* Log unrecognized packets as warning instead of error
+
+## [0.1.2](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-data-v0.1.1...voidmc-data-v0.1.2) - 2026-06-25
+
+## [0.1.1](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-codec-v0.1.0...voidmc-codec-v0.1.1) - 2026-06-25
+
+### Documentation
+
+- Add tech watch evidence
+- Add architecture readiness evidence
+
+## [0.1.1](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-codec-macros-v0.1.0...voidmc-codec-macros-v0.1.1) - 2026-06-25
+
+### Documentation
+
+- Add architecture readiness evidence
+
 ## [0.1.0](https://github.com/VoidMinecraft/VoidMC/releases/tag/voidmc-v0.1.0) - 2026-06-24
 
 ### Bug Fixes
