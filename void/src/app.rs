@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin};
+use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin, TerminalCtrlCHandlerPlugin};
 use bevy_ecs::prelude::*;
 
 use crate::Server;
@@ -13,8 +13,8 @@ use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
 use crate::plugins::DefaultPlugins;
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
-    ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, DimensionId,
-    generation::WorldGen,
+    ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
+    generation::WorldGen, load_or_generate,
 };
 
 /// The main entry point for running a Void server.
@@ -80,6 +80,9 @@ impl VoidServer {
         app.add_plugins((
             TaskPoolPlugin::default(),
             ScheduleRunnerPlugin::run_loop(tick_duration),
+            // Ctrl-C / SIGTERM emits AppExit so the server stops gracefully
+            // (the same signal `/stop` uses).
+            TerminalCtrlCHandlerPlugin,
         ))
         .add_plugins(NetworkPlugin::new(
             incoming_rx,
@@ -123,6 +126,7 @@ fn init_world(
     mut commands: Commands,
     mut chunk_index: ResMut<ChunkIndex>,
     world_gen: Res<WorldGen>,
+    loader: Option<Res<ChunkLoaderResource>>,
     config: Res<ServerConfigResource>,
 ) {
     let spawn_chunk = ChunkPos::from_block(config.spawn_x, config.spawn_z);
@@ -130,11 +134,12 @@ fn init_world(
 
     let mut count = 0;
     for pos in spawn_chunk.chunks_in_radius(radius) {
-        let chunk = world_gen.0.generate_chunk(&pos);
+        let chunk_data =
+            load_or_generate(loader.as_deref(), &world_gen, DimensionId::Overworld, &pos);
         let entity = commands
             .spawn((
                 ChunkPosition(pos),
-                ChunkData::from_protocol_chunk(&chunk),
+                chunk_data,
                 ChunkDimension(DimensionId::Overworld),
             ))
             .id();

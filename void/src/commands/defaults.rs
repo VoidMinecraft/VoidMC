@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bevy_app::AppExit;
 use bevy_ecs::prelude::With;
 use rand::Rng;
 
@@ -52,6 +53,9 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     }
     if !exclude.contains(&"summon") {
         registry.register(summon_command());
+    }
+    if !exclude.contains(&"stop") {
+        registry.register(stop_command());
     }
 }
 
@@ -526,6 +530,25 @@ fn handle_summon(ctx: &mut CommandContext) {
     ));
 }
 
+pub fn stop_command() -> Command {
+    CommandBuilder::new("stop")
+        .description("Gracefully stop the server")
+        .handler(handle_stop)
+        .build()
+}
+
+fn handle_stop(ctx: &mut CommandContext) {
+    let who = ctx.player_name().unwrap_or_else(|| "console".to_string());
+    tracing::info!("Server shutdown requested via /stop by {who}");
+    ctx.broadcast("Server is shutting down...");
+    ctx.reply("Stopping the server...");
+    // Signal a graceful exit. The runner finishes the current tick (so plugins
+    // such as world persistence can flush on `AppExit`) and then stops.
+    ctx.with_world_mut(|world| {
+        world.write_message(AppExit::Success);
+    });
+}
+
 /// Optional resource listing plugin names — can be inserted by the user.
 #[derive(Clone, bevy_ecs::prelude::Resource)]
 pub struct PluginList(pub Vec<String>);
@@ -675,5 +698,19 @@ mod tests {
 
         assert!(spawned_entities(&mut world).is_empty());
         assert_eq!(outgoing_rx.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn stop_command_requests_app_exit() {
+        let (mut world, player, _outgoing_rx) = command_world();
+        world.insert_resource(bevy_ecs::message::Messages::<AppExit>::default());
+        world
+            .resource_mut::<CommandRegistry>()
+            .register(stop_command());
+
+        dispatch_command(&mut world, 7, player, "stop", vec![]);
+
+        let exits = world.resource::<bevy_ecs::message::Messages<AppExit>>();
+        assert_eq!(exits.len(), 1, "/stop should write exactly one AppExit");
     }
 }

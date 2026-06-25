@@ -1,0 +1,23 @@
+[package]
+name = "voidmc-world-io"
+edition = "2024"
+description = "Chunk disk persistence (save/load) for the VoidMC server framework."
+version = "0.1.0"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+
+[dependencies]
+voidmc = { version = "0.1.0", path = "../void" }
+voidmc-protocol = { version = "0.2.0", path = "../void-protocol" }
+voidmc-codec = { version = "0.1.0", path = "../void-codec" }
+ussr-nbt = "0.2.1"
+bevy_ecs = "0.18.0"
+bevy_app = "0.18.0"
+flate2 = "1"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tempfile = "3"

@@ -3,6 +3,14 @@
 
 # Project
 **/logs/
+# Persisted world data (runtime artifact). Anchored so it never matches the
+# engine's `void/src/world` module.
+/world/
+/void-example/world/
+
+# macOS
+.DS_Store
+**/.DS_Store
 
 # IDEs
 **/.vscode/

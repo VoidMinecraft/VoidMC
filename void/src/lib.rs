@@ -22,8 +22,8 @@ pub mod world;
 pub use app::VoidServer;
 pub use commands::defaults::{
     PluginList, broadcast_command, gamemode_command, help_command, kick_command, list_command,
-    ping_command, plugins_command, register_default_commands, say_command, summon_command,
-    tell_command, tp_command,
+    ping_command, plugins_command, register_default_commands, say_command, stop_command,
+    summon_command, tell_command, tp_command,
 };
 pub use commands::parser::{
     BoolArg, DoubleArg, FloatArg, GameProfileArg, GreedyStringArg, IntegerArg, LongArg,
@@ -37,6 +37,10 @@ pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
+pub use world::{
+    ChunkData, ChunkDimension, ChunkDirty, ChunkIndex, ChunkLoader, ChunkLoaderResource, ChunkPos,
+    ChunkPosition, DimensionId, load_or_generate,
+};
 
 // Re-export commonly used bevy_ecs types for plugin developers
 pub use bevy_ecs::prelude::{On, Query};
