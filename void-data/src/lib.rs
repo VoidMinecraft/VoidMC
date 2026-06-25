@@ -68,6 +68,48 @@ pub fn protocol_registry_index(version: Version, registry_id: &str, entry_id: &s
         .map(|(_, protocol_id)| *protocol_id)
 }
 
+/// Returns the protocol item id for a full item id like `"minecraft:stone"`,
+/// or `None` if the name is not in the `minecraft:item` registry for `version`.
+pub fn item_id(version: Version, name: &str) -> Option<i32> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::items::ITEM_IDS,
+    };
+    table
+        .binary_search_by(|(n, _)| (*n).cmp(name))
+        .ok()
+        .map(|i| table[i].1)
+}
+
+/// Returns the full item id (e.g. `"minecraft:stone"`) for a protocol item id,
+/// or `None` if the id is not in the `minecraft:item` registry for `version`.
+pub fn item_name(version: Version, id: i32) -> Option<&'static str> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::items::ITEM_IDS,
+    };
+    table.iter().find(|(_, i)| *i == id).map(|(n, _)| *n)
+}
+
+/// Returns the default block-state id placed by a block item, or `None` if the
+/// item does not correspond to a placeable block.
+pub fn item_default_block_state(version: Version, item_id: i32) -> Option<i32> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::items::ITEM_TO_BLOCK_STATE,
+    };
+    table
+        .binary_search_by(|(i, _)| i.cmp(&item_id))
+        .ok()
+        .map(|i| table[i].1)
+}
+
+/// Returns every item id name (e.g. `"minecraft:stone"`) for `version`, useful
+/// for command tab-completion.
+pub fn item_names(version: Version) -> Vec<&'static str> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::items::ITEM_IDS,
+    };
+    table.iter().map(|(n, _)| *n).collect()
+}
+
 /// Returns entity types known by the versioned data to be excluded from
 /// Minecraft's `minecraft:summonable_entities` suggestion provider.
 pub fn non_summonable_entity_types(version: Version) -> &'static [&'static str] {
@@ -188,6 +230,28 @@ mod tests {
             Some(155)
         );
         assert_eq!(entity_type_id(Version::V26_1_2, "minecraft:not_real"), None);
+    }
+
+    #[test]
+    fn item_ids_resolve_both_directions() {
+        assert_eq!(item_id(Version::V26_1_2, "minecraft:air"), Some(0));
+        assert_eq!(item_id(Version::V26_1_2, "minecraft:stone"), Some(1));
+        assert_eq!(item_id(Version::V26_1_2, "minecraft:not_real"), None);
+        assert_eq!(item_name(Version::V26_1_2, 1), Some("minecraft:stone"));
+        assert_eq!(item_name(Version::V26_1_2, -1), None);
+    }
+
+    #[test]
+    fn block_items_map_to_their_default_state() {
+        // The stone item places the stone block (default state id 1).
+        let stone_item = item_id(Version::V26_1_2, "minecraft:stone").unwrap();
+        assert_eq!(
+            item_default_block_state(Version::V26_1_2, stone_item),
+            Some(v26_1_2::blocks::STONE)
+        );
+        // A non-block item (a tool) has no block state.
+        let sword = item_id(Version::V26_1_2, "minecraft:diamond_sword").unwrap();
+        assert_eq!(item_default_block_state(Version::V26_1_2, sword), None);
     }
 
     #[test]
