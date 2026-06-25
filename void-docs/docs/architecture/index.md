@@ -12,6 +12,22 @@ graph TD
     Net --> Codec[void-codec: Binary Serialization/Deserialization<br/>Encode/Decode Traits]
     Codec --> Protocol[void-protocol: Minecraft Protocol Definitions<br/>Packets by state and direction]
     Protocol --> Core[void: Core Server Application<br/>Client handling, game logic, state management]
+    Data[void-data: Vanilla Registry Data<br/>NBT blobs embedded at build time] --> Core
+```
+
+## Runtime and Deployment View
+
+```mermaid
+flowchart LR
+    Client[Minecraft Client] -->|TCP 25565| Net[void-net TCP listener]
+    Net --> Tokio[Tokio network runtime]
+    Tokio -->|IncomingPacket| In[flume incoming channel]
+    In --> Game[void Bevy ECS game loop]
+    Game -->|OutgoingPacket| Out[flume outgoing channel]
+    Out --> Tokio
+    Game --> Logs[logs/*.log]
+    Game --> Metrics[TPS CSV / flame traces]
+    CI[GitHub Actions] --> Gates[fmt + clippy + tests]
 ```
 
 ## Dual-Threaded Model
@@ -32,6 +48,8 @@ The two threads communicate exclusively through [flume](https://docs.rs/flume) c
 | **`void-protocol`** | Minecraft protocol definitions — serverbound/clientbound packet enums and data types. |
 | **`void-codec`** | Binary `Encode`/`Decode` traits and primitive type implementations. |
 | **`void-codec-macros`** | Derive macros (`#[derive(Encode, Decode)]`) and field attributes for codec automation. |
+| **`void-data`** | Vanilla Minecraft registry data extracted from Paper and embedded as NBT blobs at build time. |
+| **`void-example`** | Runnable example server demonstrating server setup, plugin registration, and logging. |
 
 ## Connection State Machine
 
@@ -44,10 +62,21 @@ Handshake -> Status (server list ping)
 
 See [Networking & Protocol](/reference/protocol/networking) for the full connection lifecycle and packet handling pipeline.
 
+## Architectural Decisions
+
+| Decision | Rationale |
+|---|---|
+| Multi-crate workspace | Keeps codec, protocol, networking, data, and server behavior independently testable. |
+| Tokio network runtime | Fits long-lived TCP client tasks without blocking the game loop. |
+| Bevy ECS game loop | Models players, chunks, commands, resources, and plugin behavior as composable systems. |
+| flume channels | Creates an explicit boundary between async networking and ECS world mutation. |
+| Plugin-first gameplay | Keeps the core minimal while allowing optional gameplay behavior to be added through systems and observers. |
+| Custom codec layer | Preserves Minecraft-specific wire control for VarInts, packet IDs, fixed-length data, and remaining payloads. |
+
 ## Key Reference Pages
 
 - [Architecture Details](/reference/server/architecture) — Dual-threaded model, tick loop, plugin system, packet flow
-- [Configuration](/reference/server/configuration) — `ServerBuilder` API, `ServerConfig` fields, defaults
+- [Configuration](/reference/server/configuration) — `ServerConfigBuilder` API, `ServerConfig` fields, defaults
 - [ECS Components & Resources](/reference/server/ecs) — All components, resources, and entity lifecycle
 - [Events](/reference/server/events) — Semantic events, packet events, observer pattern
 - [Networking & Protocol](/reference/protocol/networking) — Protocol states, connection lifecycle, keep-alive
@@ -56,3 +85,4 @@ See [Networking & Protocol](/reference/protocol/networking) for the full connect
 - [Player Management](/reference/gameplay/players) — Join/quit flow, visibility, position broadcasting
 - [Binary Codec](/reference/protocol/codec) — `Encode`/`Decode` traits, derive macros, field attributes
 - [Registry System](/reference/gameplay/registry) — `RegistryDataStore` API, default registries, customization
+- [Operational Readiness](/architecture/operational-readiness/deployment) — Deployment, configuration examples, and reliability notes

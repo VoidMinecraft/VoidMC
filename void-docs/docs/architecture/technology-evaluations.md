@@ -1,45 +1,118 @@
 # Technology Evaluations
 
-As part of the technical track for the End-of-Studies Project (EIP), developing a high-performance Minecraft server from scratch requires careful evaluation of foundational technologies. This document outlines the rationale behind our core technology choices, fulfilling the objective of evaluating and integrating new technologies ("veille technologique").
+VoidMC is a high-performance Minecraft server framework written from scratch in Rust. The project cannot rely on default web-service patterns: it has a binary game protocol, long-lived TCP clients, a fixed-rate game loop, and a strong modularity goal.
 
-## Custom Codec vs. Serde
+This page records the main technology comparisons behind the architecture. The broader watch process is documented in [Tech Watch](/architecture/tech-watch/).
 
-When building the Minecraft protocol layer, we had to decide how to handle encoding and decoding network packets. Serde is the widely accepted standard for serialization and deserialization in Rust, but we opted to build a custom solution: `void-codec`.
+## Evaluation Matrix
 
-### The Problem with Serde
-Minecraft's protocol heavily relies on domain-specific data types, most notably variable-length integers (`VarInt` and `VarLong`). Serde's data model is primarily designed for self-describing formats (like JSON) or standard binary formats. It maps cleanly to standard integer primitive types, but it does not easily support distinguishing between a standard integer and a variable-length integer natively within its data model.
+| Area | Selected choice | Main alternatives | Decision |
+|---|---|---|---|
+| Packet codec | Custom `void-codec` + derives | Serde, bincode, hand-written only | Accepted |
+| Async runtime | Tokio | async-std, smol, blocking threads | Accepted |
+| Game state model | Bevy ECS | Custom ECS, hecs, ad hoc structs | Accepted |
+| Thread handoff | flume channels | Mutex/RwLock queues, shared state | Accepted |
+| Observability | tracing + tracing-flame | println logs, external-only profilers | Accepted |
+| AI workflow | AGENTS.md contextualization | Generic AI prompts | Accepted |
 
-Attempting to implement this with Serde required awkward workarounds, such as explicitly handling variable length types as raw byte buffers (`[u8]`) rather than strong numerical types.
+## Custom `void-codec` vs Serde/bincode
 
-### Our Solution
-We developed `void-codec` and `void-codec-macros` to provide an exact fit for the Minecraft protocol specifications.
-- **Type-Safety:** It allows us to define Minecraft-specific primitives and map them exactly how they are structured over the wire.
-- **Performance:** Bypassing Serde's intermediate data model removes unnecessary abstractions, directly converting packet structures into raw bytes.
-- **Ergonomics:** Through custom procedural macros, defining a packet is as simple as defining a Rust `struct` without needing complex Serde annotations to handle edge cases like `VarInt`.
+Minecraft's protocol is not a generic object serialization format. It uses packet IDs, VarInt and VarLong fields, state-dependent packet enums, fixed-length vectors, NBT payloads, and fields that consume the remaining bytes of a packet.
 
-## Tokio Runtime
+| Criterion | `void-codec` | Serde/bincode |
+|---|---|---|
+| Minecraft wire compatibility | Direct support for protocol-specific attributes | Requires adapters or custom serializers for many fields |
+| Type safety | Packet structs keep domain types and explicit attributes | Possible, but VarInt/fixed-length intent is less visible |
+| Boilerplate | Derive macros generate repetitive Encode/Decode impls | Ergonomic for generic data formats |
+| Debuggability | Wire behavior is local to packet type and attributes | Behavior can be hidden in serializer configuration |
+| Exit cost | Medium; packet derives are project-specific | Lower for generic formats, but format mismatch remains |
 
-A Minecraft server is a highly concurrent, I/O-bound application that must maintain simultaneous TCP connections with potentially thousands of players while continuing to process game ticks smoothly.
+**Decision:** keep a custom codec. Serde remains useful for JSON/NBT-adjacent data, but it is not the primary network packet codec.
 
-### Rationale for Tokio
-We chose [Tokio](https://tokio.rs/) as our asynchronous runtime for the `void-net` layer:
+**Evidence:** `void-codec`, `void-codec-macros`, extensive codec tests, and the `codec_comparison` benchmark.
 
-1. **Industry Standard:** Tokio is the most mature, active, and battle-tested async runtime in the Rust ecosystem. Its extensive documentation and community support significantly reduce development friction.
-2. **High-Concurrency I/O:** Tokio's event loop (built on `epoll`) is extremely efficient at handling thousands of inactive or minimally active TCP sockets, which is perfect for maintaining player connections without blocking the main thread.
-3. **Architectural Fit:** Our server employs a dual-threaded model: a Tokio-driven network thread pool and a Bevy ECS-driven game thread. Tokio facilitates lightweight, non-blocking network operations and seamlessly integrates with flume channels to pass decoded packets safely to the Bevy ECS world without locking.
+## Tokio vs async-std/smol
 
-## AI Agents Integration & Contextualization
+VoidMC needs to hold long-lived TCP connections, read and write framed packets, and keep the game loop isolated from network I/O.
 
-As part of our continuous technology watch ("veille technologique"), we actively explored how Large Language Models (LLMs) and autonomous coding agents could be integrated directly into our development workflow to accelerate prototyping and refactoring.
+| Criterion | Tokio | async-std | smol |
+|---|---|---|---|
+| Ecosystem maturity | Very high | Moderate | Focused and lightweight |
+| TCP/runtime tooling | Broad and battle-tested | Good, smaller ecosystem | Good, smaller ecosystem |
+| Documentation and examples | Extensive | Good | Smaller |
+| Integration risk | Low | Medium | Medium |
+| Fit for many clients | Strong | Plausible | Plausible |
 
-### The Problem with Generic AI
-While standard AI assistants are effective for boilerplate code, they struggle with heavily opinionated, custom architectures like ours (a dual-threaded Tokio + Bevy ECS environment). Generic tools often hallucinate non-idiomatic code or suggest standard patterns that violate our strict separation of concerns (e.g., trying to use Mutex locks instead of `flume` channels).
+**Decision:** use Tokio for the networking layer because it minimizes runtime risk and gives the team the most documentation and ecosystem support.
 
-### Our Solution: Automated Workspace Rules (`AGENTS.md`)
-To solve this, we implemented AI contextualization directly into the repository. We created an `AGENTS.md` (and related configuration files) to serve as a ground-truth "Runbook" and "Architecture Note" for AI agents operating in the workspace.
+**Evidence:** `void-net` uses Tokio, `VoidServer` starts a dedicated Tokio runtime for networking, and `pocs/tech-watch/src/bin/async_runtime_comparison.rs` compares Tokio with async-std and smol.
 
-- **Workspace Map:** Forces the AI to understand our mult-crate setup (`void`, `void-net`, `void-codec`, etc.) before generating code.
-- **Architectural Rules:** Explicitly instructs the AI that the runtime is dual-threaded and that cross-thread communication must use `flume`.
-- **Change Patterns:** Guides the AI on how to correctly structure a new feature (e.g., adding a plugin module, registering it in `DefaultPlugins`).
+## Bevy ECS vs Custom ECS/hecs
 
-**Impact:** Incorporating contextualized AI agents transformed them from simple autocomplete tools into reliable project contributors. By maintaining the `AGENTS.md` file, we significantly reduced the "hallucination rate" of AI tools when generating Bevy systems or Tokio protocols, acting as a successful integration of an emerging modern technology into our daily engineering process.
+VoidMC wants ultra-modular gameplay. Player state, chunk state, command state, events, and future plugin behavior all benefit from a data-oriented model.
+
+| Criterion | Bevy ECS | Custom ECS | hecs |
+|---|---|---|---|
+| Scheduling model | Built-in schedules and systems | Must be designed and maintained | Minimal |
+| Resources/components | Mature API | Full control but high cost | Good core API |
+| Observer/event fit | Strong with Bevy observers | Must be built | Must be built |
+| Learning cost | Moderate | High for maintainers | Low to moderate |
+| Project fit | Strong for plugin-oriented server logic | Risky long-term maintenance | Good but less complete scheduling story |
+
+**Decision:** use Bevy ECS for the game thread. It gives the project an existing component/resource/system model and leaves the team free to focus on Minecraft behavior.
+
+**Evidence:** `void` components, resources, systems, observers, `DefaultPlugins`, `VoidServer::add_plugin`, and `pocs/tech-watch/src/bin/ecs_modularity_comparison.rs`.
+
+## flume Channels vs Mutex/RwLock Shared Queues
+
+The architecture separates the Tokio network thread from the Bevy game thread. The key question is how packets cross that boundary.
+
+| Criterion | flume channels | Mutex/RwLock queue |
+|---|---|---|
+| Ownership model | Explicit producer/consumer channels | Shared mutable state |
+| Game thread safety | Packets are drained into ECS on schedule | Easier to accidentally mutate from the wrong side |
+| Failure behavior | Send/receive errors are explicit | Lock poisoning and contention must be handled |
+| Implementation complexity | Low | Medium |
+| Debuggability | Channel direction is visible in architecture docs | Queue ownership can become implicit |
+
+**Decision:** use flume channels for incoming packets, outgoing packets, disconnects, and kicks.
+
+**Evidence:** architecture docs, `void/src/app.rs`, network resources, and the `channel_handoff` benchmark.
+
+## tracing and tracing-flame vs Ad Hoc Logs
+
+Server debugging needs more than terminal strings. The team needs structured events, file output, packet-level debug switches, and performance traces.
+
+| Criterion | tracing + tracing-flame | println/ad hoc logs |
+|---|---|---|
+| Structured context | Native fields and targets | Manual formatting |
+| Filtering | `RUST_LOG` and directives | Manual switches |
+| File output | Supported through subscriber layers | Custom work |
+| Profiling | Flamegraph-compatible trace layer | Not available |
+
+**Decision:** use tracing for logs and tracing-flame for optional profiling in the example server.
+
+**Evidence:** `void-example/src/main.rs`, metrics docs, and changelog entries.
+
+## AI Agent Contextualization with AGENTS.md
+
+AI coding tools are useful but risky in a custom architecture. Generic prompts often miss project-specific boundaries such as the dual-threaded runtime, flume-only cross-thread communication, and plugin registration flow.
+
+| Criterion | AGENTS.md contextualization | Generic AI prompts |
+|---|---|---|
+| Architecture consistency | Repository rules are always available | Depends on prompt quality |
+| Onboarding value | Helps humans and agents | Helps only a single interaction |
+| Drift prevention | Documents runbook and pitfalls | Easy to forget constraints |
+| Cost | Low maintenance file | Low initial cost, higher correction cost |
+
+**Decision:** keep AGENTS.md as a first-class engineering artifact for AI-assisted development.
+
+**Evidence:** `AGENTS.md`, project runbook, architecture notes, and change patterns.
+
+## Resulting Architecture Principles
+
+- Keep networking asynchronous and isolated from ECS mutation.
+- Keep game state modular through components, resources, systems, plugins, and events.
+- Keep protocol encoding explicit and tested.
+- Prefer reproducible experiments before adopting foundational infrastructure.
+- Document rejected choices so future contributors understand the tradeoffs.

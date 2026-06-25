@@ -17,3 +17,10 @@ voidmc-codec-macros = { version = "0.1.0", path = "../void-codec-macros" }
 uuid = "1.16.0"
 ussr-nbt = "0.2.1"
 bitflags = "2.10.0"
+
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "packet_chunk"
+harness = false

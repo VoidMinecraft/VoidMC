@@ -1,36 +1,115 @@
-# Performance Metrics & Results
+# Metrics & Results
 
-As part of our commitment to building a high-performance server (fulfilling the "Mesurer, tester et optimiser les performances techniques" track objective), we have defined key performance indicators (KPIs) and implemented stress-testing procedures.
+This page stores summarized performance results that can be shown without committing generated logs, Criterion HTML reports, flame traces, or CSV files.
 
-## Key Performance Indicators (KPIs)
+## 2026-06-24 Local Baseline
 
-To ensure the server remains stable and fast under load, we monitor the following metrics:
+Environment: local development machine, release-mode benchmarks, Criterion defaults. These numbers are comparative evidence, not a production capacity promise.
 
-1. **Tick Time (MSPT - Milliseconds Per Tick)**
-   * **Target:** < 50ms (Allows the server to maintain a stable 20 Ticks Per Second)
-   * **Description:** The time it takes for the Bevy ECS game loop to process a single logical update (game logic, physics, entity updates, player movements).
+### TPS Sample
 
-2. **Memory Footprint per Player**
-   * **Target:** < 5 MB per active connection
-   * **Description:** The amortized amount of RAM allocated when a struct `Client` is spawned and associated network buffers are created.
+Command:
 
-3. **Codec Latency**
-   * **Target:** < 1ms per packet batch
-   * **Description:** The time it takes our custom `void-codec` to serialize/deserialize packet buffers on the Tokio network thread before passing them to the Bevy game thread via Flume channels.
+```bash
+VOID_METRICS_DEBUG=1 VOID_TPS_OUTPUT=/tmp/voidmc-tps-demo.csv cargo run --release -p voidmc-example
+```
 
-## Automated & Manual Testing Strategy
+Sample rows from a short idle release run:
 
-### 1. Load Testing ("Stress-Test")
-We utilize dummy client generators attempting to connect concurrently to measure how our Tokio runtime handles peak connection limits (`epoll` saturation) and how the Bevy ECS scales with lots of empty Entities.
+| Sample | TPS | Window | Last tick | Total ticks |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 20.80 | 1009.82 ms | 50.10 ms | 21 |
+| 2 | 19.97 | 1001.62 ms | 50.07 ms | 41 |
+| 3 | 19.97 | 1001.74 ms | 50.07 ms | 61 |
+| 4 | 19.96 | 1001.81 ms | 50.08 ms | 81 |
+| 5 | 19.96 | 1001.90 ms | 50.09 ms | 101 |
+| 6 | 19.97 | 1001.71 ms | 50.07 ms | 121 |
+| 7 | 19.97 | 1001.74 ms | 50.09 ms | 141 |
+| 8 | 19.96 | 1001.76 ms | 50.10 ms | 161 |
+| 9 | 19.96 | 1001.99 ms | 50.21 ms | 181 |
+| 10 | 19.96 | 1001.95 ms | 50.05 ms | 201 |
 
-* **Scenario:** 1000 simultaneous connections joining at once.
-* **Observation:** The Tokio network thread successfully holds the 1000 connections with minimal CPU overhead. Bevy's ECS handles 1000 `Player` components effortlessly.
+Conclusion: idle release-mode server stayed at the expected 20 TPS cadence in this short run.
 
-### 2. Bottleneck Analysis & Optimizations
-**Before Optimization:**
-Using generic locking (Mutext/RwLock) to transfer packets from network to game thread caused severe synchronization contention under high load.
-**After Optimization:**
-Implementing lock-free channels (`flume`) strictly separates the network I/O from the game loop block. The thread synchronization times dropped significantly, maintaining the Tick Time (MSPT) under the 50ms threshold even with heavy I/O.
+### Codec Comparison
 
-### 3. Continuous Profiling
-Developers can use `cargo bench` to assert the encoding and decoding speeds of typical packets (like `ChunkData`), ensuring new protocol additions do not regress the Codec Latency metric.
+Command:
+
+```bash
+cargo bench -p voidmc-codec --bench codec_comparison
+```
+
+| Benchmark | Median estimate | Throughput estimate | Conclusion |
+| --- | ---: | ---: | --- |
+| `encode/void_codec_protocol_shape` | 328.43 ns | 3.04 million packets/s | Protocol-aware codec path is comfortably below the packet latency target |
+| `encode/generic_fixed_width_prototype` | 40.61 ns | 24.62 million packets/s | Faster micro-benchmark but does not model VarInt/tagged packet shape |
+| `decode/void_codec_protocol_shape` | 297.31 ns | 3.36 million packets/s | Decode path is below the packet latency target |
+| `decode/generic_fixed_width_prototype` | 42.18 ns | 23.71 million packets/s | Faster only for the simplified fixed-width prototype |
+
+Conclusion: the generic prototype wins this narrow micro-benchmark, but it is not a valid Minecraft protocol substitute. The selected `void-codec` path keeps explicit protocol layout, VarInt handling, and derive-based packet definitions.
+
+### Channel Handoff
+
+Command:
+
+```bash
+cargo bench -p voidmc --bench channel_handoff
+```
+
+| Benchmark | Median estimate | Throughput estimate | Conclusion |
+| --- | ---: | ---: | --- |
+| `flume_unbounded` | 104.77 us per 1024 messages | 9.77 million messages/s | Production choice; simple multi-producer handoff between Tokio and Bevy |
+| `mutex_vecdeque_prototype` | 84.18 us per 1024 messages | 12.16 million messages/s | Faster in this single micro-benchmark, but couples producers and consumers through explicit locking |
+
+Conclusion: the rejected lock prototype can be faster in this synthetic case. VoidMC keeps `flume` because it matches the architecture boundary, avoids shared mutable queues in gameplay systems, and makes ownership easier to reason about.
+
+### Chunk & Representative Packet Benchmark
+
+Command:
+
+```bash
+cargo bench -p voidmc-protocol --bench packet_chunk
+```
+
+| Benchmark | Median estimate | Payload size | Conclusion |
+| --- | ---: | ---: | --- |
+| `chunk_to_packet` | 4.90 us | Derived packet data | Converts a representative superflat chunk into a packet payload in low microseconds |
+| `encode_chunk_data_and_light` | 2.58 us | 55,892 bytes | Chunk payload serialization is measurable and reproducible |
+| `encode_manual_play_chunk` | 2.44 us | 55,893 bytes | Packet ID wrapper adds negligible cost |
+| `encode_clientbound_keep_alive` | 37.51 ns | 9 bytes | Representative small clientbound packet is sub-microsecond |
+| `encode_serverbound_position` | 94.06 ns | 26 bytes | Representative movement packet encode is sub-microsecond |
+| `decode_serverbound_position` | 19.21 ns | 26 bytes | Representative movement packet decode is sub-microsecond |
+
+Conclusion: chunk packets are the meaningful serialization hotspot today; small control and movement packets are not.
+
+### TCP Connect Stress POC
+
+Commands:
+
+```bash
+cargo run --release -p voidmc-example
+cargo run --manifest-path pocs/performance/Cargo.toml --release --bin tcp_connect_stress -- --addr 127.0.0.1:25565 --clients 64 --timeout-ms 1000
+```
+
+| Metric | Value |
+| --- | ---: |
+| Connection attempts | 64 |
+| Successful connections | 64 |
+| Failed connections | 0 |
+| Timed out connections | 0 |
+| Total elapsed | 0.570 ms |
+| Average latency | 0.272 ms |
+| Minimum latency | 0.076 ms |
+| Maximum latency | 0.502 ms |
+
+Conclusion: the local TCP listener accepted a 64-client burst without failures. This POC validates TCP accept responsiveness only; full Minecraft handshake/login stress remains future work.
+
+## Memory Tracking
+
+Memory is currently tracked manually when needed:
+
+```bash
+/usr/bin/time -v cargo run --release -p voidmc-example
+```
+
+Future result tables should include maximum resident set size, player/client count, test duration, and enabled plugins.

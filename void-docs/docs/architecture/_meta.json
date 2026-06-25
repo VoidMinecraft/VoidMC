@@ -10,6 +10,16 @@
     "label": "Technology Evaluations"
   },
   {
+    "type": "dir",
+    "name": "tech-watch",
+    "label": "Tech Watch"
+  },
+  {
+    "type": "dir",
+    "name": "operational-readiness",
+    "label": "Operational Readiness"
+  },
+  {
     "type": "file",
     "name": "quality-standards",
     "label": "Quality Standards"

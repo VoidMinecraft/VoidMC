@@ -19,12 +19,12 @@ Add `void` as a dependency, then create a minimal server:
 
 ```rust
 use voidmc::{
-    CommandBuilder, CommandRegistry, ServerBuilder, VoidServer,
+    CommandBuilder, CommandRegistry, ServerConfigBuilder, VoidServer,
     register_default_commands,
 };
 
 fn main() {
-    VoidServer::new(ServerBuilder::new().build())
+    VoidServer::new(ServerConfigBuilder::new().build())
         .add_plugin(|app| {
             let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
             register_default_commands(&mut registry, &[]);
@@ -46,7 +46,7 @@ This starts a server on `127.0.0.1:25565` with default settings, all built-in co
 ## Server
 
 - [Architecture](/reference/server/architecture) — Dual-threaded model, tick loop, plugin system, packet flow
-- [Configuration](/reference/server/configuration) — `ServerBuilder` API, `ServerConfig` fields, defaults
+- [Configuration](/reference/server/configuration) — `ServerConfigBuilder` API, `ServerConfig` fields, defaults
 - [ECS Components & Resources](/reference/server/ecs) — All components, resources, and entity lifecycle
 - [Events](/reference/server/events) — Semantic events, packet events, observer pattern
 
