@@ -10,6 +10,7 @@ use voidmc::{
     CommandBuilder, CommandRegistry, On, Query, ServerConfigBuilder, VoidServer,
     register_default_commands,
 };
+use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
 mod circle;
 
@@ -67,6 +68,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     VoidServer::new(config_builder.build())
+        .add_plugin(|app| {
+            // Persist modified chunks to ./world and reload them on restart.
+            app.add_plugins(WorldPersistencePlugin::new(
+                PersistenceConfig::new("world").save_interval_ticks(200),
+            ));
+        })
         .add_plugin(|app| {
             // Register all default commands
             let mut registry = app.world_mut().resource_mut::<CommandRegistry>();

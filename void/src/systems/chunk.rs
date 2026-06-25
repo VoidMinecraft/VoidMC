@@ -9,7 +9,8 @@ use crate::components::{
 use crate::config::ServerConfigResource;
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::world::{
-    ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, generation::WorldGen,
+    ChunkData, ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition,
+    generation::WorldGen, load_or_generate,
 };
 
 /// Streams chunks to players as they move through the world.
@@ -22,6 +23,7 @@ use crate::world::{
         players,
         commands,
         world_gen,
+        loader,
         config
     )
 )]
@@ -43,6 +45,7 @@ pub fn stream_chunks(
     >,
     mut commands: Commands,
     world_gen: Res<WorldGen>,
+    loader: Option<Res<ChunkLoaderResource>>,
     config: Res<ServerConfigResource>,
 ) {
     let max_chunk_generations = config.max_chunk_generations_per_tick;
@@ -131,19 +134,14 @@ pub fn stream_chunks(
                     continue;
                 }
 
-                let chunk = world_gen.0.generate_chunk(pos);
+                let chunk_data = load_or_generate(loader.as_deref(), &world_gen, dim_id, pos);
+                let packet = chunk_data.to_packet(pos.x, pos.z);
                 let entity = commands
-                    .spawn((
-                        ChunkPosition(*pos),
-                        ChunkData::from_protocol_chunk(&chunk),
-                        ChunkDimension(dim_id),
-                    ))
+                    .spawn((ChunkPosition(*pos), chunk_data, ChunkDimension(dim_id)))
                     .id();
                 chunk_index.0.insert(key, entity);
                 generated_this_tick += 1;
 
-                // For newly spawned chunks, build the packet directly from the protocol chunk
-                let packet = chunk.to_packet();
                 let _ = channels.outgoing.send(OutgoingPacket {
                     client_id: client_id.0,
                     packet: clientbound::ClientboundPacket::ManualPlay(

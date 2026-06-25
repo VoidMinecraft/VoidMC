@@ -254,6 +254,13 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | `/list` | | Show online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
 | `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double] [--wander] [--gravity] [--block-checks]` |
+| `/stop` | | Gracefully stop the server | (none) |
+
+`/stop` emits an `AppExit`, so the server finishes the current tick and shuts
+down cleanly. Plugins that clean up on shutdown — such as
+[world serialization](/reference/server/world-serialization), which flushes
+dirty chunks — react to the same signal. Ctrl-C / SIGTERM stop the server the
+same way.
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:

@@ -13,6 +13,7 @@ keywords.workspace = true
 [dependencies]
 voidmc = { version = "0.1.0", path = "../void" }
 voidmc-data = { version = "0.1.1", path = "../void-data" }
+voidmc-world-io = { version = "0.1.0", path = "../void-world-io" }
 bevy_app = "0.18.0"
 bevy_ecs = "0.18.0"
 tracing = "0.1.44"

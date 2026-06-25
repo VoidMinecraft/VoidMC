@@ -26,6 +26,18 @@ pub const CHUNK_MIN_Y: i32 = -64;
 pub const CHUNK_MAX_Y: i32 = 319;
 
 impl ChunkData {
+    /// Creates ChunkData from raw section/heightmap/light data.
+    ///
+    /// Useful for constructing chunks outside the world generator, e.g. when an
+    /// external persistence layer deserializes a chunk from disk.
+    pub fn new(sections: Vec<ChunkSection>, heightmaps: ChunkHeightmaps, light: LightData) -> Self {
+        Self {
+            sections,
+            heightmaps,
+            light,
+        }
+    }
+
     /// Creates ChunkData from a protocol Chunk, consuming its data.
     pub fn from_protocol_chunk(chunk: &ProtocolChunk) -> Self {
         Self {

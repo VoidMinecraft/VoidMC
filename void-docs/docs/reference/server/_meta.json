@@ -18,5 +18,10 @@
     "type": "file",
     "name": "events",
     "label": "Events"
+  },
+  {
+    "type": "file",
+    "name": "world-serialization",
+    "label": "World Serialization"
   }
 ]
