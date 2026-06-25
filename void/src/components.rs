@@ -92,6 +92,22 @@ pub struct Operator;
 #[derive(Component, Clone, Copy)]
 pub struct HotbarSlot(pub i16);
 
+/// Per-player container-sync counter. Incremented before each container packet
+/// so the vanilla client can reconcile its predicted inventory against the
+/// server's authoritative state.
+#[derive(Component, Default)]
+pub struct ContainerSync {
+    pub state_id: i32,
+}
+
+impl ContainerSync {
+    /// Advances and returns the next state id.
+    pub fn advance(&mut self) -> i32 {
+        self.state_id = self.state_id.wrapping_add(1);
+        self.state_id
+    }
+}
+
 /// Numeric entity type ID from the `minecraft:entity_type` registry.
 #[derive(Component)]
 pub struct EntityType(pub i32);

@@ -4,6 +4,7 @@ pub mod chat;
 pub mod configuration;
 pub mod handshake;
 pub mod interaction;
+pub mod inventory;
 pub mod login;
 pub mod movement;
 pub mod play;
@@ -24,6 +25,7 @@ impl Plugin for DefaultPlugins {
             chat::ChatPlugin,
             interaction::InteractionPlugin,
             world_interaction::WorldInteractionPlugin,
+            inventory::InventoryPlugin,
         ));
     }
 }
