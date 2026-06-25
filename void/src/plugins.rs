@@ -5,11 +5,11 @@ pub mod configuration;
 pub mod handshake;
 pub mod interaction;
 pub mod inventory;
+pub mod item_use;
 pub mod login;
 pub mod movement;
 pub mod play;
 pub mod status;
-pub mod world_interaction;
 
 pub struct DefaultPlugins;
 
@@ -24,7 +24,7 @@ impl Plugin for DefaultPlugins {
             movement::MovementPlugin,
             chat::ChatPlugin,
             interaction::InteractionPlugin,
-            world_interaction::WorldInteractionPlugin,
+            item_use::ItemUsePlugin,
             inventory::InventoryPlugin,
         ));
     }

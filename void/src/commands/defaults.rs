@@ -15,9 +15,12 @@ use crate::world::DimensionId;
 use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
 
 use super::parser::{
-    DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, StringArg, SummonableEntityArg,
+    DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, StringArg, SummonableEntityArg,
 };
 use super::{Command, CommandBuilder, CommandContext, CommandRegistry};
+use crate::inventory::Inventory;
+use crate::item::ItemStack;
+use crate::plugins::inventory::InventoryDirty;
 
 /// Registers all default commands except those listed in `exclude`.
 pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str]) {
@@ -54,9 +57,72 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
     if !exclude.contains(&"summon") {
         registry.register(summon_command());
     }
+    if !exclude.contains(&"give") {
+        registry.register(give_command());
+    }
+    if !exclude.contains(&"clear") {
+        registry.register(clear_command());
+    }
     if !exclude.contains(&"stop") {
         registry.register(stop_command());
     }
+}
+
+pub fn give_command() -> Command {
+    CommandBuilder::new("give")
+        .description("Give yourself an item")
+        .arg("item", Arc::new(ItemArg))
+        .arg_optional("count", IntegerArg::new(1, 64))
+        .handler(handle_give)
+        .build()
+}
+
+fn handle_give(ctx: &mut CommandContext) {
+    let item_name = ctx.get::<String>("item").unwrap().clone();
+    let count = ctx.get::<i32>("count").copied().unwrap_or(1).clamp(1, 64) as u8;
+
+    let Some(stack) = ItemStack::of(&item_name, count) else {
+        ctx.reply_error(&format!("Unknown item: {item_name}"));
+        return;
+    };
+
+    let entity = ctx.entity;
+    let leftover = ctx.with_world_mut(|world| {
+        let left = world
+            .get_mut::<Inventory>(entity)
+            .map(|mut inv| inv.give(stack))
+            .map(|left| left.count)
+            .unwrap_or(count);
+        world.entity_mut(entity).insert(InventoryDirty);
+        left
+    });
+
+    if leftover == 0 {
+        ctx.reply(&format!("Gave {count} x {item_name}"));
+    } else {
+        ctx.reply(&format!(
+            "Gave {} x {item_name} ({leftover} didn't fit)",
+            count - leftover
+        ));
+    }
+}
+
+pub fn clear_command() -> Command {
+    CommandBuilder::new("clear")
+        .description("Clear your inventory")
+        .handler(handle_clear)
+        .build()
+}
+
+fn handle_clear(ctx: &mut CommandContext) {
+    let entity = ctx.entity;
+    ctx.with_world_mut(|world| {
+        if let Some(mut inv) = world.get_mut::<Inventory>(entity) {
+            inv.clear();
+        }
+        world.entity_mut(entity).insert(InventoryDirty);
+    });
+    ctx.reply("Inventory cleared");
 }
 
 pub fn help_command() -> Command {

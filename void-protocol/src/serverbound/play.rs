@@ -11,6 +11,7 @@ mod player_action;
 mod player_command;
 mod player_loaded;
 mod pong;
+mod set_creative_mode_slot;
 mod set_held_item;
 mod set_player_pos;
 mod set_player_pos_and_rot;
@@ -34,6 +35,7 @@ pub use player_action::*;
 pub use player_command::*;
 pub use player_loaded::*;
 pub use pong::*;
+pub use set_creative_mode_slot::*;
 pub use set_held_item::*;
 pub use set_player_pos::*;
 pub use set_player_pos_and_rot::*;
@@ -86,6 +88,8 @@ pub enum PlayPacket {
     Pong(Pong),
     #[codec(packet_id = 0x35)]
     SetHeldItem(SetHeldItem),
+    #[codec(packet_id = 0x38)]
+    SetCreativeModeSlot(SetCreativeModeSlot),
     #[codec(packet_id = 0x3F)]
     SwingArm(SwingArm),
     #[codec(packet_id = 0x42)]

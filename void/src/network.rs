@@ -379,6 +379,13 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
+                serverbound::PlayPacket::SetCreativeModeSlot(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
                 serverbound::PlayPacket::SetPlayerPos(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,

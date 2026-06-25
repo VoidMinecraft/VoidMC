@@ -13,6 +13,7 @@ pub mod config;
 pub mod events;
 pub mod inventory;
 pub mod item;
+pub mod item_behavior;
 mod metrics;
 pub mod network;
 pub mod plugins;
@@ -23,12 +24,12 @@ pub mod world;
 
 pub use app::VoidServer;
 pub use commands::defaults::{
-    PluginList, broadcast_command, gamemode_command, help_command, kick_command, list_command,
-    ping_command, plugins_command, register_default_commands, say_command, stop_command,
-    summon_command, tell_command, tp_command,
+    PluginList, broadcast_command, clear_command, gamemode_command, give_command, help_command,
+    kick_command, list_command, ping_command, plugins_command, register_default_commands,
+    say_command, stop_command, summon_command, tell_command, tp_command,
 };
 pub use commands::parser::{
-    BoolArg, DoubleArg, FloatArg, GameProfileArg, GreedyStringArg, IntegerArg, LongArg,
+    BoolArg, DoubleArg, FloatArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, LongArg,
     ResourceLocationArg, StringArg, SummonableEntityArg,
 };
 pub use commands::{
@@ -37,6 +38,9 @@ pub use commands::{
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use inventory::Inventory;
 pub use item::{ItemId, ItemStack};
+pub use item_behavior::{
+    BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult,
+};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};

@@ -457,6 +457,38 @@ impl ArgParser for SummonableEntityArg {
     }
 }
 
+/// Item argument — a namespaced item id (e.g. `minecraft:stone`), validated as a
+/// resource location with server-side tab-completion from the item registry.
+pub struct ItemArg;
+
+impl ArgParser for ItemArg {
+    fn type_name(&self) -> &str {
+        "item"
+    }
+
+    fn parse(&self, input: &str) -> Result<Box<dyn Any + Send + Sync>, String> {
+        ResourceLocationArg.parse(input)
+    }
+
+    fn protocol_parser(&self) -> Option<Parser> {
+        Some(Parser::ResourceLocation)
+    }
+
+    fn suggestions(&self, partial: &str, _world: &World) -> Vec<String> {
+        let needle = partial.to_ascii_lowercase();
+        voidmc_data::item_names(voidmc_data::Version::V26_1_2)
+            .into_iter()
+            .filter(|name| name.contains(&needle))
+            .map(|name| name.to_string())
+            .take(50)
+            .collect()
+    }
+
+    fn suggestions_type(&self) -> Option<&str> {
+        Some("minecraft:ask_server")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
