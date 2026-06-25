@@ -12,6 +12,7 @@ graph TD
     Net --> Codec[void-codec: Binary Serialization/Deserialization<br/>Encode/Decode Traits]
     Codec --> Protocol[void-protocol: Minecraft Protocol Definitions<br/>Packets by state and direction]
     Protocol --> Core[void: Core Server Application<br/>Client handling, game logic, state management]
+    Data[void-data: Vanilla Registry Data<br/>NBT blobs embedded at build time] --> Core
 ```
 
 ## Runtime and Deployment View
@@ -47,6 +48,8 @@ The two threads communicate exclusively through [flume](https://docs.rs/flume) c
 | **`void-protocol`** | Minecraft protocol definitions — serverbound/clientbound packet enums and data types. |
 | **`void-codec`** | Binary `Encode`/`Decode` traits and primitive type implementations. |
 | **`void-codec-macros`** | Derive macros (`#[derive(Encode, Decode)]`) and field attributes for codec automation. |
+| **`void-data`** | Vanilla Minecraft registry data extracted from Paper and embedded as NBT blobs at build time. |
+| **`void-example`** | Runnable example server demonstrating server setup, plugin registration, and logging. |
 
 ## Connection State Machine
 
