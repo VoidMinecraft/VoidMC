@@ -10,9 +10,9 @@ authors.workspace = true
 keywords.workspace = true
 
 [dependencies]
-voidmc = { version = "0.1.0", path = "../void" }
-voidmc-protocol = { version = "0.2.0", path = "../void-protocol" }
-voidmc-codec = { version = "0.1.0", path = "../void-codec" }
+voidmc = { version = "0.2.0", path = "../void" }
+voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
+voidmc-codec = { version = "0.1.1", path = "../void-codec" }
 ussr-nbt = "0.2.1"
 bevy_ecs = "0.18.0"
 bevy_app = "0.18.0"
