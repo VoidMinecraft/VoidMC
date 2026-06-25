@@ -364,6 +364,11 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
+                serverbound::PlayPacket::PlayerInput(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
                 serverbound::PlayPacket::PlayerLoaded(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,

@@ -9,6 +9,7 @@ mod keep_alive;
 mod player_abilities;
 mod player_action;
 mod player_command;
+mod player_input;
 mod player_loaded;
 mod pong;
 mod set_held_item;
@@ -32,6 +33,7 @@ pub use keep_alive::*;
 pub use player_abilities::*;
 pub use player_action::*;
 pub use player_command::*;
+pub use player_input::*;
 pub use player_loaded::*;
 pub use pong::*;
 pub use set_held_item::*;
@@ -80,6 +82,8 @@ pub enum PlayPacket {
     PlayerAction(PlayerAction),
     #[codec(packet_id = 0x2A)]
     PlayerCommand(PlayerCommand),
+    #[codec(packet_id = 0x2B)]
+    PlayerInput(PlayerInput),
     #[codec(packet_id = 0x2C)]
     PlayerLoaded(PlayerLoaded),
     #[codec(packet_id = 0x2D)]

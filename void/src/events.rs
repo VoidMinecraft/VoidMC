@@ -72,6 +72,20 @@ pub struct PlayerSprintEvent {
     pub sprinting: bool,
 }
 
+/// The player's movement-key input changed (`ServerboundPlayerInput`). Each
+/// field is whether that key is currently held.
+#[derive(Event)]
+pub struct PlayerInputEvent {
+    pub entity: Entity,
+    pub forward: bool,
+    pub backward: bool,
+    pub left: bool,
+    pub right: bool,
+    pub jump: bool,
+    pub sneak: bool,
+    pub sprint: bool,
+}
+
 #[derive(Event)]
 pub struct PlayerInteractEntityEvent {
     pub entity: Entity,
