@@ -9,11 +9,12 @@
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound;
+use voidmc_protocol::serverbound::ClickContainer;
 
 use crate::components::{ClientId, ContainerSync, HotbarSlot};
 use crate::events::PlayerReadyEvent;
 use crate::inventory::Inventory;
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::network::{NetworkChannels, OutgoingPacket, PacketEvent};
 
 /// Marker: this player's inventory changed and must be re-synced to the client.
 /// Insert it after mutating an [`Inventory`]; the resync system removes it.
@@ -28,7 +29,26 @@ pub struct InventoryPlugin;
 impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(sync_inventory_on_ready)
+            .add_observer(handle_container_click)
             .add_systems(PostUpdate, resync_dirty_inventories);
+    }
+}
+
+/// Observer: applies a container click to the player's own inventory (window 0)
+/// authoritatively, then re-syncs. Items dropped by the click are spawned in M5.
+fn handle_container_click(
+    event: On<PacketEvent<ClickContainer>>,
+    mut inventories: Query<&mut Inventory>,
+    mut commands: Commands,
+) {
+    if event.packet.container_id != PLAYER_WINDOW_ID {
+        // Foreign containers (chests, etc.) are not implemented yet.
+        return;
+    }
+    if let Ok(mut inv) = inventories.get_mut(event.entity) {
+        let _dropped = inv.apply_click(event.packet.slot, event.packet.button, event.packet.mode);
+        // M5: spawn `_dropped` as item entities in the world.
+        commands.entity(event.entity).insert(InventoryDirty);
     }
 }
 

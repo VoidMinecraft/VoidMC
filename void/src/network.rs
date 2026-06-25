@@ -320,6 +320,11 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
+                serverbound::PlayPacket::ClickContainer(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
                 serverbound::PlayPacket::CloseContainer(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,

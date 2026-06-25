@@ -1,5 +1,6 @@
 mod chat_command;
 mod chat_message;
+mod click_container;
 mod client_information;
 mod close_container;
 mod command_suggestions_request;
@@ -24,6 +25,7 @@ mod use_item_on;
 
 pub use chat_command::*;
 pub use chat_message::*;
+pub use click_container::*;
 pub use client_information::*;
 pub use close_container::*;
 pub use command_suggestions_request::*;
@@ -64,6 +66,8 @@ pub enum PlayPacket {
     ClientInformation(ClientInformation),
     #[codec(packet_id = 0x0F)]
     CommandSuggestionsRequest(CommandSuggestionsRequest),
+    #[codec(packet_id = 0x12)]
+    ClickContainer(ClickContainer),
     #[codec(packet_id = 0x13)]
     CloseContainer(CloseContainer),
     #[codec(packet_id = 0x1A)]
