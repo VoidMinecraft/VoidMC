@@ -1,0 +1,118 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tcp_stress:
+        description: Run the local TCP connection stress POC after Criterion benchmarks
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  criterion:
+    name: Criterion benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run Criterion benchmarks
+        run: cargo bench --workspace --all-features
+
+      - name: Publish benchmark summary
+        run: |
+          {
+            echo "## Criterion benchmarks"
+            echo
+            echo "Executed on \`${{ github.ref_name }}\` at commit \`${{ github.sha }}\`."
+            echo
+            echo "The complete HTML reports are attached as the \`criterion-reports\` artifact."
+            echo "Results are informative: shared GitHub runners are not stable enough for performance thresholds."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Criterion reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-reports
+          path: target/criterion
+          if-no-files-found: error
+
+  tcp-connect-stress:
+    name: TCP connect stress POC
+    if: ${{ inputs.run_tcp_stress }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build and start the example server
+        shell: bash
+        run: |
+          cargo build --release -p voidmc-example
+          ./target/release/voidmc-example > target/benchmark-server.log 2>&1 &
+          echo $! > target/benchmark-server.pid
+
+          for _ in {1..30}; do
+            if timeout 1 bash -c '</dev/tcp/127.0.0.1/25565'; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "The example server did not start within 30 seconds."
+          cat target/benchmark-server.log
+          exit 1
+
+      - name: Run TCP connection stress POC
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo run --manifest-path pocs/performance/Cargo.toml --release --bin tcp_connect_stress -- \
+            --addr 127.0.0.1:25565 --clients 64 --timeout-ms 1000 | tee target/tcp-connect-stress.md
+
+      - name: Stop example server
+        if: always()
+        shell: bash
+        run: |
+          if [ -f target/benchmark-server.pid ]; then
+            kill "$(cat target/benchmark-server.pid)" || true
+          fi
+
+      - name: Publish stress-test summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## TCP connect stress POC"
+            echo
+            if [ -f target/tcp-connect-stress.md ]; then
+              cat target/tcp-connect-stress.md
+            else
+              echo "The POC did not produce a result; inspect the attached server log."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload stress-test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tcp-connect-stress
+          path: |
+            target/tcp-connect-stress.md
+            target/benchmark-server.log
+          if-no-files-found: warn
