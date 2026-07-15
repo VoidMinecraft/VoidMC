@@ -1,6 +1,13 @@
 name: Benchmarks
 
 on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/benches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/benchmarks.yml"
   workflow_dispatch:
     inputs:
       run_tcp_stress:
