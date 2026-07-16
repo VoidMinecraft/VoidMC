@@ -2,6 +2,12 @@
 
 use voidmc_codec::{Decode, Encode};
 
+/// Minecraft Java Edition release implemented by this protocol crate.
+pub const MINECRAFT_VERSION: &str = "26.1.2";
+
+/// Network protocol declared by the official Minecraft 26.1.2 server.
+pub const PROTOCOL_VERSION: i32 = 775;
+
 /// Represents the different connection states of a Minecraft client in the protocol lifecycle.
 ///
 /// Each state determines which packets are valid and how the server interacts with the client.
