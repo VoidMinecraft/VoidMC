@@ -2,7 +2,7 @@
 name = "voidmc"
 edition = "2024"
 description = "Modular, ECS-driven Minecraft server framework written in Rust."
-version = "0.2.0"
+version = "0.3.0"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
@@ -11,10 +11,10 @@ keywords.workspace = true
 
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
-voidmc-net = { version = "0.1.1", path = "../void-net" }
-voidmc-codec = { version = "0.1.1", path = "../void-codec" }
-voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
-voidmc-data = { version = "0.1.2", path = "../void-data" }
+voidmc-net = { version = "0.1.2", path = "../void-net" }
+voidmc-codec = { version = "0.1.2", path = "../void-codec" }
+voidmc-protocol = { version = "0.4.0", path = "../void-protocol" }
+voidmc-data = { version = "0.1.3", path = "../void-data" }
 uuid = { version = "1.16.0", features = ["v4"] }
 ussr-nbt = "0.2.1"
 tracing = "0.1.44"
