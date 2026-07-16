@@ -112,10 +112,7 @@ fn handle_circle(ctx: &mut CommandContext) {
     dismiss_circle(ctx, executor);
 
     let (target_position, dimension) = ctx.with_world(|world| {
-        let position = world
-            .get::<Position>(target)
-            .expect("target has Position")
-            .clone();
+        let position = *world.get::<Position>(target).expect("target has Position");
         let dimension = world
             .get::<PlayerDimension>(executor)
             .map(|dimension| dimension.0)

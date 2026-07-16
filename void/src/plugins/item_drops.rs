@@ -12,9 +12,10 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded, ItemEntity,
-    MinecraftEntityId, MovementConfig, PickupDelay, PlayerDimension, PlayerReady, Position,
-    PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, Velocity, VerticalVelocity,
+    ClientId, EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
+    ItemEntity, MinecraftEntityId, MovementConfig, PickupDelay, PlayerDimension, PlayerReady,
+    Position, PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, Velocity,
+    VerticalVelocity,
 };
 use crate::events::{EntityDespawnEvent, ItemDropEvent, PlayerDropItemEvent, PlayerReadyEvent};
 use crate::inventory::Inventory;
@@ -91,6 +92,7 @@ fn spawn_drop(
         EntityType(ITEM_ENTITY_TYPE),
         EntityDimension(dimension),
         SpawnedEntity,
+        EntityCollider::for_entity_name("minecraft:item"),
         MovementConfig {
             wander: false,
             gravity_enabled: true,
@@ -99,8 +101,7 @@ fn spawn_drop(
         VerticalVelocity(vy),
         Grounded(false),
         RecentlySpawned(5),
-        ItemEntity { stack },
-        PickupDelay(PICKUP_DELAY_TICKS),
+        (ItemEntity { stack }, PickupDelay(PICKUP_DELAY_TICKS)),
     ));
 }
 

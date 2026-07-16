@@ -24,7 +24,7 @@ pub struct PlayerName(pub String);
 #[derive(Component)]
 pub struct PlayerUuid(pub Uuid);
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
@@ -126,7 +126,7 @@ pub struct EntityDimension(pub DimensionId);
 pub struct EntityUuid(pub uuid::Uuid);
 
 /// Entity velocity in blocks/tick, encoded directly as protocol LP Vec3.
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct Velocity {
     pub x: f64,
     pub y: f64,
@@ -139,6 +139,43 @@ pub struct MovementConfig {
     pub wander: bool,
     pub gravity_enabled: bool,
     pub block_collision_enabled: bool,
+}
+
+/// Collision box used by the lightweight server-side entity physics.
+///
+/// Positions are at the entity's feet, matching the Minecraft protocol. The
+/// box is centered on X/Z and extends upward by `height` blocks.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct EntityCollider {
+    pub half_width: f64,
+    pub height: f64,
+    pub step_height: f64,
+}
+
+impl EntityCollider {
+    pub const fn new(width: f64, height: f64, step_height: f64) -> Self {
+        Self {
+            half_width: width / 2.0,
+            height,
+            step_height,
+        }
+    }
+
+    /// Returns the vanilla-sized collision box for entities whose dimensions
+    /// matter to the built-in movement demo, with a safe humanoid fallback.
+    pub fn for_entity_name(entity_name: &str) -> Self {
+        match entity_name {
+            "minecraft:pig" => Self::new(0.9, 0.9, 1.0),
+            "minecraft:item" => Self::new(0.25, 0.25, 0.0),
+            _ => Self::default(),
+        }
+    }
+}
+
+impl Default for EntityCollider {
+    fn default() -> Self {
+        Self::new(0.6, 1.8, 1.0)
+    }
 }
 
 /// Vertical physics velocity for server-controlled entities, in blocks per tick.

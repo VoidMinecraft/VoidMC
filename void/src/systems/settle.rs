@@ -2,8 +2,8 @@ use bevy_ecs::prelude::*;
 use tracing::instrument;
 
 use crate::components::{
-    EntityDimension, MovementConfig, Position, PreviousPosition, RecentlySpawned, SpawnedEntity,
-    VerticalVelocity,
+    EntityDimension, Grounded, MovementConfig, Position, PreviousPosition, RecentlySpawned,
+    SpawnedEntity, VerticalVelocity,
 };
 use crate::world::{
     ChunkData, ChunkIndex, ChunkPosition, block_state_at_world, is_solid_block_state,
@@ -25,7 +25,8 @@ pub fn settle_recent_spawns(
             &mut PreviousPosition,
             &MovementConfig,
             &EntityDimension,
-            &VerticalVelocity,
+            &mut VerticalVelocity,
+            &mut Grounded,
             &mut RecentlySpawned,
         ),
         With<SpawnedEntity>,
@@ -33,7 +34,9 @@ pub fn settle_recent_spawns(
 ) {
     const MAX_SCAN: i32 = 64;
 
-    for (mut pos, mut prev_pos, movement, dimension, velocity, mut marker) in query.iter_mut() {
+    for (mut pos, mut prev_pos, movement, dimension, mut velocity, mut grounded, mut marker) in
+        query.iter_mut()
+    {
         if marker.0 == 0 {
             continue;
         }
@@ -45,7 +48,10 @@ pub fn settle_recent_spawns(
             continue;
         }
 
-        if velocity.0 < 0.0 {
+        // Only stationary summons are eligible for the initial ground snap.
+        // Thrown item entities have an intentional launch velocity and must
+        // follow their normal arc instead of teleporting to the ground.
+        if velocity.0.abs() > f64::EPSILON {
             continue;
         }
 
@@ -65,6 +71,8 @@ pub fn settle_recent_spawns(
                     if fall_distance > 0.1 {
                         pos.y = ground_y;
                         prev_pos.y = ground_y;
+                        velocity.0 = 0.0;
+                        grounded.0 = true;
                         marker.0 = 0;
                         break;
                     }

@@ -27,9 +27,9 @@ impl Plugin for GameSystemsPlugin {
                 Update,
                 (
                     keep_alive::send_keep_alive.after(CommandSystems::DrainQueue),
-                    wander::wander_system.after(keep_alive::send_keep_alive),
+                    settle::settle_recent_spawns.after(keep_alive::send_keep_alive),
+                    wander::wander_system.after(settle::settle_recent_spawns),
                     physics::apply_spawned_entity_physics.after(wander::wander_system),
-                    settle::settle_recent_spawns.after(physics::apply_spawned_entity_physics),
                 ),
             )
             .add_systems(
