@@ -2,7 +2,7 @@
 name = "voidmc-net"
 edition = "2024"
 description = "Async networking layer for the VoidMC Minecraft server framework."
-version = "0.1.1"
+version = "0.1.2"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
@@ -11,4 +11,4 @@ keywords.workspace = true
 
 [dependencies]
 tokio = { version = "1.44.1", features = ["full"] }
-voidmc-codec = { version = "0.1.1", path = "../void-codec" }
+voidmc-codec = { version = "0.1.2", path = "../void-codec" }

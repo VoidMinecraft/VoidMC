@@ -1,6 +1,63 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [0.1.1](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-world-io-v0.1.0...voidmc-world-io-v0.1.1) - 2026-07-16
+
+### Features
+
+- Expand flame profiling tooling
+- *(logging)* Log player and world events
+
+## [0.3.0](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-v0.2.0...voidmc-v0.3.0) - 2026-07-16
+
+### Bug Fixes
+
+- *(commands)* Expose summon position and flags
+- *(status)* Advertise correct protocol version
+- *(status)* Report online player count
+- *(interaction)* Synchronize multiplayer block changes
+- *(status)* Respond without waiting for tick
+
+### Chores
+
+- *(void)* Add keepalive test
+
+### Features
+
+- *(logging)* Log player and world events
+
+## [0.4.0](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-protocol-v0.3.0...voidmc-protocol-v0.4.0) - 2026-07-16
+
+### Bug Fixes
+
+- *(commands)* Expose summon position and flags
+- *(status)* Advertise correct protocol version
+- *(interaction)* Synchronize multiplayer block changes
+
+## [0.1.2](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-net-v0.1.1...voidmc-net-v0.1.2) - 2026-07-16
+
+### Features
+
+- Expand flame profiling tooling
+
+## [0.1.3](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-data-v0.1.2...voidmc-data-v0.1.3) - 2026-07-16
+
+### Features
+
+- Expand flame profiling tooling
+
+## [0.1.2](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-codec-v0.1.1...voidmc-codec-v0.1.2) - 2026-07-16
+
+### Features
+
+- Expand flame profiling tooling
+
+## [0.1.2](https://github.com/VoidMinecraft/VoidMC/compare/voidmc-codec-macros-v0.1.1...voidmc-codec-macros-v0.1.2) - 2026-07-16
+
+### Features
+
+- Expand flame profiling tooling
+
 ## [0.1.0](https://github.com/VoidMinecraft/VoidMC/releases/tag/voidmc-world-io-v0.1.0) - 2026-06-25
 
 ### Documentation
