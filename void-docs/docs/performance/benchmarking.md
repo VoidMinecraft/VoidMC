@@ -103,7 +103,32 @@ Run the example server with flame output:
 VOID_METRICS_MODE=flame VOID_FLAME_OUTPUT=logs/void-flame.folded cargo run --release -p voidmc-example
 ```
 
-Use the folded output with a flamegraph tool locally, then summarize hotspots and optimization decisions in [Optimization Log](./optimization-log.md). Keep `logs/void-flame.folded` out of git.
+Or use the root Makefile, which renders both SVG variants after the server
+exits (including Ctrl-C):
+
+```bash
+cargo install inferno
+make flame       # active work only
+make flame-idle  # includes idle time for utilization
+```
+
+Render the folded output as a **flamegraph** to aggregate repeated work and
+make hotspots easy to present:
+
+```bash
+inferno-flamegraph logs/void-flame.folded > trace.svg
+```
+
+The example excludes idle samples and collapses thread labels, so the SVG shows
+application spans such as `ingest_network_packets`, `dispatch_packet`,
+`stream_chunks`, `load_or_generate`, `chunk_generation`, and
+`chunk_packet_encoding`. Entity profiling includes `mob_ai_wander`,
+`entity_physics`, `entity_spawn_settling`, and entity movement/spawn broadcast
+spans.
+Use `--flamechart` only when timeline ordering matters; it deliberately does
+not aggregate repeated work. Add `VOID_FLAME_INCLUDE_IDLE=1` when you need the
+aggregate SVG to show idle time and overall server utilization. Keep
+`logs/void-flame.folded` out of git.
 
 ## Memory Sampling
 

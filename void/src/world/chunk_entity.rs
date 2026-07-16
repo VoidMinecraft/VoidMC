@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 use voidmc_protocol::clientbound::chunk::{
     Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData,
     PaletteData, blocks,
@@ -39,6 +40,7 @@ impl ChunkData {
     }
 
     /// Creates ChunkData from a protocol Chunk, consuming its data.
+    #[instrument(name = "chunk_data_conversion", level = "info", skip(chunk))]
     pub fn from_protocol_chunk(chunk: &ProtocolChunk) -> Self {
         Self {
             sections: chunk.sections.clone(),
@@ -70,6 +72,7 @@ impl ChunkData {
     }
 
     /// Converts this chunk data into a ChunkDataAndLight packet.
+    #[instrument(name = "chunk_packet_encoding", level = "info", skip(self))]
     pub fn to_packet(&self, x: i32, z: i32) -> ChunkDataAndLight {
         let mut data = Vec::new();
         for section in &self.sections {

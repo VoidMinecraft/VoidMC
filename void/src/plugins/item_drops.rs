@@ -8,6 +8,7 @@
 
 use bevy_app::{App, Plugin, PostUpdate, Update};
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
@@ -175,6 +176,11 @@ fn on_player_drop_item(
 
 /// `PostUpdate`: sends metadata for newly spawned item entities so the client
 /// renders the actual item (runs after the `SpawnEntity` broadcast).
+#[instrument(
+    name = "item_metadata_broadcast",
+    level = "info",
+    skip(channels, new_items, ready_players)
+)]
 fn broadcast_item_data(
     channels: Res<NetworkChannels>,
     new_items: Query<
@@ -198,6 +204,11 @@ fn broadcast_item_data(
 
 /// Observer: sends existing item-entity metadata to a joining player (the
 /// `SpawnEntity` packets are sent by the generic entity-spawn handler).
+#[instrument(
+    name = "item_metadata_join_sync",
+    level = "info",
+    skip(event, channels, joiner, items)
+)]
 fn send_item_data_on_join(
     event: On<PlayerReadyEvent>,
     channels: Res<NetworkChannels>,
@@ -226,6 +237,7 @@ fn tick_pickup_delay(mut delays: Query<&mut PickupDelay>) {
 /// `Update`: nearby players collect dropped items. Item entities do not render a
 /// count, so a partial pickup just lowers the stored stack without re-sending
 /// metadata.
+#[instrument(name = "item_pickup", level = "info", skip(commands, players, items))]
 fn pickup_items(
     mut commands: Commands,
     mut players: Query<(Entity, &Position, &PlayerDimension, &mut Inventory), With<PlayerReady>>,

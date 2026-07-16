@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 
 use crate::components::{
     EntityDimension, Grounded, MovementConfig, Position, PreviousPosition, SpawnedEntity, Velocity,
@@ -12,6 +13,11 @@ const GRAVITY_STEP: f64 = 0.08;
 const TERMINAL_VELOCITY: f64 = -3.92;
 
 /// Applies a small server-authoritative physics step for spawned entities.
+#[instrument(
+    name = "entity_physics",
+    level = "info",
+    skip(chunk_index, chunks, query)
+)]
 pub fn apply_spawned_entity_physics(
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,

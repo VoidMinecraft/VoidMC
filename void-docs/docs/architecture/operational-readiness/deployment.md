@@ -53,6 +53,7 @@ The release build is the recommended binary for manual demos and performance che
 | `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Write TPS samples to a chosen CSV file. |
 | `VOID_METRICS_MODE=flame` | Enable tracing-flame output. |
 | `VOID_FLAME_OUTPUT=logs/trace.folded` | Choose flame trace output path. |
+| `VOID_FLAME_INCLUDE_IDLE=1` | Include idle time to show server utilization. |
 | `VOID_PACKET_DEBUG=1` | Enable packet-level debug directive in the example server. |
 
 Example:
@@ -66,4 +67,3 @@ VOID_METRICS_DEBUG=1 VOID_TPS_OUTPUT=logs/tps-demo.csv cargo run -p voidmc-examp
 VoidMC is not yet a turnkey production server. Before exposing it publicly, the project still needs hardening work around authentication/encryption, rate limiting, persistence guarantees, configuration files, and deployment automation.
 
 For the EIP objective, this page provides a reproducible deployment path and documents current operating assumptions honestly.
-

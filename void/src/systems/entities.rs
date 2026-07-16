@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 use voidmc_protocol::clientbound;
 use voidmc_protocol::types::LpVec3;
 
@@ -11,6 +12,11 @@ use crate::network::{NetworkChannels, OutgoingPacket};
 
 const RELATIVE_MOVE_SCALE: f64 = 4096.0;
 
+#[instrument(
+    name = "entity_join_sync",
+    level = "info",
+    skip(event, channels, new_player, spawned_entities)
+)]
 pub fn on_player_ready_spawn_entities(
     event: On<PlayerReadyEvent>,
     channels: Res<NetworkChannels>,
@@ -54,6 +60,11 @@ pub fn on_player_ready_spawn_entities(
     }
 }
 
+#[instrument(
+    name = "entity_spawn_broadcast",
+    level = "info",
+    skip(channels, spawned_entities, ready_players)
+)]
 pub fn broadcast_entity_spawns(
     channels: Res<NetworkChannels>,
     spawned_entities: Query<
@@ -90,6 +101,11 @@ pub fn broadcast_entity_spawns(
     }
 }
 
+#[instrument(
+    name = "entity_movement_broadcast",
+    level = "info",
+    skip(channels, moved_entities, ready_players)
+)]
 pub fn broadcast_entity_movement(
     channels: Res<NetworkChannels>,
     moved_entities: Query<
@@ -154,6 +170,11 @@ pub fn broadcast_entity_movement(
     }
 }
 
+#[instrument(
+    name = "entity_motion_broadcast",
+    level = "info",
+    skip(channels, moved_entities, ready_players)
+)]
 pub fn broadcast_entity_motion(
     channels: Res<NetworkChannels>,
     moved_entities: Query<

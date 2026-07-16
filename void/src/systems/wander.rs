@@ -1,9 +1,11 @@
 use bevy_ecs::prelude::*;
 use rand::Rng;
+use tracing::instrument;
 
 use crate::components::{Position, Rotation, SpawnedEntity, Velocity, Wander};
 
 /// Very small, deterministic-seeming wander AI for demonstration.
+#[instrument(name = "mob_ai_wander", level = "info", skip(query))]
 pub fn wander_system(
     mut query: Query<
         (&mut Position, &mut Rotation, &mut Velocity, &mut Wander),

@@ -33,6 +33,7 @@ The example server exposes performance-oriented environment variables:
 | `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Writes TPS samples to a chosen CSV file |
 | `VOID_METRICS_MODE=flame` | Enables flame tracing mode in the example logging setup |
 | `VOID_FLAME_OUTPUT=logs/void-flame.folded` | Selects the folded flame-trace output path |
+| `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time so the trace shows overall utilization |
 | `VOID_PACKET_DEBUG=1` | Enables verbose packet logging for protocol debugging |
 
 Generated `logs/`, raw Criterion output, flame traces, and `target/` artifacts stay out of git. Commit summarized Markdown tables instead.
