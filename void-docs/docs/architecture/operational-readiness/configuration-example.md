@@ -63,9 +63,9 @@ This shape mirrors the defaults while making the reliability budgets visible.
 | `VOID_TPS_OUTPUT` | `logs/tps-demo.csv` | Selects TPS CSV output. |
 | `VOID_METRICS_MODE` | `flame` | Enables flame trace mode. |
 | `VOID_FLAME_OUTPUT` | `logs/trace.folded` | Selects flame trace output. |
+| `VOID_FLAME_INCLUDE_IDLE` | `1` | Includes idle time to show server utilization. |
 | `VOID_PACKET_DEBUG` | `1` | Adds network packet debug logging. |
 
 ## Configuration Reference
 
 See [Server Configuration](/reference/server/configuration) for all fields and defaults.
-

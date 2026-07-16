@@ -215,6 +215,7 @@ pub struct PacketEvent<T> {
     pub packet: T,
 }
 
+#[instrument(level = "info", skip(world, packet))]
 fn dispatch_packet(
     world: &mut World,
     client_id: u32,

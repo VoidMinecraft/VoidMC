@@ -27,6 +27,7 @@ struct MetricsEnv {
     flame_enabled: bool,
     tps_output: Option<String>,
     flame_output: Option<String>,
+    flame_include_idle: bool,
     packet_debug: bool,
 }
 
@@ -35,6 +36,7 @@ impl MetricsEnv {
         let metrics_debug = env_flag("VOID_METRICS_DEBUG");
         let tps_output = env_string("VOID_TPS_OUTPUT");
         let flame_output = env_string("VOID_FLAME_OUTPUT");
+        let flame_include_idle = env_flag("VOID_FLAME_INCLUDE_IDLE");
         let packet_debug = env_flag("VOID_PACKET_DEBUG");
         let metrics_mode = env::var("VOID_METRICS_MODE").ok();
         let flame_enabled =
@@ -45,6 +47,7 @@ impl MetricsEnv {
             flame_enabled,
             tps_output,
             flame_output,
+            flame_include_idle,
             packet_debug,
         }
     }
@@ -143,7 +146,14 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
             .flame_output
             .clone()
             .unwrap_or_else(|| format!("logs/trace-{timestamp}.folded"));
+        // Idle samples are hidden by default so the SVG focuses on server work.
+        // They can be included to show overall utilization.
         let (flame_layer, flame_guard) = FlameLayer::with_file(&flame_path)?;
+        let flame_layer = flame_layer
+            .with_empty_samples(metrics_env.flame_include_idle)
+            .with_threads_collapsed(true)
+            .with_module_path(false)
+            .with_file_and_line(false);
         Some((flame_layer, flame_guard))
     } else {
         None

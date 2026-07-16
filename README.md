@@ -114,9 +114,27 @@ The example server also supports environment variables for diagnostics:
 | `VOID_TPS_OUTPUT` | Sets the TPS CSV output path. |
 | `VOID_METRICS_MODE=flame` | Enables flame trace output. |
 | `VOID_FLAME_OUTPUT` | Sets the flame trace output path. |
+| `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time in the flame trace to show server utilization. |
 | `VOID_PACKET_DEBUG` | Adds packet-level network debug logs. |
 
 See [Server Configuration](void-docs/docs/reference/server/configuration.md) and [Configuration Examples](void-docs/docs/architecture/operational-readiness/configuration-example.md).
+
+## Development Utilities
+
+The root `Makefile` provides the common build, test, formatting, and lint
+commands. It also automates trace rendering; install the renderer once with
+`cargo install inferno`.
+
+```bash
+# Active-work hotspot profile; Ctrl-C writes an aggregate graph and a timeline.
+make flame
+
+# Include idle time to show utilization as well.
+make flame-idle
+```
+
+The generated files are `logs/void-flame-active.svg` and
+`logs/void-flame-active-timeline.svg` (or the corresponding `idle` names).
 
 ## Architecture
 

@@ -7,6 +7,7 @@
 //! dependency on a persistence crate.
 
 use bevy_ecs::prelude::Resource;
+use tracing::instrument;
 
 use super::chunk_entity::ChunkData;
 use super::chunk_pos::ChunkPos;
@@ -28,6 +29,7 @@ pub struct ChunkLoaderResource(pub Box<dyn ChunkLoader>);
 
 /// Returns the chunk at `(dimension, pos)`, preferring the loader (if any) and
 /// falling back to the world generator.
+#[instrument(level = "info", skip(loader, world_gen))]
 pub fn load_or_generate(
     loader: Option<&ChunkLoaderResource>,
     world_gen: &WorldGen,
@@ -39,7 +41,11 @@ pub fn load_or_generate(
             return data;
         }
     }
-    ChunkData::from_protocol_chunk(&world_gen.0.generate_chunk(pos))
+    let generated_chunk = {
+        let _span = tracing::info_span!("chunk_generation").entered();
+        world_gen.0.generate_chunk(pos)
+    };
+    ChunkData::from_protocol_chunk(&generated_chunk)
 }
 
 #[cfg(test)]

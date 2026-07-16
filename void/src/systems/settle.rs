@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use tracing::instrument;
 
 use crate::components::{
     EntityDimension, MovementConfig, Position, PreviousPosition, RecentlySpawned, SpawnedEntity,
@@ -10,6 +11,11 @@ use crate::world::{
 
 /// Settle newly spawned gravity-enabled entities by scanning downward and snapping them
 /// onto the first solid block found within `MAX_SCAN` blocks.
+#[instrument(
+    name = "entity_spawn_settling",
+    level = "info",
+    skip(chunk_index, chunks, query)
+)]
 pub fn settle_recent_spawns(
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,

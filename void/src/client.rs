@@ -30,16 +30,21 @@ impl Client {
             tokio::select! {
                 result = self.socket.receive() => {
                     let packet = result?;
-                    self.incoming_tx
+                    if self.incoming_tx
                         .send(IncomingPacket {
                             client_id: self.client_id,
                             packet,
                         })
-                        .expect("Failed to send incoming packet to channel");
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
                 }
 
                 result = self.outgoing_rx.recv_async() => {
-                    let outgoing_packet = result.expect("Failed to receive outgoing packet from channel");
+                    let Ok(outgoing_packet) = result else {
+                        return Ok(());
+                    };
                     match outgoing_packet.packet {
                         ClientboundPacket::Status(packet) => self.socket.send(&packet).await?,
                         ClientboundPacket::Login(packet) => self.socket.send(&packet).await?,
