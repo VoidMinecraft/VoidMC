@@ -30,8 +30,8 @@ pub fn broadcast_position(
         let delta_y = ((pos.y * 32.0 - prev_pos.y * 32.0) * 128.0) as i16;
         let delta_z = ((pos.z * 32.0 - prev_pos.z * 32.0) * 128.0) as i16;
 
-        let yaw = (rotation.yaw / 360.0 * 256.0) as u8;
-        let pitch = (rotation.pitch / 360.0 * 256.0) as u8;
+        let yaw = (rotation.yaw.rem_euclid(360.0) / 360.0 * 256.0) as u8;
+        let pitch = (rotation.pitch.rem_euclid(360.0) / 360.0 * 256.0) as u8;
 
         for receiver_client_id in all_players.iter() {
             if receiver_client_id.0 == sender_client_id.0 {
@@ -84,5 +84,75 @@ pub fn update_previous_positions(
         prev_pos.x = pos.x;
         prev_pos.y = pos.y;
         prev_pos.z = pos.z;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_app::{App, PostUpdate};
+
+    use super::*;
+    use crate::network::{IncomingPacket, NetworkChannels};
+
+    #[test]
+    fn broadcast_position_wraps_negative_rotation() {
+        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        let mut app = App::new();
+
+        app.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        })
+        .add_systems(PostUpdate, broadcast_position);
+
+        app.world_mut().spawn((
+            ClientId(1),
+            MinecraftEntityId(42),
+            Position {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+            PreviousPosition {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+            Rotation {
+                yaw: -90.0,
+                pitch: -45.0,
+            },
+            PlayerReady,
+        ));
+        app.world_mut().spawn((ClientId(2), PlayerReady));
+
+        app.update();
+
+        let rotation = outgoing_rx.recv().unwrap();
+        let head_rotation = outgoing_rx.recv().unwrap();
+
+        let clientbound::ClientboundPacket::Play(
+            clientbound::PlayPacket::UpdateEntityPositionAndRotation(rotation),
+        ) = rotation.packet
+        else {
+            panic!("expected position and rotation packet");
+        };
+        assert_eq!(rotation.yaw, 192);
+        assert_eq!(rotation.pitch, 224);
+
+        let clientbound::ClientboundPacket::Play(clientbound::PlayPacket::SetHeadRotation(
+            head_rotation,
+        )) = head_rotation.packet
+        else {
+            panic!("expected head rotation packet");
+        };
+        assert_eq!(head_rotation.head_yaw, 192);
+
+        drop((incoming_tx, disconnect_tx, kick_rx));
     }
 }
