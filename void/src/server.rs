@@ -73,7 +73,10 @@ impl Server {
                 }
 
                 result = outgoing_rx.recv_async() => {
-                    let outgoing_packet = result.expect("Failed to receive outgoing packet from channel");
+                    let Ok(outgoing_packet) = result else {
+                        info!("Outgoing packet channel closed; shutting down network server");
+                        break;
+                    };
                     let client_id = outgoing_packet.client_id;
 
                     // Forward the packet to the appropriate client
@@ -86,15 +89,42 @@ impl Server {
                 }
 
                 result = kick_rx.recv_async() => {
-                    if let Ok(client_id) = result {
-                        // Drop the client's outgoing sender — this causes Client::run()
-                        // to exit, which then fires the disconnect notification.
-                        if self.channels.remove(&client_id).is_some() {
-                            info!(client_id = client_id, "Kicked client (dropped channel)");
-                        }
+                    let Ok(client_id) = result else {
+                        info!("Kick channel closed; shutting down network server");
+                        break;
+                    };
+
+                    // Drop the client's outgoing sender — this causes Client::run()
+                    // to exit, which then fires the disconnect notification.
+                    if self.channels.remove(&client_id).is_some() {
+                        info!(client_id = client_id, "Kicked client (dropped channel)");
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn run_exits_when_outgoing_channel_closes() {
+        let mut server = Server::new("127.0.0.1:0").await.unwrap();
+        let (incoming_tx, _incoming_rx) = flume::unbounded();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded();
+        let (disconnect_tx, _disconnect_rx) = flume::unbounded();
+        let (_kick_tx, kick_rx) = flume::unbounded();
+        drop(outgoing_tx);
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            server.run(incoming_tx, outgoing_rx, disconnect_tx, kick_rx),
+        )
+        .await
+        .expect("server should exit when the outgoing channel closes");
     }
 }
