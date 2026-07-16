@@ -70,6 +70,11 @@ to ready players by `systems::entities`.
 | `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |
 | `Rotation { yaw, pitch }` | `f32` angles | Current body/look rotation |
 | `Velocity { x, y, z }` | `f64` vector | Velocity encoded directly as protocol LP Vec3 |
+| `EntityCollider { half_width, height, step_height }` | `f64` dimensions | Feet-anchored collision box used by server-side movement |
+| `MovementConfig` | Feature flags | Enables wandering, gravity, and block collision checks |
+| `VerticalVelocity(f64)` | Vertical speed | Gravity state kept separately from protocol velocity |
+| `Grounded(bool)` | Contact state | Whether physics found support directly below the collision box |
+| `Wander` | Direction state | Optional demo random-walk behavior attached by `/summon --wander` |
 
 ### Chunk Entity Components
 
@@ -148,5 +153,6 @@ components listed above.
    then despawn the ECS entity.
 
 This lifecycle currently handles visibility, spawn/replay, motion, movement,
-and removal. It does not yet implement AI, metadata (`Set Entity Data`),
+simple opt-in wandering and collision physics, and removal. It does not yet
+implement production mob AI, general entity metadata (`Set Entity Data`),
 equipment, passengers, or per-entity view-distance culling.

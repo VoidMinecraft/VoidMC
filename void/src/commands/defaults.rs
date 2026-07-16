@@ -5,7 +5,7 @@ use bevy_ecs::prelude::With;
 use rand::Rng;
 
 use crate::components::{
-    ClientId, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
+    ClientId, EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
     MinecraftEntityId, MovementConfig, PlayerDimension, PlayerName, PlayerReady, Position,
     PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, TeleportState, Velocity,
     VerticalVelocity, Wander,
@@ -564,6 +564,7 @@ fn handle_summon(ctx: &mut CommandContext) {
             EntityType(entity_type_id),
             EntityDimension(entity_dimension),
             SpawnedEntity,
+            EntityCollider::for_entity_name(&entity_name),
             movement_config,
             VerticalVelocity(0.0),
             Grounded(!movement_config.gravity_enabled),
@@ -725,6 +726,36 @@ mod tests {
         assert_eq!(entities[0].0.x, 10.0);
         assert_eq!(entities[0].0.y, 70.0);
         assert_eq!(entities[0].0.z, -3.0);
+    }
+
+    #[test]
+    fn summon_block_checks_enables_pig_collision_box() {
+        let (mut world, player, _outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec![
+                "minecraft:pig".to_string(),
+                "--wander".to_string(),
+                "--gravity".to_string(),
+                "--block-checks".to_string(),
+            ],
+        );
+
+        let mut query = world.query_filtered::<
+            (&MovementConfig, &EntityCollider, Option<&Wander>),
+            With<SpawnedEntity>,
+        >();
+        let (movement, collider, wander) = query.single(&world).expect("one summoned pig");
+
+        assert!(movement.wander);
+        assert!(movement.gravity_enabled);
+        assert!(movement.block_collision_enabled);
+        assert_eq!(*collider, EntityCollider::new(0.9, 0.9, 1.0));
+        assert!(wander.is_some());
     }
 
     #[test]
