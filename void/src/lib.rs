@@ -19,6 +19,7 @@ pub mod network;
 pub mod plugins;
 pub mod registry;
 mod server;
+mod server_status;
 pub mod systems;
 pub mod world;
 

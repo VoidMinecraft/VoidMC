@@ -11,6 +11,7 @@ use crate::config::{ServerConfig, ServerConfigResource};
 use crate::metrics::MetricsPlugin;
 use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
 use crate::plugins::DefaultPlugins;
+use crate::server_status::ServerStatusSnapshot;
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
     ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
@@ -50,6 +51,7 @@ impl VoidServer {
     /// This function blocks until the server shuts down.
     pub fn run(self) {
         let config_resource = ServerConfigResource::from(&self.config);
+        let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
         let address = self.config.address.clone();
 
@@ -61,6 +63,7 @@ impl VoidServer {
         let (kick_tx, kick_rx) = flume::unbounded::<u32>();
 
         // Start the network server in a separate thread
+        let network_server_status = server_status.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -70,7 +73,13 @@ impl VoidServer {
             rt.block_on(async move {
                 let mut server = Server::new(&address).await.expect("Failed to start server");
                 server
-                    .run(incoming_tx, outgoing_rx, disconnect_tx, kick_rx)
+                    .run_with_status(
+                        incoming_tx,
+                        outgoing_rx,
+                        disconnect_tx,
+                        kick_rx,
+                        network_server_status,
+                    )
                     .await;
             })
         });
@@ -101,6 +110,7 @@ impl VoidServer {
         app.insert_resource(EntityIdCounter(1))
             .insert_resource(self.config.registries)
             .insert_resource(config_resource)
+            .insert_resource(server_status)
             .insert_resource(world_gen)
             .init_resource::<ChunkIndex>()
             .add_systems(Startup, init_world);

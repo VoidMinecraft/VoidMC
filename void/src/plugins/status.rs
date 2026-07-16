@@ -1,11 +1,11 @@
-use bevy_app::{App, Plugin};
+use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::{
     observer::On,
     prelude::With,
     system::{Query, Res},
 };
 use voidmc_protocol::{
-    MINECRAFT_VERSION, PROTOCOL_VERSION, clientbound,
+    clientbound,
     serverbound::{PingRequest, StatusRequest},
 };
 
@@ -13,6 +13,7 @@ use crate::{
     ServerConfigResource,
     components::PlayerReady,
     network::{NetworkChannels, OutgoingPacket, PacketEvent},
+    server_status::{ServerStatusSnapshot, player_count, server_status},
 };
 
 /// Plugin handling the status state of the Minecraft protocol, where clients can query server information without fully logging in.
@@ -20,6 +21,8 @@ pub struct StatusPlugin;
 
 impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
+        app.add_systems(PostUpdate, update_status_snapshot);
+
         app.add_observer(
             |event: On<PacketEvent<PingRequest>>, channels: Res<NetworkChannels>| {
                 let _ = channels.outgoing.send(OutgoingPacket {
@@ -55,24 +58,17 @@ impl Plugin for StatusPlugin {
     }
 }
 
-fn player_count(count: usize) -> i32 {
-    i32::try_from(count).unwrap_or(i32::MAX)
-}
-
-fn server_status(max_players: i32, online_players: i32, motd: String) -> clientbound::Status {
-    clientbound::Status {
-        version: clientbound::Version {
-            name: MINECRAFT_VERSION.to_string(),
-            protocol: PROTOCOL_VERSION,
-        },
-        players: clientbound::Players {
-            max: max_players,
-            online: online_players,
-            sample: vec![],
-        },
-        description: clientbound::Description { text: motd },
-        favicon: "".to_string(),
-        enforces_secure_chat: false,
+fn update_status_snapshot(
+    snapshot: Option<Res<ServerStatusSnapshot>>,
+    config: Option<Res<ServerConfigResource>>,
+    ready_players: Query<(), With<PlayerReady>>,
+) {
+    if let (Some(snapshot), Some(config)) = (snapshot, config) {
+        snapshot.update(
+            config.max_players,
+            ready_players.iter().count(),
+            &config.motd,
+        );
     }
 }
 
@@ -83,24 +79,6 @@ mod tests {
         ServerConfig,
         network::{IncomingPacket, NetworkChannels},
     };
-
-    #[test]
-    fn status_advertises_minecraft_26_1_2_protocol() {
-        let status = server_status(100, 3, "VoidMC".to_string());
-
-        assert_eq!(status.version.name, "26.1.2");
-        assert_eq!(status.version.protocol, 775);
-        assert_eq!(status.players.max, 100);
-        assert_eq!(status.players.online, 3);
-        assert_eq!(status.description.text, "VoidMC");
-    }
-
-    #[test]
-    fn player_count_saturates_at_protocol_limit() {
-        assert_eq!(player_count(0), 0);
-        assert_eq!(player_count(42), 42);
-        assert_eq!(player_count(i32::MAX as usize + 1), i32::MAX);
-    }
 
     #[test]
     fn status_request_counts_ready_players() {
@@ -140,5 +118,32 @@ mod tests {
 
         assert_eq!(outgoing.client_id, 7);
         assert_eq!(response.status.players.online, 2);
+    }
+
+    #[test]
+    fn status_snapshot_tracks_config_and_ready_players() {
+        let mut app = App::new();
+        let mut config = ServerConfig::default();
+        let snapshot = ServerStatusSnapshot::new(&config);
+
+        app.insert_resource(ServerConfigResource::from(&config))
+            .insert_resource(snapshot.clone())
+            .add_plugins(StatusPlugin);
+        app.world_mut().spawn(PlayerReady);
+        app.world_mut().spawn(PlayerReady);
+
+        config.max_players = 40;
+        config.motd = "Updated".to_string();
+        {
+            let mut resource = app.world_mut().resource_mut::<ServerConfigResource>();
+            resource.max_players = config.max_players;
+            resource.motd.clone_from(&config.motd);
+        }
+        app.update();
+
+        let response = snapshot.response();
+        assert_eq!(response.status.players.max, 40);
+        assert_eq!(response.status.players.online, 2);
+        assert_eq!(response.status.description.text, "Updated");
     }
 }
