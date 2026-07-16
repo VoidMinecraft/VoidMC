@@ -175,8 +175,8 @@ fn send_player_spawn(
     rot: &Rotation,
     game_mode: u8,
 ) {
-    let yaw = (rot.yaw / 360.0 * 256.0) as u8;
-    let pitch = (rot.pitch / 360.0 * 256.0) as u8;
+    let yaw = (rot.yaw.rem_euclid(360.0) / 360.0 * 256.0) as u8;
+    let pitch = (rot.pitch.rem_euclid(360.0) / 360.0 * 256.0) as u8;
 
     // Send PlayerInfoUpdate (adds to tab list)
     let _ = channels.outgoing.send(OutgoingPacket {
@@ -212,4 +212,56 @@ fn send_player_spawn(
             },
         )),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::IncomingPacket;
+
+    #[test]
+    fn player_spawn_wraps_negative_rotation() {
+        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        let channels = NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        };
+
+        send_player_spawn(
+            &channels,
+            7,
+            42,
+            uuid::Uuid::nil(),
+            "player",
+            &Position {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+            &Rotation {
+                yaw: -90.0,
+                pitch: -45.0,
+            },
+            0,
+        );
+
+        let _player_info = outgoing_rx.recv().unwrap();
+        let spawn = outgoing_rx.recv().unwrap();
+        let clientbound::ClientboundPacket::Play(clientbound::PlayPacket::SpawnEntity(spawn)) =
+            spawn.packet
+        else {
+            panic!("expected spawn entity packet");
+        };
+
+        assert_eq!(spawn.yaw, 192);
+        assert_eq!(spawn.head_yaw, 192);
+        assert_eq!(spawn.pitch, 224);
+
+        drop((incoming_tx, disconnect_tx, kick_rx));
+    }
 }
