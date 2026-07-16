@@ -103,17 +103,9 @@ fn handle_chat_message(
     player_names: Query<&PlayerName>,
     ready_clients: Query<&ClientId, With<PlayerReady>>,
 ) {
-    tracing::info!(
-        "[HANDLE_CHAT_MESSAGE_CALLED] message='{}', client_id={}",
-        event.packet.message,
-        event.client_id
-    );
     // If the client doesn't recognise a command in its tree, it sends
     // "/command args" as a ChatMessage instead of ChatCommand.  Intercept that.
     if let Some(cmd) = event.packet.message.strip_prefix('/') {
-        tracing::info!(
-            "[HANDLE_CHAT_MESSAGE_COMMAND_PREFIX] detected command prefix, routing to handle_command"
-        );
         handle_command(
             event.client_id,
             event.entity,
@@ -129,6 +121,13 @@ fn handle_chat_message(
         .get(event.entity)
         .map(|n| n.0.clone())
         .unwrap_or_else(|_| "Unknown".to_string());
+
+    tracing::info!(
+        player_name = %player_name,
+        client_id = event.client_id,
+        message = %event.packet.message,
+        "Chat message"
+    );
 
     let formatted = format!("<{}> {}", player_name, event.packet.message);
     let nbt = crate::commands::text_to_nbt(&formatted, "white");

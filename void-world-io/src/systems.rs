@@ -63,13 +63,16 @@ pub fn save_dirty_chunks(
         return;
     }
     ticker.0 = 0;
-    flush_dirty(
+    let saved = flush_dirty(
         &config,
         &store,
         &dirty,
         &mut commands,
         config.max_saves_per_flush,
     );
+    if saved > 0 {
+        tracing::info!(saved, "World saved");
+    }
 }
 
 /// On any `AppExit` (from `/stop`, Ctrl-C, or anything else), force-saves every
