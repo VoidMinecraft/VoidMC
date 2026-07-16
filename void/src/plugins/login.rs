@@ -4,7 +4,7 @@ use bevy_ecs::{
     system::{Commands, Res},
 };
 use voidmc_protocol::{
-    clientbound,
+    MINECRAFT_VERSION, clientbound,
     serverbound::{LoginAcknowledged, LoginStart},
 };
 
@@ -63,7 +63,7 @@ fn handle_login_acknowledged(
                 known_packs: vec![clientbound::KnownPack {
                     namespace: "minecraft".to_string(),
                     id: "core".to_string(),
-                    version: "26.1.2".to_string(),
+                    version: MINECRAFT_VERSION.to_string(),
                 }],
             }),
         ),
