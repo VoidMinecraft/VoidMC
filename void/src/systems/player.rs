@@ -42,6 +42,13 @@ pub fn on_player_ready(
         return;
     };
 
+    tracing::info!(
+        player_name = %new_name.0,
+        player_uuid = %new_uuid.0,
+        client_id = new_client_id.0,
+        "Player connected"
+    );
+
     // Send the new player their own tab list entry (no SpawnEntity for self)
     send_player_info(
         &channels,
@@ -88,13 +95,13 @@ pub fn on_player_ready(
 pub fn on_player_quit(
     event: On<PlayerQuitEvent>,
     channels: Res<NetworkChannels>,
-    query: Query<(&MinecraftEntityId, &PlayerUuid, &ClientId), With<PlayerReady>>,
+    query: Query<(&MinecraftEntityId, &PlayerUuid, &PlayerName, &ClientId), With<PlayerReady>>,
     all_ready: Query<&ClientId, With<PlayerReady>>,
 ) {
     let disc_entity = event.entity;
     let disc_client_id = event.client_id;
 
-    let Ok((mc_entity_id, player_uuid, _)) = query.get(disc_entity) else {
+    let Ok((mc_entity_id, player_uuid, player_name, _)) = query.get(disc_entity) else {
         return;
     };
 
@@ -128,9 +135,10 @@ pub fn on_player_quit(
     }
 
     tracing::info!(
-        "Player {} (entity {}) disconnected, notified remaining players",
-        disc_client_id,
-        eid
+        player_name = %player_name.0,
+        player_uuid = %player_uuid.0,
+        client_id = disc_client_id,
+        "Player disconnected"
     );
 }
 
