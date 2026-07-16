@@ -147,6 +147,17 @@ cargo test --workspace --all-features
 
 Rust's compiler checks, Clippy, rustfmt, and Cargo tests are the project's primary quality-analysis toolchain.
 
+## Performance Monitoring
+
+The separate **Benchmarks** GitHub Actions workflow runs the Criterion benchmarks
+weekly and on demand. Its reports are uploaded as a `criterion-reports` artifact.
+Results are tracked as observations rather than CI thresholds because hosted
+runners are not stable enough for reliable performance gating.
+
+When triggered manually, the same workflow can also start the example server and
+run the TCP connect stress POC. This measures TCP accept responsiveness only;
+it does not exercise the Minecraft handshake, login, encryption, or play state.
+
 ## Current Limitations
 
 Void is still a student project and framework prototype. It is not yet a production-hardened public Minecraft server. Authentication/encryption hardening, abuse protection, persistence guarantees, and deployment automation are documented as current limitations in [Security and Reliability](void-docs/docs/architecture/operational-readiness/security-reliability.md).
