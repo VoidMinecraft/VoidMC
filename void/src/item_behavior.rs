@@ -269,6 +269,13 @@ struct QueuedUse {
 #[derive(Resource, Default)]
 pub struct ItemUseQueue(VecDeque<QueuedUse>);
 
+#[cfg(test)]
+impl ItemUseQueue {
+    pub(crate) fn pending_len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 /// Enqueues a "use item on block" action.
 pub fn enqueue_use_on_block(
     queue: &mut ItemUseQueue,

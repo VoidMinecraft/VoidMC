@@ -10,7 +10,7 @@ use voidmc_protocol::{
     types::{BlockFace, BlockPosition},
 };
 
-use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
+use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerName, PlayerReady};
 use crate::events::{BlockBreakEvent, BlockChangeEvent, BlockPlaceEvent};
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::world::{ChunkData, ChunkDirty, ChunkIndex, ChunkPos, DimensionId};
@@ -97,13 +97,30 @@ pub fn mutate_block(
             position,
             broken_state: old_state,
         }),
-        BlockMutation::Place => world.trigger(BlockPlaceEvent {
-            entity: actor,
-            dimension,
-            position,
-            face,
-            placed_state: new_state,
-        }),
+        BlockMutation::Place => {
+            let player_name = world
+                .get::<PlayerName>(actor)
+                .map(|name| name.0.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+            let client_id = world.get::<ClientId>(actor).map(|id| id.0);
+            tracing::info!(
+                player_name = %player_name,
+                client_id,
+                dimension = dimension.name(),
+                x = position.x,
+                y = position.y,
+                z = position.z,
+                block_state_id = new_state,
+                "Block placed"
+            );
+            world.trigger(BlockPlaceEvent {
+                entity: actor,
+                dimension,
+                position,
+                face,
+                placed_state: new_state,
+            });
+        }
     }
 
     Some(old_state)
@@ -111,9 +128,6 @@ pub fn mutate_block(
 
 /// Sends a `BlockChangedAck` for the given prediction sequence to `actor`.
 pub fn send_ack(world: &World, actor: Entity, sequence: i32) {
-    if sequence == 0 {
-        return;
-    }
     let Some(client_id) = world.get::<ClientId>(actor) else {
         return;
     };
