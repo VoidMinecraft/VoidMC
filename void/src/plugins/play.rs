@@ -1,9 +1,6 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands, world::World};
-use voidmc_protocol::{
-    clientbound::KeepAlive,
-    serverbound::{ClientInformation, PlayerLoaded, Pong, TickEnd},
-};
+use voidmc_protocol::serverbound::{ClientInformation, KeepAlive, PlayerLoaded, Pong, TickEnd};
 
 use crate::{
     components::{ClientSettings, KeepAliveState, PlayerReady},
@@ -51,4 +48,34 @@ fn handle_client_information(event: On<PacketEvent<ClientInformation>>, mut comm
         locale: event.packet.locale.clone(),
         view_distance: event.packet.view_distance,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keep_alive_response_clears_awaiting_response() {
+        let mut app = App::new();
+        app.add_plugins(PlayPlugin);
+
+        let entity = app
+            .world_mut()
+            .spawn(KeepAliveState {
+                last_sent_id: 42,
+                awaiting_response: true,
+            })
+            .id();
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 7,
+            entity,
+            packet: KeepAlive { keep_alive_id: 42 },
+        });
+        app.update();
+
+        let state = app.world().get::<KeepAliveState>(entity).unwrap();
+        assert!(!state.awaiting_response);
+        assert_eq!(state.last_sent_id, 42);
+    }
 }
