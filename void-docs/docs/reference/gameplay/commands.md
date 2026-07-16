@@ -162,6 +162,7 @@ Built-in parsers that implement the `ArgParser` trait:
 | `FloatArg::unbounded()` | `f32` | `Float` | Unbounded float |
 | `DoubleArg::new(min, max)` | `f64` | `Double { min, max }` | Bounded double |
 | `DoubleArg::unbounded()` | `f64` | `Double` | Unbounded double |
+| `Vec3Arg` | `[f64; 3]` | `Vec3` | Three-dimensional `x y z` coordinates |
 | `BoolArg` | `bool` | `Bool` | Accepts `true/false/yes/no/1/0` |
 | `GreedyStringArg` | `String` | `GreedyPhrase` | All remaining input as text |
 | `GameProfileArg` | `String` | `GameProfile` | Player name with tab-completion (`minecraft:ask_server`) |
@@ -253,7 +254,7 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` |
 | `/list` | | Show online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
-| `/summon` | | Spawn a non-player entity | `<entity:resource_location> [x:double y:double z:double] [--wander] [--gravity] [--block-checks]` |
+| `/summon` | | Spawn a non-player entity | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]` |
 | `/give` | | Give yourself an item | `<item:item> [count:integer(1..64)]` |
 | `/clear` | | Empty your inventory | (none) |
 | `/stop` | | Gracefully stop the server | (none) |
@@ -314,6 +315,7 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
 
 - Command name completion (typing `/` shows all commands)
 - Argument type hints (integers, strings, players, etc.)
+- Long and short flag suggestions after the command's required arguments
 - Player name suggestions for `GameProfileArg` arguments (via `minecraft:ask_server`)
 - Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
 - Alias support (aliases appear as separate entries pointing to the same argument chain)

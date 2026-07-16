@@ -22,6 +22,7 @@ pub enum Parser {
     String(StringType),
     Entity { single: bool, players_only: bool },
     GameProfile,
+    Vec3,
     ResourceLocation,
     Message,
 }
@@ -37,6 +38,7 @@ impl Parser {
             Parser::String(_) => 5,
             Parser::Entity { .. } => 6,
             Parser::GameProfile => 7,
+            Parser::Vec3 => 10,
             Parser::ResourceLocation => 36,
             Parser::Message => 19,
         }
@@ -95,7 +97,7 @@ impl Parser {
                 let flags = (*single as u8) | ((*players_only as u8) << 1);
                 buf.push(flags);
             }
-            Parser::GameProfile | Parser::ResourceLocation | Parser::Message => {}
+            Parser::GameProfile | Parser::Vec3 | Parser::ResourceLocation | Parser::Message => {}
         }
     }
 }
@@ -195,6 +197,11 @@ mod tests {
     #[test]
     fn resource_location_parser_id_is_36() {
         assert_eq!(Parser::ResourceLocation.parser_id(), 36);
+    }
+
+    #[test]
+    fn vec3_parser_id_is_10() {
+        assert_eq!(Parser::Vec3.parser_id(), 10);
     }
 
     #[test]
