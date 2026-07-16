@@ -17,6 +17,11 @@ pub trait ArgParser: Send + Sync {
     /// Return `None` to default to `SingleWord` string.
     fn protocol_parser(&self) -> Option<Parser>;
 
+    /// Number of whitespace-delimited tokens consumed by this parser.
+    fn token_count(&self) -> usize {
+        1
+    }
+
     /// Tab-completion suggestions (optional, can query ECS world).
     fn suggestions(&self, _partial: &str, _world: &World) -> Vec<String> {
         vec![]
@@ -279,6 +284,46 @@ impl ArgParser for DoubleArg {
     }
 }
 
+/// Three-dimensional coordinate argument.
+///
+/// Consumes three whitespace-delimited doubles and advertises Minecraft's
+/// native `vec3` parser so the client presents all three coordinates as one
+/// argument.
+pub struct Vec3Arg;
+
+impl ArgParser for Vec3Arg {
+    fn type_name(&self) -> &str {
+        "vec3"
+    }
+
+    fn parse(&self, input: &str) -> Result<Box<dyn Any + Send + Sync>, String> {
+        let components: Vec<&str> = input.split_whitespace().collect();
+        if components.len() != 3 {
+            return Err(format!(
+                "'{}' is not a valid position (expected x y z)",
+                input
+            ));
+        }
+
+        let mut position = [0.0; 3];
+        for (index, component) in components.iter().enumerate() {
+            position[index] = component
+                .parse::<f64>()
+                .map_err(|_| format!("'{}' is not a valid coordinate", component))?;
+        }
+
+        Ok(Box::new(position))
+    }
+
+    fn protocol_parser(&self) -> Option<Parser> {
+        Some(Parser::Vec3)
+    }
+
+    fn token_count(&self) -> usize {
+        3
+    }
+}
+
 /// Parses `bool` — accepts true/false/yes/no/1/0.
 pub struct BoolArg;
 
@@ -538,5 +583,16 @@ mod tests {
             arg.protocol_parser(),
             Some(Parser::ResourceLocation)
         ));
+    }
+
+    #[test]
+    fn vec3_consumes_and_parses_three_tokens() {
+        let arg = Vec3Arg;
+        assert_eq!(arg.token_count(), 3);
+        assert!(matches!(arg.protocol_parser(), Some(Parser::Vec3)));
+
+        let parsed = arg.parse("10 64 -3.5").unwrap();
+        assert_eq!(*parsed.downcast::<[f64; 3]>().unwrap(), [10.0, 64.0, -3.5]);
+        assert!(arg.parse("10 64").is_err());
     }
 }

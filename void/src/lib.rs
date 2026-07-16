@@ -30,7 +30,7 @@ pub use commands::defaults::{
 };
 pub use commands::parser::{
     BoolArg, DoubleArg, FloatArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, LongArg,
-    ResourceLocationArg, StringArg, SummonableEntityArg,
+    ResourceLocationArg, StringArg, SummonableEntityArg, Vec3Arg,
 };
 pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,

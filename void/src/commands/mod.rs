@@ -360,6 +360,78 @@ enum Resolved {
     NotFound(String),
 }
 
+fn append_flag_branch(
+    nodes: &mut Vec<CommandNode>,
+    parent_index: i32,
+    literal: String,
+    definition: &FlagDefinition,
+) {
+    let literal_index = nodes.len() as i32;
+    nodes[parent_index as usize].children.push(literal_index);
+
+    if definition.takes_value {
+        let value_index = literal_index + 1;
+        nodes.push(CommandNode {
+            node_type: 1,
+            is_executable: false,
+            children: vec![value_index],
+            redirect_node: None,
+            name: Some(literal),
+            parser: None,
+            suggestions_type: None,
+        });
+
+        let protocol_parser = definition
+            .value_parser
+            .as_ref()
+            .and_then(|parser| parser.protocol_parser())
+            .unwrap_or(Parser::String(StringType::SingleWord));
+        let suggestions_type = definition
+            .value_parser
+            .as_ref()
+            .and_then(|parser| parser.suggestions_type())
+            .map(str::to_string);
+
+        nodes.push(CommandNode {
+            node_type: 2,
+            is_executable: true,
+            children: Vec::new(),
+            redirect_node: Some(parent_index),
+            name: Some(definition.long.clone()),
+            parser: Some(protocol_parser),
+            suggestions_type,
+        });
+    } else {
+        nodes.push(CommandNode {
+            node_type: 1,
+            is_executable: true,
+            children: Vec::new(),
+            redirect_node: Some(parent_index),
+            name: Some(literal),
+            parser: None,
+            suggestions_type: None,
+        });
+    }
+}
+
+fn append_flag_branches(
+    nodes: &mut Vec<CommandNode>,
+    parent_index: i32,
+    definitions: &[FlagDefinition],
+) {
+    for definition in definitions {
+        append_flag_branch(
+            nodes,
+            parent_index,
+            format!("--{}", definition.long),
+            definition,
+        );
+        if let Some(short) = definition.short {
+            append_flag_branch(nodes, parent_index, format!("-{short}"), definition);
+        }
+    }
+}
+
 /// ECS Resource holding all registered commands.
 #[derive(Resource)]
 pub struct CommandRegistry {
@@ -508,6 +580,7 @@ impl CommandRegistry {
         let mut root_children: Vec<i32> = Vec::new();
 
         for cmd in self.commands.values() {
+            let mut flag_parent_indices = Vec::new();
             let cmd_node_index = nodes.len() as i32;
 
             // Build argument chain for this command
@@ -536,6 +609,9 @@ impl CommandRegistry {
                 suggestions_type: None,
             });
             root_children.push(cmd_node_index);
+            if is_executable {
+                flag_parent_indices.push(cmd_node_index);
+            }
 
             // Add argument nodes
             for (i, arg) in cmd.arguments.iter().enumerate() {
@@ -564,6 +640,9 @@ impl CommandRegistry {
                     parser: Some(protocol_parser),
                     suggestions_type: suggestions,
                 });
+                if is_exec {
+                    flag_parent_indices.push(arg_indices[i]);
+                }
             }
 
             // Add alias literal nodes pointing to the same argument chain
@@ -585,6 +664,13 @@ impl CommandRegistry {
                     suggestions_type: None,
                 });
                 root_children.push(alias_node_index);
+                if is_executable {
+                    flag_parent_indices.push(alias_node_index);
+                }
+            }
+
+            for parent_index in flag_parent_indices {
+                append_flag_branches(&mut nodes, parent_index, &cmd.flag_definitions);
             }
         }
 
@@ -669,21 +755,22 @@ fn parse_positional(
                 });
             }
         } else if token_idx < tokens.len() {
-            let token = &tokens[token_idx];
-            match parser.parse(token) {
+            let end = (token_idx + parser.token_count()).min(tokens.len());
+            let input = tokens[token_idx..end].join(" ");
+            match parser.parse(&input) {
                 Ok(val) => {
                     parsed.insert(name.clone(), val);
                 }
                 Err(detail) => {
                     errors.push(ParseError::InvalidValue {
                         name: name.clone(),
-                        value: token.clone(),
+                        value: input,
                         expected: parser.type_name().to_string(),
                         detail: Some(detail),
                     });
                 }
             }
-            token_idx += 1;
+            token_idx = end;
         } else if *required {
             errors.push(ParseError::MissingArgument {
                 name: name.clone(),
@@ -814,39 +901,50 @@ pub fn dispatch_command(
             }
 
             // Positional argument parsing with support for relative coordinates (`~`).
-            // Resolve any `~` tokens for `double` arguments relative to the executor's `Position`.
+            // Resolve `double` and `vec3` tokens relative to the executor's Position.
             let resolved_positional = {
                 let mut tokens = positional.clone();
-                for (i, (arg_name, parser, _required, _variadic)) in
-                    res.arguments.iter().enumerate()
-                {
-                    if i >= tokens.len() {
+                let mut token_idx = 0;
+                for (arg_name, parser, _required, variadic) in &res.arguments {
+                    if token_idx >= tokens.len() {
                         break;
                     }
-                    let token = &tokens[i];
-                    if token.starts_with('~') && parser.type_name() == "double" {
-                        // Attempt to read base position from executor entity
-                        if let Some(pos_comp) = world.get::<Position>(entity) {
-                            let base_val = match arg_name.as_str() {
+
+                    let consumed = if *variadic {
+                        tokens.len() - token_idx
+                    } else {
+                        parser.token_count().min(tokens.len() - token_idx)
+                    };
+
+                    if let Some(pos_comp) = world.get::<Position>(entity) {
+                        let bases: Vec<f64> = match parser.type_name() {
+                            "double" => vec![match arg_name.as_str() {
                                 "x" => pos_comp.x,
                                 "y" => pos_comp.y,
                                 "z" => pos_comp.z,
                                 _ => pos_comp.x,
-                            };
+                            }],
+                            "vec3" => vec![pos_comp.x, pos_comp.y, pos_comp.z],
+                            _ => Vec::new(),
+                        };
 
-                            let offset_str = &token[1..];
-                            let offset = if offset_str.is_empty() {
-                                0.0
-                            } else {
-                                match offset_str.parse::<f64>() {
-                                    Ok(v) => v,
-                                    Err(_) => continue, // leave token unchanged; parse_positional will report error
-                                }
+                        for (offset, base) in bases.into_iter().take(consumed).enumerate() {
+                            let token = &tokens[token_idx + offset];
+                            let Some(relative) = token.strip_prefix('~') else {
+                                continue;
                             };
-                            let abs = base_val + offset;
-                            tokens[i] = abs.to_string();
+                            let delta = if relative.is_empty() {
+                                0.0
+                            } else if let Ok(value) = relative.parse::<f64>() {
+                                value
+                            } else {
+                                continue;
+                            };
+                            tokens[token_idx + offset] = (base + delta).to_string();
                         }
                     }
+
+                    token_idx += consumed;
                 }
                 tokens
             };
@@ -873,6 +971,51 @@ pub fn dispatch_command(
         }
         Resolved::NotFound(err) => {
             send_system_chat(world, client_id, &err, "red");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::defaults::summon_command;
+
+    fn child_named(tree: &Commands, parent_index: i32, name: &str) -> i32 {
+        tree.nodes[parent_index as usize]
+            .children
+            .iter()
+            .copied()
+            .find(|index| tree.nodes[*index as usize].name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("missing child node {name}"))
+    }
+
+    #[test]
+    fn summon_tree_uses_vec3_and_exposes_flags_after_entity() {
+        let mut registry = CommandRegistry::new();
+        registry.register(summon_command());
+
+        let tree = registry.build_command_tree();
+        let summon = child_named(&tree, tree.root_index, "summon");
+        let entity = child_named(&tree, summon, "entity");
+        let position = child_named(&tree, entity, "position");
+
+        assert!(matches!(
+            tree.nodes[position as usize].parser,
+            Some(Parser::Vec3)
+        ));
+        assert!(tree.nodes[entity as usize].is_executable);
+        assert!(tree.nodes[position as usize].is_executable);
+
+        for flag in ["--wander", "--gravity", "--block-checks", "-w", "-g", "-b"] {
+            let flag_node = child_named(&tree, entity, flag);
+            assert!(tree.nodes[flag_node as usize].is_executable);
+            assert_eq!(tree.nodes[flag_node as usize].redirect_node, Some(entity));
+
+            let position_flag_node = child_named(&tree, position, flag);
+            assert_eq!(
+                tree.nodes[position_flag_node as usize].redirect_node,
+                Some(position)
+            );
         }
     }
 }

@@ -15,7 +15,8 @@ use crate::world::DimensionId;
 use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
 
 use super::parser::{
-    DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, StringArg, SummonableEntityArg,
+    DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, StringArg,
+    SummonableEntityArg, Vec3Arg,
 };
 use super::{Command, CommandBuilder, CommandContext, CommandRegistry};
 use crate::inventory::Inventory;
@@ -475,9 +476,7 @@ pub fn summon_command() -> Command {
     CommandBuilder::new("summon")
         .description("Summon an entity at a position")
         .arg("entity", Arc::new(SummonableEntityArg))
-        .arg_optional("x", DoubleArg::unbounded())
-        .arg_optional("y", DoubleArg::unbounded())
-        .arg_optional("z", DoubleArg::unbounded())
+        .arg_optional("position", Arc::new(Vec3Arg))
         .flag("wander", Some('w'), "Attach the demo random-walk behavior")
         .flag(
             "gravity",
@@ -510,21 +509,15 @@ fn handle_summon(ctx: &mut CommandContext) {
     }
 
     let executor = ctx.entity;
-    let x_arg = ctx.get::<f64>("x").copied();
-    let y_arg = ctx.get::<f64>("y").copied();
-    let z_arg = ctx.get::<f64>("z").copied();
-    let (x, y, z) = match (x_arg, y_arg, z_arg) {
-        (Some(x), Some(y), Some(z)) => (x, y, z),
-        (None, None, None) => ctx.with_world(|world| {
+    let position_arg = ctx.get::<[f64; 3]>("position").copied();
+    let (x, y, z) = match position_arg {
+        Some([x, y, z]) => (x, y, z),
+        None => ctx.with_world(|world| {
             let pos = world
                 .get::<Position>(executor)
                 .expect("executor must have Position");
             (pos.x, pos.y, pos.z)
         }),
-        _ => {
-            ctx.reply_error("Expected either no coordinates or all of x, y and z");
-            return;
-        }
     };
 
     let entity_id = ctx.with_world_mut(|world| {
@@ -735,6 +728,30 @@ mod tests {
     }
 
     #[test]
+    fn summon_with_relative_coordinates_uses_executor_position() {
+        let (mut world, player, _outgoing_rx) = command_world();
+
+        dispatch_command(
+            &mut world,
+            7,
+            player,
+            "summon",
+            vec![
+                "minecraft:zombie".to_string(),
+                "~1".to_string(),
+                "~".to_string(),
+                "~-2".to_string(),
+            ],
+        );
+
+        let entities = spawned_entities(&mut world);
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].0.x, 13.0);
+        assert_eq!(entities[0].0.y, 64.0);
+        assert_eq!(entities[0].0.z, -10.0);
+    }
+
+    #[test]
     fn summon_rejects_partial_coordinates() {
         let (mut world, player, outgoing_rx) = command_world();
 
@@ -747,7 +764,7 @@ mod tests {
         );
 
         assert!(spawned_entities(&mut world).is_empty());
-        assert_eq!(outgoing_rx.try_iter().count(), 1);
+        assert_eq!(outgoing_rx.try_iter().count(), 2);
     }
 
     #[test]
