@@ -7,6 +7,7 @@ use tracing::{error, info, instrument};
 use crate::{
     client::Client,
     network::{IncomingPacket, OutgoingPacket},
+    server_status::ServerStatusSnapshot,
 };
 use voidmc_net::socket::ServerSocket;
 
@@ -35,6 +36,36 @@ impl Server {
         disconnect_tx: Sender<u32>,
         kick_rx: Receiver<u32>,
     ) {
+        self.run_inner(incoming_tx, outgoing_rx, disconnect_tx, kick_rx, None)
+            .await;
+    }
+
+    pub(crate) async fn run_with_status(
+        &mut self,
+        incoming_tx: Sender<IncomingPacket>,
+        outgoing_rx: Receiver<OutgoingPacket>,
+        disconnect_tx: Sender<u32>,
+        kick_rx: Receiver<u32>,
+        server_status: ServerStatusSnapshot,
+    ) {
+        self.run_inner(
+            incoming_tx,
+            outgoing_rx,
+            disconnect_tx,
+            kick_rx,
+            Some(server_status),
+        )
+        .await;
+    }
+
+    async fn run_inner(
+        &mut self,
+        incoming_tx: Sender<IncomingPacket>,
+        outgoing_rx: Receiver<OutgoingPacket>,
+        disconnect_tx: Sender<u32>,
+        kick_rx: Receiver<u32>,
+        server_status: Option<ServerStatusSnapshot>,
+    ) {
         let local_addr = self.socket.0.local_addr().ok();
         if let Some(addr) = local_addr {
             info!(listen_addr = %addr, "Server listening");
@@ -53,11 +84,18 @@ impl Server {
 
                             let incoming_tx = incoming_tx.clone();
                             let disconnect_tx = disconnect_tx.clone();
+                            let server_status = server_status.clone();
                             let (outgoing_tx, outgoing_rx) = flume::unbounded();
                             self.channels.insert(client_id, outgoing_tx);
 
                             tokio::spawn(async move {
-                                if let Err(e) = Client::new(client_id, client, incoming_tx, outgoing_rx)
+                                if let Err(e) = Client::new(
+                                    client_id,
+                                    client,
+                                    incoming_tx,
+                                    outgoing_rx,
+                                    server_status,
+                                )
                                     .run()
                                     .await
                                 {
