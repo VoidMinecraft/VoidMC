@@ -63,7 +63,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config_builder = ServerConfigBuilder::new()
         .spawn_chunk_radius(4)
-        .initial_chunk_radius(4);
+        .initial_chunk_radius(4)
+        .motd("Void Example Server")
+        .max_players(100);
 
     if metrics_env.enabled() {
         config_builder = config_builder.metrics_debug(true);
