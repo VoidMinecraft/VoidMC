@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ussr_nbt::owned::Nbt;
 use uuid::Uuid;
-use voidmc_codec::{Decode, DecodeError, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, Decoder, Encode, VarI32};
 
 #[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct BossEvent {
@@ -70,8 +70,8 @@ impl Encode for BossBarFlags {
 }
 
 impl Decode for BossBarFlags {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        Ok(BossBarFlags::from_bits_truncate(u8::decode(buf)?))
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        Ok(BossBarFlags::from_bits_truncate(decoder.decode::<u8>()?))
     }
 }
 
@@ -115,23 +115,23 @@ impl Encode for BossEventAction {
 }
 
 impl Decode for BossEventAction {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        Ok(match VarI32::decode(buf)?.0 {
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        Ok(match decoder.decode::<VarI32>()?.0 {
             0 => BossEventAction::Add {
-                title: Nbt::decode(buf)?,
-                progress: f32::decode(buf)?,
-                color: BossBarColor::decode(buf)?,
-                division: BossBarDivision::decode(buf)?,
-                flags: BossBarFlags::decode(buf)?,
+                title: decoder.decode()?,
+                progress: decoder.decode()?,
+                color: decoder.decode()?,
+                division: decoder.decode()?,
+                flags: decoder.decode()?,
             },
             1 => BossEventAction::Remove,
-            2 => BossEventAction::UpdateProgress(f32::decode(buf)?),
-            3 => BossEventAction::UpdateTitle(Nbt::decode(buf)?),
+            2 => BossEventAction::UpdateProgress(decoder.decode()?),
+            3 => BossEventAction::UpdateTitle(decoder.decode()?),
             4 => BossEventAction::UpdateStyle {
-                color: BossBarColor::decode(buf)?,
-                division: BossBarDivision::decode(buf)?,
+                color: decoder.decode()?,
+                division: decoder.decode()?,
             },
-            5 => BossEventAction::UpdateFlags(BossBarFlags::decode(buf)?),
+            5 => BossEventAction::UpdateFlags(decoder.decode()?),
             _ => return Err(DecodeError::InvalidPacketId(None)),
         })
     }
@@ -222,8 +222,16 @@ mod tests {
     }
 
     #[test]
-    fn actions_without_text_roundtrip() {
+    fn every_action_roundtrips() {
         let actions = [
+            BossEventAction::Add {
+                title: title("Boss"),
+                progress: 0.25,
+                color: BossBarColor::Purple,
+                division: BossBarDivision::Notches6,
+                flags: BossBarFlags::all(),
+            },
+            BossEventAction::UpdateTitle(title("Phase 2")),
             BossEventAction::Remove,
             BossEventAction::UpdateProgress(0.75),
             BossEventAction::UpdateStyle {
@@ -240,17 +248,6 @@ mod tests {
             assert_eq!(BossEvent::decode(&mut slice).unwrap(), packet);
             assert!(slice.is_empty());
         }
-    }
-
-    #[test]
-    fn title_update_decodes() {
-        let packet = BossEvent {
-            id: ID,
-            action: BossEventAction::UpdateTitle(title("Phase 2")),
-        };
-        let mut bytes = Vec::new();
-        packet.encode(&mut bytes);
-        assert_eq!(BossEvent::decode(&mut bytes.as_slice()).unwrap(), packet);
     }
 
     #[test]
