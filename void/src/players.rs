@@ -17,6 +17,10 @@
 //! }
 //! ```
 //!
+//! [`Players`] reads `ClientId`, `PlayerReady`, `PlayerDimension` and
+//! `LoadedChunks`. A system that also mutates one of those must wrap the two
+//! in a `ParamSet` (see `stream_chunks`), or Bevy rejects the system (B0001).
+//!
 //! Delivery failures are never silent: a missing entity logs at `debug`, an
 //! entity without a [`ClientId`] logs at `warn`, and a closed outgoing channel
 //! (the network thread is gone) logs one `error` for the whole process.

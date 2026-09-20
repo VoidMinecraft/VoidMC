@@ -16,6 +16,7 @@ use crate::events::PlayerReadyEvent;
 use crate::inventory::Inventory;
 use crate::network::PacketEvent;
 use crate::players::Players;
+use crate::schedule::VoidSystems;
 
 /// Marker: this player's inventory changed and must be re-synced to the client.
 /// Insert it after mutating an [`Inventory`]; the resync system removes it.
@@ -31,7 +32,10 @@ impl Plugin for InventoryPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(sync_inventory_on_ready)
             .add_observer(handle_container_click)
-            .add_systems(PostUpdate, resync_dirty_inventories);
+            .add_systems(
+                PostUpdate,
+                resync_dirty_inventories.in_set(VoidSystems::InventorySync),
+            );
     }
 }
 

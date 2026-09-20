@@ -21,6 +21,7 @@ use crate::inventory::Inventory;
 use crate::item::ItemStack;
 use crate::players::Players;
 use crate::plugins::inventory::InventoryDirty;
+use crate::schedule::VoidSystems;
 use crate::systems::entities::broadcast_entity_spawns;
 use crate::world::DimensionId;
 
@@ -40,9 +41,14 @@ impl Plugin for ItemDropsPlugin {
             .add_observer(send_item_data_on_join)
             .add_systems(
                 PostUpdate,
-                broadcast_item_data.after(broadcast_entity_spawns),
+                broadcast_item_data
+                    .after(broadcast_entity_spawns)
+                    .in_set(VoidSystems::EntityBroadcast),
             )
-            .add_systems(Update, (tick_pickup_delay, pickup_items));
+            .add_systems(
+                Update,
+                (tick_pickup_delay, pickup_items).in_set(VoidSystems::ItemPickup),
+            );
     }
 }
 

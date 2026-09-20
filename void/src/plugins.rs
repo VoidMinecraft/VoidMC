@@ -31,3 +31,48 @@ impl Plugin for DefaultPlugins {
         ));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bevy_app::App;
+
+    use super::DefaultPlugins;
+    use crate::commands::plugin::CommandPlugin;
+    use crate::components::EntityIdCounter;
+    use crate::config::{ServerConfig, ServerConfigResource};
+    use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
+    use crate::registry::RegistryDataStore;
+    use crate::systems::GameSystemsPlugin;
+    use crate::world::ChunkIndex;
+    use crate::world::generation::{DefaultWorldGenerator, WorldGen};
+
+    /// Builds the full framework plugin stack and ticks once. Bevy validates
+    /// system-parameter conflicts (B0001) on the first run, so this catches a
+    /// system that mutates a component `Players` reads.
+    #[test]
+    fn full_plugin_stack_ticks_without_param_conflicts() {
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, _outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
+
+        let mut app = App::new();
+        app.add_plugins(NetworkPlugin::new(
+            incoming_rx,
+            outgoing_tx,
+            disconnect_rx,
+            kick_tx,
+        ))
+        .add_plugins(DefaultPlugins)
+        .add_plugins(CommandPlugin)
+        .add_plugins(GameSystemsPlugin)
+        .insert_resource(EntityIdCounter(1))
+        .insert_resource(RegistryDataStore::default())
+        .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
+        .insert_resource(WorldGen(Box::new(DefaultWorldGenerator::default())))
+        .init_resource::<ChunkIndex>();
+
+        app.update();
+        app.update();
+    }
+}

@@ -23,6 +23,7 @@ use crate::item_behavior::{
     enqueue_use_in_air, enqueue_use_on_block,
 };
 use crate::network::PacketEvent;
+use crate::schedule::VoidSystems;
 
 pub struct ItemUsePlugin;
 
@@ -36,7 +37,10 @@ impl Plugin for ItemUsePlugin {
             .add_observer(queue_break)
             .add_observer(handle_creative_slot)
             .add_observer(track_selected_slot)
-            .add_systems(Update, drain_item_use_queue);
+            .add_systems(
+                Update,
+                drain_item_use_queue.in_set(VoidSystems::ItemUseDrain),
+            );
     }
 }
 
