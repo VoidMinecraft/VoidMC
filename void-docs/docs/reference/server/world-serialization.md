@@ -74,7 +74,8 @@ Minecraft's Anvil `.mca` format but is **not** vanilla-compatible:
 - The payload is a standard (named-root) NBT compound built with `ussr_nbt`,
   mirroring VoidMC's chunk types: per-section `block_count`, `block_states`
   (single value or `bits` + `palette` + packed `data`), `biome`, plus
-  `heightmaps` and (optionally) `light`.
+  `heightmaps`, an Anvil-shaped `block_entities` list (`id`, `x`, `y`, `z`
+  and the entity's own tags) and (optionally) `light`.
 
 ## Lifecycle
 
@@ -121,7 +122,8 @@ The engine-facing hook is the `voidmc::ChunkLoader` trait (with the
 - The format is **not** compatible with the vanilla Minecraft client or other
   servers; it only round-trips VoidMC's own chunk data.
 - Persistence is chunk-granular: a chunk is saved as a whole when any block in
-  it changes. Entities and block entities are not yet persisted.
+  it changes. Entities are not yet persisted; block entities are saved with
+  their chunk.
 - A chunk modified in memory but never flushed (e.g. on a hard `kill -9`) may be
   lost; periodic and shutdown flushes cover the normal cases.
 
