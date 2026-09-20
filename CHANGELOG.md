@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+### Bug Fixes
+
+- *(net)* Keep partial frames in `ClientSocket` so a `receive()` cancelled by `tokio::select!` no longer drops bytes and corrupts the stream
 ## [0.1.0](https://github.com/VoidMinecraft/VoidMC/releases/tag/voidmc-world-io-v0.1.0) - 2026-06-25
 
 ### Documentation
