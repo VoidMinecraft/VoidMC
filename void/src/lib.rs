@@ -22,6 +22,7 @@ pub mod registry;
 pub mod schedule;
 mod server;
 mod server_status;
+pub mod sounds;
 pub mod systems;
 pub mod world;
 
@@ -51,6 +52,7 @@ pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
+pub use sounds::{Sound, SoundPosition, SoundSource, SoundStop, Sounds, WorldSounds};
 pub use voidmc_codec::{DecodeLimits, LimitKind};
 pub use voidmc_net::socket::FrameLimits;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};

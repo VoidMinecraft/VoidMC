@@ -18,6 +18,7 @@ use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
 mod boss_bar;
 mod circle;
+mod sound;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -90,6 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             register_default_commands(&mut registry, &[]);
             registry.register(circle::circle_command());
             registry.register(boss_bar::bossbar_command());
+            registry.register(sound::sound_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);
