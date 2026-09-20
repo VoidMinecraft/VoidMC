@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 
@@ -8,17 +10,29 @@ use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 #[derive(Resource)]
 pub struct RegistryDataStore {
     pub registries: Vec<RegistryData>,
+    sent: AtomicBool,
 }
 
 impl Default for RegistryDataStore {
     fn default() -> Self {
         Self {
             registries: default_registry_data(),
+            sent: AtomicBool::new(false),
         }
     }
 }
 
 impl RegistryDataStore {
+    /// Whether any client has already received these registries; mutations
+    /// after that point desynchronise ids (see `BiomeBuilder::register`).
+    pub fn sent_to_clients(&self) -> bool {
+        self.sent.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn mark_sent(&self) {
+        self.sent.store(true, Ordering::Relaxed);
+    }
+
     /// Look up a registry by its id (e.g. `"minecraft:worldgen/biome"`).
     pub fn get_registry(&self, id: &str) -> Option<&RegistryData> {
         self.registries.iter().find(|r| r.registry_id == id)

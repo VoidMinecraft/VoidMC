@@ -14,7 +14,7 @@ pub trait WorldGenerator: Send + Sync {
 
     /// Biome of the 4×4×4 cell whose lowest corner is at these block
     /// coordinates. Feed it to [`ChunkBuilder::biomes_from`] in `generate_chunk`.
-    fn biome_at(&self, block_x: i32, block_y: i32, block_z: i32) -> BiomeId {
+    fn cell_biome(&self, block_x: i32, block_y: i32, block_z: i32) -> BiomeId {
         let _ = (block_x, block_y, block_z);
         BiomeId::plains()
     }
@@ -46,7 +46,7 @@ impl WorldGenerator for DefaultWorldGenerator {
         let amp = self.amplitude;
         let water = self.water_level;
         ChunkBuilder::new(pos.x, pos.z)
-            .biomes_from(|x, y, z| self.biome_at(x, y, z).0)
+            .biomes_from(|x, y, z| self.cell_biome(x, y, z).0)
             .with_heightmap_layered(
                 |x, z| {
                     let main_wave = (x as f64 * freq).sin() + (z as f64 * freq).sin();

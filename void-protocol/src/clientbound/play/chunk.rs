@@ -156,7 +156,7 @@ impl PaletteData {
             } => palette
                 .get(packed_get(data, *bits_per_entry, index) as usize)
                 .copied()
-                .unwrap_or(palette[0]),
+                .unwrap_or(0),
             PaletteData::Direct {
                 bits_per_entry,
                 data,
@@ -209,7 +209,8 @@ fn packed_len(bits: u8, entries: usize) -> usize {
 fn packed_get(data: &[u64], bits: u8, index: usize) -> u64 {
     let per_long = 64 / bits as usize;
     let mask = (1u64 << bits) - 1;
-    (data[index / per_long] >> ((index % per_long) * bits as usize)) & mask
+    let long = data.get(index / per_long).copied().unwrap_or(0);
+    (long >> ((index % per_long) * bits as usize)) & mask
 }
 
 fn packed_set(data: &mut [u64], bits: u8, index: usize, value: u64) {
@@ -1326,6 +1327,28 @@ mod biome_tests {
             }
         }
         assert_eq!(section.biome, PaletteData::SingleValue(3));
+    }
+
+    #[test]
+    fn block_section_golden_bytes() {
+        let mut section = ChunkSection::filled(1, 5);
+        section.set_block_state(1, 0, 0, 9);
+        let bytes = section.encode_to_bytes();
+        let mut expected = vec![0x10, 0x00, 0x00, 0x00, 4, 2, 1, 9];
+        expected.extend((1u64 << 4).to_be_bytes());
+        expected.extend([0u8; 8 * 255]);
+        expected.extend([0, 5]);
+        assert_eq!(bytes, expected);
+
+        let mut truncated = ChunkSection::filled(1, 5);
+        truncated.block_state = PaletteData::Indirect {
+            bits_per_entry: 4,
+            palette: vec![1],
+            data: vec![0x20],
+        };
+        assert_eq!(truncated.get_block_state(0, 0, 0), 1);
+        assert_eq!(truncated.get_block_state(1, 0, 0), 0);
+        assert_eq!(truncated.get_block_state(0, 15, 15), 0);
     }
 
     #[test]

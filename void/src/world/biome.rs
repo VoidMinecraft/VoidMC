@@ -452,7 +452,13 @@ impl BiomeBuilder {
     }
 
     /// Appends the biome to the registry sent at login and returns its index.
+    /// Only valid before any client has received registries: a client that
+    /// already logged in would disagree with every later chunk palette.
     pub fn register(self, store: &mut RegistryDataStore) -> Result<BiomeId, BiomeError> {
+        debug_assert!(
+            !store.sent_to_clients(),
+            "BiomeBuilder::register after registries were sent to a client"
+        );
         self.validate()?;
         if store.biome(&self.name).is_some() {
             return Err(BiomeError::AlreadyRegistered(self.name));

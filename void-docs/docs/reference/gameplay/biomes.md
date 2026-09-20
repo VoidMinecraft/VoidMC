@@ -37,7 +37,7 @@ direct at `ceil(log2(registry size))` bits, the only widths the client accepts.
 
 ## Generation
 
-`WorldGenerator::biome_at(x, y, z)` returns the biome of the cell whose lowest
+`WorldGenerator::cell_biome(x, y, z)` returns the biome of the cell whose lowest
 corner is at those block coordinates; the default is plains, so existing
 generators are unchanged. Feed it to `ChunkBuilder::biomes_from` in
 `generate_chunk`:
@@ -46,12 +46,12 @@ generators are unchanged. Feed it to `ChunkBuilder::biomes_from` in
 impl WorldGenerator for Islands {
     fn generate_chunk(&self, pos: &ChunkPos) -> Chunk {
         ChunkBuilder::new(pos.x, pos.z)
-            .biomes_from(|x, y, z| self.biome_at(x, y, z).0)
+            .biomes_from(|x, y, z| self.cell_biome(x, y, z).0)
             .fill_below(64, blocks::STONE)
             .build()
     }
 
-    fn biome_at(&self, x: i32, _y: i32, z: i32) -> BiomeId {
+    fn cell_biome(&self, x: i32, _y: i32, z: i32) -> BiomeId {
         if (x * x + z * z) < 64 * 64 { BiomeId::named("beach").unwrap() } else { BiomeId::named("ocean").unwrap() }
     }
 }
@@ -71,7 +71,7 @@ attributes (fog, sky, music, ambient sounds and particles), either a value or a
 modifier over the dimension's value.
 
 ```rust
-use voidmc::{Attribute, BiomeBuilder, ServerConfigBuilder};
+use voidmc::{Attribute, BiomeBuilder, ServerConfigBuilder, Tag};
 
 ServerConfigBuilder::new().configure_registries(|registries| {
     let id = BiomeBuilder::new("myserver:crimson_sky")
@@ -89,7 +89,10 @@ ServerConfigBuilder::new().configure_registries(|registries| {
 
 `register` returns the new `BiomeId` and fails on an unqualified name, a
 duplicate, or an attribute the client does not sync (gameplay attributes are
-server-only). Later, `RegistryDataStore::biome("myserver:crimson_sky")` finds it
+server-only). It must run before any client logs in (a debug assertion checks
+`RegistryDataStore::sent_to_clients`): ids are positions in the synced list, so
+a late addition would not match what earlier clients received. `Tag` is
+`voidmc::Tag`, the NBT tag type used for raw attribute values. Later, `RegistryDataStore::biome("myserver:crimson_sky")` finds it
 again. Visual and audio attributes apply at the camera's biome only; a custom
 biome must therefore surround the player to be seen.
 
