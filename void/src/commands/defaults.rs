@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
 use bevy_app::AppExit;
-use bevy_ecs::prelude::With;
+use bevy_ecs::prelude::{Entity, With};
 use rand::Rng;
 
 use crate::components::{
-    ClientId, EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
+    EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
     MinecraftEntityId, MovementConfig, PlayerDimension, PlayerName, PlayerReady, Position,
     PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, TeleportState, Velocity,
     VerticalVelocity, Wander,
 };
-use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::world::DimensionId;
 use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
 
@@ -234,22 +233,26 @@ fn handle_gamemode(ctx: &mut CommandContext) {
     };
 
     // Send GameEvent to change gamemode
-    ctx.with_world(|world| {
-        let channels = world.resource::<NetworkChannels>();
-        let _ = channels.outgoing.send(OutgoingPacket {
-            client_id: ctx.client_id,
-            packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
-                voidmc_protocol::clientbound::PlayPacket::GameEvent(
-                    voidmc_protocol::clientbound::GameEvent {
-                        event: voidmc_protocol::clientbound::GameEventType::ChangeGameMode,
-                        value: mode as f32,
-                    },
-                ),
-            ),
-        });
-    });
+    ctx.players().send(
+        ctx.entity,
+        voidmc_protocol::clientbound::GameEvent {
+            event: voidmc_protocol::clientbound::GameEventType::ChangeGameMode,
+            value: mode as f32,
+        },
+    );
 
     ctx.reply(&format!("Game mode set to {} ({})", mode_name, mode));
+}
+
+/// Resolves a ready player by (case-insensitive) name.
+fn find_ready_player(ctx: &mut CommandContext, name: &str) -> Option<Entity> {
+    ctx.with_world_mut(|world| {
+        world
+            .query_filtered::<(Entity, &PlayerName), With<PlayerReady>>()
+            .iter(world)
+            .find(|(_, player_name)| player_name.0.eq_ignore_ascii_case(name))
+            .map(|(entity, _)| entity)
+    })
 }
 
 fn handle_kick(ctx: &mut CommandContext) {
@@ -260,29 +263,16 @@ fn handle_kick(ctx: &mut CommandContext) {
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
     // Find the target player
-    let target: Option<u32> = ctx.with_world_mut(|world| {
-        let mut query = world.query_filtered::<(&ClientId, &PlayerName), With<PlayerReady>>();
-        query
-            .iter(world)
-            .find(|(_, name)| name.0.eq_ignore_ascii_case(&target_name))
-            .map(|(cid, _)| cid.0)
-    });
+    let target = find_ready_player(ctx, &target_name);
 
     match target {
-        Some(target_cid) => {
+        Some(target) => {
             // Send Disconnect packet
             let reason_nbt = crate::commands::text_to_nbt(&reason, "red");
-            ctx.with_world(|world| {
-                let channels = world.resource::<NetworkChannels>();
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: target_cid,
-                    packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
-                        voidmc_protocol::clientbound::PlayPacket::Disconnect(
-                            voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
-                        ),
-                    ),
-                });
-            });
+            ctx.players().send(
+                target,
+                voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
+            );
 
             ctx.reply(&format!("Kicked {} (reason: {})", target_name, reason));
         }
@@ -343,20 +333,14 @@ fn handle_tell(ctx: &mut CommandContext) {
     let sender_name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
 
     // Find the target player
-    let target: Option<u32> = ctx.with_world_mut(|world| {
-        let mut query = world.query_filtered::<(&ClientId, &PlayerName), With<PlayerReady>>();
-        query
-            .iter(world)
-            .find(|(_, name)| name.0.eq_ignore_ascii_case(&target_name))
-            .map(|(cid, _)| cid.0)
-    });
+    let target = find_ready_player(ctx, &target_name);
 
     match target {
-        Some(target_cid) => {
+        Some(target) => {
             ctx.with_world(|world| {
                 super::send_system_chat(
                     world,
-                    target_cid,
+                    target,
                     &format!("{} whispers to you: {}", sender_name, message),
                     "gray",
                 );
@@ -432,28 +416,21 @@ fn handle_tp(ctx: &mut CommandContext) {
     });
 
     // Send SynchronizePlayerPosition packet
-    ctx.with_world(|world| {
-        let channels = world.resource::<NetworkChannels>();
-        let _ = channels.outgoing.send(OutgoingPacket {
-            client_id: ctx.client_id,
-            packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
-                voidmc_protocol::clientbound::PlayPacket::SynchronizePlayerPosition(
-                    voidmc_protocol::clientbound::SynchronizePlayerPosition {
-                        teleport_id,
-                        x,
-                        y,
-                        z,
-                        vx: 0.0,
-                        vy: 0.0,
-                        vz: 0.0,
-                        yaw,
-                        pitch,
-                        flags: voidmc_protocol::clientbound::TeleportFlags::empty(),
-                    },
-                ),
-            ),
-        });
-    });
+    ctx.players().send(
+        ctx.entity,
+        voidmc_protocol::clientbound::SynchronizePlayerPosition {
+            teleport_id,
+            x,
+            y,
+            z,
+            vx: 0.0,
+            vy: 0.0,
+            vz: 0.0,
+            yaw,
+            pitch,
+            flags: voidmc_protocol::clientbound::TeleportFlags::empty(),
+        },
+    );
 
     ctx.reply(&format!("Teleported to {:.1}, {:.1}, {:.1}", x, y, z));
 }
@@ -620,6 +597,7 @@ mod tests {
 
     use super::*;
     use crate::commands::dispatch_command;
+    use crate::components::ClientId;
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
 
     fn command_world() -> (World, Entity, Receiver<OutgoingPacket>) {

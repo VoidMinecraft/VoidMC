@@ -12,7 +12,8 @@ use voidmc_protocol::{
 use crate::{
     ServerConfigResource,
     components::PlayerReady,
-    network::{NetworkChannels, OutgoingPacket, PacketEvent},
+    network::PacketEvent,
+    players::Players,
     server_status::{ServerStatusSnapshot, player_count, server_status},
 };
 
@@ -23,36 +24,30 @@ impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(PostUpdate, update_status_snapshot);
 
-        app.add_observer(
-            |event: On<PacketEvent<PingRequest>>, channels: Res<NetworkChannels>| {
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: event.client_id,
-                    packet: clientbound::ClientboundPacket::Status(
-                        clientbound::StatusPacket::PingResponse(clientbound::PingResponse {
-                            timestamp: event.packet.timestamp,
-                        }),
-                    ),
-                });
-            },
-        );
+        app.add_observer(|event: On<PacketEvent<PingRequest>>, players: Players| {
+            players.send(
+                event.entity,
+                clientbound::PingResponse {
+                    timestamp: event.packet.timestamp,
+                },
+            );
+        });
 
         app.add_observer(
             |event: On<PacketEvent<StatusRequest>>,
-             channels: Res<NetworkChannels>,
+             players: Players,
              config: Res<ServerConfigResource>,
              ready_players: Query<(), With<PlayerReady>>| {
                 let max_players = config.max_players;
                 let motd = config.motd.clone();
                 let online_players = player_count(ready_players.iter().count());
 
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: event.client_id,
-                    packet: clientbound::ClientboundPacket::Status(
-                        clientbound::StatusPacket::StatusResponse(clientbound::StatusResponse {
-                            status: server_status(max_players, online_players, motd),
-                        }),
-                    ),
-                });
+                players.send(
+                    event.entity,
+                    clientbound::StatusResponse {
+                        status: server_status(max_players, online_players, motd),
+                    },
+                );
             },
         );
     }
@@ -77,7 +72,8 @@ mod tests {
     use super::*;
     use crate::{
         ServerConfig,
-        network::{IncomingPacket, NetworkChannels},
+        components::ClientId,
+        network::{IncomingPacket, NetworkChannels, OutgoingPacket},
     };
 
     #[test]
@@ -101,7 +97,7 @@ mod tests {
         app.world_mut().spawn(PlayerReady);
         app.world_mut().spawn(PlayerReady);
         app.world_mut().spawn_empty();
-        let requester = app.world_mut().spawn_empty().id();
+        let requester = app.world_mut().spawn(ClientId(7)).id();
         app.world_mut().trigger(PacketEvent {
             client_id: 7,
             entity: requester,

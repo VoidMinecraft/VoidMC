@@ -3,11 +3,11 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    ClientId, ClientSettings, CurrentChunkPos, EffectiveViewDistance, LoadedChunks,
-    PlayerDimension, PlayerReady, Position,
+    ClientSettings, CurrentChunkPos, EffectiveViewDistance, LoadedChunks, PlayerDimension,
+    PlayerReady, Position,
 };
 use crate::config::ServerConfigResource;
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::players::Players;
 use crate::world::{
     ChunkData, ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition,
     generation::WorldGen, load_or_generate,
@@ -17,10 +17,10 @@ use crate::world::{
 #[instrument(
     level = "info",
     skip(
-        channels,
+        players,
         chunk_index,
         chunk_query,
-        players,
+        viewers,
         commands,
         world_gen,
         loader,
@@ -28,12 +28,12 @@ use crate::world::{
     )
 )]
 pub fn stream_chunks(
-    channels: Res<NetworkChannels>,
+    players: Players,
     mut chunk_index: ResMut<ChunkIndex>,
     chunk_query: Query<(&ChunkPosition, &ChunkData)>,
-    mut players: Query<
+    mut viewers: Query<
         (
-            &ClientId,
+            Entity,
             &Position,
             &mut CurrentChunkPos,
             &mut EffectiveViewDistance,
@@ -53,14 +53,14 @@ pub fn stream_chunks(
     let mut throttled = false;
 
     for (
-        client_id,
+        player,
         position,
         mut current_chunk,
         mut effective_vd,
         mut loaded_chunks,
         dimension,
         settings,
-    ) in players.iter_mut()
+    ) in viewers.iter_mut()
     {
         let new_chunk = ChunkPos::from_block(position.x, position.z);
 
@@ -82,15 +82,13 @@ pub fn stream_chunks(
 
         // Send SetCenterChunk when the chunk position changed
         if chunk_changed {
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: client_id.0,
-                packet: clientbound::ClientboundPacket::Play(
-                    clientbound::PlayPacket::SetCenterChunk(clientbound::SetCenterChunk {
-                        chunk_x: new_chunk.x,
-                        chunk_z: new_chunk.z,
-                    }),
-                ),
-            });
+            players.send(
+                player,
+                clientbound::SetCenterChunk {
+                    chunk_x: new_chunk.x,
+                    chunk_z: new_chunk.z,
+                },
+            );
         }
 
         let desired_sorted = new_chunk.chunks_in_radius(view_distance);
@@ -106,15 +104,13 @@ pub fn stream_chunks(
             .collect();
 
         for pos in &to_unload {
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: client_id.0,
-                packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::UnloadChunk(
-                    clientbound::UnloadChunk {
-                        chunk_x: pos.x,
-                        chunk_z: pos.z,
-                    },
-                )),
-            });
+            players.send(
+                player,
+                clientbound::UnloadChunk {
+                    chunk_x: pos.x,
+                    chunk_z: pos.z,
+                },
+            );
             loaded_chunks.0.remove(pos);
         }
 
@@ -142,12 +138,7 @@ pub fn stream_chunks(
                 chunk_index.0.insert(key, entity);
                 generated_this_tick += 1;
 
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: client_id.0,
-                    packet: clientbound::ClientboundPacket::ManualPlay(
-                        clientbound::ManualPlayPacket::ChunkDataAndLight(packet),
-                    ),
-                });
+                players.send(player, packet);
                 loaded_chunks.0.insert(*pos);
                 continue;
             }
@@ -156,12 +147,7 @@ pub fn stream_chunks(
             if let Some(&chunk_entity) = chunk_index.0.get(&key) {
                 if let Ok((chunk_pos, chunk_data)) = chunk_query.get(chunk_entity) {
                     let packet = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
-                    let _ = channels.outgoing.send(OutgoingPacket {
-                        client_id: client_id.0,
-                        packet: clientbound::ClientboundPacket::ManualPlay(
-                            clientbound::ManualPlayPacket::ChunkDataAndLight(packet),
-                        ),
-                    });
+                    players.send(player, packet);
                     loaded_chunks.0.insert(*pos);
                 }
             }

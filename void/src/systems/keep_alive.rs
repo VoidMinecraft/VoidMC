@@ -5,7 +5,7 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{ClientId, KeepAliveState, PlayerReady};
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::players::Players;
 
 #[derive(Resource)]
 pub struct KeepAliveTicker {
@@ -22,11 +22,11 @@ impl Default for KeepAliveTicker {
     }
 }
 
-#[instrument(level = "info", skip(ticker, channels, query))]
+#[instrument(level = "info", skip(ticker, players, query))]
 pub fn send_keep_alive(
     mut ticker: ResMut<KeepAliveTicker>,
-    channels: Res<NetworkChannels>,
-    mut query: Query<(&ClientId, &mut KeepAliveState), With<PlayerReady>>,
+    players: Players,
+    mut query: Query<(Entity, &ClientId, &mut KeepAliveState), With<PlayerReady>>,
 ) {
     ticker.ticks_since_last += 1;
 
@@ -41,7 +41,7 @@ pub fn send_keep_alive(
         .unwrap_or_default()
         .as_millis() as i64;
 
-    for (client_id, mut keep_alive_state) in query.iter_mut() {
+    for (entity, client_id, mut keep_alive_state) in query.iter_mut() {
         if keep_alive_state.awaiting_response {
             tracing::warn!(
                 "Client {} did not respond to keep-alive, skipping",
@@ -53,12 +53,7 @@ pub fn send_keep_alive(
         keep_alive_state.last_sent_id = keep_alive_id;
         keep_alive_state.awaiting_response = true;
 
-        let _ = channels.outgoing.send(OutgoingPacket {
-            client_id: client_id.0,
-            packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::KeepAlive(
-                clientbound::KeepAlive { keep_alive_id },
-            )),
-        });
+        players.send(entity, clientbound::KeepAlive { keep_alive_id });
 
         tracing::debug!(
             "Sent keep-alive {} to client {}",

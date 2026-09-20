@@ -16,6 +16,7 @@ pub mod item;
 pub mod item_behavior;
 mod metrics;
 pub mod network;
+pub mod players;
 pub mod plugins;
 pub mod registry;
 mod server;
@@ -43,6 +44,7 @@ pub use item_behavior::{
     BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
     UseResult,
 };
+pub use players::{Players, Recipient, Recipients, WorldPlayers};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
 pub use voidmc_codec::{DecodeLimits, LimitKind};
