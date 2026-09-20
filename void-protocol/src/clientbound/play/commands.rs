@@ -184,7 +184,7 @@ impl Encode for Commands {
 }
 
 impl Decode for Commands {
-    fn decode(_buf: &mut &[u8]) -> Result<Self, DecodeError> {
+    fn decode_with(_decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, DecodeError> {
         // Server-only packet, no need to decode
         Err(DecodeError::InvalidLength)
     }

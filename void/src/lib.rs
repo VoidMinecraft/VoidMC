@@ -45,6 +45,8 @@ pub use item_behavior::{
 };
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use server::Server;
+pub use voidmc_codec::{DecodeLimits, LimitKind};
+pub use voidmc_net::socket::FrameLimits;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
 pub use world::{

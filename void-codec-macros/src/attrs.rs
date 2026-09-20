@@ -1,4 +1,5 @@
-use syn::{Attribute, Expr, Field, GenericArgument, LitInt, PathArguments, Result, Type};
+use quote::quote;
+use syn::{Attribute, BinOp, Expr, Field, GenericArgument, LitInt, PathArguments, Result, Type};
 
 /// Transform an expression to prefix bare identifiers with `self.` for use in impl blocks
 /// E.g., `length * factor` becomes `self.length * self.factor`
@@ -27,10 +28,34 @@ pub fn transform_expr_for_self(expr: &Expr) -> Expr {
     }
 }
 
-/// Same as above but without self. prefix for use in function context where vars are local
-pub fn transform_expr_for_local(expr: &Expr) -> Expr {
-    // Just return as-is since identifiers are already local variables in scope
-    expr.clone()
+/// Convert a fixed-length expression into checked `usize` arithmetic.
+pub fn checked_len_expr(expr: &Expr) -> proc_macro2::TokenStream {
+    match expr {
+        Expr::Binary(binary) => {
+            let left = checked_len_expr(&binary.left);
+            let right = checked_len_expr(&binary.right);
+            let method = match binary.op {
+                BinOp::Add(_) => quote!(checked_add),
+                BinOp::Sub(_) => quote!(checked_sub),
+                BinOp::Mul(_) => quote!(checked_mul),
+                BinOp::Div(_) => quote!(checked_div),
+                _ => {
+                    return quote! {
+                        Err(voidmc_codec::DecodeError::InvalidLength)
+                    };
+                }
+            };
+            quote! {{
+                let left = (#left)?;
+                let right = (#right)?;
+                left.#method(right).ok_or(voidmc_codec::DecodeError::InvalidLength)
+            }}
+        }
+        Expr::Paren(paren) => checked_len_expr(&paren.expr),
+        _ => quote! {
+            usize::try_from(#expr).map_err(|_| voidmc_codec::DecodeError::InvalidLength)
+        },
+    }
 }
 
 /// Check if a field type is `Vec<u8>`

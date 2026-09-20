@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use voidmc_codec::{Decode, DecodeError, Encode};
+use voidmc_codec::{Decode, DecodeError, Decoder, Encode};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -23,8 +23,8 @@ impl Encode for TeleportFlags {
 }
 
 impl Decode for TeleportFlags {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        let bits = u32::decode(buf)?;
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bits = decoder.decode::<u32>()?;
         Ok(TeleportFlags::from_bits_truncate(bits))
     }
 }

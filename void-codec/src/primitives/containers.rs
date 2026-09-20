@@ -1,5 +1,5 @@
 use crate::primitives::vari::VarI32;
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
 
 impl<T: Encode> Encode for Vec<T> {
     fn encode(&self, buf: &mut Vec<u8>) {
@@ -11,15 +11,26 @@ impl<T: Encode> Encode for Vec<T> {
 }
 
 impl<T: Decode> Decode for Vec<T> {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        let len = VarI32::decode(buf)?.0;
-        if len < 0 {
-            return Err(DecodeError::InvalidLength);
-        }
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let raw_len = decoder.decode::<VarI32>()?.0;
+        let len = decoder.checked_len(
+            raw_len,
+            LimitKind::CollectionElements,
+            decoder.limits().max_collection_elements,
+        )?;
+        decoder.charge_elements(len)?;
+        let allocation = len
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(DecodeError::InvalidLength)?;
+        decoder.charge_allocation(allocation)?;
 
-        let mut vec = Vec::with_capacity(len as usize);
+        let mut vec = Vec::new();
+        vec.try_reserve_exact(len)
+            .map_err(|_| DecodeError::AllocationFailed {
+                requested: allocation,
+            })?;
         for _ in 0..len {
-            vec.push(T::decode(buf)?);
+            vec.push(decoder.decode::<T>()?);
         }
         Ok(vec)
     }
@@ -33,21 +44,17 @@ impl Encode for String {
 }
 
 impl Decode for String {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        let len = VarI32::decode(buf)?.0;
-        if len < 0 {
-            return Err(DecodeError::InvalidLength);
-        }
-
-        let len = len as usize;
-        if buf.len() < len {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(len);
-        *buf = rest;
-
-        String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::InvalidLength)
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let raw_len = decoder.decode::<VarI32>()?.0;
+        let len = decoder.checked_len(
+            raw_len,
+            LimitKind::StringBytes,
+            decoder.limits().max_string_bytes,
+        )?;
+        decoder.charge_allocation(len)?;
+        let bytes = decoder.take(len)?;
+        let text = std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidLength)?;
+        Ok(text.to_owned())
     }
 }
 
@@ -66,10 +73,10 @@ impl<T: Encode> Encode for Option<T> {
 }
 
 impl<T: Decode> Decode for Option<T> {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        let present = bool::decode(buf)?;
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let present = decoder.decode::<bool>()?;
         if present {
-            T::decode(buf).map(Some)
+            decoder.decode::<T>().map(Some)
         } else {
             Ok(None)
         }

@@ -1,4 +1,4 @@
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
 
 /// Helper functions for encoding/decoding fixed-length vectors
 /// These functions do not encode a length prefix since it's known from context
@@ -39,23 +39,32 @@ pub fn encode_fixed_length_vec_u8(
 
 pub fn decode_fixed_length_vec<T: Decode>(
     len: usize,
-    buf: &mut &[u8],
+    decoder: &mut Decoder<'_>,
 ) -> Result<Vec<T>, DecodeError> {
-    let mut vec = Vec::with_capacity(len);
+    decoder.charge_elements(len)?;
+    let allocation = len
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(DecodeError::InvalidLength)?;
+    decoder.charge_allocation(allocation)?;
+    let mut vec = Vec::new();
+    vec.try_reserve_exact(len)
+        .map_err(|_| DecodeError::AllocationFailed {
+            requested: allocation,
+        })?;
     for _ in 0..len {
-        vec.push(T::decode(buf)?);
+        vec.push(decoder.decode::<T>()?);
     }
     Ok(vec)
 }
 
 /// Optimized decoding for Vec<u8> - just copy_from_slice without decode overhead
-pub fn decode_fixed_length_vec_u8(len: usize, buf: &mut &[u8]) -> Result<Vec<u8>, DecodeError> {
-    if buf.len() < len {
-        eprintln!("Buffer too small: expected {}, got {}", len, buf.len());
-        return Err(DecodeError::UnexpectedEof);
-    }
-    let (data, rest) = buf.split_at(len);
-    *buf = rest;
+pub fn decode_fixed_length_vec_u8(
+    len: usize,
+    decoder: &mut Decoder<'_>,
+) -> Result<Vec<u8>, DecodeError> {
+    decoder.charge_elements(len)?;
+    decoder.charge_allocation(len)?;
+    let data = decoder.take(len)?;
     Ok(data.to_vec())
 }
 /// Encode remaining bytes - for Vec<u8> at end of packet
@@ -64,8 +73,15 @@ pub fn encode_remaining_vec_u8(vec: &[u8], buf: &mut Vec<u8>) {
 }
 
 /// Decode remaining bytes - consumes all remaining buffer
-pub fn decode_remaining_vec_u8(buf: &mut &[u8]) -> Result<Vec<u8>, DecodeError> {
-    let remaining = buf.to_vec();
-    *buf = &[];
-    Ok(remaining)
+pub fn decode_remaining_vec_u8(decoder: &mut Decoder<'_>) -> Result<Vec<u8>, DecodeError> {
+    let len = decoder.remaining_len();
+    if len > decoder.limits().max_remaining_bytes {
+        return Err(DecodeError::LimitExceeded {
+            kind: LimitKind::RemainingBytes,
+            requested: len,
+            limit: decoder.limits().max_remaining_bytes,
+        });
+    }
+    decoder.charge_allocation(len)?;
+    Ok(decoder.take(len)?.to_vec())
 }

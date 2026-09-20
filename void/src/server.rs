@@ -9,7 +9,7 @@ use crate::{
     network::{IncomingPacket, OutgoingPacket},
     server_status::ServerStatusSnapshot,
 };
-use voidmc_net::socket::ServerSocket;
+use voidmc_net::socket::{FrameLimits, ServerSocket};
 
 #[derive(Debug)]
 pub struct Server {
@@ -20,9 +20,13 @@ pub struct Server {
 
 impl Server {
     pub async fn new(addr: &str) -> std::io::Result<Self> {
+        Self::new_with_limits(addr, FrameLimits::default()).await
+    }
+
+    pub async fn new_with_limits(addr: &str, limits: FrameLimits) -> std::io::Result<Self> {
         let server = TcpListener::bind(addr).await?;
         Ok(Self {
-            socket: ServerSocket(server),
+            socket: ServerSocket::new(server, limits),
             channels: HashMap::new(),
             next_id: 1,
         })
@@ -66,7 +70,7 @@ impl Server {
         kick_rx: Receiver<u32>,
         server_status: Option<ServerStatusSnapshot>,
     ) {
-        let local_addr = self.socket.0.local_addr().ok();
+        let local_addr = self.socket.local_addr().ok();
         if let Some(addr) = local_addr {
             info!(listen_addr = %addr, "Server listening");
         }

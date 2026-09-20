@@ -115,9 +115,7 @@ impl Inventory {
 
     /// Empties every slot and the cursor.
     pub fn clear(&mut self) {
-        for slot in &mut self.slots {
-            *slot = ItemStack::EMPTY;
-        }
+        self.slots.fill(ItemStack::EMPTY);
         self.cursor = ItemStack::EMPTY;
     }
 

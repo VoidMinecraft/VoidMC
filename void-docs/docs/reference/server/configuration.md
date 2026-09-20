@@ -5,7 +5,7 @@
 `ServerConfigBuilder` provides a fluent API for constructing a `ServerConfig`:
 
 ```rust
-use voidmc::{ServerConfigBuilder, SpawnPosition};
+use voidmc::{FrameLimits, ServerConfigBuilder, SpawnPosition};
 
 let config = ServerConfigBuilder::new()
     .address("0.0.0.0:25565")
@@ -19,6 +19,7 @@ let config = ServerConfigBuilder::new()
     .initial_chunk_radius(3)
     .motd("My Void Server")
     .hardcore(false)
+    .frame_limits(FrameLimits::default())
     .world_generator(MyGenerator::new())
     .configure_registries(|registries| {
         // Modify registry data before server starts
@@ -47,8 +48,21 @@ let config = ServerConfigBuilder::new()
 | `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
+| `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
+
+## Packet limits
+
+`FrameLimits` rejects invalid packet lengths before allocation and carries the
+limits used while decoding strings, collections, remaining-byte fields, and NBT.
+The production defaults allow 2 MiB inbound frames and 8 MiB outbound frames.
+Applications can replace the complete policy through
+`ServerConfigBuilder::frame_limits`.
+
+Decoded packets must consume their complete declared frame. Packet definitions
+that intentionally accept an opaque tail must mark that field with
+`#[codec(remaining)]`.
 
 ## SpawnPosition
 

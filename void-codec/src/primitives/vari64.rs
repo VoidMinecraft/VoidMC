@@ -1,4 +1,4 @@
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarI64(pub i64);
@@ -24,17 +24,16 @@ impl Encode for VarI64 {
 }
 
 impl Decode for VarI64 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let mut value: u64 = 0;
         let mut shift = 0;
 
         for _ in 0..10 {
-            if buf.is_empty() {
-                return Err(DecodeError::UnexpectedEof);
-            }
+            let byte = decoder.take(1)?[0];
 
-            let byte = buf[0];
-            *buf = &buf[1..];
+            if shift == 63 && byte & 0xfe != 0 {
+                return Err(DecodeError::InvalidVarintLength);
+            }
 
             value |= ((byte & 0x7F) as u64) << shift;
 

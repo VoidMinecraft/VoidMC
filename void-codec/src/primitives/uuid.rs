@@ -1,4 +1,4 @@
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode};
 use uuid::Uuid;
 
 impl Encode for Uuid {
@@ -8,14 +8,8 @@ impl Encode for Uuid {
 }
 
 impl Decode for Uuid {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 16 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let uuid_bytes = &buf[..16];
-        *buf = &buf[16..];
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let uuid_bytes = decoder.take(16)?;
         Ok(Uuid::from_bytes(uuid_bytes.try_into().unwrap()))
     }
 }

@@ -1,7 +1,7 @@
 use crate::network::{IncomingPacket, OutgoingPacket};
 use crate::server_status::ServerStatusSnapshot;
 use flume::{Receiver, Sender};
-use voidmc_net::socket::{ClientSocket, Packet};
+use voidmc_net::socket::{ClientSocket, Packet, SocketError};
 use voidmc_protocol::{State, clientbound, serverbound};
 
 enum StatusFastPath {
@@ -45,7 +45,7 @@ impl Client {
         }
     }
 
-    pub async fn run(mut self) -> std::io::Result<()> {
+    pub async fn run(mut self) -> Result<(), SocketError> {
         loop {
             tokio::select! {
                 result = self.socket.receive() => {
@@ -82,7 +82,7 @@ impl Client {
         }
     }
 
-    async fn handle_status_packet(&mut self, packet: &Packet) -> std::io::Result<bool> {
+    async fn handle_status_packet(&mut self, packet: &Packet) -> Result<bool, SocketError> {
         match self.status_fast_path {
             StatusFastPath::Handshake => {
                 let Ok(serverbound::HandshakePacket::Handshake(handshake)) =
@@ -146,7 +146,10 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let peer = TcpStream::connect(address).await.unwrap();
-        let socket = ServerSocket(listener).accept().await.unwrap();
+        let socket = ServerSocket::new(listener, Default::default())
+            .accept()
+            .await
+            .unwrap();
         (socket, peer)
     }
 

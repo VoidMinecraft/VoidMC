@@ -1,4 +1,4 @@
-use voidmc_codec::{Decode, DecodeError, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, Decoder, Encode, VarI32};
 
 /// A block position packed into an i64 using Minecraft's bit layout.
 ///
@@ -20,8 +20,8 @@ impl Encode for BlockPosition {
 }
 
 impl Decode for BlockPosition {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        let val = i64::decode(buf)?;
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let val = decoder.decode::<i64>()?;
         let mut x = (val >> 38) as i32;
         let mut z = ((val >> 12) & 0x3FFFFFF) as i32;
         let mut y = (val & 0xFFF) as i16;
@@ -111,26 +111,18 @@ impl Encode for LpVec3 {
 }
 
 impl Decode for LpVec3 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.is_empty() {
-            return Err(DecodeError::UnexpectedEof);
-        }
-        let lowest = buf[0];
-        *buf = &buf[1..];
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let lowest = decoder.take(1)?[0];
         if lowest == 0 {
             return Ok(Self::ZERO);
         }
-        if buf.len() < 5 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-        let middle = buf[0];
-        *buf = &buf[1..];
-        let highest = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        *buf = &buf[4..];
+        let middle = decoder.take(1)?[0];
+        let high_bytes: [u8; 4] = decoder.take(4)?.try_into().expect("four bytes");
+        let highest = u32::from_be_bytes(high_bytes);
         let buffer: u64 = ((highest as u64) << 16) | ((middle as u64) << 8) | (lowest as u64);
         let mut scale: u64 = (lowest as u64) & 3;
         if (lowest & 4) == 4 {
-            let ext = VarI32::decode(buf)?.0 as u32 as u64;
+            let ext = decoder.decode::<VarI32>()?.0 as u32 as u64;
             scale |= ext << 2;
         }
         let s = scale as f64;

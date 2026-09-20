@@ -606,7 +606,7 @@ impl Encode for ChunkDataAndLight {
 }
 
 impl Decode for ChunkDataAndLight {
-    fn decode(_buf: &mut &[u8]) -> Result<Self, DecodeError> {
+    fn decode_with(_decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, DecodeError> {
         Err(DecodeError::InvalidLength)
     }
 }

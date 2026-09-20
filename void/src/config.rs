@@ -1,4 +1,5 @@
 use bevy_ecs::prelude::*;
+use voidmc_net::socket::FrameLimits;
 
 use crate::registry::RegistryDataStore;
 use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
@@ -40,6 +41,7 @@ pub struct ServerConfig {
     pub packet_ingest_budget_ms: u64,
     pub max_chunk_generations_per_tick: usize,
     pub slow_tick_ms: u64,
+    pub frame_limits: FrameLimits,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
 }
@@ -64,6 +66,7 @@ impl Default for ServerConfig {
             packet_ingest_budget_ms: 4,
             max_chunk_generations_per_tick: 8,
             slow_tick_ms: 200,
+            frame_limits: FrameLimits::default(),
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
         }
@@ -164,6 +167,11 @@ impl ServerConfigBuilder {
 
     pub fn slow_tick_ms(mut self, slow_tick_ms: u64) -> Self {
         self.config.slow_tick_ms = slow_tick_ms;
+        self
+    }
+
+    pub fn frame_limits(mut self, limits: FrameLimits) -> Self {
+        self.config.frame_limits = limits;
         self
     }
 

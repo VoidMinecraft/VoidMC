@@ -1,4 +1,4 @@
-use voidmc_codec::{Decode, DecodeError, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, Decoder, Encode, LimitKind, VarI32};
 
 use crate::slot::Slot;
 
@@ -30,9 +30,9 @@ impl EntityMetadataValue {
         }
     }
 
-    fn decode_value(serializer_id: i32, buf: &mut &[u8]) -> Result<Self, DecodeError> {
+    fn decode_value(serializer_id: i32, decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         match serializer_id {
-            serializer::ITEM_STACK => Ok(EntityMetadataValue::ItemStack(Slot::decode(buf)?)),
+            serializer::ITEM_STACK => Ok(EntityMetadataValue::ItemStack(decoder.decode::<Slot>()?)),
             _ => Err(DecodeError::InvalidLength),
         }
     }
@@ -70,16 +70,32 @@ impl Encode for SetEntityData {
 }
 
 impl Decode for SetEntityData {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        let entity_id = VarI32::decode(buf)?.0;
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let entity_id = decoder.decode::<VarI32>()?.0;
         let mut entries = Vec::new();
         loop {
-            let index = u8::decode(buf)?;
+            let index = decoder.decode::<u8>()?;
             if index == EOF_MARKER {
                 break;
             }
-            let serializer_id = VarI32::decode(buf)?.0;
-            let value = EntityMetadataValue::decode_value(serializer_id, buf)?;
+            let next_len = entries
+                .len()
+                .checked_add(1)
+                .ok_or(DecodeError::InvalidLength)?;
+            decoder.checked_len(
+                i32::try_from(next_len).map_err(|_| DecodeError::InvalidLength)?,
+                LimitKind::CollectionElements,
+                decoder.limits().max_collection_elements,
+            )?;
+            decoder.charge_elements(1)?;
+            decoder.charge_allocation(std::mem::size_of::<EntityMetadataEntry>())?;
+            entries
+                .try_reserve(1)
+                .map_err(|_| DecodeError::AllocationFailed {
+                    requested: std::mem::size_of::<EntityMetadataEntry>(),
+                })?;
+            let serializer_id = decoder.decode::<VarI32>()?.0;
+            let value = EntityMetadataValue::decode_value(serializer_id, decoder)?;
             entries.push(EntityMetadataEntry { index, value });
         }
         Ok(SetEntityData { entity_id, entries })
