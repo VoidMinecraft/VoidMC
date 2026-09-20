@@ -16,6 +16,7 @@ use voidmc::{
 };
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
+mod boss_bar;
 mod circle;
 
 struct LogGuards {
@@ -88,9 +89,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
             register_default_commands(&mut registry, &[]);
             registry.register(circle::circle_command());
+            registry.register(boss_bar::bossbar_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);
+            app.add_observer(boss_bar::despawn_bossbar_on_quit);
             app.add_systems(Update, circle::circle_system);
         })
         .add_plugin(|app| {

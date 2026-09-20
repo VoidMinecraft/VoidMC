@@ -47,6 +47,7 @@ pub use item_behavior::{
     UseResult,
 };
 pub use players::{Players, Recipient, Recipients, WorldPlayers};
+pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags, BossBarViewers};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
