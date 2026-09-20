@@ -1,7 +1,5 @@
-//! Flushes block entity changes recorded on [`ChunkData`] as Block Entity
-//! Data packets to the players seeing each chunk. Chunk packets carry the
-//! current block entities themselves, so this runs before chunk streaming and
-//! never double-sends to a player who is about to receive the whole chunk.
+//! Runs before `ChunkStreaming`: a player receiving the chunk this tick gets
+//! its block entities inside the chunk packet, not as a second packet.
 
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::prelude::*;
