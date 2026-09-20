@@ -5,6 +5,7 @@ pub mod chunk;
 mod command_suggestions_response;
 pub mod commands;
 mod disconnect;
+pub mod entity_metadata;
 mod game_event;
 mod keep_alive;
 mod level_particles;
@@ -20,6 +21,7 @@ mod set_entity_data;
 mod set_entity_motion;
 mod set_head_rotation;
 mod set_held_slot;
+mod set_passengers;
 mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
@@ -37,6 +39,9 @@ pub use chunk::*;
 pub use command_suggestions_response::*;
 pub use commands::*;
 pub use disconnect::*;
+pub use entity_metadata::{
+    Billboard, DisplayTransform, ItemDisplayContext, MAX_TELEPORT_TICKS, pack_brightness,
+};
 pub use game_event::*;
 pub use keep_alive::*;
 pub use level_particles::*;
@@ -52,6 +57,7 @@ pub use set_entity_data::*;
 pub use set_entity_motion::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
+pub use set_passengers::*;
 pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
@@ -136,6 +142,7 @@ pub enum ManualPlayPacket {
     ChunkDataAndLight(ChunkDataAndLight),
     Commands(Commands),
     CommandSuggestionsResponse(CommandSuggestionsResponse),
+    SetPassengers(SetPassengers),
 }
 
 impl Encode for ManualPlayPacket {
@@ -163,6 +170,10 @@ impl Encode for ManualPlayPacket {
             }
             ManualPlayPacket::CommandSuggestionsResponse(packet) => {
                 voidmc_codec::VarI32(0x0F).encode(buf);
+                packet.encode(buf);
+            }
+            ManualPlayPacket::SetPassengers(packet) => {
+                voidmc_codec::VarI32(0x6B).encode(buf);
                 packet.encode(buf);
             }
         }

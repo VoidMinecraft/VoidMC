@@ -64,9 +64,11 @@ to ready players by `systems::entities`.
 | `MinecraftEntityId(i32)` | Entity ID | Server-assigned ID used by entity packets |
 | `EntityUuid(Uuid)` | UUID | UUID sent once in `Add Entity` |
 | `EntityType(i32)` | Registry ID | Protocol ID from `minecraft:entity_type` |
-| `SpawnedEntity` | (marker) | Marks a non-player entity; `#[require]`s every component below plus `EntityViewers`. Requirements are runtime defaults, not compile-time checks: `EntityType` has no usable default and panics, so inserting the marker without going through `EntityBuilder` fails loudly instead of replicating a wrong entity |
+| `SpawnedEntity` | (marker) | Marks a non-player entity; constructible only inside `void`, so `EntityBuilder` is the one spawn path and every component below plus `EntityViewers` / `EntityMetadata` is guaranteed present. Use it as a query filter |
 | `EntityDimension(DimensionId)` | Dimension | Dimension the entity lives in (default `Overworld`) |
 | `EntityViewers` | Player set | Players currently receiving this entity's packets; maintained by the visibility tracker |
+| `EntityMetadata` | Indexed values | Synched entity data with dirty tracking; typed components (`CustomName`, `Glowing`, `Display`, ...) project into it |
+| `Passengers(Vec<Entity>)` | Riders | Entities riding this one; changes send `SetPassengers` to viewers |
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |
 | `Rotation { yaw, pitch }` | `f32` angles | Current body/look rotation |
@@ -163,7 +165,8 @@ components listed above.
    current viewer, so a client can never keep a ghost. `EntityDespawnEvent`
    remains as a trigger-style hook that does the same despawn.
 
-Features that need extra packets per viewer (item metadata, later entity
-metadata and passengers) observe `EntityShownEvent { entity, viewer }` instead
-of broadcasting on spawn. Not yet implemented: mob AI, general entity metadata,
-equipment, passengers.
+Features that need extra packets per viewer observe
+`EntityShownEvent { entity, viewer }` instead of broadcasting on spawn; entity
+metadata and passengers ship this way (see
+[Entities](/reference/gameplay/entities)). Not yet implemented: mob AI,
+equipment.

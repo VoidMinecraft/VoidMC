@@ -19,6 +19,7 @@ use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 mod biome;
 mod boss_bar;
 mod circle;
+mod entities;
 mod particle;
 mod sound;
 
@@ -97,11 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(sound::sound_command());
             registry.register(biome::biome_command());
             registry.register(particle::particle_command());
+            registry.register(entities::spawn_command());
+            registry.register(entities::display_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);
             app.add_observer(boss_bar::despawn_bossbar_on_quit);
-            app.add_systems(Update, circle::circle_system);
+            app.add_systems(Update, (circle::circle_system, entities::shield_system));
         })
         .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",

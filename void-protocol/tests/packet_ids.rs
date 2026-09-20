@@ -133,6 +133,7 @@ const SPECS: &[EnumSpec] = &[
                 "CommandSuggestionsResponse",
                 "minecraft:command_suggestions",
             ),
+            ("SetPassengers", "minecraft:set_passengers"),
         ],
     },
     EnumSpec {

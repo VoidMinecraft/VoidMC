@@ -22,7 +22,10 @@ pub enum VoidSystems {
     /// `PostUpdate`, after `ChunkStreaming`: movement/motion of non-player
     /// entities to their current viewers.
     EntityBroadcast,
-    /// `PostUpdate`, after `EntityBroadcast`: viewer diff — `SpawnEntity` /
+    /// `PostUpdate`, after `EntityBroadcast`: dirty metadata indices and
+    /// changed passenger lists to current viewers.
+    EntityMetadataSync,
+    /// `PostUpdate`, after `EntityMetadataSync`: viewer diff — `SpawnEntity` /
     /// `RemoveEntities` as players start or stop seeing an entity's chunk.
     EntityVisibility,
     /// `PostUpdate`: other players' movement and head rotation.

@@ -48,6 +48,7 @@ manual_into_clientbound!(
         ChunkDataAndLight,
         Commands,
         CommandSuggestionsResponse,
+        SetPassengers,
     }
 );
 
