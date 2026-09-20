@@ -6,6 +6,7 @@ use crate::components::{
     ClientId, MinecraftEntityId, PlayerReady, Position, PreviousPosition, Rotation,
 };
 use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::systems::entities::relative_delta;
 
 #[instrument(level = "info", skip(channels, moved_query, all_players))]
 pub fn broadcast_position(
@@ -26,12 +27,42 @@ pub fn broadcast_position(
     all_players: Query<&ClientId, With<PlayerReady>>,
 ) {
     for (sender_client_id, mc_entity_id, pos, prev_pos, rotation) in moved_query.iter() {
-        let delta_x = ((pos.x * 32.0 - prev_pos.x * 32.0) * 128.0) as i16;
-        let delta_y = ((pos.y * 32.0 - prev_pos.y * 32.0) * 128.0) as i16;
-        let delta_z = ((pos.z * 32.0 - prev_pos.z * 32.0) * 128.0) as i16;
-
         let yaw = (rotation.yaw.rem_euclid(360.0) / 360.0 * 256.0) as u8;
         let pitch = (rotation.pitch.rem_euclid(360.0) / 360.0 * 256.0) as u8;
+
+        // Relative deltas only cover ~8 blocks; beyond that, fall back to an
+        // absolute teleport instead of silently sending a saturated delta.
+        let packet = if let (Some(delta_x), Some(delta_y), Some(delta_z)) = (
+            relative_delta(pos.x, prev_pos.x),
+            relative_delta(pos.y, prev_pos.y),
+            relative_delta(pos.z, prev_pos.z),
+        ) {
+            clientbound::PlayPacket::UpdateEntityPositionAndRotation(
+                clientbound::UpdateEntityPositionAndRotation {
+                    entity_id: mc_entity_id.0,
+                    delta_x,
+                    delta_y,
+                    delta_z,
+                    yaw,
+                    pitch,
+                    on_ground: true,
+                },
+            )
+        } else {
+            clientbound::PlayPacket::TeleportEntity(clientbound::TeleportEntity {
+                entity_id: mc_entity_id.0,
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+                vx: 0.0,
+                vy: 0.0,
+                vz: 0.0,
+                yaw: rotation.yaw,
+                pitch: rotation.pitch,
+                relatives: clientbound::TeleportFlags::empty(),
+                on_ground: true,
+            })
+        };
 
         for receiver_client_id in all_players.iter() {
             if receiver_client_id.0 == sender_client_id.0 {
@@ -41,19 +72,7 @@ pub fn broadcast_position(
             // Send position + rotation update
             let _ = channels.outgoing.send(OutgoingPacket {
                 client_id: receiver_client_id.0,
-                packet: clientbound::ClientboundPacket::Play(
-                    clientbound::PlayPacket::UpdateEntityPositionAndRotation(
-                        clientbound::UpdateEntityPositionAndRotation {
-                            entity_id: mc_entity_id.0,
-                            delta_x,
-                            delta_y,
-                            delta_z,
-                            yaw,
-                            pitch,
-                            on_ground: true,
-                        },
-                    ),
-                ),
+                packet: clientbound::ClientboundPacket::Play(packet.clone()),
             });
 
             // Send head rotation
@@ -152,6 +171,57 @@ mod tests {
             panic!("expected head rotation packet");
         };
         assert_eq!(head_rotation.head_yaw, 192);
+
+        drop((incoming_tx, disconnect_tx, kick_rx));
+    }
+
+    #[test]
+    fn broadcast_position_teleports_when_delta_overflows_i16() {
+        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        let mut app = App::new();
+
+        app.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        })
+        .add_systems(PostUpdate, broadcast_position);
+
+        // 100 blocks on X is 409600 fixed-point units, far past i16::MAX (32767).
+        app.world_mut().spawn((
+            ClientId(1),
+            MinecraftEntityId(42),
+            Position {
+                x: 100.0,
+                y: 64.0,
+                z: 0.0,
+            },
+            PreviousPosition {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+            Rotation {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            PlayerReady,
+        ));
+        app.world_mut().spawn((ClientId(2), PlayerReady));
+
+        app.update();
+
+        let clientbound::ClientboundPacket::Play(clientbound::PlayPacket::TeleportEntity(teleport)) =
+            outgoing_rx.recv().unwrap().packet
+        else {
+            panic!("expected absolute teleport for a move beyond the i16 delta range");
+        };
+        assert_eq!(teleport.entity_id, 42);
+        assert_eq!((teleport.x, teleport.y, teleport.z), (100.0, 64.0, 0.0));
 
         drop((incoming_tx, disconnect_tx, kick_rx));
     }

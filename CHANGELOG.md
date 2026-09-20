@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+### Bug Fixes
+
+- Player position broadcasts no longer send a silently saturated i16 delta for moves beyond ~8 blocks; they fall back to an absolute `TeleportEntity`
 ## [0.1.0](https://github.com/VoidMinecraft/VoidMC/releases/tag/voidmc-world-io-v0.1.0) - 2026-06-25
 
 ### Documentation
