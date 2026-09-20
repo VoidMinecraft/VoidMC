@@ -30,8 +30,7 @@ pub fn broadcast_position(
         let yaw = (rotation.yaw.rem_euclid(360.0) / 360.0 * 256.0) as u8;
         let pitch = (rotation.pitch.rem_euclid(360.0) / 360.0 * 256.0) as u8;
 
-        // Relative deltas only cover ~8 blocks; beyond that, fall back to an
-        // absolute teleport instead of silently sending a saturated delta.
+        // Deltas are i16 (~8 blocks); beyond that, send an absolute teleport.
         let packet = if let (Some(delta_x), Some(delta_y), Some(delta_z)) = (
             relative_delta(pos.x, prev_pos.x),
             relative_delta(pos.y, prev_pos.y),
@@ -191,7 +190,6 @@ mod tests {
         })
         .add_systems(PostUpdate, broadcast_position);
 
-        // 100 blocks on X is 409600 fixed-point units, far past i16::MAX (32767).
         app.world_mut().spawn((
             ClientId(1),
             MinecraftEntityId(42),
