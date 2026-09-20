@@ -6,6 +6,23 @@ use crate::types::BlockPosition;
 
 const VERSION: Version = Version::V26_1_2;
 const PARTICLE_TYPE: &str = "minecraft:particle_type";
+const POSITION_SOURCE_TYPE: &str = "minecraft:position_source_type";
+
+fn registry_id(registry: &str, name: &str) -> i32 {
+    voidmc_data::protocol_registry_index(VERSION, registry, name)
+        .unwrap_or_else(|| panic!("{name} is in the 26.1.2 {registry} registry"))
+}
+
+fn registry_name(registry: &str, id: i32) -> Option<&'static str> {
+    voidmc_data::protocol_registry(VERSION, registry)?
+        .iter()
+        .find(|(_, candidate)| *candidate == id)
+        .map(|(name, _)| *name)
+}
+
+fn unknown_id(id: i32) -> DecodeError {
+    DecodeError::InvalidPacketId(u8::try_from(id).ok())
+}
 
 /// 0xAARRGGBB; `rgb` sets alpha to 0xFF (dust ignores alpha).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,18 +92,24 @@ pub enum PositionSource {
     Entity { entity_id: i32, y_offset: f32 },
 }
 
+impl PositionSource {
+    pub fn name(&self) -> &'static str {
+        match self {
+            PositionSource::Block(_) => "minecraft:block",
+            PositionSource::Entity { .. } => "minecraft:entity",
+        }
+    }
+}
+
 impl Encode for PositionSource {
     fn encode(&self, buf: &mut Vec<u8>) {
+        VarI32(registry_id(POSITION_SOURCE_TYPE, self.name())).encode(buf);
         match self {
-            PositionSource::Block(position) => {
-                VarI32(0).encode(buf);
-                position.encode(buf);
-            }
+            PositionSource::Block(position) => position.encode(buf),
             PositionSource::Entity {
                 entity_id,
                 y_offset,
             } => {
-                VarI32(1).encode(buf);
                 VarI32(*entity_id).encode(buf);
                 y_offset.encode(buf);
             }
@@ -96,28 +119,41 @@ impl Encode for PositionSource {
 
 impl Decode for PositionSource {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(match decoder.decode::<VarI32>()?.0 {
-            0 => PositionSource::Block(decoder.decode()?),
-            1 => PositionSource::Entity {
-                entity_id: decoder.decode::<VarI32>()?.0,
-                y_offset: decoder.decode()?,
+        let type_id = decoder.decode::<VarI32>()?.0;
+        Ok(
+            match registry_name(POSITION_SOURCE_TYPE, type_id).ok_or(unknown_id(type_id))? {
+                "minecraft:block" => PositionSource::Block(decoder.decode()?),
+                "minecraft:entity" => PositionSource::Entity {
+                    entity_id: decoder.decode::<VarI32>()?.0,
+                    y_offset: decoder.decode()?,
+                },
+                _ => return Err(unknown_id(type_id)),
             },
-            _ => return Err(DecodeError::InvalidPacketId(None)),
-        })
+        )
     }
 }
 
 macro_rules! particles {
     (
-        data { $( $data:ident $body:tt => $data_name:literal, )* }
+        data { $( $data:ident { $( $field:ident : $ty:ty ),* } => $data_name:literal, )* }
         simple { $( $simple:ident => $simple_name:literal, )* }
     ) => {
         /// Every `minecraft:particle_type` of 26.1.2; payload-carrying types
         /// carry their payload in the variant.
         #[derive(Debug, Clone, PartialEq)]
         pub enum Particle {
-            $( $data $body, )*
+            $( $data { $( $field: $ty ),* }, )*
             $( $simple, )*
+        }
+
+        #[cfg(test)]
+        impl Particle {
+            fn fixtures() -> Vec<Particle> {
+                vec![
+                    $( Particle::$data { $( $field: tests::Fixture::fixture() ),* }, )*
+                    $( Particle::$simple, )*
+                ]
+            }
         }
 
         impl Particle {
@@ -271,8 +307,7 @@ particles! {
 
 impl Particle {
     pub fn type_id(&self) -> i32 {
-        voidmc_data::particle_type_id(VERSION, self.name())
-            .expect("every Particle name is in the 26.1.2 particle_type registry")
+        registry_id(PARTICLE_TYPE, self.name())
     }
 
     fn qualify(name: &str) -> String {
@@ -281,13 +316,6 @@ impl Particle {
         } else {
             format!("minecraft:{name}")
         }
-    }
-
-    fn name_of(type_id: i32) -> Option<&'static str> {
-        voidmc_data::protocol_registry(VERSION, PARTICLE_TYPE)?
-            .iter()
-            .find(|(_, id)| *id == type_id)
-            .map(|(name, _)| *name)
     }
 }
 
@@ -346,7 +374,7 @@ impl Encode for Particle {
 impl Decode for Particle {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let type_id = decoder.decode::<VarI32>()?.0;
-        let name = Particle::name_of(type_id).ok_or(DecodeError::InvalidPacketId(None))?;
+        let name = registry_name(PARTICLE_TYPE, type_id).ok_or(unknown_id(type_id))?;
         let state =
             |decoder: &mut Decoder<'_>| Ok::<i32, DecodeError>(decoder.decode::<VarI32>()?.0);
         Ok(match name {
@@ -412,7 +440,7 @@ impl Decode for Particle {
             "minecraft:shriek" => Particle::Shriek {
                 delay: decoder.decode::<VarI32>()?.0,
             },
-            simple => Particle::simple(simple).ok_or(DecodeError::InvalidPacketId(None))?,
+            simple => Particle::simple(simple).ok_or(unknown_id(type_id))?,
         })
     }
 }
@@ -438,6 +466,49 @@ pub struct LevelParticles {
 mod tests {
     use super::*;
     use crate::clientbound::PlayPacket;
+
+    pub(super) trait Fixture {
+        fn fixture() -> Self;
+    }
+
+    impl Fixture for i32 {
+        fn fixture() -> Self {
+            300
+        }
+    }
+
+    impl Fixture for f32 {
+        fn fixture() -> Self {
+            1.25
+        }
+    }
+
+    impl Fixture for [f64; 3] {
+        fn fixture() -> Self {
+            [1.0, -2.0, 3.5]
+        }
+    }
+
+    impl Fixture for ParticleColor {
+        fn fixture() -> Self {
+            ParticleColor::argb(9, 8, 7, 6)
+        }
+    }
+
+    impl Fixture for ItemStackTemplate {
+        fn fixture() -> Self {
+            ItemStackTemplate::simple(1, 64)
+        }
+    }
+
+    impl Fixture for PositionSource {
+        fn fixture() -> Self {
+            PositionSource::Entity {
+                entity_id: 7,
+                y_offset: 0.5,
+            }
+        }
+    }
 
     fn encode(particle: Particle) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -571,46 +642,10 @@ mod tests {
     }
 
     #[test]
-    fn every_payload_family_roundtrips() {
-        let mut particles = vec![
-            Particle::Block { state: 42 },
-            Particle::Dust {
-                color: ParticleColor::rgb(1, 2, 3),
-                scale: 2.0,
-            },
-            Particle::DustColorTransition {
-                from: ParticleColor::rgb(1, 2, 3),
-                to: ParticleColor::rgb(4, 5, 6),
-                scale: 0.5,
-            },
-            Particle::Effect {
-                color: ParticleColor(-1),
-                power: 1.0,
-            },
-            Particle::InstantEffect {
-                color: ParticleColor(-1),
-                power: 0.25,
-            },
-            Particle::TintedLeaves {
-                color: ParticleColor::argb(9, 8, 7, 6),
-            },
-            Particle::Flash {
-                color: ParticleColor::rgb(0, 0, 0),
-            },
-            Particle::DragonBreath { power: 3.0 },
-            Particle::Item {
-                stack: ItemStackTemplate::simple(1, 64),
-            },
-            Particle::Vibration {
-                source: PositionSource::Block(BlockPosition { x: 1, y: -2, z: 3 }),
-                arrival_in_ticks: 5,
-            },
-            Particle::SculkCharge { roll: 1.25 },
-            Particle::Shriek { delay: 200 },
-        ];
-        particles.extend(Particle::NAMES.iter().filter_map(|n| Particle::simple(n)));
-        assert_eq!(particles.len(), 12 + 99);
-        for particle in particles {
+    fn every_variant_roundtrips() {
+        let fixtures = Particle::fixtures();
+        assert_eq!(fixtures.len(), Particle::NAMES.len());
+        for particle in fixtures {
             assert_eq!(roundtrip(&particle), particle);
         }
     }
@@ -655,8 +690,28 @@ mod tests {
     }
 
     #[test]
-    fn unknown_type_id_is_rejected() {
+    fn unknown_ids_are_rejected() {
         let bytes = [0xFF, 0x01];
         assert!(Particle::decode(&mut bytes.as_slice()).is_err());
+        let bytes = [0x02];
+        assert!(PositionSource::decode(&mut bytes.as_slice()).is_err());
+    }
+
+    #[test]
+    fn position_source_ids_come_from_the_registry() {
+        let mut block = Vec::new();
+        PositionSource::Block(BlockPosition { x: 0, y: 0, z: 0 }).encode(&mut block);
+        assert_eq!(block[0], 0);
+        let mut entity = Vec::new();
+        PositionSource::Entity {
+            entity_id: 1,
+            y_offset: 0.0,
+        }
+        .encode(&mut entity);
+        assert_eq!(entity[0], 1);
+        assert_eq!(
+            PositionSource::decode(&mut block.as_slice()).unwrap(),
+            PositionSource::Block(BlockPosition { x: 0, y: 0, z: 0 })
+        );
     }
 }

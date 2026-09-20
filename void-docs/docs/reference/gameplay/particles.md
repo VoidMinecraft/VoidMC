@@ -3,9 +3,10 @@
 Particles are fire-and-forget requests: build one with `Particles::spawn`
 (a `SystemParam`) or `WorldParticles::new(&world).spawn(..)` (from command
 handlers, item behaviours and other `&World` code), chain the settings you
-need, and let it drop. The `LevelParticles` packet goes to every ready player
-that has the position's chunk loaded in the request's dimension, unless you
-set an `Audience`.
+need, and finish with `.send()`. The `LevelParticles` packet goes to every
+ready player that has the position's chunk loaded in the request's dimension,
+unless you set an `Audience`. A request that is never sent does nothing (the
+builder is `#[must_use]`).
 
 ```rust
 use voidmc::{Particle, ParticleColor, Particles, DimensionId};
@@ -18,7 +19,8 @@ fn on_block_break(event: On<BlockBreakEvent>, particles: Particles) {
         .dimension(event.dimension)
         .count(12)
         .offset(0.3, 0.3, 0.3)
-        .speed(0.05);
+        .speed(0.05)
+        .send();
 }
 
 fn heal_burst(particles: Particles, healed: Query<(Entity, &Position), Added<Healed>>) {
@@ -28,7 +30,8 @@ fn heal_burst(particles: Particles, healed: Query<(Entity, &Position), Added<Hea
             .at(position)
             .count(30)
             .offset(0.5, 1.0, 0.5)
-            .audience(Audience::InDimension(DimensionId::Overworld));
+            .audience(Audience::InDimension(DimensionId::Overworld))
+            .send();
     }
 }
 ```
@@ -46,9 +49,9 @@ fn heal_burst(particles: Particles, healed: Query<(Entity, &Position), Added<Hea
 | `long_distance(bool)` | `false` | Ignore the client's particle distance limit. |
 | `always_visible(bool)` | `false` | Render even when the client's particle setting is "minimal". |
 | `audience(Audience)` / `viewers(entities)` | chunk viewers | Replace the default audience. |
-| `send()` | — | Send now instead of on drop. |
+| `send()` | — | Consumes the request and sends it. |
 
-`packet()` returns the `LevelParticles` that would be sent, for tests.
+`packet()` and `recipients()` return what `send()` would send and to whom, for tests.
 
 ## Particle types
 
@@ -64,7 +67,7 @@ be forgotten:
 | `EntityEffect`, `TintedLeaves`, `Flash` | `color: ParticleColor` (ARGB). |
 | `Effect`, `InstantEffect` | `color: ParticleColor` (`ParticleColor(-1)` = default), `power: f32`. |
 | `DragonBreath` | `power: f32`. |
-| `Item` | `stack: ItemStackTemplate` (`ItemStackTemplate::from(&item_stack)` or `::simple(item_id, count)`). |
+| `Item` | `stack: ItemStackTemplate` (`ItemStackTemplate::try_from(&item_stack)`, `Err` for an empty stack, or `::simple(item_id, count)`). |
 | `Vibration` | `source: PositionSource::{Block, Entity}`, `arrival_in_ticks: i32`. |
 | `Trail` | `target: [f64; 3]`, `color`, `duration: i32`. |
 | `SculkCharge` | `roll: f32`. |

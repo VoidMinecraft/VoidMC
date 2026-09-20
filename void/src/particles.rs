@@ -1,6 +1,6 @@
-//! Fire-and-forget particle requests: `particles.spawn(Particle::Flame).at(pos)`.
-//! The request is sent when it is dropped (or on an explicit `send`), to the
-//! players who have the position's chunk loaded unless an `Audience` is set.
+//! Fire-and-forget particle requests: `particles.spawn(Particle::Flame).at(pos).send()`,
+//! delivered to the players who have the position's chunk loaded unless an
+//! `Audience` is set.
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
@@ -28,17 +28,25 @@ impl From<Position> for [f64; 3] {
     }
 }
 
-impl From<&ItemStack> for ItemStackTemplate {
-    fn from(stack: &ItemStack) -> Self {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptyItemStack;
+
+impl TryFrom<&ItemStack> for ItemStackTemplate {
+    type Error = EmptyItemStack;
+
+    fn try_from(stack: &ItemStack) -> Result<Self, EmptyItemStack> {
         let slot = stack.to_slot();
-        ItemStackTemplate {
+        if slot.is_empty() {
+            return Err(EmptyItemStack);
+        }
+        Ok(ItemStackTemplate {
             item_id: slot.item_id,
-            count: slot.count.max(1),
+            count: slot.count,
             components: voidmc_protocol::slot::DataComponentPatch {
                 components_to_add: slot.components_to_add,
                 components_to_remove: slot.components_to_remove,
             },
-        }
+        })
     }
 }
 
@@ -83,7 +91,7 @@ impl<'a> Sink<'a> {
     }
 }
 
-/// Sends itself on drop; every setter has a default (see `ParticleRequest::new`).
+#[must_use = "a particle request does nothing until `.send()`"]
 pub struct ParticleRequest<'a> {
     sink: Sink<'a>,
     particle: Particle,
@@ -95,7 +103,6 @@ pub struct ParticleRequest<'a> {
     long_distance: bool,
     always_visible: bool,
     audience: Option<Audience>,
-    sent: bool,
 }
 
 impl<'a> ParticleRequest<'a> {
@@ -111,7 +118,6 @@ impl<'a> ParticleRequest<'a> {
             long_distance: false,
             always_visible: false,
             audience: None,
-            sent: false,
         }
     }
 
@@ -196,30 +202,33 @@ impl<'a> ParticleRequest<'a> {
         }
     }
 
-    pub fn send(mut self) {
-        self.dispatch();
-    }
-
-    fn dispatch(&mut self) {
-        if self.sent {
-            return;
-        }
-        self.sent = true;
+    pub fn recipients(&self) -> Recipients<'a> {
         let ready = self.sink.ready();
-        let recipients = match &self.audience {
+        match &self.audience {
             Some(audience) => audience.resolve(ready),
             None => ready.seeing_chunk(
                 self.dimension,
                 ChunkPos::from_block(self.position[0], self.position[2]),
             ),
-        };
-        recipients.send(self.packet());
+        }
     }
-}
 
-impl Drop for ParticleRequest<'_> {
-    fn drop(&mut self) {
-        self.dispatch();
+    pub fn send(self) {
+        let recipients = self.recipients();
+        let particle = self.particle;
+        recipients.send(LevelParticles {
+            long_distance: self.long_distance,
+            always_visible: self.always_visible,
+            x: self.position[0],
+            y: self.position[1],
+            z: self.position[2],
+            offset_x: self.offset[0],
+            offset_y: self.offset[1],
+            offset_z: self.offset[2],
+            max_speed: self.speed,
+            count: self.count,
+            particle,
+        });
     }
 }
 
@@ -297,11 +306,13 @@ mod tests {
             particles
                 .spawn(Particle::Flame)
                 .at([40.0, 64.0, -3.0])
-                .count(5);
+                .count(5)
+                .send();
             particles
                 .spawn(Particle::Smoke)
                 .at([40.0, 64.0, -3.0])
-                .dimension(DimensionId::Nether);
+                .dimension(DimensionId::Nether)
+                .send();
         });
         app.update();
 
@@ -325,15 +336,18 @@ mod tests {
             particles
                 .spawn(Particle::Heart)
                 .at([1.0, 2.0, 3.0])
-                .viewers([far]);
+                .viewers([far])
+                .send();
             particles
                 .spawn(Particle::Heart)
                 .at([1.0, 2.0, 3.0])
-                .audience(Audience::InDimension(DimensionId::End));
+                .audience(Audience::InDimension(DimensionId::End))
+                .send();
             particles
                 .spawn(Particle::Heart)
                 .at([1.0, 2.0, 3.0])
-                .audience(Audience::All);
+                .audience(Audience::All)
+                .send();
         });
         app.update();
 
@@ -345,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn builder_fields_reach_the_packet_and_send_once() {
+    fn builder_fields_reach_the_packet_and_unsent_requests_send_nothing() {
         let (mut app, rx) = test_app();
         viewer(&mut app, 1, DimensionId::Overworld, &[(0, 0)]);
 
@@ -361,11 +375,15 @@ mod tests {
                 .speed(0.1)
                 .long_distance(true)
                 .always_visible(true);
+            assert_eq!(request.packet().count, 20);
+            assert_eq!(request.recipients().len(), 1);
             request.send();
             particles
                 .spawn(Particle::Crit)
                 .at([1.0, 1.0, 1.0])
-                .directed([0.0, 1.0, 0.0], 0.3);
+                .directed([0.0, 1.0, 0.0], 0.3)
+                .send();
+            let _abandoned = particles.spawn(Particle::Lava).at([1.0, 1.0, 1.0]);
         });
         app.update();
 
@@ -393,7 +411,8 @@ mod tests {
 
         WorldParticles::new(app.world())
             .spawn(Particle::Note)
-            .at_block(BlockPosition { x: 3, y: 64, z: 3 });
+            .at_block(BlockPosition { x: 3, y: 64, z: 3 })
+            .send();
 
         let sent = drain(&rx);
         assert_eq!(sent.len(), 1);
@@ -402,10 +421,14 @@ mod tests {
     }
 
     #[test]
-    fn item_stack_converts_to_template() {
+    fn item_stack_converts_to_template_unless_empty() {
         let stack = ItemStack::of("minecraft:stone", 3).unwrap();
-        let template = ItemStackTemplate::from(&stack);
+        let template = ItemStackTemplate::try_from(&stack).unwrap();
         assert_eq!(template.count, 3);
         assert_eq!(template.item_id, stack.to_slot().item_id);
+        assert_eq!(
+            ItemStackTemplate::try_from(&ItemStack::EMPTY),
+            Err(EmptyItemStack)
+        );
     }
 }

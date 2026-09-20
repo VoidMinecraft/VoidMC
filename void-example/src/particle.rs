@@ -45,7 +45,8 @@ fn handle_particle(ctx: &mut CommandContext) {
             .dimension(dimension)
             .count(count)
             .offset(0.5, 0.5, 0.5)
-            .speed(0.05);
+            .speed(0.05)
+            .send();
     });
     ctx.reply(&format!("Spawned {count} x {name}"));
 }

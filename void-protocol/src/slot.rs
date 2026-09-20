@@ -126,16 +126,26 @@ pub struct DataComponentPatch {
     pub components_to_remove: Vec<i32>,
 }
 
-impl Encode for DataComponentPatch {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        VarI32(self.components_to_add.len() as i32).encode(buf);
-        VarI32(self.components_to_remove.len() as i32).encode(buf);
-        for component in &self.components_to_add {
+impl DataComponentPatch {
+    pub fn encode_parts(
+        components_to_add: &[DataComponent],
+        components_to_remove: &[i32],
+        buf: &mut Vec<u8>,
+    ) {
+        VarI32(components_to_add.len() as i32).encode(buf);
+        VarI32(components_to_remove.len() as i32).encode(buf);
+        for component in components_to_add {
             component.encode(buf);
         }
-        for &type_id in &self.components_to_remove {
+        for &type_id in components_to_remove {
             VarI32(type_id).encode(buf);
         }
+    }
+}
+
+impl Encode for DataComponentPatch {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        Self::encode_parts(&self.components_to_add, &self.components_to_remove, buf);
     }
 }
 
@@ -232,13 +242,6 @@ impl Slot {
     pub fn is_empty(&self) -> bool {
         self.count <= 0
     }
-
-    fn patch(&self) -> DataComponentPatch {
-        DataComponentPatch {
-            components_to_add: self.components_to_add.clone(),
-            components_to_remove: self.components_to_remove.clone(),
-        }
-    }
 }
 
 impl Encode for Slot {
@@ -248,7 +251,7 @@ impl Encode for Slot {
             return;
         }
         VarI32(self.item_id).encode(buf);
-        self.patch().encode(buf);
+        DataComponentPatch::encode_parts(&self.components_to_add, &self.components_to_remove, buf);
     }
 }
 
@@ -305,6 +308,19 @@ mod tests {
             components_to_remove: vec![component_ids::REPAIR_COST],
         };
         assert_eq!(roundtrip(&slot), slot);
+    }
+
+    #[test]
+    fn slot_wire_bytes_are_count_item_patch() {
+        let slot = Slot {
+            count: 1,
+            item_id: 895,
+            components_to_add: vec![DataComponent::Damage(123), DataComponent::MaxStackSize(1)],
+            components_to_remove: vec![component_ids::REPAIR_COST],
+        };
+        let mut buf = Vec::new();
+        slot.encode(&mut buf);
+        assert_eq!(buf, vec![1, 0xFF, 0x06, 2, 1, 3, 123, 1, 1, 19]);
     }
 
     #[test]
