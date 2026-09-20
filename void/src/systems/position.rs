@@ -49,7 +49,6 @@ pub fn broadcast_position(
                 },
             )
         } else {
-            // Players carry no server-side velocity, so the teleport reports zero.
             clientbound::PlayPacket::TeleportEntity(clientbound::TeleportEntity {
                 entity_id: mc_entity_id.0,
                 x: pos.x,

@@ -348,8 +348,6 @@ fn velocity_to_lp_vec3(velocity: &Velocity) -> LpVec3 {
     }
 }
 
-/// Fixed-point delta for relative movement packets, or `None` when the move
-/// exceeds the ~8 block range an `i16` can carry and needs an absolute packet.
 pub(crate) fn relative_delta(current: f64, previous: f64) -> Option<i16> {
     let delta = ((current - previous) * RELATIVE_MOVE_SCALE).round();
     if delta < i16::MIN as f64 || delta > i16::MAX as f64 {
