@@ -33,7 +33,12 @@ struct LocalBlockPos {
 }
 
 impl LocalBlockPos {
-    fn of(position: BlockPosition) -> Self {
+    fn of(chunk: ChunkPos, position: BlockPosition) -> Self {
+        debug_assert_eq!(
+            ChunkPos::new(position.x.div_euclid(16), position.z.div_euclid(16)),
+            chunk,
+            "block position {position:?} is not in chunk {chunk:?}"
+        );
         Self {
             x: position.x.rem_euclid(16) as u8,
             y: position.y,
@@ -79,8 +84,9 @@ impl ChunkData {
         )
     }
 
-    pub fn block_entity(&self, position: BlockPosition) -> Option<&BlockEntity> {
-        self.block_entities.get(&LocalBlockPos::of(position))
+    /// `chunk` is this chunk's column; a position from another column is a caller bug.
+    pub fn block_entity(&self, chunk: ChunkPos, position: BlockPosition) -> Option<&BlockEntity> {
+        self.block_entities.get(&LocalBlockPos::of(chunk, position))
     }
 
     /// Every block entity with its world position; `chunk` is this chunk's column.
@@ -98,11 +104,12 @@ impl ChunkData {
     /// can never sit on a stone block.
     pub fn set_block_entity(
         &mut self,
+        chunk: ChunkPos,
         position: BlockPosition,
         block_entity: impl Into<BlockEntity>,
     ) -> Result<Option<BlockEntity>, BlockEntityError> {
         let block_entity = block_entity.into();
-        let local = LocalBlockPos::of(position);
+        let local = LocalBlockPos::of(chunk, position);
         let block_state = self
             .get_block(local.x, local.y as i32, local.z)
             .ok_or(BlockEntityError::OutsideWorld)?;
@@ -117,20 +124,36 @@ impl ChunkData {
         Ok(self.block_entities.insert(local, block_entity))
     }
 
-    /// Loads persisted block entities without validating or queueing updates.
+    /// Loads persisted block entities without queueing updates; entries whose
+    /// block no longer hosts their kind are dropped with a warning.
     pub fn restore_block_entities(
         &mut self,
+        chunk: ChunkPos,
         block_entities: impl IntoIterator<Item = (BlockPosition, BlockEntity)>,
     ) {
-        self.block_entities.extend(
-            block_entities
-                .into_iter()
-                .map(|(position, block_entity)| (LocalBlockPos::of(position), block_entity)),
-        );
+        for (position, block_entity) in block_entities {
+            let local = LocalBlockPos::of(chunk, position);
+            let hosted = self
+                .get_block(local.x, local.y as i32, local.z)
+                .is_some_and(|state| block_entity.kind().hosted_by(state));
+            if hosted {
+                self.block_entities.insert(local, block_entity);
+            } else {
+                tracing::warn!(
+                    ?position,
+                    kind = block_entity.kind().name(),
+                    "Dropping persisted block entity: its block does not host it"
+                );
+            }
+        }
     }
 
-    pub fn remove_block_entity(&mut self, position: BlockPosition) -> Option<BlockEntity> {
-        let local = LocalBlockPos::of(position);
+    pub fn remove_block_entity(
+        &mut self,
+        chunk: ChunkPos,
+        position: BlockPosition,
+    ) -> Option<BlockEntity> {
+        let local = LocalBlockPos::of(chunk, position);
         let removed = self.block_entities.remove(&local)?;
         self.pending_block_entities.insert(local, removed.kind());
         Some(removed)

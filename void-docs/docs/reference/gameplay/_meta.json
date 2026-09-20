@@ -26,7 +26,6 @@
   },
   {
     "type": "file",
-<<<<<<< HEAD
     "name": "sounds",
     "label": "Sounds"
   },
@@ -39,10 +38,11 @@
     "type": "file",
     "name": "particles",
     "label": "Particles"
-=======
+  },
+  {
+    "type": "file",
     "name": "block-entities",
     "label": "Block Entities"
->>>>>>> 6585e66 (feat(example): /sign demo command and block entity docs)
   },
   {
     "type": "file",

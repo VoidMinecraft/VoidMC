@@ -562,14 +562,18 @@ fn emit_blocks_module(
 
 /// Reads `assets/<version>/block_entity_hosts.json` (block entity type ->
 /// hosting block names, extracted from Paper's `BlockEntityType.java` by
-/// `scripts/extract_block_entity_hosts.py`). Empty if the file is absent.
+/// `scripts/extract_block_entity_hosts.py`). A version directory without it
+/// fails the build: an empty table would make every block entity unhostable.
 fn load_block_entity_hosts(crate_dir: &Path, version: &str) -> BTreeMap<String, Vec<String>> {
     let path = crate_dir
         .join("assets")
         .join(version)
         .join("block_entity_hosts.json");
     if !path.is_file() {
-        return BTreeMap::new();
+        panic!(
+            "missing {}: run scripts/extract_block_entity_hosts.py {version} <BlockEntityType.java>",
+            path.display()
+        );
     }
     let json_text =
         fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));

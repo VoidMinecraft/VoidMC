@@ -120,6 +120,7 @@ fn chunk_from_nbt(nbt: &Nbt) -> Result<LoadedChunk> {
     let mut data = ChunkData::new(sections, heightmaps, light);
     match field(c, "block_entities") {
         Some(Tag::List(List::Compound(list))) => data.restore_block_entities(
+            ChunkPos::new(x, z),
             list.iter()
                 .map(block_entity_from_nbt)
                 .collect::<Result<Vec<_>>>()?,
@@ -138,17 +139,33 @@ fn chunk_from_nbt(nbt: &Nbt) -> Result<LoadedChunk> {
 
 // ---- block entities -------------------------------------------------------
 
-// Anvil shape: the block entity's own tags plus `id`, `x`, `y`, `z`.
+// Anvil shape: `id`, `x`, `y`, `z` first, then the block entity's own tags,
+// so loading can strip exactly the four written here even if the payload
+// carries keys of the same name.
+const METADATA_TAGS: usize = 4;
+
 fn block_entity_to_nbt(position: BlockPosition, block_entity: &BlockEntity) -> Compound {
-    let mut tags = block_entity.data().tags.clone();
-    tags.push(("id".into(), Tag::String(block_entity.kind().name().into())));
-    tags.push(("x".into(), Tag::Int(position.x)));
-    tags.push(("y".into(), Tag::Int(position.y as i32)));
-    tags.push(("z".into(), Tag::Int(position.z)));
+    let mut tags = vec![
+        ("id".into(), Tag::String(block_entity.kind().name().into())),
+        ("x".into(), Tag::Int(position.x)),
+        ("y".into(), Tag::Int(position.y as i32)),
+        ("z".into(), Tag::Int(position.z)),
+    ];
+    tags.extend(block_entity.data().tags.iter().cloned());
     Compound { tags }
 }
 
 fn block_entity_from_nbt(c: &Compound) -> Result<(BlockPosition, BlockEntity)> {
+    let names: Vec<_> = c
+        .tags
+        .iter()
+        .take(METADATA_TAGS)
+        .map(|(name, _)| name.decode().map(|n| n.into_owned()))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| corrupt("block entity metadata"))?;
+    if names != ["id", "x", "y", "z"] {
+        return Err(corrupt("block entity metadata"));
+    }
     let id = get_string(c, "id")?;
     let kind = BlockEntityKind::from_name(&id)
         .ok_or_else(|| PersistenceError::Corrupt(format!("unknown block entity type {id}")))?;
@@ -157,16 +174,7 @@ fn block_entity_from_nbt(c: &Compound) -> Result<(BlockPosition, BlockEntity)> {
         y: get_int(c, "y")? as i16,
         z: get_int(c, "z")?,
     };
-    let tags = c
-        .tags
-        .iter()
-        .filter(|(name, _)| {
-            !name
-                .decode()
-                .is_ok_and(|name| matches!(name.as_ref(), "id" | "x" | "y" | "z"))
-        })
-        .cloned()
-        .collect();
+    let tags = c.tags[METADATA_TAGS..].to_vec();
     Ok((position, BlockEntity::raw(kind, Compound { tags })))
 }
 
@@ -513,20 +521,23 @@ mod tests {
         chunk.set_block(2, 70, 15, blocks::OAK_SIGN).unwrap();
         chunk.set_block(15, -60, 15, blocks::PLAYER_HEAD).unwrap();
         chunk.set_block(0, 0, 0, banner.block_state()).unwrap();
+        let chunk_pos = ChunkPos::new(3, -5);
         chunk
             .set_block_entity(
+                chunk_pos,
                 sign_pos,
                 Sign::lines(["persist", "me", "", ""]).back(SignSide::default().glowing()),
             )
             .unwrap();
         chunk
-            .set_block_entity(head_pos, Skull::player("Notch"))
+            .set_block_entity(chunk_pos, head_pos, Skull::player("Notch"))
             .unwrap();
-        chunk.set_block_entity(banner_pos, banner).unwrap();
+        chunk
+            .set_block_entity(chunk_pos, banner_pos, banner)
+            .unwrap();
 
         let bytes = serialize_chunk(DimensionId::Overworld, 3, -5, &chunk, false).unwrap();
         let loaded = deserialize_chunk(&bytes).unwrap();
-        let chunk_pos = ChunkPos::new(3, -5);
         let mut expected: Vec<_> = chunk.block_entities(chunk_pos).collect();
         let mut got: Vec<_> = loaded.data.block_entities(chunk_pos).collect();
         expected.sort_by_key(|(p, _)| (p.x, p.y, p.z));
@@ -548,6 +559,61 @@ mod tests {
         assert_eq!(get_int(sign, "y").unwrap(), 70);
         assert_eq!(get_int(sign, "z").unwrap(), -65);
         assert!(field(sign, "front_text").is_some());
+    }
+
+    #[test]
+    fn raw_payload_keys_named_like_metadata_survive() {
+        use ussr_nbt::owned::Tag;
+        use voidmc_data::v26_1_2::blocks;
+
+        let mut chunk = sample_chunk();
+        chunk.set_block(1, 5, 1, blocks::CHEST).unwrap();
+        let pos = BlockPosition { x: 1, y: 5, z: 1 };
+        let raw = BlockEntity::raw(
+            BlockEntityKind::chest(),
+            Compound {
+                tags: vec![
+                    ("id".into(), Tag::String("custom".into())),
+                    ("x".into(), Tag::Int(99)),
+                ],
+            },
+        );
+        chunk
+            .set_block_entity(ChunkPos::new(0, 0), pos, raw.clone())
+            .unwrap();
+        let bytes = serialize_chunk(DimensionId::Overworld, 0, 0, &chunk, false).unwrap();
+        let loaded = deserialize_chunk(&bytes).unwrap();
+        assert_eq!(
+            loaded
+                .data
+                .block_entities(ChunkPos::new(0, 0))
+                .collect::<Vec<_>>(),
+            vec![(pos, &raw)]
+        );
+    }
+
+    #[test]
+    fn persisted_entry_on_a_block_that_cannot_host_it_is_dropped() {
+        let mut nbt = chunk_to_nbt(DimensionId::Overworld, 0, 0, &sample_chunk(), false);
+        let sign_on_stone = Compound {
+            tags: vec![
+                ("id".into(), Tag::String("minecraft:sign".into())),
+                ("x".into(), Tag::Int(0)),
+                ("y".into(), Tag::Int(0)),
+                ("z".into(), Tag::Int(0)),
+            ],
+        };
+        nbt.compound
+            .tags
+            .retain(|(n, _)| n.decode().unwrap() != "block_entities");
+        nbt.compound.tags.push((
+            "block_entities".into(),
+            Tag::List(List::Compound(vec![sign_on_stone])),
+        ));
+        let mut bytes = Vec::new();
+        nbt.write(&mut bytes).unwrap();
+        let loaded = deserialize_chunk(&bytes).unwrap();
+        assert_eq!(loaded.data.block_entities(ChunkPos::new(0, 0)).count(), 0);
     }
 
     #[test]

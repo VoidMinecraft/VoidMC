@@ -429,12 +429,14 @@ pub fn chunk_of(position: BlockPosition) -> ChunkPos {
     ChunkPos::new(position.x.div_euclid(16), position.z.div_euclid(16))
 }
 
-fn chunk_entity(world: &World, dimension: DimensionId, position: BlockPosition) -> Option<Entity> {
-    world
-        .resource::<ChunkIndex>()
-        .0
-        .get(&(dimension, chunk_of(position)))
-        .copied()
+fn chunk_entity(
+    world: &World,
+    dimension: DimensionId,
+    position: BlockPosition,
+) -> Option<(Entity, ChunkPos)> {
+    let chunk = chunk_of(position);
+    let entity = world.resource::<ChunkIndex>().0.get(&(dimension, chunk))?;
+    Some((*entity, chunk))
 }
 
 pub fn block_entity_at(
@@ -442,8 +444,10 @@ pub fn block_entity_at(
     dimension: DimensionId,
     position: BlockPosition,
 ) -> Option<&BlockEntity> {
-    let entity = chunk_entity(world, dimension, position)?;
-    world.get::<ChunkData>(entity)?.block_entity(position)
+    let (entity, chunk) = chunk_entity(world, dimension, position)?;
+    world
+        .get::<ChunkData>(entity)?
+        .block_entity(chunk, position)
 }
 
 /// Stores `block_entity` at `position`, replacing any previous one. Players
@@ -454,12 +458,12 @@ pub fn set_block_entity(
     position: BlockPosition,
     block_entity: impl Into<BlockEntity>,
 ) -> Result<Option<BlockEntity>, BlockEntityError> {
-    let entity =
+    let (entity, chunk) =
         chunk_entity(world, dimension, position).ok_or(BlockEntityError::ChunkNotLoaded)?;
     world
         .get_mut::<ChunkData>(entity)
         .ok_or(BlockEntityError::ChunkNotLoaded)?
-        .set_block_entity(position, block_entity)
+        .set_block_entity(chunk, position, block_entity)
 }
 
 pub fn remove_block_entity(
@@ -467,10 +471,10 @@ pub fn remove_block_entity(
     dimension: DimensionId,
     position: BlockPosition,
 ) -> Option<BlockEntity> {
-    let entity = chunk_entity(world, dimension, position)?;
+    let (entity, chunk) = chunk_entity(world, dimension, position)?;
     world
         .get_mut::<ChunkData>(entity)?
-        .remove_block_entity(position)
+        .remove_block_entity(chunk, position)
 }
 
 /// The same operations as [`set_block_entity`] & co, from a system.
@@ -481,13 +485,15 @@ pub struct BlockEntities<'w, 's> {
 }
 
 impl BlockEntities<'_, '_> {
-    fn chunk(&self, dimension: DimensionId, position: BlockPosition) -> Option<Entity> {
-        self.index.0.get(&(dimension, chunk_of(position))).copied()
+    fn chunk(&self, dimension: DimensionId, position: BlockPosition) -> Option<(Entity, ChunkPos)> {
+        let chunk = chunk_of(position);
+        let entity = self.index.0.get(&(dimension, chunk))?;
+        Some((*entity, chunk))
     }
 
     pub fn get(&self, dimension: DimensionId, position: BlockPosition) -> Option<&BlockEntity> {
-        let entity = self.chunk(dimension, position)?;
-        self.chunks.get(entity).ok()?.block_entity(position)
+        let (entity, chunk) = self.chunk(dimension, position)?;
+        self.chunks.get(entity).ok()?.block_entity(chunk, position)
     }
 
     pub fn set(
@@ -496,13 +502,13 @@ impl BlockEntities<'_, '_> {
         position: BlockPosition,
         block_entity: impl Into<BlockEntity>,
     ) -> Result<Option<BlockEntity>, BlockEntityError> {
-        let entity = self
+        let (entity, chunk) = self
             .chunk(dimension, position)
             .ok_or(BlockEntityError::ChunkNotLoaded)?;
         self.chunks
             .get_mut(entity)
             .map_err(|_| BlockEntityError::ChunkNotLoaded)?
-            .set_block_entity(position, block_entity)
+            .set_block_entity(chunk, position, block_entity)
     }
 
     pub fn remove(
@@ -510,11 +516,11 @@ impl BlockEntities<'_, '_> {
         dimension: DimensionId,
         position: BlockPosition,
     ) -> Option<BlockEntity> {
-        let entity = self.chunk(dimension, position)?;
+        let (entity, chunk) = self.chunk(dimension, position)?;
         self.chunks
             .get_mut(entity)
             .ok()?
-            .remove_block_entity(position)
+            .remove_block_entity(chunk, position)
     }
 }
 
@@ -563,6 +569,13 @@ mod tests {
         0x00, 0x08, 0x74, 0x65, 0x78, 0x74, 0x75, 0x72, 0x65, 0x73, 0x08, 0x00, 0x05, 0x76, 0x61,
         0x6c, 0x75, 0x65, 0x00, 0x0c, 0x64, 0x47, 0x56, 0x34, 0x64, 0x48, 0x56, 0x79, 0x5a, 0x51,
         0x3d, 0x3d, 0x00, 0x00, 0x00,
+    ];
+    const SKULL_TEXTURE: &[u8] = &[
+        0x0a, 0x0a, 0x00, 0x07, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x6c, 0x65, 0x09, 0x00, 0x0a, 0x70,
+        0x72, 0x6f, 0x70, 0x65, 0x72, 0x74, 0x69, 0x65, 0x73, 0x0a, 0x00, 0x00, 0x00, 0x01, 0x08,
+        0x00, 0x04, 0x6e, 0x61, 0x6d, 0x65, 0x00, 0x08, 0x74, 0x65, 0x78, 0x74, 0x75, 0x72, 0x65,
+        0x73, 0x08, 0x00, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x00, 0x0c, 0x64, 0x47, 0x56, 0x34,
+        0x64, 0x48, 0x56, 0x79, 0x5a, 0x51, 0x3d, 0x3d, 0x00, 0x00, 0x00,
     ];
     const BANNER: &[u8] = &[
         0x0a, 0x09, 0x00, 0x08, 0x70, 0x61, 0x74, 0x74, 0x65, 0x72, 0x6e, 0x73, 0x0a, 0x00, 0x00,
@@ -614,6 +627,9 @@ mod tests {
             .id(Uuid::parse_str("069a79f4-44e9-4ac8-9fc5-4d0e04ff4dfa").unwrap())
             .into();
         assert_eq!(network_bytes(&full), SKULL_FULL);
+
+        let texture_only: BlockEntity = Skull::texture("dGV4dHVyZQ==").into();
+        assert_eq!(network_bytes(&texture_only), SKULL_TEXTURE);
 
         let bare: BlockEntity = Skull::default().into();
         assert!(bare.data().tags.is_empty());
@@ -672,19 +688,19 @@ mod tests {
     #[test]
     fn storage_set_get_remove() {
         let mut data = chunk_with(POS, blocks::OAK_SIGN);
-        assert_eq!(data.block_entity(POS), None);
+        assert_eq!(data.block_entity(CHUNK, POS), None);
 
         let first = data
-            .set_block_entity(POS, Sign::lines(["a", "", "", ""]))
+            .set_block_entity(CHUNK, POS, Sign::lines(["a", "", "", ""]))
             .unwrap();
         assert_eq!(first, None);
         assert_eq!(
-            data.block_entity(POS).unwrap().kind(),
+            data.block_entity(CHUNK, POS).unwrap().kind(),
             BlockEntityKind::sign()
         );
 
         let replaced = data
-            .set_block_entity(POS, Sign::lines(["b", "", "", ""]))
+            .set_block_entity(CHUNK, POS, Sign::lines(["b", "", "", ""]))
             .unwrap();
         assert_eq!(replaced, Some(Sign::lines(["a", "", "", ""]).into()));
         assert_eq!(
@@ -693,18 +709,18 @@ mod tests {
         );
 
         assert_eq!(
-            data.remove_block_entity(POS),
+            data.remove_block_entity(CHUNK, POS),
             Some(Sign::lines(["b", "", "", ""]).into())
         );
-        assert_eq!(data.remove_block_entity(POS), None);
-        assert_eq!(data.block_entity(POS), None);
+        assert_eq!(data.remove_block_entity(CHUNK, POS), None);
+        assert_eq!(data.block_entity(CHUNK, POS), None);
     }
 
     #[test]
     fn set_rejects_a_block_that_cannot_host_the_kind() {
         let mut data = chunk_with(POS, blocks::STONE);
         assert_eq!(
-            data.set_block_entity(POS, Sign::new()),
+            data.set_block_entity(CHUNK, POS, Sign::new()),
             Err(BlockEntityError::WrongBlock {
                 block_state: blocks::STONE,
                 kind: BlockEntityKind::sign()
@@ -712,11 +728,11 @@ mod tests {
         );
         let mut sign_block = chunk_with(POS, blocks::OAK_SIGN);
         assert!(matches!(
-            sign_block.set_block_entity(POS, Skull::player("x")),
+            sign_block.set_block_entity(CHUNK, POS, Skull::player("x")),
             Err(BlockEntityError::WrongBlock { .. })
         ));
         assert_eq!(
-            sign_block.set_block_entity(BlockPosition { y: 400, ..POS }, Sign::new()),
+            sign_block.set_block_entity(CHUNK, BlockPosition { y: 400, ..POS }, Sign::new()),
             Err(BlockEntityError::OutsideWorld)
         );
         assert!(!sign_block.has_pending_block_entities());
@@ -725,23 +741,23 @@ mod tests {
     #[test]
     fn block_change_drops_a_block_entity_the_new_block_cannot_host() {
         let mut data = chunk_with(POS, blocks::OAK_SIGN);
-        data.set_block_entity(POS, Sign::new()).unwrap();
+        data.set_block_entity(CHUNK, POS, Sign::new()).unwrap();
         data.take_pending_block_entities(CHUNK);
 
         data.set_block(13, 70, 5, blocks::SPRUCE_WALL_SIGN).unwrap();
         assert!(
-            data.block_entity(POS).is_some(),
+            data.block_entity(CHUNK, POS).is_some(),
             "sign to sign keeps the text"
         );
 
         data.set_block(13, 70, 5, blocks::OAK_HANGING_SIGN).unwrap();
-        assert_eq!(data.block_entity(POS), None);
+        assert_eq!(data.block_entity(CHUNK, POS), None);
         assert!(!data.has_pending_block_entities());
 
         data.set_block(13, 70, 5, blocks::OAK_SIGN).unwrap();
-        data.set_block_entity(POS, Sign::new()).unwrap();
+        data.set_block_entity(CHUNK, POS, Sign::new()).unwrap();
         data.set_block(13, 70, 5, blocks::AIR).unwrap();
-        assert_eq!(data.block_entity(POS), None);
+        assert_eq!(data.block_entity(CHUNK, POS), None);
         assert!(!data.has_pending_block_entities());
     }
 
@@ -749,7 +765,7 @@ mod tests {
     fn chunk_packet_lists_block_entities() {
         let mut data = chunk_with(POS, blocks::OAK_SIGN);
         assert!(data.to_packet(CHUNK.x, CHUNK.z).block_entities.is_empty());
-        data.set_block_entity(POS, Sign::lines(["a", "", "", ""]))
+        data.set_block_entity(CHUNK, POS, Sign::lines(["a", "", "", ""]))
             .unwrap();
         let packet = data.to_packet(CHUNK.x, CHUNK.z);
         let sign: BlockEntity = Sign::lines(["a", "", "", ""]).into();

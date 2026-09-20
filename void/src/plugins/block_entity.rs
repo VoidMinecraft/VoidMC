@@ -38,7 +38,7 @@ fn sync_block_entities(
         commands.entity(entity).insert(ChunkDirty);
         let recipients = players.ready().seeing_chunk(dimension.0, position.0);
         for (block_position, kind) in data.take_pending_block_entities(position.0) {
-            let packet = match data.block_entity(block_position) {
+            let packet = match data.block_entity(position.0, block_position) {
                 Some(block_entity) => block_entity.packet(block_position),
                 None => BlockEntityData {
                     position: block_position,

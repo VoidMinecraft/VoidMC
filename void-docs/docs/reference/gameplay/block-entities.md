@@ -48,12 +48,14 @@ returns the block entity it replaced, if any. `/sign <text...>` in
 | `block_entity_at(world, dimension, position)` | `&World` | Read. |
 | `remove_block_entity(world, dimension, position)` | `&mut World` | Remove; viewers get the block entity reset to its defaults (a blank sign). |
 | `BlockEntities` (`SystemParam`) | systems | `get`, `set`, `remove` with the same semantics. |
-| `ChunkData::block_entity` / `set_block_entity` / `remove_block_entity` / `block_entities(chunk)` | chunk | The storage the above delegate to. |
+| `ChunkData::block_entity(chunk, pos)` / `set_block_entity(chunk, pos, be)` / `remove_block_entity(chunk, pos)` / `block_entities(chunk)` | chunk | The storage the above delegate to; `chunk` is the column the `ChunkData` belongs to (checked in debug builds). |
 
 Changing a block to one that cannot host the stored kind removes the block
 entity automatically — breaking a sign never leaves its text behind, and
-turning an oak sign into a spruce sign keeps it. The Block Update packet
-already tells the client, so no extra packet is sent.
+turning an oak sign into a spruce sign keeps it. Through `mutate_block` (the
+live path) the Block Update packet already tells the client, so no extra
+packet is sent; a direct `ChunkData::set_block` (generation, bulk edits) drops
+the entry without notifying anyone.
 
 Changes are flushed once per tick in `PostUpdate`
 (`VoidSystems::BlockEntitySync`, before `ChunkStreaming`) to
