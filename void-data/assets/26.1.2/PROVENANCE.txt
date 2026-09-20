@@ -26,6 +26,12 @@ Notes:
   - blockCollisionShapes.json vendored from prismarine 1.21.9 since the
     pc_26_1_2 PR ships only protocol data. Block shapes change rarely
     between minor versions; new 26.1.2 blocks fall back to FULL_CUBE.
+  - block_entity_hosts.json maps each minecraft:block_entity_type entry to
+    the blocks that host it. Mojang's data generator has no report for this;
+    it is extracted from the `register(...)` table of Paper 26.1.2's
+    net/minecraft/world/level/block/entity/BlockEntityType.java by
+    scripts/extract_block_entity_hosts.py. void-data/build.rs turns it into
+    block-state ranges; a block name missing from blocks.json fails the build.
   - Re-run scripts/extract.sh once prismarine publishes 26.1.2.
   - The `Minecraft version:` line must match the directory name and
     version.json's `id`.

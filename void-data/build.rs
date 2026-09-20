@@ -214,6 +214,7 @@ fn main() {
         let items = load_item_entries(&crate_dir, version);
         let packets = load_packets(&crate_dir, version);
         let entity_types = load_registry_entries(&crate_dir, version, "minecraft:entity_type");
+        let block_entity_hosts = load_block_entity_hosts(&crate_dir, version);
         emit_blocks_module(
             &mut blocks_code,
             version,
@@ -222,6 +223,7 @@ fn main() {
             &items,
             &packets,
             &entity_types,
+            &block_entity_hosts,
         );
     }
     fs::write(out_dir.join("blocks.rs"), blocks_code).unwrap();
@@ -318,6 +320,7 @@ fn emit_blocks_module(
     items: &[(String, i32)],
     packets: &PacketTable,
     entity_types: &[(String, i32)],
+    block_entity_hosts: &BTreeMap<String, Vec<String>>,
 ) {
     let blocks_obj = blocks_json
         .as_object()
@@ -545,6 +548,9 @@ fn emit_blocks_module(
     // ---- items module
     emit_items_module(out, &defs, items);
 
+    // ---- block entity hosts module
+    emit_block_entity_hosts_module(out, &defs, block_entity_hosts);
+
     // ---- packets module
     emit_packets_module(out, packets);
 
@@ -552,6 +558,63 @@ fn emit_blocks_module(
     emit_entity_kinds(out, entity_types);
 
     let _ = writeln!(out, "}}");
+}
+
+/// Reads `assets/<version>/block_entity_hosts.json` (block entity type ->
+/// hosting block names, extracted from Paper's `BlockEntityType.java` by
+/// `scripts/extract_block_entity_hosts.py`). Empty if the file is absent.
+fn load_block_entity_hosts(crate_dir: &Path, version: &str) -> BTreeMap<String, Vec<String>> {
+    let path = crate_dir
+        .join("assets")
+        .join(version)
+        .join("block_entity_hosts.json");
+    if !path.is_file() {
+        return BTreeMap::new();
+    }
+    let json_text =
+        fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let value: Value = serde_json::from_str(&json_text)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    value
+        .as_object()
+        .expect("block_entity_hosts.json root must be object")
+        .iter()
+        .map(|(kind, blocks)| (kind.clone(), json_string_array(blocks)))
+        .collect()
+}
+
+/// Emits the `block_entities` submodule: `(min_state_id, max_state_id,
+/// block_entity_type)` for every block that hosts a block entity, sorted by
+/// state id for binary search.
+fn emit_block_entity_hosts_module(
+    out: &mut String,
+    defs: &[BlockDef],
+    hosts: &BTreeMap<String, Vec<String>>,
+) {
+    let mut rows: Vec<(i32, i32, &str)> = Vec::new();
+    for (kind, blocks) in hosts {
+        for block in blocks {
+            let def = defs
+                .iter()
+                .find(|d| &d.full_name == block)
+                .unwrap_or_else(|| panic!("block_entity_hosts.json: unknown block {block}"));
+            rows.push((def.min_state_id, def.max_state_id, kind.as_str()));
+        }
+    }
+    rows.sort_by_key(|r| r.0);
+
+    let _ = writeln!(out, "    /// Blocks that host a block entity.");
+    let _ = writeln!(out, "    pub mod block_entities {{");
+    let _ = writeln!(
+        out,
+        "        /// `(min_state_id, max_state_id, block_entity_type)` sorted by state id."
+    );
+    let _ = writeln!(out, "        pub static HOSTS: &[(i32, i32, &str)] = &[");
+    for (min, max, kind) in rows {
+        let _ = writeln!(out, "            ({min}, {max}, {kind:?}),");
+    }
+    let _ = writeln!(out, "        ];");
+    let _ = writeln!(out, "    }}");
 }
 
 /// Emits the `items` submodule: one `const` per item (id), a name→id lookup

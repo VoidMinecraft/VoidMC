@@ -85,6 +85,24 @@ pub fn block_entity_type_id(version: Version, name: &str) -> Option<i32> {
     protocol_registry_index(version, "minecraft:block_entity_type", name)
 }
 
+pub fn block_entity_type_name(version: Version, id: i32) -> Option<&'static str> {
+    protocol_registry(version, "minecraft:block_entity_type")?
+        .iter()
+        .find(|(_, protocol_id)| *protocol_id == id)
+        .map(|(name, _)| *name)
+}
+
+/// The block entity type hosted by a block state, or `None` when that block
+/// carries no block entity.
+pub fn block_entity_type_for_state(version: Version, block_state_id: i32) -> Option<&'static str> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::block_entities::HOSTS,
+    };
+    let idx = table.partition_point(|(min, _, _)| *min <= block_state_id);
+    let (min, max, kind) = table.get(idx.checked_sub(1)?)?;
+    (*min..=*max).contains(&block_state_id).then_some(*kind)
+}
+
 pub fn menu_id(version: Version, name: &str) -> Option<i32> {
     protocol_registry_index(version, "minecraft:menu", name)
 }
@@ -315,6 +333,8 @@ mod tests {
             Some(1313)
         );
         assert_eq!(block_entity_type_id(v, "minecraft:chest"), Some(1));
+        assert_eq!(block_entity_type_name(v, 1), Some("minecraft:chest"));
+        assert_eq!(block_entity_type_name(v, 4096), None);
         assert_eq!(menu_id(v, "minecraft:generic_9x3"), Some(2));
         assert_eq!(data_component_type_id(v, "minecraft:custom_data"), Some(0));
         assert_eq!(
@@ -531,5 +551,47 @@ mod tests {
             Version::V26_1_2,
             "minecraft:not_real"
         ));
+    }
+
+    #[test]
+    fn block_entity_hosts_come_from_block_state_ranges() {
+        let v = Version::V26_1_2;
+        assert_eq!(
+            block_entity_type_for_state(v, v26_1_2::blocks::OAK_SIGN),
+            Some("minecraft:sign")
+        );
+        assert_eq!(
+            block_entity_type_for_state(v, v26_1_2::state::OakWallSign::MAX_STATE_ID),
+            Some("minecraft:sign")
+        );
+        assert_eq!(
+            block_entity_type_for_state(v, v26_1_2::blocks::OAK_HANGING_SIGN),
+            Some("minecraft:hanging_sign")
+        );
+        assert_eq!(
+            block_entity_type_for_state(v, v26_1_2::blocks::PLAYER_HEAD),
+            Some("minecraft:skull")
+        );
+        assert_eq!(
+            block_entity_type_for_state(v, v26_1_2::blocks::RED_WALL_BANNER),
+            Some("minecraft:banner")
+        );
+        assert_eq!(
+            block_entity_type_for_state(v, v26_1_2::blocks::CHEST),
+            Some("minecraft:chest")
+        );
+        assert_eq!(block_entity_type_for_state(v, v26_1_2::blocks::STONE), None);
+        assert_eq!(block_entity_type_for_state(v, -1), None);
+        assert_eq!(block_entity_type_for_state(v, i32::MAX), None);
+        for (_, _, kind) in v26_1_2::block_entities::HOSTS {
+            assert!(
+                block_entity_type_id(v, kind).is_some(),
+                "{kind} not in registry"
+            );
+        }
+        assert_eq!(v26_1_2::block_entities::HOSTS.len(), 201);
+        for pair in v26_1_2::block_entities::HOSTS.windows(2) {
+            assert!(pair[0].1 < pair[1].0, "host ranges overlap: {pair:?}");
+        }
     }
 }
