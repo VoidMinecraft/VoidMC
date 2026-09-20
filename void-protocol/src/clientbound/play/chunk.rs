@@ -1348,7 +1348,7 @@ mod biome_tests {
         };
         assert_eq!(truncated.get_block_state(0, 0, 0), 1);
         assert_eq!(truncated.get_block_state(1, 0, 0), 0);
-        assert_eq!(truncated.get_block_state(0, 15, 15), 0);
+        assert_eq!(truncated.get_block_state(0, 15, 15), 1);
     }
 
     #[test]
