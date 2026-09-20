@@ -1,29 +1,7 @@
-//! Sending clientbound packets to players.
-//!
-//! Two entry points share one API:
-//!
-//! - [`Players`] — a `SystemParam` for systems and observers.
-//! - [`WorldPlayers`] — the same API over a `&World`, for command handlers,
-//!   item behaviours and exclusive drain systems.
-//!
-//! Players are addressed by their `Entity`. Packets are accepted as
-//! `impl Into<ClientboundPacket>`, so a bare packet struct works:
-//!
-//! ```ignore
-//! fn my_system(players: Players, targets: Query<Entity, With<PlayerReady>>) {
-//!     players.broadcast(SystemChat { content, overlay: false });
-//!     players.ready().except(me).send(packet);
-//!     players.ready().seeing_chunk(DimensionId::Overworld, pos).send(packet);
-//! }
-//! ```
-//!
-//! [`Players`] reads `ClientId`, `PlayerReady`, `PlayerDimension` and
-//! `LoadedChunks`. A system that also mutates one of those must wrap the two
-//! in a `ParamSet` (see `stream_chunks`), or Bevy rejects the system (B0001).
-//!
-//! Delivery failures are never silent: a missing entity logs at `debug`, an
-//! entity without a [`ClientId`] logs at `warn`, and a closed outgoing channel
-//! (the network thread is gone) logs one `error` for the whole process.
+//! Entity-addressed packet sending: [`Players`] from systems, [`WorldPlayers`]
+//! from `&World`. `Players` reads `ClientId`, `PlayerReady`, `PlayerDimension`
+//! and `LoadedChunks`; a system mutating one of those must hold both in a
+//! `ParamSet` (B0001).
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,12 +16,8 @@ use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
 use crate::network::{NetworkChannels, OutgoingPacket};
 use crate::world::{ChunkPos, DimensionId};
 
-/// Set once the outgoing channel is observed closed, so the error is logged
-/// exactly once instead of once per packet.
 static CHANNEL_CLOSED_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// One candidate recipient of a broadcast. Exposed to [`Recipients::filter`]
-/// predicates.
 #[derive(Clone, Copy)]
 pub struct Recipient<'a> {
     entity: Entity,
@@ -61,12 +35,10 @@ impl Recipient<'_> {
         self.client_id
     }
 
-    /// The player's dimension, if known (`PlayerDimension` present).
     pub fn dimension(&self) -> Option<DimensionId> {
         self.dimension
     }
 
-    /// Whether the client currently has `chunk` loaded in `dimension`.
     pub fn sees_chunk(&self, dimension: DimensionId, chunk: ChunkPos) -> bool {
         self.dimension == Some(dimension)
             && self
@@ -75,30 +47,24 @@ impl Recipient<'_> {
     }
 }
 
-/// A snapshot of recipients that composes filters and ends in [`send`].
-///
-/// [`send`]: Recipients::send
+/// A snapshot of ready players; filters narrow it, [`Recipients::send`] delivers.
 pub struct Recipients<'a> {
     sender: &'a Sender<OutgoingPacket>,
     targets: Vec<Recipient<'a>>,
 }
 
 impl<'a> Recipients<'a> {
-    /// Drops `entity` from the recipients.
     pub fn except(mut self, entity: Entity) -> Self {
         self.targets.retain(|r| r.entity != entity);
         self
     }
 
-    /// Keeps only players in `dimension`.
     pub fn in_dimension(mut self, dimension: DimensionId) -> Self {
         self.targets.retain(|r| r.dimension == Some(dimension));
         self
     }
 
-    /// Keeps only players whose dimension matches `dimension`; `None` means
-    /// "visible from every dimension" and keeps everyone. Mirrors the
-    /// `Option<&EntityDimension>` convention on spawned entities.
+    /// `None` keeps everyone, matching `Option<&EntityDimension>` on spawned entities.
     pub fn visible_from(self, dimension: Option<DimensionId>) -> Self {
         match dimension {
             Some(dimension) => self.in_dimension(dimension),
@@ -106,19 +72,16 @@ impl<'a> Recipients<'a> {
         }
     }
 
-    /// Keeps only players that currently have `chunk` loaded in `dimension`.
     pub fn seeing_chunk(mut self, dimension: DimensionId, chunk: ChunkPos) -> Self {
         self.targets.retain(|r| r.sees_chunk(dimension, chunk));
         self
     }
 
-    /// Keeps only players for which `predicate` returns `true`.
     pub fn filter(mut self, mut predicate: impl FnMut(&Recipient<'a>) -> bool) -> Self {
         self.targets.retain(|r| predicate(r));
         self
     }
 
-    /// The remaining recipients' entities.
     pub fn entities(&self) -> impl Iterator<Item = Entity> + '_ {
         self.targets.iter().map(|r| r.entity)
     }
@@ -131,7 +94,6 @@ impl<'a> Recipients<'a> {
         self.targets.is_empty()
     }
 
-    /// Sends one packet to every remaining recipient (cloned per recipient).
     pub fn send(&self, packet: impl Into<ClientboundPacket>) {
         let packet = packet.into();
         let Some((last, rest)) = self.targets.split_last() else {
@@ -149,8 +111,6 @@ impl<'a> Recipients<'a> {
     }
 }
 
-/// Hands one packet to the network thread. The only place that touches the
-/// channel, so a failure is logged exactly once.
 fn deliver(
     sender: &Sender<OutgoingPacket>,
     entity: Entity,
@@ -168,7 +128,6 @@ fn deliver(
     }
 }
 
-/// Resolves `entity` to a client id, logging when it cannot be a recipient.
 fn resolve_client(world: &World, entity: Entity) -> Option<u32> {
     match world.get_entity(entity) {
         Ok(entity_ref) => match entity_ref.get::<ClientId>() {
@@ -185,7 +144,6 @@ fn resolve_client(world: &World, entity: Entity) -> Option<u32> {
     }
 }
 
-/// Packet sending from systems and observers.
 #[derive(SystemParam)]
 pub struct Players<'w, 's> {
     channels: Res<'w, NetworkChannels>,
@@ -204,8 +162,7 @@ pub struct Players<'w, 's> {
 }
 
 impl Players<'_, '_> {
-    /// Sends one packet to one client. Works for any connected client entity,
-    /// including those still in the status/login/configuration phases.
+    /// Works for any client entity, ready or still in status/login/configuration.
     pub fn send(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
         match self.clients.get(entity) {
             Ok(client_id) => deliver(&self.channels.outgoing, entity, client_id.0, packet.into()),
@@ -218,7 +175,6 @@ impl Players<'_, '_> {
         }
     }
 
-    /// Sends one packet to each of `entities` (cloned per recipient).
     pub fn send_to(
         &self,
         entities: impl IntoIterator<Item = Entity>,
@@ -230,7 +186,6 @@ impl Players<'_, '_> {
         }
     }
 
-    /// Every ready player, as a filterable set.
     pub fn ready(&self) -> Recipients<'_> {
         Recipients {
             sender: &self.channels.outgoing,
@@ -247,17 +202,14 @@ impl Players<'_, '_> {
         }
     }
 
-    /// Sends one packet to every ready player.
     pub fn broadcast(&self, packet: impl Into<ClientboundPacket>) {
         self.ready().send(packet);
     }
 
-    /// Sends one packet to every ready player except `entity`.
     pub fn broadcast_except(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
         self.ready().except(entity).send(packet);
     }
 
-    /// Sends one packet to every ready player that has `chunk` loaded.
     pub fn broadcast_chunk(
         &self,
         dimension: DimensionId,
@@ -268,7 +220,6 @@ impl Players<'_, '_> {
     }
 }
 
-/// Packet sending from exclusive-world code (`&World` is enough).
 pub struct WorldPlayers<'w> {
     world: &'w World,
 }
@@ -282,15 +233,13 @@ impl<'w> WorldPlayers<'w> {
         &self.world.resource::<NetworkChannels>().outgoing
     }
 
-    /// Sends one packet to one client. Works for any connected client entity,
-    /// including those still in the status/login/configuration phases.
+    /// Works for any client entity, ready or still in status/login/configuration.
     pub fn send(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
         if let Some(client_id) = resolve_client(self.world, entity) {
             deliver(self.sender(), entity, client_id, packet.into());
         }
     }
 
-    /// Sends one packet to each of `entities` (cloned per recipient).
     pub fn send_to(
         &self,
         entities: impl IntoIterator<Item = Entity>,
@@ -302,11 +251,9 @@ impl<'w> WorldPlayers<'w> {
         }
     }
 
-    /// Every ready player, as a filterable set.
     pub fn ready(&self) -> Recipients<'w> {
         let world = self.world;
-        // `try_query_filtered` only fails when `ClientId` or `PlayerReady` was
-        // never registered, in which case no player can be ready.
+        // None only when ClientId/PlayerReady were never registered: no ready player exists.
         let targets = world
             .try_query_filtered::<(Entity, &ClientId), With<PlayerReady>>()
             .map(|mut query| {
@@ -327,17 +274,14 @@ impl<'w> WorldPlayers<'w> {
         }
     }
 
-    /// Sends one packet to every ready player.
     pub fn broadcast(&self, packet: impl Into<ClientboundPacket>) {
         self.ready().send(packet);
     }
 
-    /// Sends one packet to every ready player except `entity`.
     pub fn broadcast_except(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
         self.ready().except(entity).send(packet);
     }
 
-    /// Sends one packet to every ready player that has `chunk` loaded.
     pub fn broadcast_chunk(
         &self,
         dimension: DimensionId,
@@ -369,7 +313,6 @@ mod tests {
             disconnect: disconnect_rx,
             kick: kick_tx,
         });
-        // Keep the unused ends alive for the app's lifetime.
         app.insert_non_send_resource((_incoming_tx, _disconnect_tx, _kick_rx));
         (app, outgoing_rx)
     }
@@ -496,7 +439,6 @@ mod tests {
         app.add_systems(Update, move |players: Players| {
             players.send(gone, keep_alive(1));
             players.send(not_a_client, keep_alive(2));
-            // A ready player without ClientId cannot be reached by broadcast either.
             players.broadcast(keep_alive(3));
         });
         app.update();

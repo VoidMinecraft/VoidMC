@@ -5,12 +5,13 @@ use bevy_ecs::prelude::Commands;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_flame::FlameLayer;
 use tracing_subscriber::prelude::*;
+use voidmc::commands::system_chat;
 use voidmc::components::PlayerName;
 use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
 use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
 use voidmc::plugins::inventory::InventoryDirty;
 use voidmc::{
-    CommandBuilder, CommandRegistry, Inventory, ItemStack, On, Query, ServerConfigBuilder,
+    CommandBuilder, CommandRegistry, Inventory, ItemStack, On, Players, Query, ServerConfigBuilder,
     VoidServer, register_default_commands,
 };
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
@@ -101,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Give every player a small starter kit when they join.
             app.add_observer(give_starter_kit);
+            app.add_observer(announce_join);
         })
         .add_command(
             CommandBuilder::new("hello")
@@ -239,6 +241,18 @@ fn give_starter_kit(
         }
     }
     commands.entity(event.entity).insert(InventoryDirty);
+}
+
+/// Demo of the packet-send API: tell everyone else who just joined.
+fn announce_join(event: On<PlayerReadyEvent>, players: Players, names: Query<&PlayerName>) {
+    let name = names
+        .get(event.entity)
+        .map(|n| n.0.as_str())
+        .unwrap_or("Someone");
+    players.broadcast_except(
+        event.entity,
+        system_chat(&format!("{name} joined the server"), "yellow"),
+    );
 }
 
 fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) {

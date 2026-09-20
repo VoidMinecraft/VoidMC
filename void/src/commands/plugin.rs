@@ -9,9 +9,6 @@ pub enum CommandSystems {
     DrainQueue,
 }
 
-/// Ordering handle for the command drain. Contained in
-/// [`VoidSystems::CommandDrain`]; kept for backwards compatibility.
-///
 /// Plugin that initializes the command system.
 /// The CommandRegistry starts empty; use `register_default_commands()`
 /// or `VoidServer::add_command()` to populate it.

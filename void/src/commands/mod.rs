@@ -276,7 +276,6 @@ impl<'a> CommandContext<'a> {
         WorldPlayers::new(self.world).broadcast(system_chat(message, "white"));
     }
 
-    /// Packet-send access for command handlers (`ctx.players().send(..)`).
     pub fn players(&self) -> WorldPlayers<'_> {
         WorldPlayers::new(self.world)
     }
@@ -296,7 +295,6 @@ impl<'a> CommandContext<'a> {
     }
 }
 
-/// A non-overlay `SystemChat` packet with plain text in `color`.
 pub fn system_chat(message: &str, color: &str) -> voidmc_protocol::clientbound::SystemChat {
     voidmc_protocol::clientbound::SystemChat {
         content: text_to_nbt(message, color),

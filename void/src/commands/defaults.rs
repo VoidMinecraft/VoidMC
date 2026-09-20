@@ -244,7 +244,6 @@ fn handle_gamemode(ctx: &mut CommandContext) {
     ctx.reply(&format!("Game mode set to {} ({})", mode_name, mode));
 }
 
-/// Resolves a ready player by (case-insensitive) name.
 fn find_ready_player(ctx: &mut CommandContext, name: &str) -> Option<Entity> {
     ctx.with_world_mut(|world| {
         world

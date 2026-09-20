@@ -46,9 +46,6 @@ mod tests {
     use crate::world::ChunkIndex;
     use crate::world::generation::{DefaultWorldGenerator, WorldGen};
 
-    /// Builds the full framework plugin stack and ticks once. Bevy validates
-    /// system-parameter conflicts (B0001) on the first run, so this catches a
-    /// system that mutates a component `Players` reads.
     #[test]
     fn full_plugin_stack_ticks_without_param_conflicts() {
         let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();

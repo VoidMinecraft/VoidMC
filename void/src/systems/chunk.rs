@@ -15,9 +15,8 @@ use crate::world::{
 
 /// Streams chunks to players as they move through the world.
 ///
-/// Mutates `LoadedChunks`, which [`Players`] reads, so the two live in a
-/// `ParamSet`: packets are collected while the viewer query is borrowed and
-/// sent afterwards, in the same order.
+/// `LoadedChunks` is both mutated here and read by `Players`, hence the
+/// `ParamSet` and the outbox.
 #[instrument(
     level = "info",
     skip(

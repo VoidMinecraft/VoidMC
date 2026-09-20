@@ -1,52 +1,31 @@
-//! Public system sets for ordering user systems against framework phases.
-//!
-//! Every built-in system runs inside one of these sets, so a plugin can say
-//! "after chunk streaming" without naming private functions:
-//!
-//! ```ignore
-//! app.add_systems(PostUpdate, my_system.after(VoidSystems::ChunkStreaming));
-//! ```
-//!
-//! Sets are named after what the systems in them do today. The schedule each
-//! set lives in is fixed (see each variant); ordering constraints only apply
-//! within a schedule.
+//! Framework phases as public `SystemSet`s, so user systems can be ordered
+//! with `.before(VoidSystems::X)` / `.after(VoidSystems::X)` in the same schedule.
 
 use bevy_ecs::schedule::SystemSet;
 
-/// Framework phases, grouped by Bevy schedule.
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum VoidSystems {
-    /// `PreUpdate` — drains the network thread's incoming channel, spawns
-    /// client entities, decodes and dispatches packets (`On<PacketEvent<T>>`
-    /// observers fire here), and despawns disconnected clients.
+    /// `PreUpdate`: packet decode + dispatch (`On<PacketEvent<T>>` fires here), disconnects.
     NetworkIngest,
 
-    /// `Update` — executes queued chat commands with `&mut World`
-    /// (`CommandSystems::DrainQueue` is contained in this set).
+    /// `Update`: contains `CommandSystems::DrainQueue`.
     CommandDrain,
-    /// `Update` — executes queued item uses / block breaks through
-    /// `ItemBehavior` handlers with `&mut World`.
+    /// `Update`: `ItemBehavior` handlers run here.
     ItemUseDrain,
-    /// `Update` — sends `KeepAlive` to ready players on its interval.
-    /// Runs after [`CommandDrain`](Self::CommandDrain).
+    /// `Update`, after `CommandDrain`.
     KeepAlive,
-    /// `Update` — server-side entity simulation: settling fresh spawns,
-    /// wandering, gravity/physics. Runs after [`KeepAlive`](Self::KeepAlive).
+    /// `Update`, after `KeepAlive`: settle, wander, physics.
     EntitySimulation,
-    /// `Update` — dropped-item pickup and pickup-delay ticking.
+    /// `Update`.
     ItemPickup,
 
-    /// `PostUpdate` — sends spawn, movement, motion and metadata packets for
-    /// non-player `SpawnedEntity`s, then records their previous positions.
+    /// `PostUpdate`: spawn/movement/motion/metadata of non-player entities.
     EntityBroadcast,
-    /// `PostUpdate` — sends other players' movement and head rotation, then
-    /// records previous positions.
+    /// `PostUpdate`: other players' movement and head rotation.
     PlayerBroadcast,
-    /// `PostUpdate` — loads/generates and sends chunks as players move,
-    /// unloads out-of-range chunks, updates `LoadedChunks`.
+    /// `PostUpdate`: chunk load/unload packets, updates `LoadedChunks`.
     ChunkStreaming,
-    /// `PostUpdate` — re-sends the inventory window of players flagged
-    /// `InventoryDirty`.
+    /// `PostUpdate`: resync of `InventoryDirty` players.
     InventorySync,
 }
 

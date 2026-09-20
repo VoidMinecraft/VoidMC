@@ -18,9 +18,6 @@ pub enum ClientboundPacket {
     ManualPlay(ManualPlayPacket),
 }
 
-/// Generates `From<Packet> for ClientboundPacket` for every packet struct so
-/// callers can pass a bare packet wherever `impl Into<ClientboundPacket>` is
-/// accepted. Add a line here whenever a variant is added to a state enum.
 macro_rules! into_clientbound {
     ($($state:ident :: $inner:ident :: $variant:ident),* $(,)?) => {
         $(
@@ -70,17 +67,13 @@ impl From<ManualPlayPacket> for ClientboundPacket {
 }
 
 into_clientbound! {
-    // Status
     Status::StatusPacket::StatusResponse,
     Status::StatusPacket::PingResponse,
-    // Login
     Login::LoginPacket::LoginSuccess,
-    // Configuration
     Configuration::ConfigurationPacket::FinishConfiguration,
     Configuration::ConfigurationPacket::RegistryData,
     Configuration::ConfigurationPacket::KnownPacks,
     ManualConfiguration::ManualConfigurationPacket::UpdateTags,
-    // Play
     Play::PlayPacket::SpawnEntity,
     Play::PlayPacket::BlockChangedAck,
     Play::PlayPacket::BlockUpdate,
