@@ -80,7 +80,7 @@ impl Server {
                 result = self.socket.accept() => {
                     match result {
                         Ok(client) => {
-                            let client_ip = client.1.to_string();
+                            let client_ip = client.peer_addr().to_string();
                             info!(client_ip = %client_ip, "Accepted new connection");
 
                             let client_id = self.next_id;

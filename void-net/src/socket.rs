@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, Encode, VarI32};
 
@@ -24,17 +25,22 @@ impl Default for FrameLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameError {
     InvalidLengthVarInt,
+    TruncatedLengthPrefix { bytes_read: usize },
     NegativeLength(i32),
     EmptyFrame,
     FrameTooLarge { requested: usize, limit: usize },
     AllocationFailed { requested: usize },
     OutboundLengthOverflow { requested: usize },
+    TruncatedFrame { expected: usize, received: usize },
 }
 
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidLengthVarInt => write!(f, "invalid frame length VarInt"),
+            Self::TruncatedLengthPrefix { bytes_read } => {
+                write!(f, "connection closed after {bytes_read} frame length bytes")
+            }
             Self::NegativeLength(value) => write!(f, "negative frame length {value}"),
             Self::EmptyFrame => write!(f, "empty packet frame"),
             Self::FrameTooLarge { requested, limit } => {
@@ -49,6 +55,12 @@ impl std::fmt::Display for FrameError {
                     "outbound frame length {requested} does not fit in a VarInt"
                 )
             }
+            Self::TruncatedFrame { expected, received } => {
+                write!(
+                    f,
+                    "connection closed after {received} of {expected} frame bytes"
+                )
+            }
         }
     }
 }
@@ -57,6 +69,7 @@ impl std::error::Error for FrameError {}
 
 #[derive(Debug)]
 pub enum SocketError {
+    PeerClosed,
     Io(std::io::Error),
     Frame(FrameError),
     Decode(DecodeError),
@@ -65,6 +78,7 @@ pub enum SocketError {
 impl std::fmt::Display for SocketError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PeerClosed => write!(f, "peer closed the connection"),
             Self::Io(error) => error.fmt(f),
             Self::Frame(error) => error.fmt(f),
             Self::Decode(error) => error.fmt(f),
@@ -75,6 +89,7 @@ impl std::fmt::Display for SocketError {
 impl std::error::Error for SocketError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::PeerClosed => None,
             Self::Io(error) => Some(error),
             Self::Frame(error) => Some(error),
             Self::Decode(error) => Some(error),
@@ -112,16 +127,54 @@ impl Packet {
     }
 }
 
-pub struct ClientSocket(TcpStream, pub SocketAddr, FrameLimits);
+pub struct ClientSocket {
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+    limits: FrameLimits,
+}
 
 impl ClientSocket {
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer_addr
+    }
+
+    pub fn into_split(self) -> (ClientReader, ClientWriter) {
+        let (reader, writer) = self.stream.into_split();
+        (
+            ClientReader {
+                stream: reader,
+                limits: self.limits,
+            },
+            ClientWriter {
+                stream: writer,
+                limits: self.limits,
+            },
+        )
+    }
+}
+
+pub struct ClientReader {
+    stream: OwnedReadHalf,
+    limits: FrameLimits,
+}
+
+impl ClientReader {
     pub async fn receive(&mut self) -> Result<Packet, SocketError> {
         let mut len_buf = [0u8; 5];
         let mut bytes_read = 0usize;
         loop {
-            self.0
-                .read_exact(&mut len_buf[bytes_read..bytes_read + 1])
-                .await?;
+            if self
+                .stream
+                .read(&mut len_buf[bytes_read..bytes_read + 1])
+                .await?
+                == 0
+            {
+                return if bytes_read == 0 {
+                    Err(SocketError::PeerClosed)
+                } else {
+                    Err(FrameError::TruncatedLengthPrefix { bytes_read }.into())
+                };
+            }
             let byte = len_buf[bytes_read];
             bytes_read += 1;
             if byte & 0x80 == 0 {
@@ -144,10 +197,10 @@ impl ClientSocket {
         }
         let len =
             usize::try_from(signed_len).map_err(|_| FrameError::NegativeLength(signed_len))?;
-        if len > self.2.max_inbound_frame_bytes {
+        if len > self.limits.max_inbound_frame_bytes {
             return Err(FrameError::FrameTooLarge {
                 requested: len,
-                limit: self.2.max_inbound_frame_bytes,
+                limit: self.limits.max_inbound_frame_bytes,
             }
             .into());
         }
@@ -157,20 +210,38 @@ impl ClientSocket {
             .try_reserve_exact(len)
             .map_err(|_| FrameError::AllocationFailed { requested: len })?;
         packet_buf.resize(len, 0);
-        self.0.read_exact(&mut packet_buf).await?;
+        let mut received = 0;
+        while received < len {
+            let bytes_read = self.stream.read(&mut packet_buf[received..]).await?;
+            if bytes_read == 0 {
+                return Err(FrameError::TruncatedFrame {
+                    expected: len,
+                    received,
+                }
+                .into());
+            }
+            received += bytes_read;
+        }
         Ok(Packet {
             bytes: packet_buf,
-            decode_limits: self.2.decode,
+            decode_limits: self.limits.decode,
         })
     }
+}
 
+pub struct ClientWriter {
+    stream: OwnedWriteHalf,
+    limits: FrameLimits,
+}
+
+impl ClientWriter {
     pub async fn send<T: Encode>(&mut self, packet: &T) -> Result<(), SocketError> {
         let mut packet_buf = Vec::new();
         packet.encode(&mut packet_buf);
-        if packet_buf.len() > self.2.max_outbound_frame_bytes {
+        if packet_buf.len() > self.limits.max_outbound_frame_bytes {
             return Err(FrameError::FrameTooLarge {
                 requested: packet_buf.len(),
-                limit: self.2.max_outbound_frame_bytes,
+                limit: self.limits.max_outbound_frame_bytes,
             }
             .into());
         }
@@ -180,8 +251,8 @@ impl ClientSocket {
             })?;
         let mut len_buf = Vec::with_capacity(5);
         VarI32(len).encode(&mut len_buf);
-        self.0.write_all(&len_buf).await?;
-        self.0.write_all(&packet_buf).await?;
+        self.stream.write_all(&len_buf).await?;
+        self.stream.write_all(&packet_buf).await?;
         Ok(())
     }
 }
@@ -199,7 +270,11 @@ impl ServerSocket {
 
     pub async fn accept(&self) -> std::io::Result<ClientSocket> {
         let (stream, addr) = self.listener.accept().await?;
-        Ok(ClientSocket(stream, addr, self.limits))
+        Ok(ClientSocket {
+            stream,
+            peer_addr: addr,
+            limits: self.limits,
+        })
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -221,29 +296,32 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_negative_frame_length_before_allocation() {
-        let (mut socket, mut peer) = connected(FrameLimits::default()).await;
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (mut reader, _) = socket.into_split();
         let mut prefix = Vec::new();
         VarI32(-1).encode(&mut prefix);
         peer.write_all(&prefix).await.unwrap();
         assert!(matches!(
-            socket.receive().await,
+            reader.receive().await,
             Err(SocketError::Frame(FrameError::NegativeLength(-1)))
         ));
     }
 
     #[tokio::test]
     async fn rejects_zero_and_overlong_frame_lengths() {
-        let (mut socket, mut peer) = connected(FrameLimits::default()).await;
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (mut reader, _) = socket.into_split();
         peer.write_all(&[0]).await.unwrap();
         assert!(matches!(
-            socket.receive().await,
+            reader.receive().await,
             Err(SocketError::Frame(FrameError::EmptyFrame))
         ));
 
-        let (mut socket, mut peer) = connected(FrameLimits::default()).await;
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (mut reader, _) = socket.into_split();
         peer.write_all(&[0x80; 5]).await.unwrap();
         assert!(matches!(
-            socket.receive().await,
+            reader.receive().await,
             Err(SocketError::Frame(FrameError::InvalidLengthVarInt))
         ));
     }
@@ -254,24 +332,26 @@ mod tests {
             max_inbound_frame_bytes: 8,
             ..FrameLimits::default()
         };
-        let (mut socket, mut peer) = connected(limits).await;
+        let (socket, mut peer) = connected(limits).await;
+        let (mut reader, _) = socket.into_split();
         let mut prefix = Vec::new();
         VarI32(9).encode(&mut prefix);
         peer.write_all(&prefix).await.unwrap();
         assert!(matches!(
-            socket.receive().await,
+            reader.receive().await,
             Err(SocketError::Frame(FrameError::FrameTooLarge {
                 requested: 9,
                 limit: 8
             }))
         ));
 
-        let (mut socket, mut peer) = connected(FrameLimits::default()).await;
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (mut reader, _) = socket.into_split();
         let mut prefix = Vec::new();
         VarI32(i32::MAX).encode(&mut prefix);
         peer.write_all(&prefix).await.unwrap();
         assert!(matches!(
-            socket.receive().await,
+            reader.receive().await,
             Err(SocketError::Frame(FrameError::FrameTooLarge {
                 requested,
                 ..
@@ -285,18 +365,45 @@ mod tests {
             max_inbound_frame_bytes: 1,
             ..FrameLimits::default()
         };
-        let (mut socket, mut peer) = connected(limits).await;
+        let (socket, mut peer) = connected(limits).await;
+        let (mut reader, _) = socket.into_split();
         peer.write_all(&[1, 42]).await.unwrap();
-        let packet = socket.receive().await.unwrap();
+        let packet = reader.receive().await.unwrap();
         assert_eq!(packet.decode::<u8>(), Ok(42));
     }
 
     #[tokio::test]
-    async fn rejects_truncated_frame() {
-        let (mut socket, mut peer) = connected(FrameLimits::default()).await;
+    async fn distinguishes_eof_while_reading_frames() {
+        let (socket, peer) = connected(FrameLimits::default()).await;
+        let (mut reader, _) = socket.into_split();
+        drop(peer);
+        assert!(matches!(
+            reader.receive().await,
+            Err(SocketError::PeerClosed)
+        ));
+
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (mut reader, _) = socket.into_split();
+        peer.write_all(&[0x80]).await.unwrap();
+        peer.shutdown().await.unwrap();
+        assert!(matches!(
+            reader.receive().await,
+            Err(SocketError::Frame(FrameError::TruncatedLengthPrefix {
+                bytes_read: 1
+            }))
+        ));
+
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (mut reader, _) = socket.into_split();
         peer.write_all(&[2, 0]).await.unwrap();
         peer.shutdown().await.unwrap();
-        assert!(matches!(socket.receive().await, Err(SocketError::Io(_))));
+        assert!(matches!(
+            reader.receive().await,
+            Err(SocketError::Frame(FrameError::TruncatedFrame {
+                expected: 2,
+                received: 1
+            }))
+        ));
     }
 
     #[test]
@@ -325,9 +432,10 @@ mod tests {
             max_outbound_frame_bytes: 4,
             ..FrameLimits::default()
         };
-        let (mut socket, _peer) = connected(limits).await;
+        let (socket, _peer) = connected(limits).await;
+        let (_, mut writer) = socket.into_split();
         assert!(matches!(
-            socket.send(&Bytes(vec![0; 5])).await,
+            writer.send(&Bytes(vec![0; 5])).await,
             Err(SocketError::Frame(FrameError::FrameTooLarge {
                 requested: 5,
                 limit: 4
