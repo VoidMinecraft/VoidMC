@@ -33,7 +33,10 @@ pub enum State {
     Play = 0x5,
 }
 
+pub mod block_entity;
 pub mod clientbound;
 pub mod serverbound;
 pub mod slot;
 pub mod types;
+
+pub use block_entity::BlockEntityKind;
