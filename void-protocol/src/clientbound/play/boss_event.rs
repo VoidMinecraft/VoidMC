@@ -47,7 +47,7 @@ pub enum BossBarColor {
 #[repr(i32)]
 pub enum BossBarDivision {
     #[default]
-    None = 0,
+    Progress = 0,
     Notches6 = 1,
     Notches10 = 2,
     Notches12 = 3,

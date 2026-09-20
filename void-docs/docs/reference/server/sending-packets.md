@@ -54,6 +54,33 @@ fn broadcast_health(players: Players, mobs: Query<(&MinecraftEntityId, &Health, 
 `Recipient` exposes `entity()`, `client_id()`, `dimension()`,
 `visible_from(Option<DimensionId>)` and `sees_chunk(dimension, chunk)` to predicates.
 
+### Audiences
+
+A feature that keeps addressing the same players over time (a boss bar, a
+looping sound, a private entity) stores a `voidmc::Audience` instead of a
+player list. It narrows a `Recipients` snapshot with `resolve` and tests one
+`Recipient` with `includes`, so every plugin reuses the same filters instead of
+inventing its own set.
+
+| Variant | Players |
+|---|---|
+| `Audience::All` (default) | Every ready player. |
+| `Audience::InDimension(dimension)` | Ready players in that dimension. |
+| `Audience::Explicit(HashSet<Entity>)` — `Audience::explicit([a, b])` | Exactly these player entities, while ready. |
+| `Audience::Custom(Arc<dyn Fn(&Recipient) -> bool>)` — `Audience::custom(\|r\| ..)` | Any predicate over `Recipient`. |
+
+```rust
+use voidmc::{Audience, Players, DimensionId};
+
+fn announce(players: Players, audience: Res<RaidAudience>) {
+    audience.0.resolve(players.ready()).send(packet);
+}
+
+let nether_only = Audience::InDimension(DimensionId::Nether);
+let party = Audience::explicit([alice, bob]);
+let ops = Audience::custom(|r| r.client_id() < 10);
+```
+
 ### From exclusive-world code
 
 Command handlers, item behaviours and drain systems hold a `&World`:

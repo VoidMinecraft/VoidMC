@@ -25,12 +25,15 @@ fn start_raid(mut commands: Commands) {
 | `title` | `String` | required |
 | `progress` | `f32` in `0.0..=1.0` | `1.0` |
 | `color` | `BossBarColor` (`Pink`, `Blue`, `Red`, `Green`, `Yellow`, `Purple`, `White`) | `Pink` |
-| `division` | `BossBarDivision` (`None`, `Notches6`, `Notches10`, `Notches12`, `Notches20`) | `None` |
+| `division` | `BossBarDivision` (`Progress`, `Notches6`, `Notches10`, `Notches12`, `Notches20`) | `Progress` |
 | `flags` | `BossBarFlags` (`DARKEN_SCREEN`, `BOSS_MUSIC`, `WORLD_FOG`) | empty |
+| `audience` | [`Audience`](../server/sending-packets.md#audiences) | `Audience::All` |
 
 The builder methods (`.title()`, `.progress()`, `.color()`, `.division()`,
-`.flags()`, `.darken_screen()`, `.boss_music()`, `.world_fog()`) set the same
-fields; `set_progress` clamps to the valid range.
+`.flags()`, `.darken_screen()`, `.boss_music()`, `.world_fog()`, `.audience()`,
+`.viewers([..])`) set the same fields. `progress` is clamped to `0.0..=1.0` on
+the wire whether you go through `set_progress` or assign the field (NaN counts
+as `0.0`).
 
 ## Updating a bar
 
@@ -50,22 +53,31 @@ fn tick_raid(mut bars: Query<&mut BossBar, With<Raid>>, raid: Res<RaidState>) {
 }
 ```
 
-## Viewers
+## Audience
 
-By default every ready player sees every bar: players joining later receive it
-on their first ready tick, players leaving are forgotten. Add a
-`BossBarViewers` component to restrict the audience to an explicit set of player
-entities; `add` / `remove` on it show or hide the bar for that player on the
-next tick.
+`audience` decides who sees the bar. With the default `Audience::All`, every
+ready player sees it: players joining later receive it on their first ready
+tick, players leaving are forgotten. Any other `Audience` narrows it; changing
+the audience shows the bar to newcomers and removes it from players who no
+longer qualify on the next tick.
 
 ```rust
-use voidmc::{BossBar, BossBarViewers};
+use voidmc::{Audience, BossBar, DimensionId};
 
 fn personal_timer(mut commands: Commands, player: Entity) {
-    commands.spawn((
-        BossBar::new("Time left").progress(1.0),
-        BossBarViewers::new([player]),
-    ));
+    commands.spawn(BossBar::new("Time left").viewers([player]));
+}
+
+fn nether_warning(mut commands: Commands) {
+    commands.spawn(BossBar::new("The Nether").audience(Audience::InDimension(DimensionId::Nether)));
+}
+
+fn invite(mut bars: Query<&mut BossBar, With<Party>>, player: Entity) {
+    for mut bar in &mut bars {
+        if let Audience::Explicit(members) = &mut bar.audience {
+            members.insert(player);
+        }
+    }
 }
 ```
 

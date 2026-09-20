@@ -1,8 +1,7 @@
 use bevy_ecs::prelude::{Commands, Component, Entity, Query};
 use voidmc::events::PlayerQuitEvent;
 use voidmc::{
-    BossBar, BossBarColor, BossBarDivision, BossBarViewers, Command, CommandBuilder,
-    CommandContext, FloatArg, On,
+    BossBar, BossBarColor, BossBarDivision, Command, CommandBuilder, CommandContext, FloatArg, On,
 };
 
 #[derive(Component)]
@@ -38,13 +37,13 @@ fn handle_bossbar(ctx: &mut CommandContext) {
             }
             (false, None) => {
                 let bar = world
-                    .spawn((
+                    .spawn(
                         BossBar::new("Void Example")
                             .color(BossBarColor::Purple)
                             .division(BossBarDivision::Notches10)
-                            .progress(progress.unwrap_or(1.0)),
-                        BossBarViewers::new([player]),
-                    ))
+                            .progress(progress.unwrap_or(1.0))
+                            .viewers([player]),
+                    )
                     .id();
                 world.entity_mut(player).insert(DemoBossBar(bar));
                 "Boss bar shown. Try /bossbar 0.5 and /bossbar --remove."

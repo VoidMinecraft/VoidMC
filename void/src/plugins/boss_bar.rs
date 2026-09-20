@@ -1,7 +1,7 @@
 //! Boss bars as entities: spawn a [`BossBar`], mutate its fields, despawn it.
-//! Every ready player sees it unless a [`BossBarViewers`] component narrows the
-//! audience. A `PostUpdate` system diffs each bar against what each viewer last
-//! received and sends only the matching Boss Event actions.
+//! Its [`Audience`] picks the viewers (every ready player by default). A
+//! `PostUpdate` system diffs each bar against what each viewer last received
+//! and sends only the matching Boss Event actions.
 
 use std::collections::HashSet;
 
@@ -14,17 +14,18 @@ use voidmc_protocol::clientbound::{BossEvent, BossEventAction};
 
 pub use voidmc_protocol::clientbound::{BossBarColor, BossBarDivision, BossBarFlags};
 
-use crate::players::Players;
+use crate::players::{Audience, Players};
 use crate::schedule::VoidSystems;
 
-#[derive(Component, Clone, Debug, PartialEq)]
-#[require(BossBarSync)]
+#[derive(Component, Clone, Debug)]
+#[require(BossBarState)]
 pub struct BossBar {
     pub title: String,
     pub progress: f32,
     pub color: BossBarColor,
     pub division: BossBarDivision,
     pub flags: BossBarFlags,
+    pub audience: Audience,
 }
 
 impl BossBar {
@@ -35,6 +36,7 @@ impl BossBar {
             color: BossBarColor::default(),
             division: BossBarDivision::default(),
             flags: BossBarFlags::empty(),
+            audience: Audience::All,
         }
     }
 
@@ -78,13 +80,19 @@ impl BossBar {
         self.flags(flags)
     }
 
-    /// Clamps to `0.0..=1.0`; NaN becomes `0.0`.
+    pub fn audience(mut self, audience: Audience) -> Self {
+        self.audience = audience;
+        self
+    }
+
+    pub fn viewers(self, players: impl IntoIterator<Item = Entity>) -> Self {
+        self.audience(Audience::explicit(players))
+    }
+
+    /// Clamps to `0.0..=1.0`; NaN becomes `0.0`. Assigning the field directly
+    /// is fine too: the sync system applies the same clamp on the wire.
     pub fn set_progress(&mut self, progress: f32) {
-        self.progress = if progress.is_nan() {
-            0.0
-        } else {
-            progress.clamp(0.0, 1.0)
-        };
+        self.progress = clamp_progress(progress);
     }
 
     fn title_nbt(&self) -> Nbt {
@@ -94,64 +102,73 @@ impl BossBar {
         }
     }
 
-    fn add(&self) -> BossEventAction {
-        BossEventAction::Add {
-            title: self.title_nbt(),
-            progress: self.progress,
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            title: self.title.clone(),
+            progress: clamp_progress(self.progress),
             color: self.color,
             division: self.division,
             flags: self.flags,
         }
     }
 
-    fn updates_since(&self, previous: &BossBar) -> Vec<BossEventAction> {
-        let mut actions = Vec::new();
-        if self.progress != previous.progress {
-            actions.push(BossEventAction::UpdateProgress(self.progress));
+    fn add(&self) -> BossEventAction {
+        BossEventAction::Add {
+            title: self.title_nbt(),
+            progress: clamp_progress(self.progress),
+            color: self.color,
+            division: self.division,
+            flags: self.flags,
         }
-        if self.title != previous.title {
+    }
+
+    fn updates_since(&self, sent: &Snapshot) -> Vec<BossEventAction> {
+        let mut actions = Vec::new();
+        let progress = clamp_progress(self.progress);
+        if progress != sent.progress {
+            actions.push(BossEventAction::UpdateProgress(progress));
+        }
+        if self.title != sent.title {
             actions.push(BossEventAction::UpdateTitle(self.title_nbt()));
         }
-        if self.color != previous.color || self.division != previous.division {
+        if self.color != sent.color || self.division != sent.division {
             actions.push(BossEventAction::UpdateStyle {
                 color: self.color,
                 division: self.division,
             });
         }
-        if self.flags != previous.flags {
+        if self.flags != sent.flags {
             actions.push(BossEventAction::UpdateFlags(self.flags));
         }
         actions
     }
 }
 
-/// Restricts a [`BossBar`] to these player entities; without it every ready
-/// player is a viewer.
-#[derive(Component, Clone, Debug, Default)]
-pub struct BossBarViewers(pub HashSet<Entity>);
-
-impl BossBarViewers {
-    pub fn new(players: impl IntoIterator<Item = Entity>) -> Self {
-        Self(players.into_iter().collect())
+fn clamp_progress(progress: f32) -> f32 {
+    if progress.is_nan() {
+        0.0
+    } else {
+        progress.clamp(0.0, 1.0)
     }
+}
 
-    pub fn add(&mut self, player: Entity) -> bool {
-        self.0.insert(player)
-    }
-
-    pub fn remove(&mut self, player: Entity) -> bool {
-        self.0.remove(&player)
-    }
+#[derive(Debug, Clone)]
+struct Snapshot {
+    title: String,
+    progress: f32,
+    color: BossBarColor,
+    division: BossBarDivision,
+    flags: BossBarFlags,
 }
 
 #[derive(Component, Debug)]
-pub struct BossBarSync {
+pub struct BossBarState {
     id: Uuid,
-    sent: Option<BossBar>,
+    sent: Option<Snapshot>,
     viewers: HashSet<Entity>,
 }
 
-impl Default for BossBarSync {
+impl Default for BossBarState {
     fn default() -> Self {
         Self {
             id: Uuid::new_v4(),
@@ -161,7 +178,7 @@ impl Default for BossBarSync {
     }
 }
 
-impl BossBarSync {
+impl BossBarState {
     pub fn id(&self) -> Uuid {
         self.id
     }
@@ -187,51 +204,68 @@ impl Plugin for BossBarPlugin {
     }
 }
 
-fn sync_boss_bars(
-    players: Players,
-    mut bars: Query<(&BossBar, Option<&BossBarViewers>, &mut BossBarSync)>,
-) {
-    let ready: HashSet<Entity> = players.ready().entities().collect();
-    for (bar, viewers, mut sync) in bars.iter_mut() {
-        let desired: HashSet<Entity> = match viewers {
-            Some(viewers) => viewers.0.intersection(&ready).copied().collect(),
-            None => ready.clone(),
+fn sync_boss_bars(players: Players, mut bars: Query<(&BossBar, &mut BossBarState)>) {
+    let ready = players.ready();
+    for (bar, mut state) in bars.iter_mut() {
+        let members = || {
+            ready
+                .iter()
+                .filter(|r| bar.audience.includes(r))
+                .map(|r| r.entity())
         };
+        let mut count = 0;
+        let same_members = members().all(|entity| {
+            count += 1;
+            state.viewers.contains(&entity)
+        }) && count == state.viewers.len();
+        let desired: Option<HashSet<Entity>> = (!same_members).then(|| members().collect());
 
-        for gone in sync.viewers.difference(&desired) {
-            players.send(*gone, sync.event(BossEventAction::Remove));
-        }
-        for joined in desired.difference(&sync.viewers) {
-            players.send(*joined, sync.event(bar.add()));
-        }
-
-        if sync.sent.as_ref() != Some(bar) {
-            if let Some(previous) = &sync.sent {
-                let kept = desired.intersection(&sync.viewers).copied();
-                let kept: Vec<Entity> = kept.collect();
-                for action in bar.updates_since(previous) {
-                    players.send_to(kept.iter().copied(), sync.event(action));
-                }
+        if let Some(desired) = &desired {
+            for gone in state.viewers.difference(desired) {
+                players.send(*gone, state.event(BossEventAction::Remove));
             }
-            sync.sent = Some(bar.clone());
         }
-        sync.viewers = desired;
+
+        if let Some(sent) = &state.sent {
+            let actions = bar.updates_since(sent);
+            if !actions.is_empty() {
+                let kept = state
+                    .viewers
+                    .iter()
+                    .copied()
+                    .filter(|viewer| desired.as_ref().is_none_or(|d| d.contains(viewer)));
+                let kept: Vec<Entity> = kept.collect();
+                for action in actions {
+                    players.send_to(kept.iter().copied(), state.event(action));
+                }
+                state.sent = Some(bar.snapshot());
+            }
+        } else {
+            state.sent = Some(bar.snapshot());
+        }
+
+        if let Some(desired) = desired {
+            for joined in desired.difference(&state.viewers) {
+                players.send(*joined, state.event(bar.add()));
+            }
+            state.viewers = desired;
+        }
     }
 }
 
 fn remove_from_viewers(
     event: On<Remove, BossBar>,
     players: Players,
-    mut bars: Query<&mut BossBarSync>,
+    mut bars: Query<&mut BossBarState>,
 ) {
-    let Ok(mut sync) = bars.get_mut(event.entity) else {
+    let Ok(mut state) = bars.get_mut(event.entity) else {
         return;
     };
-    for viewer in sync.viewers.iter() {
-        players.send(*viewer, sync.event(BossEventAction::Remove));
+    for viewer in state.viewers.iter() {
+        players.send(*viewer, state.event(BossEventAction::Remove));
     }
-    sync.viewers.clear();
-    sync.sent = None;
+    state.viewers.clear();
+    state.sent = None;
 }
 
 #[cfg(test)]
@@ -241,8 +275,9 @@ mod tests {
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
-    use crate::components::{ClientId, PlayerReady};
+    use crate::components::{ClientId, PlayerDimension, PlayerReady};
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::world::DimensionId;
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
@@ -265,11 +300,11 @@ mod tests {
         app.world_mut().spawn((ClientId(id), PlayerReady)).id()
     }
 
-    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    #[derive(Debug, PartialEq, PartialOrd)]
     enum Sent {
-        Add(u32),
+        Add(u32, f32),
         Remove(u32),
-        Progress(u32),
+        Progress(u32, f32),
         Title(u32),
         Style(u32),
         Flags(u32),
@@ -283,16 +318,16 @@ mod tests {
                     panic!("unexpected packet {:?}", out.packet);
                 };
                 match event.action {
-                    BossEventAction::Add { .. } => Sent::Add(out.client_id),
+                    BossEventAction::Add { progress, .. } => Sent::Add(out.client_id, progress),
                     BossEventAction::Remove => Sent::Remove(out.client_id),
-                    BossEventAction::UpdateProgress(_) => Sent::Progress(out.client_id),
+                    BossEventAction::UpdateProgress(p) => Sent::Progress(out.client_id, p),
                     BossEventAction::UpdateTitle(_) => Sent::Title(out.client_id),
                     BossEventAction::UpdateStyle { .. } => Sent::Style(out.client_id),
                     BossEventAction::UpdateFlags(_) => Sent::Flags(out.client_id),
                 }
             })
             .collect();
-        sent.sort();
+        sent.sort_by(|a, b| a.partial_cmp(b).unwrap());
         sent
     }
 
@@ -313,6 +348,11 @@ mod tests {
         );
         assert_eq!(BossBar::new("x").progress(-3.0).progress, 0.0);
         assert_eq!(BossBar::new("x").progress(f32::NAN).progress, 0.0);
+        assert!(matches!(BossBar::new("x").audience, Audience::All));
+        assert!(matches!(
+            BossBar::new("x").viewers([Entity::PLACEHOLDER]).audience,
+            Audience::Explicit(_)
+        ));
     }
 
     #[test]
@@ -323,8 +363,9 @@ mod tests {
         app.world_mut().spawn(BossBar::new("Boss"));
 
         app.update();
-        assert_eq!(drain(&rx), vec![Sent::Add(1), Sent::Add(2)]);
+        assert_eq!(drain(&rx), vec![Sent::Add(1, 1.0), Sent::Add(2, 1.0)]);
 
+        app.update();
         app.update();
         assert!(drain(&rx).is_empty());
     }
@@ -339,7 +380,7 @@ mod tests {
 
         app.world_mut().get_mut::<BossBar>(bar).unwrap().progress = 0.5;
         app.update();
-        assert_eq!(drain(&rx), vec![Sent::Progress(1)]);
+        assert_eq!(drain(&rx), vec![Sent::Progress(1, 0.5)]);
 
         {
             let mut bar = app.world_mut().get_mut::<BossBar>(bar).unwrap();
@@ -359,6 +400,31 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_progress_assigned_directly_is_sent_clamped_once() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let bar = app
+            .world_mut()
+            .spawn(BossBar::new("Boss").progress(0.5))
+            .id();
+        app.update();
+        drain(&rx);
+
+        app.world_mut().get_mut::<BossBar>(bar).unwrap().progress = f32::NAN;
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Progress(1, 0.0)]);
+        app.update();
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut().get_mut::<BossBar>(bar).unwrap().progress = 7.0;
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Progress(1, 1.0)]);
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
     fn late_joiners_get_add_and_leavers_get_remove() {
         let (mut app, rx) = test_app();
         let first = player(&mut app, 1);
@@ -372,7 +438,7 @@ mod tests {
         let second = player(&mut app, 2);
         app.world_mut().get_mut::<BossBar>(bar).unwrap().progress = 0.4;
         app.update();
-        assert_eq!(drain(&rx), vec![Sent::Add(2), Sent::Progress(1)]);
+        assert_eq!(drain(&rx), vec![Sent::Add(2, 0.4), Sent::Progress(1, 0.4)]);
 
         app.world_mut().entity_mut(first).remove::<PlayerReady>();
         app.update();
@@ -381,8 +447,8 @@ mod tests {
         app.world_mut().despawn(second);
         app.update();
         assert!(drain(&rx).is_empty());
-        let sync = app.world().get::<BossBarSync>(bar).unwrap();
-        assert_eq!(sync.viewers().count(), 0);
+        let state = app.world().get::<BossBarState>(bar).unwrap();
+        assert_eq!(state.viewers().count(), 0);
     }
 
     #[test]
@@ -405,31 +471,38 @@ mod tests {
     }
 
     #[test]
-    fn explicit_viewers_can_be_added_and_removed() {
+    fn audience_changes_add_and_remove_viewers() {
         let (mut app, rx) = test_app();
         let first = player(&mut app, 1);
         let second = player(&mut app, 2);
-        player(&mut app, 3);
+        app.world_mut().spawn((
+            ClientId(3),
+            PlayerReady,
+            PlayerDimension(DimensionId::Nether),
+        ));
         let bar = app
             .world_mut()
-            .spawn((BossBar::new("Boss"), BossBarViewers::new([first])))
+            .spawn(BossBar::new("Boss").viewers([first]))
             .id();
         app.update();
-        assert_eq!(drain(&rx), vec![Sent::Add(1)]);
+        assert_eq!(drain(&rx), vec![Sent::Add(1, 1.0)]);
 
-        app.world_mut()
-            .get_mut::<BossBarViewers>(bar)
-            .unwrap()
-            .add(second);
+        app.world_mut().get_mut::<BossBar>(bar).unwrap().audience =
+            Audience::explicit([first, second]);
         app.update();
-        assert_eq!(drain(&rx), vec![Sent::Add(2)]);
+        assert_eq!(drain(&rx), vec![Sent::Add(2, 1.0)]);
 
-        app.world_mut()
-            .get_mut::<BossBarViewers>(bar)
-            .unwrap()
-            .remove(first);
-        app.world_mut().get_mut::<BossBar>(bar).unwrap().progress = 0.1;
+        {
+            let mut bar = app.world_mut().get_mut::<BossBar>(bar).unwrap();
+            bar.audience = Audience::explicit([second]);
+            bar.progress = 0.1;
+        }
         app.update();
-        assert_eq!(drain(&rx), vec![Sent::Remove(1), Sent::Progress(2)]);
+        assert_eq!(drain(&rx), vec![Sent::Remove(1), Sent::Progress(2, 0.1)]);
+
+        app.world_mut().get_mut::<BossBar>(bar).unwrap().audience =
+            Audience::InDimension(DimensionId::Nether);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Add(3, 0.1), Sent::Remove(2)]);
     }
 }
