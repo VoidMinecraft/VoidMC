@@ -103,7 +103,9 @@ player. None of them derive `Clone` or `Debug`.
 | Event | Fields | When |
 |---|---|---|
 | `ItemDropEvent` | `dropper`, `stack` | Request to spawn a dropped item. **Developer code may fire this.** |
-| `EntityDespawnEvent` | `entity` | Request to remove a non-player `SpawnedEntity`. **The only supported despawn path** — the observer sends `RemoveEntities` to players that can see it, then despawns. Developer code fires this. |
+| `EntityDespawnEvent` | `entity` | Request to despawn a non-player `SpawnedEntity`; equivalent to `commands.entity(e).despawn()`. Removal itself is ghost-proof: an `On<Remove, SpawnedEntity>` observer sends `RemoveEntities` to every current viewer whichever way the entity goes away. |
+| `EntityShownEvent` | `entity`, `viewer` | `viewer` just received `Add Entity` for `entity`. Delivered when the tracker system's commands apply, so both entities exist unless despawned in the same tick. Send per-viewer follow-up packets (metadata, passengers) from an observer. |
+| `EntityHiddenEvent` | `entity`, `network_id`, `viewer` | `viewer` just received `Remove Entities` for `entity`. Delivered deferred: on despawn `entity` is already gone and on disconnect `viewer` is; observers must not read components from either and use the ids in the payload. |
 
 ### Blocks
 

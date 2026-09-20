@@ -20,8 +20,6 @@ impl Plugin for GameSystemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KeepAliveTicker>()
             .add_observer(player::on_player_ready)
-            .add_observer(entities::on_player_ready_spawn_entities)
-            .add_observer(entities::on_entity_despawn)
             .add_observer(player::on_player_quit)
             .configure_sets(
                 Update,
@@ -45,11 +43,19 @@ impl Plugin for GameSystemsPlugin {
                         .in_set(VoidSystems::EntitySimulation),
                 ),
             )
+            .configure_sets(
+                PostUpdate,
+                (
+                    VoidSystems::ChunkStreaming,
+                    VoidSystems::EntityBroadcast,
+                    VoidSystems::EntityVisibility,
+                )
+                    .chain(),
+            )
             .add_systems(
                 PostUpdate,
                 (
                     (
-                        entities::broadcast_entity_spawns,
                         entities::broadcast_entity_movement,
                         entities::broadcast_entity_motion,
                         entities::update_previous_entity_positions

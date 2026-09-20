@@ -2,31 +2,28 @@
 //!
 //! A drop is requested with an [`ItemDropEvent`] (emitted by inventory throws and
 //! the drop key); this plugin spawns a `minecraft:item` entity carrying an
-//! [`ItemEntity`], which the standard entity broadcast renders, plus a
-//! `SetEntityData` packet so the client shows the actual item. Nearby players
-//! pick drops up after a short delay.
+//! [`ItemEntity`]. The entity tracker replicates it, and an [`EntityShownEvent`]
+//! observer sends the `SetEntityData` packet that makes the client show the
+//! actual item. Nearby players pick drops up after a short delay.
 
-use bevy_app::{App, Plugin, PostUpdate, Update};
+use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded, ItemEntity,
-    MinecraftEntityId, MovementConfig, PickupDelay, PlayerDimension, PlayerReady, Position,
-    PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, Velocity, VerticalVelocity,
+    EntityDimension, ItemEntity, MinecraftEntityId, PickupDelay, PlayerDimension, PlayerReady,
+    Position, SpawnedEntity, Velocity,
 };
-use crate::events::{EntityDespawnEvent, ItemDropEvent, PlayerDropItemEvent, PlayerReadyEvent};
+use crate::entity::{EntityBuilder, EntityKind, EntityShownEvent};
+use crate::events::{EntityDespawnEvent, ItemDropEvent, PlayerDropItemEvent};
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
 use crate::players::Players;
 use crate::plugins::inventory::InventoryDirty;
 use crate::schedule::VoidSystems;
-use crate::systems::entities::broadcast_entity_spawns;
 use crate::world::DimensionId;
 
-/// Protocol entity-type id of `minecraft:item` in 26.1.2.
-const ITEM_ENTITY_TYPE: i32 = 71;
 /// Ticks before a freshly dropped item can be picked up.
 const PICKUP_DELAY_TICKS: u8 = 10;
 /// Squared pickup radius in blocks.
@@ -38,27 +35,11 @@ impl Plugin for ItemDropsPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(on_item_drop)
             .add_observer(on_player_drop_item)
-            .add_observer(send_item_data_on_join)
-            .add_systems(
-                PostUpdate,
-                broadcast_item_data
-                    .after(broadcast_entity_spawns)
-                    .in_set(VoidSystems::EntityBroadcast),
-            )
+            .add_observer(send_item_data_on_shown)
             .add_systems(
                 Update,
                 (tick_pickup_delay, pickup_items).in_set(VoidSystems::ItemPickup),
             );
-    }
-}
-
-fn entity_visible(
-    item_dim: Option<&EntityDimension>,
-    player_dim: Option<&PlayerDimension>,
-) -> bool {
-    match (item_dim, player_dim) {
-        (Some(a), Some(b)) => a.0 == b.0,
-        _ => true,
     }
 }
 
@@ -68,12 +49,8 @@ fn item_data_packet(entity_id: i32, stack: &ItemStack) -> clientbound::Clientbou
     ))
 }
 
-/// Spawns a floating item entity. The `Added<SpawnedEntity>` broadcast sends the
-/// `SpawnEntity` packet; [`broadcast_item_data`] sends its metadata.
-#[allow(clippy::too_many_arguments)]
 fn spawn_drop(
     commands: &mut Commands,
-    id_counter: &mut EntityIdCounter,
     dimension: DimensionId,
     x: f64,
     y: f64,
@@ -81,40 +58,21 @@ fn spawn_drop(
     velocity: Velocity,
     stack: ItemStack,
 ) {
-    let entity_id = id_counter.0;
-    id_counter.0 += 1;
-    let vy = velocity.y;
-    commands.spawn((
-        MinecraftEntityId(entity_id),
-        EntityUuid(uuid::Uuid::new_v4()),
-        Position { x, y, z },
-        PreviousPosition { x, y, z },
-        Rotation {
-            yaw: 0.0,
-            pitch: 0.0,
-        },
-        velocity,
-        EntityType(ITEM_ENTITY_TYPE),
-        EntityDimension(dimension),
-        SpawnedEntity,
-        EntityCollider::for_entity_name("minecraft:item"),
-        MovementConfig {
-            wander: false,
-            gravity_enabled: true,
-            block_collision_enabled: true,
-        },
-        VerticalVelocity(vy),
-        Grounded(false),
-        RecentlySpawned(5),
-        (ItemEntity { stack }, PickupDelay(PICKUP_DELAY_TICKS)),
-    ));
+    EntityBuilder::new(EntityKind::Item)
+        .at(x, y, z)
+        .in_dimension(dimension)
+        .velocity(velocity)
+        .gravity(true)
+        .block_collision(true)
+        .settle_ticks(5)
+        .spawn(commands)
+        .insert((ItemEntity { stack }, PickupDelay(PICKUP_DELAY_TICKS)));
 }
 
 /// Observer: spawns a drop at the dropper's position.
 fn on_item_drop(
     event: On<ItemDropEvent>,
     mut commands: Commands,
-    mut id_counter: ResMut<EntityIdCounter>,
     players: Query<(&Position, &PlayerDimension)>,
 ) {
     if event.stack.is_empty() {
@@ -125,7 +83,6 @@ fn on_item_drop(
     };
     spawn_drop(
         &mut commands,
-        &mut id_counter,
         dim.0,
         pos.x,
         pos.y + 1.0,
@@ -180,50 +137,13 @@ fn on_player_drop_item(
     commands.entity(event.entity).insert(InventoryDirty);
 }
 
-/// `PostUpdate`: sends metadata for newly spawned item entities so the client
-/// renders the actual item (runs after the `SpawnEntity` broadcast).
-#[instrument(
-    name = "item_metadata_broadcast",
-    level = "info",
-    skip(players, new_items)
-)]
-fn broadcast_item_data(
+fn send_item_data_on_shown(
+    event: On<EntityShownEvent>,
     players: Players,
-    new_items: Query<
-        (&MinecraftEntityId, &ItemEntity, Option<&EntityDimension>),
-        Added<SpawnedEntity>,
-    >,
+    items: Query<(&MinecraftEntityId, &ItemEntity)>,
 ) {
-    let ready = players.ready();
-    for (entity_id, item, dim) in new_items.iter() {
-        let dimension = dim.map(|d| d.0);
-        ready.send_where(
-            |r| r.visible_from(dimension),
-            item_data_packet(entity_id.0, &item.stack),
-        );
-    }
-}
-
-/// Observer: sends existing item-entity metadata to a joining player (the
-/// `SpawnEntity` packets are sent by the generic entity-spawn handler).
-#[instrument(
-    name = "item_metadata_join_sync",
-    level = "info",
-    skip(event, players, joiner, items)
-)]
-fn send_item_data_on_join(
-    event: On<PlayerReadyEvent>,
-    players: Players,
-    joiner: Query<Option<&PlayerDimension>>,
-    items: Query<(&MinecraftEntityId, &ItemEntity, Option<&EntityDimension>), With<SpawnedEntity>>,
-) {
-    let Ok(player_dim) = joiner.get(event.entity) else {
-        return;
-    };
-    for (entity_id, item, dim) in items.iter() {
-        if entity_visible(dim, player_dim) {
-            players.send(event.entity, item_data_packet(entity_id.0, &item.stack));
-        }
+    if let Ok((entity_id, item)) = items.get(event.entity) {
+        players.send(event.viewer, item_data_packet(entity_id.0, &item.stack));
     }
 }
 

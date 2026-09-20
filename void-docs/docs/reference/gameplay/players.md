@@ -8,7 +8,7 @@ When a client completes configuration, the server transitions them to the Play s
 
 Upon receiving `FinishConfigurationAcknowledged`:
 
-- Allocate a `MinecraftEntityId` from `EntityIdCounter`
+- Allocate a `MinecraftEntityId` (`MinecraftEntityId::allocate()`, a process-wide counter shared with spawned entities)
 - Compute spawn Y from `WorldGenerator::surface_height_at()` if not explicitly set
 - Insert all gameplay components:
   - `ConnectionState(Play)`

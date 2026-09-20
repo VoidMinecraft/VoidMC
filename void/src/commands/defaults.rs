@@ -5,13 +5,11 @@ use bevy_ecs::prelude::{Entity, With};
 use rand::Rng;
 
 use crate::components::{
-    EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
-    MinecraftEntityId, MovementConfig, PlayerDimension, PlayerName, PlayerReady, Position,
-    PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, TeleportState, Velocity,
-    VerticalVelocity, Wander,
+    PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState, Wander,
 };
+use crate::entity::{EntityBuilder, EntityKind};
 use crate::world::DimensionId;
-use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
+use voidmc_data::{Version, is_summonable_entity_type};
 
 use super::parser::{
     DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, StringArg,
@@ -471,12 +469,9 @@ pub fn summon_command() -> Command {
 fn handle_summon(ctx: &mut CommandContext) {
     let entity_name = ctx.get::<String>("entity").unwrap().clone();
 
-    let entity_type_id = match entity_type_id(Version::V26_1_2, &entity_name) {
-        Some(id) => id,
-        None => {
-            ctx.reply_error(&format!("Unknown entity type: {}", entity_name));
-            return;
-        }
+    let Some(kind) = EntityKind::from_name(&entity_name) else {
+        ctx.reply_error(&format!("Unknown entity type: {}", entity_name));
+        return;
     };
 
     if !is_summonable_entity_type(Version::V26_1_2, &entity_name) {
@@ -496,66 +491,29 @@ fn handle_summon(ctx: &mut CommandContext) {
         }),
     };
 
-    let entity_id = ctx.with_world_mut(|world| {
-        let mut counter = world.resource_mut::<EntityIdCounter>();
-        let id = counter.0;
-        counter.0 += 1;
-        id
-    });
-    let entity_uuid = uuid::Uuid::new_v4();
-    let entity_dimension = ctx.with_world(|world| {
+    let dimension = ctx.with_world(|world| {
         world
             .get::<PlayerDimension>(executor)
             .map(|dimension| dimension.0)
             .unwrap_or(DimensionId::Overworld)
     });
 
-    let movement_config = MovementConfig {
-        wander: ctx.flag("wander"),
-        gravity_enabled: ctx.flag("gravity"),
-        block_collision_enabled: ctx.flag("block-checks"),
-    };
-
-    let initial_velocity_y = if movement_config.gravity_enabled {
-        -0.08
-    } else {
-        0.0
-    };
+    let wander = ctx.flag("wander");
+    let builder = EntityBuilder::new(kind)
+        .at(x, y, z)
+        .in_dimension(dimension)
+        .wander(wander)
+        .gravity(ctx.flag("gravity"))
+        .block_collision(ctx.flag("block-checks"));
 
     ctx.with_world_mut(|world| {
-        let mut e = world.spawn((
-            MinecraftEntityId(entity_id),
-            EntityUuid(entity_uuid),
-            Position { x, y, z },
-            PreviousPosition { x, y, z },
-            Rotation {
-                yaw: 0.0,
-                pitch: 0.0,
-            },
-            Velocity {
-                x: 0.0,
-                y: initial_velocity_y,
-                z: 0.0,
-            },
-            EntityType(entity_type_id),
-            EntityDimension(entity_dimension),
-            SpawnedEntity,
-            EntityCollider::for_entity_name(&entity_name),
-            movement_config,
-            VerticalVelocity(0.0),
-            Grounded(!movement_config.gravity_enabled),
-            RecentlySpawned(15),
-        ));
-
-        // Attach simple Wander AI only when explicitly requested.
-        if movement_config.wander {
+        let mut e = builder.spawn_in(world);
+        if wander {
             let mut rng = rand::thread_rng();
-            let yaw = rng.gen_range(0.0..360.0) as f32;
-            let ticks = rng.gen_range(40..140);
             e.insert(Wander {
-                ticks,
+                ticks: rng.gen_range(40..140),
                 speed: 0.08,
-                yaw,
+                yaw: rng.gen_range(0.0..360.0) as f32,
             });
         }
     });
@@ -596,7 +554,9 @@ mod tests {
 
     use super::*;
     use crate::commands::dispatch_command;
-    use crate::components::ClientId;
+    use crate::components::{
+        ClientId, EntityCollider, EntityType, MovementConfig, PreviousPosition, SpawnedEntity,
+    };
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
 
     fn command_world() -> (World, Entity, Receiver<OutgoingPacket>) {
@@ -612,7 +572,6 @@ mod tests {
             disconnect: disconnect_rx,
             kick: kick_tx,
         });
-        world.insert_resource(EntityIdCounter(1000));
 
         let mut registry = CommandRegistry::new();
         registry.register(summon_command());

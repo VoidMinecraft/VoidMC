@@ -453,6 +453,29 @@ mod tests {
     }
 
     #[test]
+    fn entity_kind_enum_matches_registry() {
+        use v26_1_2::EntityKind;
+        assert_eq!(EntityKind::Zombie.id(), 150);
+        assert_eq!(EntityKind::Zombie.name(), "minecraft:zombie");
+        assert_eq!(
+            EntityKind::from_name("minecraft:pig"),
+            Some(EntityKind::Pig)
+        );
+        assert_eq!(EntityKind::from_id(150), Some(EntityKind::Zombie));
+        assert_eq!(EntityKind::from_name("minecraft:nope"), None);
+        for kind in EntityKind::ALL {
+            assert_eq!(
+                entity_type_id(Version::V26_1_2, kind.name()),
+                Some(kind.id())
+            );
+        }
+        assert_eq!(
+            EntityKind::ALL.len(),
+            entity_type_names(Version::V26_1_2).len()
+        );
+    }
+
+    #[test]
     fn item_ids_resolve_both_directions() {
         assert_eq!(item_id(Version::V26_1_2, "minecraft:air"), Some(0));
         assert_eq!(item_id(Version::V26_1_2, "minecraft:stone"), Some(1));

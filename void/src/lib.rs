@@ -10,6 +10,7 @@ mod client;
 pub mod commands;
 pub mod components;
 pub mod config;
+pub mod entity;
 pub mod events;
 pub mod inventory;
 pub mod item;
@@ -40,6 +41,7 @@ pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
+pub use entity::{EntityBuilder, EntityHiddenEvent, EntityKind, EntityPlugin, EntityShownEvent};
 pub use inventory::Inventory;
 pub use item::{ItemId, ItemStack};
 pub use item_behavior::{
