@@ -18,7 +18,9 @@ void-data/
 ├── tests/blocks.rs          # Round-trip + sanity tests for the codegen
     └── assets/<version>/
     ├── blocks.json                    # Mojang block-state report
-    ├── registries.json                # Mojang protocol registry ID report
+    ├── registries.json                # Mojang protocol registry ID report (full, never pruned)
+    ├── packets.json                   # Mojang packet-id report (per state/direction)
+    ├── version.json                   # version.json from the server jar (id, protocol_version)
     ├── non_summonable_entity_types.json # Server-maintained summon exclusions
     ├── blockCollisionShapes.json      # Prismarine collision boxes
     ├── PROVENANCE.txt                 # Source provenance audit trail
@@ -229,6 +231,9 @@ cd void-data/scripts
 ./extract.sh 26.1.2 https://fill-data.papermc.io/v1/objects/<sha>/paper-26.1.2-<build>.jar
 ```
 
+26.1.x server jars are compiled for Java 25; point `JAVA=/path/to/java` at a
+suitable JDK if the default `java` is older.
+
 What `extract.sh` does:
 
 1. Downloads the bundled Paper jar (Mojang server jar with all libs).
@@ -236,7 +241,11 @@ What `extract.sh` does:
    `generated/data/minecraft/...` (registries, tags) and
    `generated/reports/*.json` (block-state palette and protocol registry IDs).
 3. Copies every shipped registry directory into `assets/<version>/`.
-4. Copies `blocks.json` and `registries.json` straight from the reports.
+4. Copies `blocks.json`, `registries.json` and `packets.json` straight from
+   the reports, and `version.json` out of the server jar. `registries.json`
+   must be kept whole: trimming it to a few registries silently removes the
+   ids for particles, sounds, block entities, menus and data components
+   (this happened once).
 5. Keeps versioned hand-maintained validation assets such as
    `non_summonable_entity_types.json` next to the generated data.
 6. Clones the prismarine fork pinned by `PRISMARINE_REF`
@@ -244,7 +253,7 @@ What `extract.sh` does:
    `data/pc/$PRISMARINE_SHAPE_VERSION/blockCollisionShapes.json` into the
    asset directory.
 7. Writes `PROVENANCE.txt` with timestamps, the jar URL, the prismarine
-   commit hash, and the shape-source version — this file is committed
+   commit hash, the shape-source version and the Minecraft version — this file is committed
    alongside the JSONs so future maintainers can audit how the data was
    produced.
 

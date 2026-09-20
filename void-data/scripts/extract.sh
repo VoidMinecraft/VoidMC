@@ -7,7 +7,8 @@
 # Example:
 #   ./extract.sh 1.21.4 https://fill-data.papermc.io/v1/objects/.../paper-1.21.4-232.jar
 #
-# Requires: java, curl, jq (optional).
+# Requires: java (26.1.x jars need Java 25+; override with JAVA=/path/to/java),
+#           curl, unzip, jq (optional).
 
 set -euo pipefail
 
@@ -63,7 +64,7 @@ curl -fsSL -o "$WORK_DIR/paper.jar" "$PAPER_URL"
 echo "==> Running data generator (--all)"
 (
   cd "$WORK_DIR"
-  java -DbundlerMainClass=net.minecraft.data.Main -jar paper.jar --all --output generated >/dev/null 2>&1
+  "${JAVA:-java}" -DbundlerMainClass=net.minecraft.data.Main -jar paper.jar --all --output generated >/dev/null 2>&1
 )
 
 DATA="$WORK_DIR/generated/data/minecraft"
@@ -107,6 +108,28 @@ else
   echo "  WARNING: $REPORTS/registries.json missing — protocol registry codegen will skip" >&2
 fi
 
+echo "==> Copying Mojang packet-id report"
+if [ -f "$REPORTS/packets.json" ]; then
+  cp "$REPORTS/packets.json" "$ASSETS_DIR/packets.json"
+  printf '  %-32s %s states\n' "packets.json" \
+    "$(grep -c '^  "' "$ASSETS_DIR/packets.json" || true)"
+else
+  echo "  WARNING: $REPORTS/packets.json missing — packet-id codegen will skip" >&2
+fi
+
+echo "==> Copying version.json from the server jar"
+# The bundler wraps the real server jar; version.json (id, protocol_version,
+# world_version) lives inside that inner jar.
+INNER_JAR="$(unzip -Z1 "$WORK_DIR/paper.jar" "META-INF/versions/*/server-*.jar" | head -n1 || true)"
+if [ -n "$INNER_JAR" ]; then
+  unzip -p "$WORK_DIR/paper.jar" "$INNER_JAR" > "$WORK_DIR/server-inner.jar"
+  unzip -p "$WORK_DIR/server-inner.jar" version.json > "$ASSETS_DIR/version.json"
+  printf '  %-32s protocol %s\n' "version.json" \
+    "$(grep -o '"protocol_version": *[0-9]*' "$ASSETS_DIR/version.json" | grep -o '[0-9]*$' || true)"
+else
+  echo "  WARNING: no inner server jar in bundler — version.json not copied; protocol-version guard will fail" >&2
+fi
+
 # ---- Prismarine block-collision shapes -----------------------------------
 # We pin a release branch / commit so the data is reproducible. The vendored
 # JSON ships next to blocks.json and is consumed by void-data/build.rs to
@@ -136,6 +159,7 @@ Mojang server jar: $PAPER_URL
 Prismarine ref:    $PRISMARINE_REF
 Prismarine commit: $PRISM_COMMIT
 Shape source ver:  $PRISMARINE_SHAPE_VERSION
+Minecraft version: $VERSION
 EOF
 
 echo "==> Done. Run: cargo build -p void-data"

@@ -1,14 +1,30 @@
 Generated: 2026-05-05T18:00:55Z
-Mojang server jar: ../../../papermc/paper-server/.gradle/caches/paperweight/data/bundler/server.jar
+Regenerated: 2026-09-20T17:41:43Z (registries.json, packets.json, version.json)
+Mojang server jar: ../../../papermc/paper-server/.gradle/caches/paperweight/taskCache/downloadServerJar.jar
 Prismarine ref:    master
 Prismarine commit: (pre-26.1.2 fork — branch pc_26_1_2 has only protocol/version)
 Shape source ver:  1.21.9
+Minecraft version: 26.1.2
 
 Notes:
-  - blocks.json produced by net.minecraft.data.Main --reports on the bundled
-    server jar of Paper 26.1.2. Authoritative for block-state ids in this
+  - blocks.json, registries.json and packets.json produced by
+    `java -DbundlerMainClass=net.minecraft.data.Main -jar <bundler>.jar --all`
+    on the bundler jar of Paper 26.1.2 (Java 25 required). Authoritative for
+    block-state ids, hardcoded-registry protocol ids and packet ids in this
     Minecraft version.
+  - registries.json is shipped UNPRUNED (95 registries). An earlier revision
+    was trimmed to entity_type + item, which silently made particle_type,
+    sound_event, block_entity_type, menu and data_component_type unavailable.
+    Do not trim it again; void-data/build.rs consumes every registry.
+  - packets.json is Mojang's per-state, per-direction packet-id table,
+    copied verbatim; it is the reference for every hand-written packet id
+    in void-protocol.
+  - version.json is copied verbatim from the server jar; its `id` and
+    `protocol_version` are the reference for void-protocol's
+    MINECRAFT_VERSION / PROTOCOL_VERSION.
   - blockCollisionShapes.json vendored from prismarine 1.21.9 since the
     pc_26_1_2 PR ships only protocol data. Block shapes change rarely
     between minor versions; new 26.1.2 blocks fall back to FULL_CUBE.
   - Re-run scripts/extract.sh once prismarine publishes 26.1.2.
+  - The `Minecraft version:` line must match the directory name and
+    version.json's `id`.
