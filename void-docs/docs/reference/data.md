@@ -90,6 +90,49 @@ assert!(is_summonable_entity_type(Version::V26_1_2, "minecraft:zombie"));
 assert!(!is_summonable_entity_type(Version::V26_1_2, "minecraft:player"));
 ```
 
+The hardcoded registries that are never synced to the client —
+`minecraft:particle_type`, `minecraft:sound_event`,
+`minecraft:block_entity_type`, `minecraft:menu`,
+`minecraft:data_component_type` — have thin accessors of the same shape
+(`particle_type_id`, `sound_event_id`, `block_entity_type_id`, `menu_id`,
+`data_component_type_id`).
+
+### Packet IDs
+
+`assets/<version>/packets.json` (Mojang's `reports/packets.json`) is emitted
+twice: as constants under `v26_1_2::packets::<state>::<direction>::<NAME>` and
+as a lookup table behind `packets` / `packet_id`:
+
+```rust
+use voidmc_data::{Version, packet_id, v26_1_2::packets};
+
+assert_eq!(packets::play::clientbound::ADD_ENTITY, 1);
+assert_eq!(packet_id(Version::V26_1_2, "play", "serverbound", "minecraft:chat"), Some(9));
+```
+
+`voidmc-protocol` does not use the constants in its `#[codec(packet_id = ..)]`
+attributes (the derive wants a literal); instead `void-protocol/tests/packet_ids.rs`
+extracts every literal from the crate's source and checks it against this
+table. Adding a packet variant means adding its Mojang name to that test's
+`SPECS` table, otherwise the test fails.
+
+### Version guard
+
+`assets/<version>/version.json` is the `version.json` from inside the server
+jar. `build.rs` exports its `protocol_version` to dependents' build scripts
+through `cargo::metadata` (hence `links = "voidmc-data"` in `Cargo.toml`), and
+`void-protocol/build.rs` asserts that `MINECRAFT_VERSION` is a shipped version
+and `PROTOCOL_VERSION` equals the jar's number. `protocol_version(Version)` /
+`world_version(Version)` expose the same values at runtime.
+
+### Biome payload
+
+`minecraft:worldgen/biome` JSON is filtered to the `Biome.NETWORK_CODEC`
+fields (`has_precipitation`, `temperature`, `temperature_modifier`,
+`downfall`, `attributes`, `effects`) before NBT conversion; worldgen-only
+keys never reach the wire. A unit test asserts the shipped NBT contains
+exactly those fields and that `minecraft:plains` is present.
+
 `non_summonable_entity_types.json` is a small versioned exclusion list for
 runtime `/summon` validation. The protocol registry report provides IDs, but it
 does not encode Minecraft's `EntityType::canSummon` predicate, so this curated

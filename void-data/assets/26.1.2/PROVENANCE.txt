@@ -17,11 +17,12 @@ Notes:
     sound_event, block_entity_type, menu and data_component_type unavailable.
     Do not trim it again; void-data/build.rs consumes every registry.
   - packets.json is Mojang's per-state, per-direction packet-id table,
-    copied verbatim; it is the reference for every hand-written packet id
-    in void-protocol.
-  - version.json is copied verbatim from the server jar; its `id` and
-    `protocol_version` are the reference for void-protocol's
-    MINECRAFT_VERSION / PROTOCOL_VERSION.
+    copied verbatim; void-data emits it as constants and void-protocol's
+    tests/packet_ids.rs checks every hand-written packet id against it.
+  - version.json is copied verbatim from the server jar; void-data exports
+    its `id` and `protocol_version` through cargo::metadata and
+    void-protocol/build.rs asserts MINECRAFT_VERSION / PROTOCOL_VERSION
+    against them.
   - blockCollisionShapes.json vendored from prismarine 1.21.9 since the
     pc_26_1_2 PR ships only protocol data. Block shapes change rarely
     between minor versions; new 26.1.2 blocks fall back to FULL_CUBE.
