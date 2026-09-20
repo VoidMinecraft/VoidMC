@@ -27,6 +27,20 @@ fn my_system(players: Players, me: Query<Entity, With<Operator>>) {
 }
 ```
 
+`ready()` snapshots the ready players into a `Vec`. Take it **once per system
+run** and use the borrowing variants inside loops:
+
+```rust
+fn broadcast_health(players: Players, mobs: Query<(&MinecraftEntityId, &Health, Option<&EntityDimension>)>) {
+    let ready = players.ready();
+    for (id, health, dim) in mobs.iter() {
+        let dim = dim.map(|d| d.0);
+        ready.send_where(|r| r.visible_from(dim), health_packet(id.0, health));
+        ready.send_except(some_entity, other_packet);
+    }
+}
+```
+
 | Method | Recipients |
 |---|---|
 | `send(entity, packet)` | One client entity — ready or still in status/login/configuration. |
@@ -35,9 +49,10 @@ fn my_system(players: Players, me: Query<Entity, With<Operator>>) {
 | `broadcast_except(entity, packet)` | Every ready player but one. |
 | `broadcast_chunk(dimension, chunk, packet)` | Ready players whose `LoadedChunks` contains the chunk. |
 | `ready()` → `Recipients` | Snapshot of ready players; chain `except`, `in_dimension`, `visible_from(Option<DimensionId>)`, `seeing_chunk`, `filter`, then `send`. |
+| `Recipients::send_except(entity, packet)` / `send_where(pred, packet)` | Same as above without consuming or allocating — for loops. |
 
-`Recipient` exposes `entity()`, `client_id()`, `dimension()` and
-`sees_chunk(dimension, chunk)` to `filter` predicates.
+`Recipient` exposes `entity()`, `client_id()`, `dimension()`,
+`visible_from(Option<DimensionId>)` and `sees_chunk(dimension, chunk)` to predicates.
 
 ### From exclusive-world code
 
@@ -92,6 +107,8 @@ inside one schedule.
 | `PlayerBroadcast` | `PostUpdate` | Other players' movement and head rotation. |
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Resync players flagged `InventoryDirty`. |
+| `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
+| `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |
 
 `CommandDrain → KeepAlive → EntitySimulation` are chained; the other sets in
 a schedule are unordered relative to each other.

@@ -23,6 +23,7 @@ pub fn broadcast_position(
         ),
     >,
 ) {
+    let ready = players.ready();
     for (mover, mc_entity_id, pos, prev_pos, rotation) in moved_query.iter() {
         let yaw = (rotation.yaw.rem_euclid(360.0) / 360.0 * 256.0) as u8;
         let pitch = (rotation.pitch.rem_euclid(360.0) / 360.0 * 256.0) as u8;
@@ -60,16 +61,17 @@ pub fn broadcast_position(
             })
         };
 
-        let others = players.ready().except(mover);
-
         // Send position + rotation update
-        others.send(packet);
+        ready.send_except(mover, packet);
 
         // Send head rotation
-        others.send(clientbound::SetHeadRotation {
-            entity_id: mc_entity_id.0,
-            head_yaw: yaw,
-        });
+        ready.send_except(
+            mover,
+            clientbound::SetHeadRotation {
+                entity_id: mc_entity_id.0,
+                head_yaw: yaw,
+            },
+        );
     }
 }
 

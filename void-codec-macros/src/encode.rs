@@ -143,6 +143,8 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     })
                     .collect::<Result<Vec<_>>>()?;
 
+                let from_impls = tagged_from_impls(name, data, type_attrs.wrap.as_ref());
+
                 let expanded = quote! {
                     impl voidmc_codec::Encode for #name {
                         fn encode(&self, buf: &mut Vec<u8>) {
@@ -151,6 +153,8 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             }
                         }
                     }
+
+                    #from_impls
                 };
 
                 Ok(expanded)
@@ -207,6 +211,8 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     })
                     .collect::<Result<Vec<_>>>()?;
 
+                let from_impls = tagged_from_impls(name, data, type_attrs.wrap.as_ref());
+
                 let expanded = quote! {
                     impl voidmc_codec::Encode for #name {
                         fn encode(&self, buf: &mut Vec<u8>) {
@@ -215,6 +221,8 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             }
                         }
                     }
+
+                    #from_impls
                 };
 
                 Ok(expanded)
@@ -226,5 +234,58 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
             }
         }
         Data::Union(_) => Err(Error::new_spanned(input, "Unions are not supported")),
+    }
+}
+
+fn tagged_from_impls(
+    name: &syn::Ident,
+    data: &syn::DataEnum,
+    wrap: Option<&syn::Path>,
+) -> proc_macro2::TokenStream {
+    let wrap_type = wrap.map(|path| {
+        let mut type_path = path.clone();
+        type_path.segments.pop();
+        type_path.segments.pop_punct();
+        type_path
+    });
+
+    let per_variant = data.variants.iter().filter_map(|v| {
+        let variant = &v.ident;
+        let inner = match &v.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => &fields.unnamed[0].ty,
+            _ => return None,
+        };
+        let wrapped = wrap.zip(wrap_type.as_ref()).map(|(path, ty)| {
+            quote! {
+                impl From<#inner> for #ty {
+                    fn from(packet: #inner) -> Self {
+                        #path(#name::#variant(packet))
+                    }
+                }
+            }
+        });
+        Some(quote! {
+            impl From<#inner> for #name {
+                fn from(packet: #inner) -> Self {
+                    #name::#variant(packet)
+                }
+            }
+            #wrapped
+        })
+    });
+
+    let enum_level = wrap.zip(wrap_type.as_ref()).map(|(path, ty)| {
+        quote! {
+            impl From<#name> for #ty {
+                fn from(packet: #name) -> Self {
+                    #path(packet)
+                }
+            }
+        }
+    });
+
+    quote! {
+        #(#per_variant)*
+        #enum_level
     }
 }

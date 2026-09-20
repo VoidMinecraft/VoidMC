@@ -39,6 +39,11 @@ impl Recipient<'_> {
         self.dimension
     }
 
+    /// `None` means visible from every dimension.
+    pub fn visible_from(&self, dimension: Option<DimensionId>) -> bool {
+        dimension.is_none_or(|dimension| self.dimension == Some(dimension))
+    }
+
     pub fn sees_chunk(&self, dimension: DimensionId, chunk: ChunkPos) -> bool {
         self.dimension == Some(dimension)
             && self
@@ -65,11 +70,9 @@ impl<'a> Recipients<'a> {
     }
 
     /// `None` keeps everyone, matching `Option<&EntityDimension>` on spawned entities.
-    pub fn visible_from(self, dimension: Option<DimensionId>) -> Self {
-        match dimension {
-            Some(dimension) => self.in_dimension(dimension),
-            None => self,
-        }
+    pub fn visible_from(mut self, dimension: Option<DimensionId>) -> Self {
+        self.targets.retain(|r| r.visible_from(dimension));
+        self
     }
 
     pub fn seeing_chunk(mut self, dimension: DimensionId, chunk: ChunkPos) -> Self {
@@ -95,19 +98,34 @@ impl<'a> Recipients<'a> {
     }
 
     pub fn send(&self, packet: impl Into<ClientboundPacket>) {
+        self.send_where(|_| true, packet);
+    }
+
+    /// Non-allocating alternatives to `except`/`filter` for use inside loops.
+    pub fn send_except(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
+        self.send_where(|r| r.entity != entity, packet);
+    }
+
+    pub fn send_where(
+        &self,
+        mut predicate: impl FnMut(&Recipient<'a>) -> bool,
+        packet: impl Into<ClientboundPacket>,
+    ) {
         let packet = packet.into();
-        let Some((last, rest)) = self.targets.split_last() else {
-            return;
-        };
-        for recipient in rest {
-            deliver(
-                self.sender,
-                recipient.entity,
-                recipient.client_id,
-                packet.clone(),
-            );
+        let mut pending: Option<&Recipient<'a>> = None;
+        for recipient in self.targets.iter().filter(|r| predicate(r)) {
+            if let Some(previous) = pending.replace(recipient) {
+                deliver(
+                    self.sender,
+                    previous.entity,
+                    previous.client_id,
+                    packet.clone(),
+                );
+            }
         }
-        deliver(self.sender, last.entity, last.client_id, packet);
+        if let Some(last) = pending {
+            deliver(self.sender, last.entity, last.client_id, packet);
+        }
     }
 }
 
@@ -388,6 +406,46 @@ mod tests {
         let mut sent = drain(&rx);
         sent.sort();
         assert_eq!(sent, vec![(2, 1), (3, 1), (3, 2)]);
+    }
+
+    #[test]
+    fn borrowing_send_variants_match_consuming_filters() {
+        let (mut app, rx) = test_app();
+        let me = app
+            .world_mut()
+            .spawn((ClientId(1), PlayerReady, PlayerDimension(DimensionId::End)))
+            .id();
+        app.world_mut()
+            .spawn((ClientId(2), PlayerReady, PlayerDimension(DimensionId::End)));
+        app.world_mut().spawn((ClientId(3), PlayerReady));
+
+        app.add_systems(Update, move |players: Players| {
+            let ready = players.ready();
+            for id in 1..=2 {
+                ready.send_except(me, keep_alive(id));
+            }
+            ready.send_where(|r| r.visible_from(Some(DimensionId::End)), keep_alive(3));
+            ready.send_where(|r| r.visible_from(None), keep_alive(4));
+            ready.send_where(|_| false, keep_alive(5));
+        });
+        app.update();
+
+        let mut sent = drain(&rx);
+        sent.sort();
+        assert_eq!(
+            sent,
+            vec![
+                (1, 3),
+                (1, 4),
+                (2, 1),
+                (2, 2),
+                (2, 3),
+                (2, 4),
+                (3, 1),
+                (3, 2),
+                (3, 4)
+            ]
+        );
     }
 
     #[test]

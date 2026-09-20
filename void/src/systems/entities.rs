@@ -79,6 +79,7 @@ pub fn broadcast_entity_spawns(
         Added<SpawnedEntity>,
     >,
 ) {
+    let ready = players.ready();
     for (entity_id, entity_uuid, position, rotation, velocity, entity_type, entity_dimension) in
         spawned_entities.iter()
     {
@@ -91,10 +92,8 @@ pub fn broadcast_entity_spawns(
             velocity,
         );
 
-        players
-            .ready()
-            .visible_from(entity_dimension.map(|d| d.0))
-            .send(packet);
+        let dimension = entity_dimension.map(|d| d.0);
+        ready.send_where(|r| r.visible_from(dimension), packet);
     }
 }
 
@@ -121,6 +120,7 @@ pub fn broadcast_entity_movement(
         ),
     >,
 ) {
+    let ready = players.ready();
     for (entity_id, position, previous_position, rotation, velocity, grounded, entity_dimension) in
         moved_entities.iter()
     {
@@ -153,10 +153,10 @@ pub fn broadcast_entity_movement(
             ))
         });
 
-        let recipients = players.ready().visible_from(entity_dimension.map(|d| d.0));
-        recipients.send(movement_packet);
+        let dimension = entity_dimension.map(|d| d.0);
+        ready.send_where(|r| r.visible_from(dimension), movement_packet);
         if let Some(packet) = head_rotation_packet {
-            recipients.send(packet);
+            ready.send_where(|r| r.visible_from(dimension), packet);
         }
     }
 }
@@ -173,6 +173,7 @@ pub fn broadcast_entity_motion(
         (With<SpawnedEntity>, Changed<Velocity>),
     >,
 ) {
+    let ready = players.ready();
     for (entity_id, velocity, entity_dimension) in moved_entities.iter() {
         if velocity.is_added() {
             continue;
@@ -183,10 +184,8 @@ pub fn broadcast_entity_motion(
             velocity: velocity_to_lp_vec3(&velocity),
         };
 
-        players
-            .ready()
-            .visible_from(entity_dimension.map(|d| d.0))
-            .send(packet);
+        let dimension = entity_dimension.map(|d| d.0);
+        ready.send_where(|r| r.visible_from(dimension), packet);
     }
 }
 

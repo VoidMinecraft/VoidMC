@@ -27,6 +27,10 @@ pub enum VoidSystems {
     ChunkStreaming,
     /// `PostUpdate`: resync of `InventoryDirty` players.
     InventorySync,
+    /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
+    StatusSnapshot,
+    /// `PostUpdate`: TPS tracking (only with `metrics_debug`).
+    Metrics,
 }
 
 #[cfg(test)]

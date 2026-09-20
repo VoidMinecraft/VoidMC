@@ -2,6 +2,7 @@ use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::{
     observer::On,
     prelude::With,
+    schedule::IntoScheduleConfigs,
     system::{Query, Res},
 };
 use voidmc_protocol::{
@@ -14,6 +15,7 @@ use crate::{
     components::PlayerReady,
     network::PacketEvent,
     players::Players,
+    schedule::VoidSystems,
     server_status::{ServerStatusSnapshot, player_count, server_status},
 };
 
@@ -22,7 +24,10 @@ pub struct StatusPlugin;
 
 impl Plugin for StatusPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, update_status_snapshot);
+        app.add_systems(
+            PostUpdate,
+            update_status_snapshot.in_set(VoidSystems::StatusSnapshot),
+        );
 
         app.add_observer(|event: On<PacketEvent<PingRequest>>, players: Players| {
             players.send(

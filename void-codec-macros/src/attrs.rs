@@ -105,6 +105,7 @@ pub struct TypeAttrs {
     pub tagged: bool,
     pub varint32: bool,
     pub varint64: bool,
+    pub wrap: Option<syn::Path>,
 }
 
 #[derive(Default)]
@@ -164,6 +165,10 @@ pub fn parse_type_attrs(attrs: &[Attribute]) -> Result<TypeAttrs> {
                 Ok(())
             } else if meta.path.is_ident("varint64") {
                 type_attrs.varint64 = true;
+                Ok(())
+            } else if meta.path.is_ident("wrap") {
+                let _eq: syn::token::Eq = meta.input.parse()?;
+                type_attrs.wrap = Some(meta.input.parse()?);
                 Ok(())
             } else {
                 Err(meta.error("unknown type codec attribute"))

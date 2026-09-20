@@ -194,11 +194,13 @@ fn broadcast_item_data(
         Added<SpawnedEntity>,
     >,
 ) {
+    let ready = players.ready();
     for (entity_id, item, dim) in new_items.iter() {
-        players
-            .ready()
-            .visible_from(dim.map(|d| d.0))
-            .send(item_data_packet(entity_id.0, &item.stack));
+        let dimension = dim.map(|d| d.0);
+        ready.send_where(
+            |r| r.visible_from(dimension),
+            item_data_packet(entity_id.0, &item.stack),
+        );
     }
 }
 
