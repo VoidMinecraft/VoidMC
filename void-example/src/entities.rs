@@ -112,7 +112,9 @@ fn handle_display(ctx: &mut CommandContext) {
                             Display::default()
                                 .transform(shield_transform(angle))
                                 .interpolation_ticks(2)
-                                .brightness(15, 15),
+                                .brightness(15, 15)
+                                .view_range(2.0)
+                                .culling_box(2.0 * SHIELD_RADIUS + 1.0, 2.0),
                             ShieldSegment { angle },
                             DemoDisplay { owner: executor },
                         ));

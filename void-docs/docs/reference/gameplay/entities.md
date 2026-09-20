@@ -63,8 +63,11 @@ full state once.
 | `NoGravity`, `Silent` | Indices 5 and 4 |
 | `ItemEntity { stack }` | Rendered item of a `minecraft:item` entity |
 
-Insert to enable, `remove::<T>()` to restore the vanilla default. Mutating a
-component's fields re-sends only what changed.
+Insert to enable, `remove::<T>()` to restore the vanilla default (every shipped
+source implements `clear`, including the display components). Mutating a
+component's fields re-sends only what changed. These components act on
+server-owned entities only; player entities are replicated by the player
+systems and ignore them.
 
 For indices without a typed component, write `EntityMetadata` directly:
 
@@ -80,14 +83,32 @@ fn freeze(mut meta: Query<&mut EntityMetadata, With<Frozen>>) {
 ```
 
 `set` marks the index dirty only when the value changed; `touch(index)` forces a
-resend. Implement `MetadataSource` for your own components and register
-`project::<T>` if you want the same projection treatment.
+resend. Your own components get the same treatment by implementing
+`MetadataSource` and registering them:
+
+```rust
+use voidmc::{EntityMetadata, MetadataSource, MetadataSourceAppExt};
+
+#[derive(Component)]
+struct Frozen(i32);
+
+impl MetadataSource for Frozen {
+    fn write(&self, meta: &mut EntityMetadata) {
+        meta.set(7, EntityMetadataValue::Int(self.0));
+    }
+    fn clear(meta: &mut EntityMetadata) {
+        meta.set(7, EntityMetadataValue::Int(0));
+    }
+}
+
+app.add_metadata_source::<Frozen>();
+```
 
 ## Display entities
 
 `BlockDisplay`, `ItemDisplay` and `TextDisplay` require a `Display` component
 holding the shared settings (transform, interpolation, billboard, brightness,
-view range, shadow, glow color). Spawn the matching `EntityKind`:
+view range, shadow, glow color, culling box). Spawn the matching `EntityKind`:
 
 ```rust
 use voidmc::{BlockDisplay, Display, DisplayTransform, EntityBuilder, EntityKind};
@@ -101,7 +122,10 @@ EntityBuilder::new(EntityKind::BlockDisplay)
 
 Assigning `Display::transform` starts a new keyframe that the client
 interpolates over `interpolation_ticks`; the interpolation clock reset is
-always re-sent, even for an identical transform.
+always re-sent, even for an identical transform. `view_range` multiplies the
+64-block render distance and `culling_box(width, height)` sets the client's
+frustum-culling box — a translated or scaled display left at the default 0
+flickers at screen edges.
 
 ```rust
 display.transform = DisplayTransform::default()

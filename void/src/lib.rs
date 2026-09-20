@@ -46,8 +46,8 @@ pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnP
 pub use entity::{
     Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EntityBuilder,
     EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing,
-    Invisible, ItemDisplay, ItemDisplayContext, NoGravity, Passengers, Silent, TextAlignment,
-    TextDisplay,
+    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
+    Passengers, Silent, TextAlignment, TextDisplay,
 };
 pub use inventory::Inventory;
 pub use item::{ItemId, ItemStack};

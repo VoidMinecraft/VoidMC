@@ -24,6 +24,10 @@ pub mod entity_flag {
     pub const FALL_FLYING: u8 = 1 << 7;
 }
 
+pub mod item_entity_index {
+    pub const ITEM: u8 = 8;
+}
+
 pub mod display_index {
     pub const TRANSFORMATION_START_DELTA_TICKS: u8 = 8;
     pub const TRANSFORMATION_DURATION: u8 = 9;

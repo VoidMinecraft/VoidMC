@@ -10,7 +10,7 @@ use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
 use ussr_nbt::owned::{Nbt, Tag};
 use voidmc_protocol::clientbound::entity_metadata::{
-    display_index, entity_flag, entity_index, text_display_flag,
+    display_index, entity_flag, entity_index, item_entity_index, text_display_flag,
 };
 use voidmc_protocol::clientbound::{
     EntityMetadataEntry, EntityMetadataValue as Value, SetEntityData,
@@ -163,7 +163,17 @@ impl MetadataSource for Silent {
 
 impl MetadataSource for ItemEntity {
     fn write(&self, meta: &mut EntityMetadata) {
-        meta.set(8, Value::ItemStack(self.stack.to_slot()));
+        meta.set(
+            item_entity_index::ITEM,
+            Value::ItemStack(self.stack.to_slot()),
+        );
+    }
+
+    fn clear(meta: &mut EntityMetadata) {
+        meta.set(
+            item_entity_index::ITEM,
+            Value::ItemStack(ItemStack::EMPTY.to_slot()),
+        );
     }
 }
 
@@ -244,6 +254,15 @@ impl Display {
         self.glow_color = Some(argb);
         self
     }
+
+    /// `width`/`height` are the client's frustum-culling box around the entity
+    /// position, not the render size; a translated or scaled display left at
+    /// 0 flickers at screen edges.
+    pub fn culling_box(mut self, width: f32, height: f32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
 }
 
 impl MetadataSource for Display {
@@ -279,6 +298,10 @@ impl MetadataSource for Display {
             Value::Int(self.glow_color.unwrap_or(-1)),
         );
     }
+
+    fn clear(meta: &mut EntityMetadata) {
+        Display::default().write(meta);
+    }
 }
 
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +311,10 @@ pub struct BlockDisplay(pub i32);
 impl MetadataSource for BlockDisplay {
     fn write(&self, meta: &mut EntityMetadata) {
         meta.set(display_index::BLOCK_STATE, Value::BlockState(self.0));
+    }
+
+    fn clear(meta: &mut EntityMetadata) {
+        BlockDisplay(voidmc_data::v26_1_2::blocks::AIR).write(meta);
     }
 }
 
@@ -319,6 +346,12 @@ impl MetadataSource for ItemDisplay {
             display_index::ITEM_DISPLAY_CONTEXT,
             Value::Byte(self.context as i8),
         );
+    }
+
+    fn clear(meta: &mut EntityMetadata) {
+        ItemDisplay::new(ItemStack::EMPTY)
+            .context(ItemDisplayContext::None)
+            .write(meta);
     }
 }
 
@@ -418,6 +451,10 @@ impl MetadataSource for TextDisplay {
         meta.set(display_index::TEXT_OPACITY, Value::Byte(self.opacity));
         meta.set(display_index::TEXT_FLAGS, Value::Byte(self.flags() as i8));
     }
+
+    fn clear(meta: &mut EntityMetadata) {
+        TextDisplay::new("").write(meta);
+    }
 }
 
 fn flags_byte(invisible: bool, glowing: bool) -> i8 {
@@ -481,32 +518,44 @@ fn on_remove<T: MetadataSource>(event: On<Remove, T>, mut entities: Query<&mut E
     }
 }
 
+/// Registers a [`MetadataSource`]: its projection runs in
+/// `VoidSystems::EntityMetadataSync` before the send, and removing the
+/// component restores its defaults through [`MetadataSource::clear`].
+pub trait MetadataSourceAppExt {
+    fn add_metadata_source<T: MetadataSource>(&mut self) -> &mut Self;
+}
+
+impl MetadataSourceAppExt for App {
+    fn add_metadata_source<T: MetadataSource>(&mut self) -> &mut Self {
+        self.add_observer(on_remove::<T>).add_systems(
+            PostUpdate,
+            project::<T>
+                .before(sync_entity_metadata)
+                .in_set(VoidSystems::EntityMetadataSync),
+        )
+    }
+}
+
 pub(super) fn register(app: &mut App) {
     app.add_observer(on_remove_invisible)
         .add_observer(on_remove_glowing)
-        .add_observer(on_remove::<CustomName>)
-        .add_observer(on_remove::<NoGravity>)
-        .add_observer(on_remove::<Silent>)
         .add_observer(send_full_metadata_on_shown)
         .add_systems(
             PostUpdate,
             (
-                (
-                    project_flags,
-                    project::<CustomName>,
-                    project::<NoGravity>,
-                    project::<Silent>,
-                    project::<ItemEntity>,
-                    project::<Display>,
-                    project::<BlockDisplay>,
-                    project::<ItemDisplay>,
-                    project::<TextDisplay>,
-                ),
+                project_flags.before(sync_entity_metadata),
                 sync_entity_metadata,
             )
-                .chain()
                 .in_set(VoidSystems::EntityMetadataSync),
-        );
+        )
+        .add_metadata_source::<CustomName>()
+        .add_metadata_source::<NoGravity>()
+        .add_metadata_source::<Silent>()
+        .add_metadata_source::<ItemEntity>()
+        .add_metadata_source::<Display>()
+        .add_metadata_source::<BlockDisplay>()
+        .add_metadata_source::<ItemDisplay>()
+        .add_metadata_source::<TextDisplay>();
 }
 
 fn sync_entity_metadata(
@@ -719,6 +768,72 @@ mod tests {
             .transform = DisplayTransform::default().translation(1.0, 0.0, 0.0);
         app.update();
         assert_eq!(metadata(&rx), vec![(1, vec![(8, 1)])]);
+    }
+
+    #[test]
+    fn removing_display_components_restores_defaults_before_a_later_show() {
+        let (mut app, rx) = test_app();
+        let _viewer = player(&mut app, 1);
+        let shield = EntityBuilder::new(EntityKind::BlockDisplay)
+            .spawn_in(app.world_mut())
+            .insert((
+                BlockDisplay(300),
+                Display::default().brightness(15, 15).view_range(3.0),
+            ))
+            .id();
+        app.update();
+        metadata(&rx);
+
+        app.world_mut()
+            .entity_mut(shield)
+            .remove::<(BlockDisplay, Display)>();
+        app.update();
+        assert_eq!(metadata(&rx).len(), 1);
+        let mut expected = EntityMetadata::default();
+        Display::default().write(&mut expected);
+        BlockDisplay(0).write(&mut expected);
+        let meta = app.world().get::<EntityMetadata>(shield).unwrap();
+        assert_eq!(meta.entries(), expected.entries());
+
+        let late = player(&mut app, 2);
+        app.update();
+        let sent = metadata(&rx);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, 2);
+        let _ = late;
+    }
+
+    #[test]
+    fn downstream_metadata_source_registers_through_the_app_extension() {
+        #[derive(Component)]
+        struct Frozen(i32);
+
+        impl MetadataSource for Frozen {
+            fn write(&self, meta: &mut EntityMetadata) {
+                meta.set(entity_index::TICKS_FROZEN, Value::Int(self.0));
+            }
+
+            fn clear(meta: &mut EntityMetadata) {
+                meta.set(entity_index::TICKS_FROZEN, Value::Int(0));
+            }
+        }
+
+        let (mut app, rx) = test_app();
+        app.add_metadata_source::<Frozen>();
+        let _viewer = player(&mut app, 1);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .insert(Frozen(140))
+            .id();
+        app.update();
+        assert_eq!(metadata(&rx), vec![(1, vec![(7, 1)])]);
+        app.world_mut().entity_mut(zombie).remove::<Frozen>();
+        app.update();
+        assert_eq!(metadata(&rx), vec![(1, vec![(7, 1)])]);
+        assert_eq!(
+            app.world().get::<EntityMetadata>(zombie).unwrap().get(7),
+            Some(&Value::Int(0))
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use ussr_nbt::owned::Nbt;
-use voidmc_codec::{Decode, DecodeError, Decoder, Encode, LimitKind, VarI32};
+use voidmc_codec::{Decode, DecodeError, Decoder, Encode, LimitKind, VarI32, VarI64};
 
 use crate::slot::Slot;
 
@@ -67,7 +67,7 @@ impl EntityMetadataValue {
             Self::Int(value) | Self::BlockState(value) | Self::Pose(value) => {
                 VarI32(*value).encode(buf)
             }
-            Self::Long(value) => value.encode(buf),
+            Self::Long(value) => VarI64(*value).encode(buf),
             Self::Float(value) => value.encode(buf),
             Self::String(value) => value.encode(buf),
             Self::Component(value) => value.encode(buf),
@@ -94,7 +94,7 @@ impl EntityMetadataValue {
         Ok(match serializer_id {
             serializer::BYTE => Self::Byte(decoder.decode::<i8>()?),
             serializer::INT => Self::Int(decoder.decode::<VarI32>()?.0),
-            serializer::LONG => Self::Long(decoder.decode::<i64>()?),
+            serializer::LONG => Self::Long(decoder.decode::<VarI64>()?.0),
             serializer::FLOAT => Self::Float(decoder.decode::<f32>()?),
             serializer::STRING => Self::String(decoder.decode::<String>()?),
             serializer::COMPONENT => Self::Component(decoder.decode::<Nbt>()?),
@@ -202,7 +202,10 @@ impl SetEntityData {
     }
 
     pub fn item(entity_id: i32, item: Slot) -> Self {
-        Self::new(entity_id).with(8, EntityMetadataValue::ItemStack(item))
+        Self::new(entity_id).with(
+            super::entity_metadata::item_entity_index::ITEM,
+            EntityMetadataValue::ItemStack(item),
+        )
     }
 }
 
@@ -275,6 +278,19 @@ mod tests {
         let mut buf = Vec::new();
         packet.encode(&mut buf);
         assert_eq!(buf, [5, 0, 0, 0x60, 5, 8, 1, 19, 19, 5, 0xFF]);
+    }
+
+    #[test]
+    fn long_is_a_varint_on_the_wire() {
+        let packet = SetEntityData::new(1).with(7, EntityMetadataValue::Long(300));
+        let mut buf = Vec::new();
+        packet.encode(&mut buf);
+        assert_eq!(buf, [1, 7, 2, 0xac, 0x02, 0xFF]);
+        let packet = SetEntityData::new(1).with(7, EntityMetadataValue::Long(-1));
+        buf.clear();
+        packet.encode(&mut buf);
+        assert_eq!(buf.len(), 3 + 10 + 1);
+        roundtrip(&packet);
     }
 
     #[test]
