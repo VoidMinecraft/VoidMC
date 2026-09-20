@@ -68,9 +68,16 @@ pub use voidmc_net::socket::FrameLimits;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
 pub use world::{
+<<<<<<< HEAD
     Attribute, BiomeBuilder, BiomeError, BiomeId, ChunkData, ChunkDimension, ChunkDirty,
     ChunkIndex, ChunkLoader, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
     GrassColorModifier, biome_at, load_or_generate, set_biome,
+=======
+    Banner, BannerLayer, BannerPattern, BlockEntities, BlockEntity, BlockEntityError,
+    BlockEntityKind, ChunkData, ChunkDimension, ChunkDirty, ChunkIndex, ChunkLoader,
+    ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId, DyeColor, Sign, SignSide, Skull,
+    block_entity_at, load_or_generate, remove_block_entity, set_block_entity,
+>>>>>>> e5dd953 (feat(world): block entity storage, typed Sign/Skull/Banner, sync and persistence)
 };
 
 // Re-export commonly used bevy_ecs types for plugin developers

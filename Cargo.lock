@@ -1988,6 +1988,7 @@ dependencies = [
  "ussr-nbt",
  "voidmc",
  "voidmc-codec",
+ "voidmc-data",
  "voidmc-protocol",
 ]
 

@@ -7,8 +7,9 @@
 
 use ussr_nbt::endian::RawVec;
 use ussr_nbt::owned::{Compound, List, Nbt, Tag};
-use voidmc::{ChunkData, DimensionId};
+use voidmc::{BlockEntity, BlockEntityKind, ChunkData, ChunkPos, DimensionId};
 use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData, PaletteData};
+use voidmc_protocol::types::BlockPosition;
 
 use crate::error::{PersistenceError, Result};
 
@@ -59,6 +60,10 @@ fn chunk_to_nbt(
     include_light: bool,
 ) -> Nbt {
     let sections: Vec<Compound> = data.sections.iter().map(section_to_nbt).collect();
+    let block_entities: Vec<Compound> = data
+        .block_entities(ChunkPos::new(x, z))
+        .map(|(position, block_entity)| block_entity_to_nbt(position, block_entity))
+        .collect();
 
     let mut tags: Vec<(ussr_nbt::mutf8::MString, Tag)> = vec![
         ("version".into(), Tag::Int(FORMAT_VERSION)),
@@ -69,6 +74,10 @@ fn chunk_to_nbt(
         (
             "heightmaps".into(),
             Tag::Compound(heightmaps_to_nbt(&data.heightmaps)),
+        ),
+        (
+            "block_entities".into(),
+            Tag::List(compound_list(block_entities)),
         ),
     ];
 
@@ -108,12 +117,57 @@ fn chunk_from_nbt(nbt: &Nbt) -> Result<LoadedChunk> {
         _ => LightData::full_sky_light(),
     };
 
+    let mut data = ChunkData::new(sections, heightmaps, light);
+    match field(c, "block_entities") {
+        Some(Tag::List(List::Compound(list))) => data.restore_block_entities(
+            list.iter()
+                .map(block_entity_from_nbt)
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Some(Tag::List(List::Empty)) | None => {}
+        _ => return Err(corrupt("invalid block_entities")),
+    }
+
     Ok(LoadedChunk {
         dimension,
         x,
         z,
-        data: ChunkData::new(sections, heightmaps, light),
+        data,
     })
+}
+
+// ---- block entities -------------------------------------------------------
+
+// Anvil shape: the block entity's own tags plus `id`, `x`, `y`, `z`.
+fn block_entity_to_nbt(position: BlockPosition, block_entity: &BlockEntity) -> Compound {
+    let mut tags = block_entity.data().tags.clone();
+    tags.push(("id".into(), Tag::String(block_entity.kind().name().into())));
+    tags.push(("x".into(), Tag::Int(position.x)));
+    tags.push(("y".into(), Tag::Int(position.y as i32)));
+    tags.push(("z".into(), Tag::Int(position.z)));
+    Compound { tags }
+}
+
+fn block_entity_from_nbt(c: &Compound) -> Result<(BlockPosition, BlockEntity)> {
+    let id = get_string(c, "id")?;
+    let kind = BlockEntityKind::from_name(&id)
+        .ok_or_else(|| PersistenceError::Corrupt(format!("unknown block entity type {id}")))?;
+    let position = BlockPosition {
+        x: get_int(c, "x")?,
+        y: get_int(c, "y")? as i16,
+        z: get_int(c, "z")?,
+    };
+    let tags = c
+        .tags
+        .iter()
+        .filter(|(name, _)| {
+            !name
+                .decode()
+                .is_ok_and(|name| matches!(name.as_ref(), "id" | "x" | "y" | "z"))
+        })
+        .cloned()
+        .collect();
+    Ok((position, BlockEntity::raw(kind, Compound { tags })))
 }
 
 // ---- sections -------------------------------------------------------------
@@ -284,6 +338,13 @@ fn get_int(c: &Compound, key: &str) -> Result<i32> {
     }
 }
 
+fn get_string(c: &Compound, key: &str) -> Result<String> {
+    match field(c, key) {
+        Some(Tag::String(v)) => v.decode().map(|s| s.into_owned()).map_err(|_| corrupt(key)),
+        _ => Err(corrupt(key)),
+    }
+}
+
 fn get_short(c: &Compound, key: &str) -> Result<i16> {
     match field(c, key) {
         Some(Tag::Short(v)) => Ok(*v),
@@ -321,6 +382,14 @@ fn long_array_u64(c: &Compound, key: &str) -> Result<Vec<u64>> {
         .into_iter()
         .map(|x| x as u64)
         .collect())
+}
+
+fn compound_list(compounds: Vec<Compound>) -> List {
+    if compounds.is_empty() {
+        List::Empty
+    } else {
+        List::Compound(compounds)
+    }
 }
 
 fn byte_array_list(arrays: &[Vec<u8>]) -> List {
@@ -417,6 +486,99 @@ mod tests {
         assert_sections_eq(&chunk, &loaded.data);
         // Light regenerated as full sky, not the original empty-ish data.
         assert!(!loaded.data.light.sky_light_arrays.is_empty());
+    }
+
+    #[test]
+    fn block_entities_round_trip_with_anvil_shaped_entries() {
+        use voidmc::{Banner, DyeColor, Sign, SignSide, Skull};
+        use voidmc_data::v26_1_2::blocks;
+
+        let mut chunk = sample_chunk();
+        let sign_pos = BlockPosition {
+            x: 50,
+            y: 70,
+            z: -65,
+        };
+        let head_pos = BlockPosition {
+            x: 63,
+            y: -60,
+            z: -65,
+        };
+        let banner_pos = BlockPosition {
+            x: 48,
+            y: 0,
+            z: -80,
+        };
+        let banner = Banner::new(DyeColor::Red);
+        chunk.set_block(2, 70, 15, blocks::OAK_SIGN).unwrap();
+        chunk.set_block(15, -60, 15, blocks::PLAYER_HEAD).unwrap();
+        chunk.set_block(0, 0, 0, banner.block_state()).unwrap();
+        chunk
+            .set_block_entity(
+                sign_pos,
+                Sign::lines(["persist", "me", "", ""]).back(SignSide::default().glowing()),
+            )
+            .unwrap();
+        chunk
+            .set_block_entity(head_pos, Skull::player("Notch"))
+            .unwrap();
+        chunk.set_block_entity(banner_pos, banner).unwrap();
+
+        let bytes = serialize_chunk(DimensionId::Overworld, 3, -5, &chunk, false).unwrap();
+        let loaded = deserialize_chunk(&bytes).unwrap();
+        let chunk_pos = ChunkPos::new(3, -5);
+        let mut expected: Vec<_> = chunk.block_entities(chunk_pos).collect();
+        let mut got: Vec<_> = loaded.data.block_entities(chunk_pos).collect();
+        expected.sort_by_key(|(p, _)| (p.x, p.y, p.z));
+        got.sort_by_key(|(p, _)| (p.x, p.y, p.z));
+        assert_eq!(got, expected);
+        assert!(!loaded.data.has_pending_block_entities());
+
+        let mut cursor = bytes.as_slice();
+        let nbt = Nbt::read(&mut cursor).unwrap();
+        let Some(Tag::List(List::Compound(entries))) = field(&nbt.compound, "block_entities")
+        else {
+            panic!("block_entities list missing");
+        };
+        let sign = entries
+            .iter()
+            .find(|c| get_string(c, "id").unwrap() == "minecraft:sign")
+            .unwrap();
+        assert_eq!(get_int(sign, "x").unwrap(), 50);
+        assert_eq!(get_int(sign, "y").unwrap(), 70);
+        assert_eq!(get_int(sign, "z").unwrap(), -65);
+        assert!(field(sign, "front_text").is_some());
+    }
+
+    #[test]
+    fn chunks_without_block_entities_still_load() {
+        let chunk = sample_chunk();
+        let bytes = serialize_chunk(DimensionId::Overworld, 0, 0, &chunk, false).unwrap();
+        let loaded = deserialize_chunk(&bytes).unwrap();
+        assert_eq!(loaded.data.block_entities(ChunkPos::new(0, 0)).count(), 0);
+    }
+
+    #[test]
+    fn unknown_block_entity_type_is_corrupt() {
+        let mut nbt = chunk_to_nbt(DimensionId::Overworld, 0, 0, &sample_chunk(), false);
+        let bogus = Compound {
+            tags: vec![
+                ("id".into(), Tag::String("minecraft:not_real".into())),
+                ("x".into(), Tag::Int(0)),
+                ("y".into(), Tag::Int(0)),
+                ("z".into(), Tag::Int(0)),
+            ],
+        };
+        nbt.compound
+            .tags
+            .retain(|(n, _)| n.decode().unwrap() != "block_entities");
+        nbt.compound.tags.push((
+            "block_entities".into(),
+            Tag::List(List::Compound(vec![bogus])),
+        ));
+        let mut bytes = Vec::new();
+        nbt.write(&mut bytes).unwrap();
+        assert!(deserialize_chunk(&bytes).is_err());
     }
 
     #[test]

@@ -14,6 +14,7 @@ voidmc = { version = "0.2.0", path = "../void" }
 voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
 voidmc-codec = { version = "0.1.1", path = "../void-codec" }
 ussr-nbt = "0.2.1"
+voidmc-data = { version = "0.1.2", path = "../void-data" }
 bevy_ecs = "0.18.0"
 bevy_app = "0.18.0"
 flate2 = "1"
