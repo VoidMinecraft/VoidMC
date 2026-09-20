@@ -1,24 +1,8 @@
-use std::sync::OnceLock;
-
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::chunk::{Chunk as ProtocolChunk, ChunkBuilder, blocks};
 
+use super::biome::BiomeId;
 use super::chunk_pos::ChunkPos;
-
-/// Resolves the network ID of `minecraft:plains` in the shipped biome
-/// registry. Falls back to 0 if the lookup fails (which would mean the registry
-/// isn't shipped).
-fn plains_biome_id() -> i32 {
-    static ID: OnceLock<i32> = OnceLock::new();
-    *ID.get_or_init(|| {
-        voidmc_data::registry_index(
-            voidmc_data::Version::V26_1_2,
-            "minecraft:worldgen/biome",
-            "minecraft:plains",
-        )
-        .unwrap_or(0)
-    })
-}
 
 /// Pluggable terrain generator trait.
 pub trait WorldGenerator: Send + Sync {
@@ -27,6 +11,13 @@ pub trait WorldGenerator: Send + Sync {
 
     /// Returns the terrain surface Y at a given block coordinate.
     fn surface_height_at(&self, block_x: i32, block_z: i32) -> i32;
+
+    /// Biome of the 4×4×4 cell whose lowest corner is at these block
+    /// coordinates. Feed it to [`ChunkBuilder::biomes_from`] in `generate_chunk`.
+    fn biome_at(&self, block_x: i32, block_y: i32, block_z: i32) -> BiomeId {
+        let _ = (block_x, block_y, block_z);
+        BiomeId::plains()
+    }
 }
 
 /// Default sine-wave terrain generator (matches original behavior).
@@ -55,7 +46,7 @@ impl WorldGenerator for DefaultWorldGenerator {
         let amp = self.amplitude;
         let water = self.water_level;
         ChunkBuilder::new(pos.x, pos.z)
-            .biome(plains_biome_id())
+            .biomes_from(|x, y, z| self.biome_at(x, y, z).0)
             .with_heightmap_layered(
                 |x, z| {
                     let main_wave = (x as f64 * freq).sin() + (z as f64 * freq).sin();

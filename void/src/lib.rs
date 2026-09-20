@@ -58,8 +58,9 @@ pub use voidmc_net::socket::FrameLimits;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
 pub use world::{
-    ChunkData, ChunkDimension, ChunkDirty, ChunkIndex, ChunkLoader, ChunkLoaderResource, ChunkPos,
-    ChunkPosition, DimensionId, load_or_generate,
+    Attribute, BiomeBuilder, BiomeError, BiomeId, ChunkData, ChunkDimension, ChunkDirty,
+    ChunkIndex, ChunkLoader, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
+    GrassColorModifier, biome_at, load_or_generate, set_biome,
 };
 
 // Re-export commonly used bevy_ecs types for plugin developers

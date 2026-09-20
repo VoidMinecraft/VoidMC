@@ -96,6 +96,7 @@ const SPECS: &[EnumSpec] = &[
             ("BlockChangedAck", "minecraft:block_changed_ack"),
             ("BlockUpdate", "minecraft:block_update"),
             ("BossEvent", "minecraft:boss_event"),
+            ("ChunksBiomes", "minecraft:chunks_biomes"),
             ("SetContainerContent", "minecraft:container_set_content"),
             ("SetContainerSlot", "minecraft:container_set_slot"),
             ("Disconnect", "minecraft:disconnect"),

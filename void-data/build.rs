@@ -73,6 +73,7 @@ const TAG_REGISTRIES: &[(&str, &str)] = &[
 fn main() {
     println!("cargo:rerun-if-changed=assets");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/biome_attributes.rs");
 
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
@@ -1353,61 +1354,7 @@ const BIOME_WORLDGEN_FIELDS: &[&str] = &[
     "creature_spawn_probability",
 ];
 
-// `EnvironmentAttributes.java` (Paper 26.1.2): entries registered with
-// `.syncable()`; `EnvironmentAttributeMap.NETWORK_CODEC` drops the rest.
-const BIOME_SYNCABLE_ATTRIBUTES: &[&str] = &[
-    "minecraft:visual/fog_color",
-    "minecraft:visual/fog_start_distance",
-    "minecraft:visual/fog_end_distance",
-    "minecraft:visual/sky_fog_end_distance",
-    "minecraft:visual/cloud_fog_end_distance",
-    "minecraft:visual/water_fog_color",
-    "minecraft:visual/water_fog_start_distance",
-    "minecraft:visual/water_fog_end_distance",
-    "minecraft:visual/sky_color",
-    "minecraft:visual/sunrise_sunset_color",
-    "minecraft:visual/cloud_color",
-    "minecraft:visual/cloud_height",
-    "minecraft:visual/sun_angle",
-    "minecraft:visual/moon_angle",
-    "minecraft:visual/star_angle",
-    "minecraft:visual/moon_phase",
-    "minecraft:visual/star_brightness",
-    "minecraft:visual/block_light_tint",
-    "minecraft:visual/sky_light_color",
-    "minecraft:visual/sky_light_factor",
-    "minecraft:visual/night_vision_color",
-    "minecraft:visual/ambient_light_color",
-    "minecraft:visual/default_dripstone_particle",
-    "minecraft:visual/ambient_particles",
-    "minecraft:audio/background_music",
-    "minecraft:audio/music_volume",
-    "minecraft:audio/ambient_sounds",
-    "minecraft:audio/firefly_bush_sounds",
-    "minecraft:gameplay/sky_light_level",
-    "minecraft:gameplay/water_evaporates",
-    "minecraft:gameplay/fast_lava",
-    "minecraft:gameplay/piglins_zombify",
-    "minecraft:gameplay/creaking_active",
-];
-
-const BIOME_NON_SYNCABLE_ATTRIBUTES: &[&str] = &[
-    "minecraft:gameplay/can_start_raid",
-    "minecraft:gameplay/bed_rule",
-    "minecraft:gameplay/respawn_anchor_works",
-    "minecraft:gameplay/nether_portal_spawns_piglin",
-    "minecraft:gameplay/increased_fire_burnout",
-    "minecraft:gameplay/eyeblossom_open",
-    "minecraft:gameplay/turtle_egg_hatch_chance",
-    "minecraft:gameplay/snow_golem_melts",
-    "minecraft:gameplay/surface_slime_spawn_chance",
-    "minecraft:gameplay/cat_waking_up_gift_chance",
-    "minecraft:gameplay/bees_stay_in_hive",
-    "minecraft:gameplay/monsters_burn",
-    "minecraft:gameplay/can_pillager_patrol_spawn",
-    "minecraft:gameplay/villager_activity",
-    "minecraft:gameplay/baby_villager_activity",
-];
+include!("src/biome_attributes.rs");
 
 fn biome_network_form(value: &Value, entry: &str) -> Value {
     let obj = value

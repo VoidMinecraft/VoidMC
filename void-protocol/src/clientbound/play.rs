@@ -72,6 +72,8 @@ pub enum PlayPacket {
     BlockUpdate(BlockUpdate),
     #[codec(packet_id = 0x09)]
     BossEvent(BossEvent),
+    #[codec(packet_id = 0x0D)]
+    ChunksBiomes(ChunksBiomes),
     #[codec(packet_id = 0x12)]
     SetContainerContent(SetContainerContent),
     #[codec(packet_id = 0x14)]

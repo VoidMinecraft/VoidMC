@@ -26,6 +26,11 @@
   },
   {
     "type": "file",
+    "name": "biomes",
+    "label": "Biomes"
+  },
+  {
+    "type": "file",
     "name": "world",
     "label": "World & Chunks"
   },
