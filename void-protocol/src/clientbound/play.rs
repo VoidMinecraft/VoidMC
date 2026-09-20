@@ -3,6 +3,7 @@ mod block_entity_data;
 mod block_update;
 mod boss_event;
 pub mod chunk;
+mod close_container;
 mod command_suggestions_response;
 pub mod commands;
 mod disconnect;
@@ -11,12 +12,14 @@ mod game_event;
 mod keep_alive;
 mod level_particles;
 mod login;
+mod open_screen;
 mod ping;
 mod player_info_remove;
 mod player_info_update;
 mod remove_entities;
 mod set_container_content;
 mod set_container_slot;
+mod set_cooldown;
 mod set_cursor_item;
 mod set_entity_data;
 mod set_entity_motion;
@@ -38,6 +41,7 @@ pub use block_entity_data::*;
 pub use block_update::*;
 pub use boss_event::*;
 pub use chunk::*;
+pub use close_container::*;
 pub use command_suggestions_response::*;
 pub use commands::*;
 pub use disconnect::*;
@@ -48,12 +52,14 @@ pub use game_event::*;
 pub use keep_alive::*;
 pub use level_particles::*;
 pub use login::*;
+pub use open_screen::*;
 pub use ping::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
 pub use remove_entities::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
+pub use set_cooldown::*;
 pub use set_cursor_item::*;
 pub use set_entity_data::*;
 pub use set_entity_motion::*;
@@ -86,10 +92,14 @@ pub enum PlayPacket {
     BossEvent(BossEvent),
     #[codec(packet_id = 0x0D)]
     ChunksBiomes(ChunksBiomes),
+    #[codec(packet_id = 0x11)]
+    CloseContainer(CloseContainer),
     #[codec(packet_id = 0x12)]
     SetContainerContent(SetContainerContent),
     #[codec(packet_id = 0x14)]
     SetContainerSlot(SetContainerSlot),
+    #[codec(packet_id = 0x16)]
+    SetCooldown(SetCooldown),
     #[codec(packet_id = 0x20)]
     Disconnect(Disconnect),
     #[codec(packet_id = 0x25)]
@@ -108,6 +118,8 @@ pub enum PlayPacket {
     UpdateEntityPositionAndRotation(UpdateEntityPositionAndRotation),
     #[codec(packet_id = 0x38)]
     UpdateEntityRotation(UpdateEntityRotation),
+    #[codec(packet_id = 0x3B)]
+    OpenScreen(OpenScreen),
     #[codec(packet_id = 0x3D)]
     Ping(Ping),
     #[codec(packet_id = 0x48)]
