@@ -23,32 +23,26 @@ const VERSION: Version = Version::V26_1_2;
 #[derive(Debug, Clone, PartialEq)]
 enum Event {
     Named(String),
-    Custom {
-        sound_id: String,
-        fixed_range: Option<f32>,
-    },
+    Custom(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Emitter {
     Unplaced,
-    At {
-        x: f64,
-        y: f64,
-        z: f64,
-        dimension: Option<DimensionId>,
-    },
+    At(SoundPosition),
     Entity(Entity),
 }
 
 #[derive(Debug, Clone)]
 pub struct Sound {
     event: Event,
+    fixed_range: Option<f32>,
     source: SoundSource,
     volume: f32,
     pitch: f32,
     seed: i64,
     emitter: Emitter,
+    dimension: Option<DimensionId>,
     audience: Option<Audience>,
 }
 
@@ -61,29 +55,27 @@ impl Sound {
 
     /// A resource-pack sound sent inline; nothing needs registering.
     pub fn custom(sound_id: impl Into<String>) -> Self {
-        Self::build(Event::Custom {
-            sound_id: qualify(sound_id.into()),
-            fixed_range: None,
-        })
+        Self::build(Event::Custom(qualify(sound_id.into())))
     }
 
     fn build(event: Event) -> Self {
         Self {
             event,
+            fixed_range: None,
             source: SoundSource::Master,
             volume: 1.0,
             pitch: 1.0,
             seed: 0,
             emitter: Emitter::Unplaced,
+            dimension: None,
             audience: None,
         }
     }
 
-    /// Only meaningful for [`Sound::custom`]; registry sounds carry their own range.
+    /// Audible range in blocks. A registry sound with a range is sent as an
+    /// inline holder carrying its name, which the client resolves the same way.
     pub fn fixed_range(mut self, blocks: f32) -> Self {
-        if let Event::Custom { fixed_range, .. } = &mut self.event {
-            *fixed_range = Some(blocks);
-        }
+        self.fixed_range = Some(blocks);
         self
     }
 
@@ -107,28 +99,17 @@ impl Sound {
         self
     }
 
-    pub fn at(mut self, position: impl Into<SoundPosition>) -> Self {
-        let SoundPosition { x, y, z } = position.into();
-        let dimension = match self.emitter {
-            Emitter::At { dimension, .. } => dimension,
-            _ => None,
-        };
-        self.emitter = Emitter::At { x, y, z, dimension };
+    /// Emit from a point; the default audience is the players seeing its chunk.
+    pub fn at(mut self, dimension: DimensionId, position: impl Into<SoundPosition>) -> Self {
+        self.emitter = Emitter::At(position.into());
+        self.dimension = Some(dimension);
         self
     }
 
-    /// Dimension of an [`Sound::at`] position; narrows the default audience to
-    /// players seeing that chunk.
+    /// Overrides the dimension used for the default audience (for
+    /// [`Sound::from_entity`] emitters whose entity carries none).
     pub fn in_dimension(mut self, dimension: DimensionId) -> Self {
-        self.emitter = match self.emitter {
-            Emitter::At { x, y, z, .. } => Emitter::At {
-                x,
-                y,
-                z,
-                dimension: Some(dimension),
-            },
-            other => other,
-        };
+        self.dimension = Some(dimension);
         self
     }
 
@@ -143,15 +124,17 @@ impl Sound {
     }
 
     fn event(&self) -> Option<SoundEvent> {
+        let inline = |sound_id: &String| SoundEvent::Inline {
+            sound_id: sound_id.clone(),
+            fixed_range: self.fixed_range,
+        };
         match &self.event {
-            Event::Named(name) => resolve(name).map(SoundEvent::Registry),
-            Event::Custom {
-                sound_id,
-                fixed_range,
-            } => Some(SoundEvent::Inline {
-                sound_id: sound_id.clone(),
-                fixed_range: *fixed_range,
-            }),
+            Event::Named(name) => match (resolve(name), self.fixed_range) {
+                (None, _) => None,
+                (Some(id), None) => Some(SoundEvent::Registry(id)),
+                (Some(_), Some(_)) => Some(inline(name)),
+            },
+            Event::Custom(sound_id) => Some(inline(sound_id)),
         }
     }
 }
@@ -259,6 +242,7 @@ fn chunk_audience(position: SoundPosition, dimension: Option<DimensionId>) -> Au
     }
 }
 
+/// Returns whether at least one player received the packet.
 fn play_with(
     sound: &Sound,
     ready: Recipients<'_>,
@@ -279,19 +263,19 @@ fn play_with(
             tracing::warn!("Sound played without a position or emitting entity; dropped");
             return false;
         }
-        Emitter::At { x, y, z, dimension } => (
+        Emitter::At(position) => (
             SoundEffect {
                 sound: event,
                 source: sound.source,
-                x: SoundEffect::fixed_point(x),
-                y: SoundEffect::fixed_point(y),
-                z: SoundEffect::fixed_point(z),
+                x: SoundEffect::fixed_point(position.x),
+                y: SoundEffect::fixed_point(position.y),
+                z: SoundEffect::fixed_point(position.z),
                 volume: sound.volume,
                 pitch: sound.pitch,
                 seed: sound.seed,
             }
             .into(),
-            chunk_audience(SoundPosition { x, y, z }, dimension),
+            chunk_audience(position, sound.dimension),
         ),
         Emitter::Entity(entity) => {
             let Some(info) = lookup(entity) else {
@@ -313,14 +297,18 @@ fn play_with(
                 }
                 .into(),
                 match info.position {
-                    Some(position) => chunk_audience(position, info.dimension),
+                    Some(position) => chunk_audience(position, sound.dimension.or(info.dimension)),
                     None => Audience::All,
                 },
             )
         }
     };
     let audience = sound.audience.as_ref().unwrap_or(&default_audience);
-    audience.resolve(ready).send(packet);
+    let recipients = audience.resolve(ready);
+    if recipients.is_empty() {
+        return false;
+    }
+    recipients.send(packet);
     true
 }
 
@@ -335,12 +323,7 @@ fn play_to_with(
             tracing::warn!(?player, "play_to target has no Position; dropped");
             return false;
         };
-        sound.emitter = Emitter::At {
-            x: position.x,
-            y: position.y,
-            z: position.z,
-            dimension: None,
-        };
+        sound.emitter = Emitter::At(position);
     }
     sound.audience = Some(Audience::explicit([player]));
     play_with(&sound, ready, lookup)
@@ -373,7 +356,7 @@ impl Sounds<'_, '_> {
         })
     }
 
-    /// Returns whether a packet was sent.
+    /// Returns whether at least one player received the sound.
     pub fn play(&self, sound: Sound) -> bool {
         play_with(&sound, self.players.ready(), |e| self.lookup(e))
     }
@@ -547,6 +530,15 @@ mod tests {
             })
         );
         assert_eq!(Sound::new("x").fixed_range(1.0).event(), None);
+        assert_eq!(
+            Sound::new("entity.player.levelup")
+                .fixed_range(64.0)
+                .event(),
+            Some(SoundEvent::Inline {
+                sound_id: "minecraft:entity.player.levelup".into(),
+                fixed_range: Some(64.0),
+            })
+        );
     }
 
     #[test]
@@ -563,28 +555,74 @@ mod tests {
         player(&mut app, 2, DimensionId::Overworld, &[(5, 5)]);
         player(&mut app, 3, DimensionId::Nether, &[(0, 0)]);
         app.add_systems(Update, |sounds: Sounds| {
-            assert!(
-                sounds.play(
-                    Sound::new("entity.player.levelup")
-                        .at((1.5, 64.0, 0.25))
-                        .in_dimension(DimensionId::Overworld)
-                )
-            );
+            assert!(sounds.play(
+                Sound::new("entity.player.levelup").at(DimensionId::Overworld, (1.5, 64.0, 0.25))
+            ));
         });
         app.update();
         assert_eq!(drain(&rx), vec![Sent::At(1, levelup(), 12, 512, 2)]);
     }
 
     #[test]
-    fn positional_sound_without_dimension_reaches_everyone() {
+    fn play_reports_whether_anyone_heard_it() {
         let (mut app, rx) = test_app();
-        player(&mut app, 1, DimensionId::Overworld, &[]);
-        player(&mut app, 2, DimensionId::Nether, &[]);
+        player(&mut app, 1, DimensionId::Overworld, &[(0, 0)]);
         app.add_systems(Update, |sounds: Sounds| {
-            sounds.play(Sound::custom("a:b").at((0.0, 0.0, 0.0)));
+            assert!(!sounds.play(Sound::custom("a:b").at(DimensionId::Nether, (0.0, 0.0, 0.0))));
+            assert!(
+                !sounds.play(Sound::custom("a:b").at(DimensionId::Overworld, (999.0, 0.0, 0.0)))
+            );
+            assert!(sounds.play(Sound::custom("a:b").at(DimensionId::Overworld, (0.0, 0.0, 0.0))));
         });
         app.update();
-        assert_eq!(drain(&rx).len(), 2);
+        assert_eq!(drain(&rx).len(), 1);
+    }
+
+    #[test]
+    fn dimension_override_is_order_independent() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1, DimensionId::Nether, &[(0, 0)]);
+        player(&mut app, 2, DimensionId::Overworld, &[(0, 0)]);
+        let mob = app
+            .world_mut()
+            .spawn((
+                MinecraftEntityId(5),
+                Position {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            ))
+            .id();
+        app.add_systems(Update, move |sounds: Sounds| {
+            assert!(
+                sounds.play(
+                    Sound::custom("a:b")
+                        .in_dimension(DimensionId::Nether)
+                        .from_entity(mob)
+                )
+            );
+            assert!(
+                sounds.play(
+                    Sound::custom("a:b")
+                        .from_entity(mob)
+                        .in_dimension(DimensionId::Nether)
+                )
+            );
+            assert!(
+                sounds.play(
+                    Sound::custom("a:b")
+                        .in_dimension(DimensionId::Nether)
+                        .at(DimensionId::Overworld, (0.0, 0.0, 0.0))
+                )
+            );
+        });
+        app.update();
+        let sent = drain(&rx);
+        assert_eq!(sent.len(), 3);
+        assert!(matches!(sent[0], Sent::Entity(1, _, 5)));
+        assert!(matches!(sent[1], Sent::Entity(1, _, 5)));
+        assert!(matches!(sent[2], Sent::At(2, ..)));
     }
 
     #[test]
@@ -595,8 +633,7 @@ mod tests {
         app.add_systems(Update, move |sounds: Sounds| {
             sounds.play(
                 Sound::custom("a:b")
-                    .at((0.0, 0.0, 0.0))
-                    .in_dimension(DimensionId::Overworld)
+                    .at(DimensionId::Overworld, (0.0, 0.0, 0.0))
                     .audience(Audience::explicit([second])),
             );
         });
@@ -687,13 +724,7 @@ mod tests {
         let (mut app, rx) = test_app();
         player(&mut app, 1, DimensionId::Overworld, &[(0, 0)]);
         let sounds = WorldSounds::new(app.world());
-        assert!(
-            sounds.play(
-                Sound::custom("a:b")
-                    .at((0.0, 0.0, 0.0))
-                    .in_dimension(DimensionId::Overworld)
-            )
-        );
+        assert!(sounds.play(Sound::custom("a:b").at(DimensionId::Overworld, (0.0, 0.0, 0.0))));
         sounds.stop(SoundStop::all());
         assert_eq!(drain(&rx).len(), 2);
     }
@@ -703,7 +734,8 @@ mod tests {
     #[should_panic(expected = "unknown sound event")]
     fn unknown_sound_fails_loudly_in_debug() {
         let (app, _rx) = test_app();
-        WorldSounds::new(app.world()).play(Sound::new("does.not.exist").at((0.0, 0.0, 0.0)));
+        WorldSounds::new(app.world())
+            .play(Sound::new("does.not.exist").at(DimensionId::Overworld, (0.0, 0.0, 0.0)));
     }
 
     #[cfg(debug_assertions)]

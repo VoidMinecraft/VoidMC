@@ -16,8 +16,7 @@ fn on_pickup(sounds: Sounds, orbs: Query<(&Position, &EntityDimension), With<Pic
                 .category(SoundSource::Players)
                 .volume(1.0)
                 .pitch(1.2)
-                .at(position)
-                .in_dimension(dimension.0),
+                .at(dimension.0, position),
         );
     }
 }
@@ -26,36 +25,41 @@ fn on_pickup(sounds: Sounds, orbs: Query<(&Position, &EntityDimension), With<Pic
 | Builder | Meaning | Default |
 |---|---|---|
 | `Sound::new(name)` | A `minecraft:sound_event` registry entry (`"entity.player.levelup"` or `"minecraft:entity.player.levelup"`), resolved when played. | required |
-| `Sound::custom(id)` | A resource-pack sound sent inline; `.fixed_range(blocks)` sets its audible range. | — |
+| `Sound::custom(id)` | A resource-pack sound sent inline. | — |
+| `.fixed_range(blocks)` | Audible range. A registry sound with a range is sent inline under its name, which the client resolves identically. | client default (`16 × volume`) |
 | `.category(SoundSource)` | Client volume slider: `Master`, `Music`, `Records`, `Weather`, `Blocks`, `Hostile`, `Neutral`, `Players`, `Ambient`, `Voice`, `Ui`. | `Master` |
 | `.volume(f32)` | `≥ 0`; above `1.0` also extends the audible range. | `1.0` |
 | `.pitch(f32)` | clamped to `0.5..=2.0`. | `1.0` |
 | `.seed(i64)` | Picks the variant of multi-sound events. | `0` |
-| `.at(position)` + `.in_dimension(dimension)` | Emit from a point (`(f64, f64, f64)` or `&Position`). | — |
-| `.from_entity(entity)` | Emit from an entity (follows it client-side). | — |
+| `.at(dimension, position)` | Emit from a point (`(f64, f64, f64)` or `&Position`) in a dimension. | — |
+| `.from_entity(entity)` | Emit from an entity (follows it client-side); its dimension comes from the entity, `.in_dimension(..)` overrides it. | — |
 | `.audience(Audience)` | Who hears it; see below. | see below |
 
 A sound must be placed with `.at(..)` or `.from_entity(..)` (or sent with
 `play_to`, below). An unknown registry name or an unplaced sound panics in
-debug builds and is logged once and dropped in release builds; `play` returns
-whether a packet was sent.
+debug builds and is logged once and dropped in release builds. `play` returns
+whether at least one player received the sound, so an empty audience (nobody
+sees the chunk) returns `false` without sending anything.
 
 ## Audience
 
-The default audience is the players who can see the emitting position: with
-`.in_dimension(..)` (or an entity carrying a dimension) that is everyone in the
-dimension whose `LoadedChunks` contains the emitter's chunk; without a dimension
-it is every ready player. Any [`Audience`](../server/sending-packets.md#audiences)
-overrides it.
+The default audience is the players who can see the emitting position:
+everyone in the emitter's dimension whose `LoadedChunks` contains its chunk. An
+entity emitter with no dimension component and no `.in_dimension(..)` falls
+back to every ready player. Any [`Audience`](../server/sending-packets.md#audiences)
+overrides the default.
 
 ```rust
 use voidmc::{Audience, DimensionId, Sound};
 
-Sound::new("ambient.cave").at((0.0, 30.0, 0.0)).audience(Audience::InDimension(DimensionId::Overworld));
+Sound::new("ambient.cave").at(DimensionId::Overworld, (0.0, 30.0, 0.0)).audience(Audience::InDimension(DimensionId::Overworld));
 ```
 
 `play_to(player, sound)` targets one player: the audience is that player alone
 and an unplaced sound is emitted at their own position. Use it for UI feedback.
+Like every audience it only reaches **ready** players (`PlayerReady`); a client
+still in login or configuration is skipped, unlike `Players::send`, which
+addresses any client entity.
 
 ```rust
 sounds.play_to(player, Sound::custom("myserver:ui/ding").category(SoundSource::Ui));
