@@ -69,6 +69,9 @@ inventing its own set.
 | `Audience::Explicit(HashSet<Entity>)` — `Audience::explicit([a, b])` | Exactly these player entities, while ready. |
 | `Audience::Custom(Arc<dyn Fn(&Recipient) -> bool>)` — `Audience::custom(\|r\| ..)` | Any predicate over `Recipient`. |
 
+`audience.except(entity)` wraps any audience in a `Custom` that also skips
+that entity.
+
 ```rust
 use voidmc::{Audience, Players, DimensionId};
 
@@ -79,6 +82,7 @@ fn announce(players: Players, audience: Res<RaidAudience>) {
 let nether_only = Audience::InDimension(DimensionId::Nether);
 let party = Audience::explicit([alice, bob]);
 let ops = Audience::custom(|r| r.client_id() < 10);
+let others = Audience::InDimension(DimensionId::Nether).except(me);
 ```
 
 ### From exclusive-world code
