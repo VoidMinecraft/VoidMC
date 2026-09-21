@@ -108,7 +108,7 @@ impl Race {
     fn status(&self, kart: &Kart) -> String {
         match self.phase {
             Phase::Generating => format!("Construction du circuit : {}%", self.construction()),
-            Phase::Destroying => format!("Demontage du circuit : {}%", self.construction()),
+            Phase::Destroying => format!("Destruction du circuit : {}%", self.construction()),
             Phase::Lobby | Phase::Results => "Vol libre | /race pour lancer une course".into(),
             Phase::Loading => "Chargement des chunks / synchronisation des pilotes...".into(),
             _ if !kart.participant => "Prochaine course : attends l'arrivee des pilotes".into(),
@@ -219,6 +219,9 @@ impl Grid<'_, '_> {
                 .tell(player, format!("La grille est pleine ({GRID} pilotes)."));
             return;
         }
+        let Ok(mut entity) = self.commands.get_entity(player) else {
+            return;
+        };
         let mut kart = Kart {
             fuel: 100.0,
             next_gate: 1,
@@ -226,7 +229,7 @@ impl Grid<'_, '_> {
         };
         kart.wait(slot);
         self.race.roster.push(player);
-        self.commands.entity(player).insert((
+        entity.insert((
             kart,
             Racer { gate: 1 },
             BossBar::new(BOOST_TITLE)
@@ -658,41 +661,48 @@ fn hud(race: Res<Race>, racers: Query<(Entity, &Kart), With<Racer>>, chat: Chat)
     }
 }
 
-fn race_bar(race: Res<Race>, mut bar: Single<&mut BossBar, With<RaceBar>>) {
-    let shown = match race.phase {
-        Phase::Generating => Some((
-            format!("Construction du circuit : {}%", race.construction()),
-            race.construction() as f32 / 100.0,
-            BossBarColor::White,
-        )),
-        Phase::Destroying => Some((
-            format!("Demontage du circuit : {}%", race.construction()),
-            race.construction() as f32 / 100.0,
-            BossBarColor::White,
-        )),
-        Phase::Countdown => {
-            let seconds = race.countdown().div_ceil(20);
-            Some((
-                format!("Depart dans {seconds}..."),
-                seconds as f32 / COUNTDOWN.div_ceil(20) as f32,
-                BossBarColor::Yellow,
-            ))
+fn race_bar(
+    race: Res<Race>,
+    mut bar: Single<&mut BossBar, With<RaceBar>>,
+    mut shown: Local<Option<(Phase, u64)>>,
+) {
+    let value = match race.phase {
+        Phase::Generating | Phase::Destroying => race.construction() as u64,
+        Phase::Countdown => race.countdown().div_ceil(20),
+        Phase::Racing => race.time_limit().saturating_sub(race.elapsed()) / 20,
+        Phase::Lobby | Phase::Loading | Phase::Results => {
+            *shown = None;
+            if !matches!(&bar.audience, Audience::Explicit(viewers) if viewers.is_empty()) {
+                bar.audience = Audience::explicit([]);
+            }
+            return;
         }
-        Phase::Racing => {
-            let remaining = race.time_limit().saturating_sub(race.elapsed()) / 20;
-            Some((
-                format!("Temps restant : {}:{:02}", remaining / 60, remaining % 60),
-                remaining as f32 / (race.time_limit() / 20) as f32,
-                BossBarColor::Red,
-            ))
-        }
-        Phase::Lobby | Phase::Loading | Phase::Results => None,
     };
-    let Some((title, progress, color)) = shown else {
-        if !matches!(&bar.audience, Audience::Explicit(viewers) if viewers.is_empty()) {
-            bar.audience = Audience::explicit([]);
-        }
+    if *shown == Some((race.phase, value)) {
         return;
+    }
+    *shown = Some((race.phase, value));
+    let (title, progress, color) = match race.phase {
+        Phase::Generating => (
+            format!("Construction du circuit : {value}%"),
+            value as f32 / 100.0,
+            BossBarColor::White,
+        ),
+        Phase::Destroying => (
+            format!("Destruction du circuit : {value}%"),
+            value as f32 / 100.0,
+            BossBarColor::White,
+        ),
+        Phase::Countdown => (
+            format!("Depart dans {value}..."),
+            value as f32 / COUNTDOWN.div_ceil(20) as f32,
+            BossBarColor::Yellow,
+        ),
+        _ => (
+            format!("Temps restant : {}:{:02}", value / 60, value % 60),
+            value as f32 / (race.time_limit() / 20) as f32,
+            BossBarColor::Red,
+        ),
     };
     if bar.title != title {
         bar.title = title;
@@ -1065,6 +1075,20 @@ mod tests {
         h.command(pilots[0], "join", &[]);
         assert!(h.chats(1).is_empty());
         assert_eq!(h.race().roster.len(), GRID);
+    }
+
+    #[test]
+    fn join_ignores_a_despawned_entity() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let stale = h.spawn(2);
+        h.world().despawn(stale);
+        h.drain();
+        h.world().trigger(Join(stale));
+        h.world().flush();
+        h.tick();
+        assert_eq!(h.race().roster, vec![a]);
+        assert!(h.chats(1).is_empty());
     }
 
     #[test]
@@ -1555,7 +1579,7 @@ mod tests {
         for client in [1, 2, 3] {
             let shown = overlays(&out, client);
             assert_eq!(shown.len(), 1);
-            assert!(shown[0].starts_with("Demontage du circuit : "));
+            assert!(shown[0].starts_with("Destruction du circuit : "));
         }
         let _ = c;
     }
@@ -1651,7 +1675,48 @@ mod tests {
                 .into_iter()
                 .filter_map(|(_, title, _)| title)
                 .collect::<Vec<_>>(),
-            vec!["Demontage du circuit : 0%"]
+            vec!["Destruction du circuit : 0%"]
+        );
+    }
+
+    #[test]
+    fn race_bar_is_left_untouched_between_two_quantised_values() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        h.command(a, "race", &[]);
+        while h.race().phase != Phase::Racing {
+            h.tick();
+        }
+        h.tick();
+        h.drain();
+        let bar = h
+            .world()
+            .query_filtered::<Entity, With<RaceBar>>()
+            .single(h.app.world())
+            .unwrap();
+        let changed = h
+            .app
+            .world()
+            .entity(bar)
+            .get_ref::<BossBar>()
+            .unwrap()
+            .last_changed();
+        let title = h.app.world().get::<BossBar>(bar).unwrap().title.clone();
+        h.ticks(19);
+        assert!(bars(&h.drain(), 1).is_empty());
+        let bar_ref = h.app.world().entity(bar).get_ref::<BossBar>().unwrap();
+        assert_eq!(bar_ref.last_changed(), changed);
+        assert_eq!(bar_ref.title, title);
+        h.tick();
+        assert_eq!(
+            bars(&h.drain(), 1)
+                .into_iter()
+                .map(|(action, title, _)| (action, title))
+                .collect::<Vec<_>>(),
+            vec![
+                ("progress".into(), None),
+                ("title".into(), Some("Temps restant : 9:58".into())),
+            ]
         );
     }
 }
