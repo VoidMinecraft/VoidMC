@@ -183,7 +183,8 @@ seul joueur concerné ; les sons de jeu sont émis **depuis l'entité kart**
 | Arrivée / record | `entity.player.levelup` / `ui.toast.challenge_complete` | pilote / tous |
 | Bonus ramassé | `entity.item.pickup` (1.2) | pilote |
 | Turbo / Bouclier / Banane / Glace | `firework_rocket.launch` / `beacon.activate` / `slime_block.place` / `glass.place` | au kart |
-| Missile / Onde / Éclair / Super-recharge / Boule de feu | `wither.shoot` / `generic.explode` / `lightning_bolt.thunder` / `respawn_anchor.charge` / `blaze.ambient` | au kart |
+| Missile / Onde / Éclair / Super-recharge / Boule de feu | `wither.shoot` / `generic.explode` / `lightning_bolt.thunder` (0.8) / `respawn_anchor.charge` / `blaze.ambient` | au kart |
+| Éclair qui tombe (chaque coup) / premier coup | `lightning_bolt.thunder` (1.0) / `lightning_bolt.impact` | au kart |
 | Boule de feu tirée | `ghast.shoot` | au kart |
 | Touché : missile / éclair / onde / banane / glace / boule de feu | `generic.explode` / `player.hurt` / `player.hurt` (0.8) / `slime.squish` / `glass.break` / `generic.explode` | au kart |
 | Bouclier qui absorbe | `item.shield.block` | au kart |
@@ -282,13 +283,14 @@ les dix ticks, pour ses seuls spectateurs.
 - **Éclair** : un orage sur tous les adversaires en course, où qu'ils soient. Chaque
   kart visé reçoit un composant `Lightning { delay, seed, remaining }` : son premier
   éclair tombe après son propre délai (distinct par victime, moins de 0,9 s), puis
-  toutes les 0,3 s (6 ticks) la seed change et une entité `lightning_bolt` du moteur
-  apparaît sur le kart (le client joue l'animation, le tonnerre, l'impact et le flash
-  du ciel lui-même ; le serveur n'envoie aucun son par éclair et retire l'entité après
-  10 ticks), deux éclairs en tout : avec huit pilotes, un orage fait déjà flasher le
-  ciel de tous les joueurs 14 fois. Le ralentissement de 2,5 s s'applique au premier
-  éclair (absorbé par le bouclier) ; chaque éclair émet une onde. Le composant
-  disparaît après le deuxième éclair : un kart sans `Lightning` ne coûte rien.
+  toutes les 0,3 s (6 ticks) la seed change et un éclair maison (`Bolt`, voir
+  *Visuels et animation*) frappe le kart, trois éclairs en tout ; aucune entité
+  `lightning_bolt` du moteur, donc pas de flash du ciel chez tous les joueurs. Chaque
+  coup joue le tonnerre depuis le kart (`lightning_bolt.thunder`, volume 1,0 — pas les
+  10 000 du jeu) et émet une onde ; le premier ajoute `lightning_bolt.impact`, applique
+  le ralentissement de 2,5 s (absorbé par le bouclier) et le cri `player.hurt`. Le
+  lanceur reçoit lui aussi un éclair, inoffensif, à l'activation. Le composant
+  disparaît après le troisième éclair : un kart sans `Lightning` ne coûte rien.
 - **Boule de feu** : trois bâtons de blaze orbitent autour du pilote pendant 2 s, puis
   une entité `fireball` du moteur part tout droit dans le cap du kart à 1,2 bloc/tick,
   à ras de la piste, pendant 3 s au plus ou jusqu'à quitter la route ; elle touche le
@@ -324,8 +326,9 @@ effet n'émet rien.
 
 L'état complet — pièges, missiles, boules de feu, ondes (positions, âges, rayons,
 identifiant unique) et emplacements de cristaux — est exposé par la ressource `Items` ;
-les orages vivent sur les karts (`Lightning`) et les éclairs sont des entités `Bolt`.
-Tout est retiré à la fin de la manche, cristaux, éclairs et boules de feu compris.
+les orages vivent sur les karts (`Lightning`) et les éclairs (`Bolt` : position, seed,
+âge) dans `Items` comme les ondes. Tout est retiré à la fin de la manche, cristaux,
+éclairs et boules de feu compris.
 
 ### Visuels et animation
 
@@ -338,7 +341,7 @@ moteur se charge du reste : apparition chez les joueurs qui chargent le chunk,
 retrait quand ils s'éloignent, métadonnées complètes pour un spectateur qui arrive
 en cours d'animation.
 
-Les dix genres reprennent les modèles de la référence, tous issus de `voidmc_data` :
+Les onze genres reprennent les modèles de la référence, tous issus de `voidmc_data` :
 
 - **Bonus tenu** : l'objet du bonus (`fire_charge`, `shield`, `yellow_dye`,
   `firework_rocket`, `ender_pearl`, `blue_ice`, `lightning_rod`, `nether_star`,
@@ -361,8 +364,13 @@ Les dix genres reprennent les modèles de la référence, tous issus de `voidmc_
 - **Missile** : fuselage de fer, ogive de béton rouge et tuyère sea lantern en
   rotation, orientés selon la piste.
 - **Ondes** : douze segments en anneau (`emerald_block`, `orange_stained_glass`, ou
-  sea lantern et verre cyan alternés) dont le rayon suit l'onde ; l'éclair est une
-  colonne de cinq prismes en zigzag.
+  sea lantern et verre cyan alternés) dont le rayon suit l'onde.
+- **Éclair** : sept prismes fins (sea lantern et béton jaune alternés, 0,2 bloc de
+  côté) mis bout à bout en zigzag depuis 12 blocs au-dessus du point d'impact jusqu'au
+  kart ; les décalages latéraux (±0,9 bloc) de chaque coude viennent de la seed du
+  coup, chaque éclair est donc différent. Il vit 8 ticks : plein pendant 4 ticks, puis
+  une seule image le réduit à zéro (l'interpolation client fait le fondu) avant son
+  retrait — deux images en tout, jamais de recréation.
 
 L'animation est **échantillonnée tous les deux ticks** (10 Hz), la cadence native de
 l'interpolation client : les displays reçoivent `interpolation_ticks = 2` et

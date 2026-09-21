@@ -24,10 +24,10 @@ pub const MISSILE_LIFE: u16 = 160;
 pub const MISSILE_RADIUS: f64 = 2.5;
 pub const BURST_LIFE: u8 = 12;
 pub const SHOCKWAVE_RADIUS: f64 = 9.0;
-pub const LIGHTNING_STRIKES: u16 = 2;
+pub const LIGHTNING_STRIKES: u16 = 3;
 pub const LIGHTNING_PERIOD: u16 = 6;
 pub const LIGHTNING_SPREAD: u16 = 18;
-pub const BOLT_LIFE: u64 = 10;
+pub const BOLT_LIFE: u8 = 8;
 pub const FIREBALL_SPEED: f64 = 1.2;
 pub const FIREBALL_LIFE: u16 = 60;
 pub const FIREBALL_RADIUS: f64 = 2.0;
@@ -123,9 +123,27 @@ impl Lightning {
     }
 }
 
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bolt {
-    pub expires: u64,
+    pub id: u64,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub seed: u64,
+    pub age: u8,
+}
+
+impl Bolt {
+    fn at(id: u64, kart: &Kart, seed: u64, jitter: (f64, f64)) -> Self {
+        Self {
+            id,
+            x: kart.x + jitter.0,
+            y: kart.y,
+            z: kart.z + jitter.1,
+            seed,
+            age: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +244,7 @@ pub struct Items {
     pub missiles: Vec<Missile>,
     pub fireballs: Vec<Fireball>,
     pub bursts: Vec<Burst>,
+    pub bolts: Vec<Bolt>,
     pub sparks: Vec<Spark>,
     serial: u64,
 }
@@ -265,6 +284,7 @@ impl Items {
             despawn(commands, fireball.entity);
         }
         self.bursts.clear();
+        self.bolts.clear();
         self.sparks.clear();
     }
 
@@ -274,6 +294,7 @@ impl Items {
             && self.missiles.is_empty()
             && self.fireballs.is_empty()
             && self.bursts.is_empty()
+            && self.bolts.is_empty()
             && self.sparks.is_empty()
     }
 }
@@ -343,7 +364,6 @@ pub struct Field<'w, 's> {
     items: ResMut<'w, Items>,
     karts: KartQuery<'w, 's>,
     storms: Query<'w, 's, (Entity, &'static mut Lightning)>,
-    bolts: Query<'w, 's, (Entity, &'static Bolt)>,
     chat: Chat<'w, 's>,
     audio: Audio<'w, 's>,
     commands: Commands<'w, 's>,
@@ -464,6 +484,8 @@ impl Field<'_, '_> {
                 let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Lightning);
                 self.items.bursts.push(burst);
                 let roll = mix(self.map.seed ^ tick.wrapping_mul(ROLL_STRIDE) ^ racer.id as u64);
+                let bolt = Bolt::at(self.items.serial(), &kart, roll, (0.0, 0.0));
+                self.items.bolts.push(bolt);
                 for (index, other) in racers.iter().filter(|r| r.kart != racer.kart).enumerate() {
                     let delay = (roll as u16).wrapping_add(2 * index as u16) % LIGHTNING_SPREAD;
                     self.commands.entity(other.kart).insert(Lightning {
@@ -511,7 +533,7 @@ impl Field<'_, '_> {
         }
     }
 
-    fn storms(&mut self, racers: &[Contender], tick: u64) {
+    fn storms(&mut self, racers: &[Contender]) {
         let mut strikes: Vec<(Contender, bool)> = Vec::new();
         let mut done = Vec::new();
         for (entity, mut storm) in &mut self.storms {
@@ -527,15 +549,9 @@ impl Field<'_, '_> {
             let first = storm.remaining == LIGHTNING_STRIKES;
             storm.remaining -= 1;
             storm.delay = LIGHTNING_PERIOD - 1;
-            let (jx, jz) = storm.jitter();
             let kart = self.karts.get(entity).unwrap().3;
-            EntityBuilder::new(EntityKind::LightningBolt)
-                .at(kart.x + jx, kart.y, kart.z + jz)
-                .gravity(false)
-                .with(Bolt {
-                    expires: tick + BOLT_LIFE,
-                })
-                .spawn(&mut self.commands);
+            let bolt = Bolt::at(self.items.serial(), kart, storm.seed, storm.jitter());
+            self.items.bolts.push(bolt);
             strikes.push((*target, first));
             if storm.remaining == 0 {
                 done.push(entity);
@@ -545,7 +561,9 @@ impl Field<'_, '_> {
             let mut kart = self.karts.get_mut(target.kart).unwrap().3;
             let burst = Burst::at(self.items.serial(), &kart, 2.5, BurstKind::Lightning);
             self.items.bursts.push(burst);
+            self.audio.at(target.kart, Cue::Thunder);
             if first {
+                self.audio.at(target.kart, Cue::Impact);
                 let shielded = kart.strike(Strike::Lightning);
                 self.struck(
                     &target,
@@ -559,23 +577,11 @@ impl Field<'_, '_> {
         for entity in done {
             self.commands.entity(entity).remove::<Lightning>();
         }
-        self.expire_bolts(tick);
-    }
-
-    fn expire_bolts(&mut self, tick: u64) {
-        for (entity, bolt) in &self.bolts {
-            if tick >= bolt.expires {
-                despawn(&mut self.commands, entity);
-            }
-        }
     }
 
     fn calm(&mut self) {
         for (entity, _) in &self.storms {
             self.commands.entity(entity).remove::<Lightning>();
-        }
-        for (entity, _) in &self.bolts {
-            despawn(&mut self.commands, entity);
         }
     }
 
@@ -796,6 +802,10 @@ pub fn update(race: Res<Race>, mut field: Field) {
         burst.age += 1;
     }
     field.items.bursts.retain(|burst| burst.age < BURST_LIFE);
+    for bolt in &mut field.items.bolts {
+        bolt.age += 1;
+    }
+    field.items.bolts.retain(|bolt| bolt.age < BOLT_LIFE);
     let racers = field.racers();
     for racer in &racers {
         let Ok((_, _, _, kart)) = field.karts.get(racer.kart) else {
@@ -818,7 +828,7 @@ pub fn update(race: Res<Race>, mut field: Field) {
     }
     field.missiles(&racers);
     field.fireballs(&racers);
-    field.storms(&racers, tick);
+    field.storms(&racers);
 }
 
 pub fn fly(items: Res<Items>, mut projectiles: Query<&mut Position, With<Projectile>>) {
@@ -1049,22 +1059,17 @@ mod tests {
     use super::*;
     use crate::audio::Hit;
     use crate::chat::HUD_COLOR;
+    use crate::displays::{BOLT_FLASH, BOLT_SEGMENTS, KEYFRAME_TICKS, Key, Kind, Scene};
     use crate::kart::FIREBALL_CHARGE;
     use crate::race::tests::{Harness, Out, sounds};
+    use voidmc::SoundSource;
+
+    fn scene(h: &Harness) -> &Scene {
+        h.app.world().resource::<Scene>()
+    }
 
     fn items(h: &Harness) -> &Items {
         h.app.world().resource::<Items>()
-    }
-
-    fn bolt_sounds(out: &[Out]) -> usize {
-        let client_side = [
-            "entity.lightning_bolt.thunder",
-            "entity.lightning_bolt.impact",
-        ]
-        .map(|name| voidmc::sounds::resolve(name).unwrap());
-        out.iter()
-            .filter(|o| matches!(o, Out::Sound { sound, .. } if client_side.contains(sound)))
-            .count()
     }
 
     fn storm(h: &Harness, player: Entity) -> Option<Lightning> {
@@ -1074,12 +1079,18 @@ mod tests {
             .copied()
     }
 
-    fn bolts(h: &mut Harness) -> Vec<(Entity, Bolt)> {
-        h.world()
-            .query::<(Entity, &Bolt)>()
-            .iter(h.app.world())
-            .map(|(e, b)| (e, *b))
+    fn bolt_props(h: &Harness, bolt: &Bolt) -> Vec<Entity> {
+        let scene = h.app.world().resource::<Scene>();
+        (0..u8::MAX)
+            .map_while(|part| scene.entity(Key(bolt.id, Kind::Bolt, part)))
             .collect()
+    }
+
+    fn emitted_by(out: &[Out], client: u32, cue: Cue, emitter: i32) -> usize {
+        sounds(out, client, cue)
+            .iter()
+            .filter(|o| matches!(o, Out::Sound { emitter: Some(e), .. } if *e == emitter))
+            .count()
     }
 
     fn spawns_of(out: &[Out], client: u32, kind: EntityKind) -> Vec<(i32, (f64, f64, f64))> {
@@ -1956,13 +1967,26 @@ mod tests {
         assert!(storms.iter().all(|s| s.remaining == LIGHTNING_STRIKES));
         let seeds: HashSet<u64> = storms.iter().map(|s| s.seed).collect();
         assert_eq!(seeds.len(), 3);
-        assert!(bolts(&mut h).is_empty());
+        assert_eq!(items(&h).bolts.len(), 1);
+        let caster_bolt = items(&h).bolts[0];
+        assert_eq!((caster_bolt.x, caster_bolt.z), (h.kart(a).x, h.kart(a).z));
         let out = h.drain();
         assert!(spawns_of(&out, 1, EntityKind::LightningBolt).is_empty());
         assert_eq!(flashes(&out, 2).len(), 0);
         assert_eq!(items(&h).bursts.len(), 1);
         for e in [b, c, d] {
             assert_eq!(h.kart(e).slow, 0);
+        }
+        let mut props: HashMap<u64, Vec<i32>> = HashMap::new();
+        if cast.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+            let ids: Vec<i32> = bolt_props(&h, &caster_bolt)
+                .iter()
+                .map(|e| network_id(&h, *e))
+                .collect();
+            assert_eq!(ids.len(), BOLT_SEGMENTS);
+            let spawned = spawns_of(&out, 1, EntityKind::BlockDisplay);
+            assert!(ids.iter().all(|id| spawned.iter().any(|(i, _)| i == id)));
+            props.insert(caster_bolt.id, ids);
         }
 
         let victims: Vec<(Entity, u16, u64)> = [b, c, d]
@@ -1973,46 +1997,74 @@ mod tests {
             })
             .collect();
         let mut struck: HashMap<Entity, Vec<u64>> = HashMap::new();
-        let mut seen: HashSet<Entity> = HashSet::new();
-        for _ in 0..(LIGHTNING_SPREAD + LIGHTNING_PERIOD * LIGHTNING_STRIKES + BOLT_LIFE as u16 + 2)
+        let mut seen: HashSet<u64> = HashSet::from([caster_bolt.id]);
+        let mut removed: HashSet<i32> = HashSet::new();
+        for _ in
+            0..(LIGHTNING_SPREAD + LIGHTNING_PERIOD * LIGHTNING_STRIKES + u16::from(BOLT_LIFE) + 2)
         {
             h.tick();
             let tick = h.race().tick;
-            let fresh: Vec<(Entity, Bolt)> = bolts(&mut h)
-                .into_iter()
-                .filter(|(e, _)| seen.insert(*e))
+            let fresh: Vec<Bolt> = items(&h)
+                .bolts
+                .iter()
+                .filter(|bolt| seen.insert(bolt.id))
+                .copied()
                 .collect();
             let out = h.drain();
-            let spawned = spawns_of(&out, 1, EntityKind::LightningBolt);
-            assert_eq!(spawned.len(), fresh.len());
-            for (entity, bolt) in &fresh {
-                assert_eq!(bolt.expires, tick + BOLT_LIFE);
-                let at = h.app.world().get::<Position>(*entity).unwrap();
-                assert!(
-                    spawned
-                        .iter()
-                        .any(|(id, p)| *id == network_id(&h, *entity) && *p == (at.x, at.y, at.z))
-                );
+            assert!(spawns_of(&out, 1, EntityKind::LightningBolt).is_empty());
+            let mut thunder = 0;
+            for bolt in &fresh {
+                assert_eq!(bolt.age, 0);
+                assert_ne!(bolt.seed, 0);
                 let victim = victims
                     .iter()
                     .map(|(e, _, _)| *e)
                     .find(|e| {
                         let k = h.kart(*e);
-                        (k.x - at.x).abs() <= 0.4 + 1e-9
-                            && (k.z - at.z).abs() <= 0.4 + 1e-9
-                            && k.y == at.y
+                        (k.x - bolt.x).abs() <= 0.4 + 1e-9
+                            && (k.z - bolt.z).abs() <= 0.4 + 1e-9
+                            && k.y == bolt.y
                     })
                     .expect("a bolt lands on a rival");
                 struck.entry(victim).or_default().push(tick);
+                let kart = network_id(&h, h.kart_entity(victim));
+                thunder += emitted_by(&out, 1, Cue::Thunder, kart);
             }
+            assert_eq!(thunder, fresh.len());
+            assert_eq!(sounds(&out, 1, Cue::Thunder).len(), fresh.len());
             assert!(sounds(&out, 1, Cue::Hit(Hit::Lightning)).len() <= fresh.len());
-            assert_eq!(bolt_sounds(&out), 0);
-            for (entity, bolt) in bolts(&mut h) {
-                assert!(tick < bolt.expires, "{entity:?}");
+            assert!(sounds(&out, 1, Cue::Impact).len() <= fresh.len());
+            if tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+                let spawned = spawns_of(&out, 1, EntityKind::BlockDisplay);
+                for bolt in &items(&h).bolts {
+                    let segments = bolt_props(&h, bolt);
+                    assert_eq!(segments.len(), BOLT_SEGMENTS, "{bolt:?}");
+                    let ids: Vec<i32> = segments.iter().map(|e| network_id(&h, *e)).collect();
+                    if let Some(known) = props.get(&bolt.id) {
+                        assert_eq!(*known, ids);
+                        continue;
+                    }
+                    for (segment, id) in segments.iter().zip(&ids) {
+                        let at = h.app.world().get::<Position>(*segment).unwrap();
+                        assert!(
+                            spawned
+                                .iter()
+                                .any(|(i, p)| i == id && *p == (bolt.x, bolt.y, bolt.z)),
+                            "{bolt:?}"
+                        );
+                        assert_eq!((at.x, at.y, at.z), (bolt.x, bolt.y, bolt.z));
+                    }
+                    props.insert(bolt.id, ids);
+                }
             }
-            let dead: Vec<i32> = removals(&out, 1);
-            for (entity, _) in &fresh {
-                assert!(!dead.contains(&network_id(&h, *entity)));
+            for id in removals(&out, 1) {
+                removed.insert(id);
+            }
+            for bolt in &items(&h).bolts {
+                assert!(bolt.age < BOLT_LIFE);
+                if let Some(ids) = props.get(&bolt.id) {
+                    assert!(ids.iter().all(|id| !removed.contains(id)));
+                }
             }
         }
         for (victim, delay, seed) in &victims {
@@ -2025,8 +2077,14 @@ mod tests {
             assert!(storm(&h, *victim).is_none());
             assert_ne!(*seed, mix(*seed));
         }
-        assert_eq!(seen.len(), 3 * usize::from(LIGHTNING_STRIKES));
-        assert!(bolts(&mut h).is_empty());
+        assert_eq!(seen.len(), 1 + 3 * usize::from(LIGHTNING_STRIKES));
+        assert_eq!(props.len(), seen.len());
+        for ids in props.values() {
+            assert_eq!(ids.len(), BOLT_SEGMENTS);
+            assert!(ids.iter().all(|id| removed.contains(id)));
+        }
+        assert!(items(&h).bolts.is_empty());
+        assert!(scene(&h).keys().all(|key| key.1 != Kind::Bolt));
         assert!(h.kart(b).slow > 0 && h.kart(d).slow > 0);
         assert_eq!(h.kart(c).slow, 0);
         assert_eq!(h.kart(a).slow, 0);
@@ -2037,12 +2095,14 @@ mod tests {
         let out = h.drain();
         assert!(spawns_of(&out, 1, EntityKind::LightningBolt).is_empty());
         assert!(sounds(&out, 1, Cue::Hit(Hit::Lightning)).is_empty());
-        assert!(bolts(&mut h).is_empty());
+        assert!(sounds(&out, 1, Cue::Thunder).is_empty());
+        assert!(items(&h).bolts.is_empty());
         assert!(items(&h).bursts.is_empty());
     }
 
     #[test]
-    fn the_first_strike_carries_the_hit_and_shields_absorb_it_bolts_expire_on_the_wire() {
+    fn the_first_strike_carries_the_hit_and_impact_and_shields_absorb_it_bolts_expire_on_the_wire()
+    {
         let mut h = Harness::new(42);
         let a = h.connect(1);
         let b = h.connect(2);
@@ -2073,33 +2133,94 @@ mod tests {
         let hurt = sounds(&out, 2, Cue::Hit(Hit::Lightning));
         assert_eq!(hurt.len(), 1);
         assert!(matches!(hurt[0], Out::Sound { emitter: Some(e), .. } if e == kb));
-        assert_eq!(bolt_sounds(&out), 0);
+        assert_eq!(emitted_by(&out, 2, Cue::Thunder, kb), 1);
+        assert_eq!(emitted_by(&out, 2, Cue::Impact, kb), 1);
+        let thunder = sounds(&out, 2, Cue::Thunder);
+        assert!(matches!(
+            thunder[0],
+            Out::Sound {
+                source: SoundSource::Players,
+                volume: 1.0,
+                pitch: 1.0,
+                at: None,
+                ..
+            }
+        ));
+        assert!(spawns_of(&out, 2, EntityKind::LightningBolt).is_empty());
         assert!(
             particles(&out, 2, Particle::ElectricSpark)
                 .iter()
                 .any(|o| matches!(o, Out::Particles { count: 24, .. }))
         );
         let (bx, bz) = (h.kart(b).x, h.kart(b).z);
-        let bolt: Vec<(i32, (f64, f64, f64))> = spawns_of(&out, 2, EntityKind::LightningBolt)
-            .into_iter()
-            .filter(|(_, p)| (p.0 - bx).abs() <= 0.4 + 1e-9 && (p.2 - bz).abs() <= 0.4 + 1e-9)
-            .collect();
-        assert_eq!(bolt.len(), 1);
-        let bolt_id = bolt[0].0;
+        let bolt = *items(&h)
+            .bolts
+            .iter()
+            .find(|bolt| (bolt.x - bx).abs() <= 0.4 + 1e-9 && (bolt.z - bz).abs() <= 0.4 + 1e-9)
+            .unwrap();
+        assert_eq!(bolt.age, 0);
         let raw: Vec<ClientboundPacket> = h
             .packets()
             .into_iter()
             .filter_map(|(client, packet)| (client == 2).then_some(packet))
             .collect();
         assert!(raw.is_empty());
-        h.ticks(BOLT_LIFE as usize - 1);
-        let out = h.drain();
-        assert!(!removals(&out, 2).contains(&bolt_id));
-        all.extend(out);
-        h.tick();
-        let out = h.drain();
-        assert!(removals(&out, 2).contains(&bolt_id));
-        all.extend(out);
+        if !h.race().tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+            h.tick();
+            all.extend(h.drain());
+        }
+        let segments: Vec<i32> = bolt_props(&h, &bolt)
+            .iter()
+            .map(|e| network_id(&h, *e))
+            .collect();
+        assert_eq!(segments.len(), BOLT_SEGMENTS);
+        let spawned: Vec<i32> = spawns_of(&all, 2, EntityKind::BlockDisplay)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(segments.iter().all(|id| spawned.contains(id)));
+        let lit: Vec<[f32; 3]> = (0..BOLT_SEGMENTS as u8)
+            .map(|part| {
+                scene(&h)
+                    .frame(Key(bolt.id, Kind::Bolt, part))
+                    .unwrap()
+                    .transform
+                    .scale
+            })
+            .collect();
+        assert!(lit.iter().all(|scale| scale.iter().all(|v| *v > 0.0)));
+        while items(&h)
+            .bolts
+            .iter()
+            .any(|b| b.id == bolt.id && b.age < BOLT_FLASH)
+        {
+            h.tick();
+            all.extend(h.drain());
+        }
+        if !h.race().tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+            h.tick();
+            all.extend(h.drain());
+        }
+        assert!(items(&h).bolts.iter().any(|b| b.id == bolt.id));
+        for part in 0..BOLT_SEGMENTS as u8 {
+            let scale = scene(&h)
+                .frame(Key(bolt.id, Kind::Bolt, part))
+                .unwrap()
+                .transform
+                .scale;
+            assert_eq!(scale, [0.0; 3]);
+        }
+        assert!(segments.iter().all(|id| !removals(&all, 2).contains(id)));
+        while items(&h).bolts.iter().any(|b| b.id == bolt.id) {
+            h.tick();
+            all.extend(h.drain());
+        }
+        if !h.race().tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+            h.tick();
+            all.extend(h.drain());
+        }
+        assert!(segments.iter().all(|id| removals(&all, 2).contains(id)));
+        assert!(bolt_props(&h, &bolt).is_empty());
         h.ticks(usize::from(
             LIGHTNING_SPREAD + LIGHTNING_PERIOD * LIGHTNING_STRIKES,
         ));
@@ -2115,16 +2236,23 @@ mod tests {
                 .all(|o| !matches!(o, Out::Sound { emitter: Some(e), .. } if *e == kc))
         );
         assert_eq!(sounds(&all, 3, Cue::Hit(Hit::Lightning)).len(), 1);
+        assert!(spawns_of(&all, 3, EntityKind::LightningBolt).is_empty());
         assert_eq!(
-            spawns_of(&all, 3, EntityKind::LightningBolt).len(),
-            2 * usize::from(LIGHTNING_STRIKES)
+            emitted_by(&all, 3, Cue::Thunder, kb),
+            usize::from(LIGHTNING_STRIKES)
         );
+        assert_eq!(
+            emitted_by(&all, 3, Cue::Thunder, kc),
+            usize::from(LIGHTNING_STRIKES)
+        );
+        assert_eq!(emitted_by(&all, 3, Cue::Impact, kb), 1);
+        assert_eq!(emitted_by(&all, 3, Cue::Impact, kc), 1);
         assert!(storm(&h, c).is_none());
         assert!(storm(&h, b).is_none());
     }
 
     #[test]
-    fn lightning_bolt_spawn_matches_paper_add_entity_layout() {
+    fn bolt_segment_spawn_matches_paper_add_entity_layout() {
         let mut h = Harness::new(42);
         let a = h.connect(1);
         let b = h.connect(2);
@@ -2134,31 +2262,38 @@ mod tests {
         h.tick();
         h.drain();
         use_item(&mut h, a, PowerUp::Lightning);
-        h.drain();
         h.ticks(storm(&h, b).unwrap().delay as usize + 1);
-        let bolt = bolts(&mut h)[0].0;
+        if !h.race().tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+            h.tick();
+        }
+        let (bx, bz) = (h.kart(b).x, h.kart(b).z);
+        let bolt = *items(&h)
+            .bolts
+            .iter()
+            .find(|bolt| (bolt.x - bx).abs() <= 0.4 + 1e-9 && (bolt.z - bz).abs() <= 0.4 + 1e-9)
+            .unwrap();
+        let segment = bolt_props(&h, &bolt)[0];
         let (spawn, sent) = h
             .packets()
             .into_iter()
             .find_map(|(client, packet)| match packet {
                 ClientboundPacket::Play(PlayPacket::SpawnEntity(p))
-                    if client == 2 && p.entity_type == EntityKind::LightningBolt.id() =>
+                    if client == 2 && p.entity_id == network_id(&h, segment) =>
                 {
                     Some((p.clone(), PlayPacket::SpawnEntity(p)))
                 }
                 _ => None,
             })
             .unwrap();
-        let at = *h.app.world().get::<Position>(bolt).unwrap();
-        assert_eq!(spawn.entity_id, network_id(&h, bolt));
-        assert_eq!((spawn.x, spawn.y, spawn.z), (at.x, at.y, at.z));
+        assert_eq!(spawn.entity_type, EntityKind::BlockDisplay.id());
+        assert_eq!((spawn.x, spawn.y, spawn.z), (bolt.x, bolt.y, bolt.z));
         let mut bytes = Vec::new();
         sent.encode(&mut bytes);
         let mut expected = vec![voidmc_data::v26_1_2::packets::play::clientbound::ADD_ENTITY as u8];
         VarI32(spawn.entity_id).encode(&mut expected);
         expected.extend_from_slice(spawn.entity_uuid.as_bytes());
-        VarI32(EntityKind::LightningBolt.id()).encode(&mut expected);
-        for value in [at.x, at.y, at.z] {
+        VarI32(EntityKind::BlockDisplay.id()).encode(&mut expected);
+        for value in [bolt.x, bolt.y, bolt.z] {
             expected.extend_from_slice(&value.to_be_bytes());
         }
         expected.extend_from_slice(&[0, 0, 0, 0, 0]);

@@ -43,10 +43,12 @@ pub enum Cue {
     Bump,
     Portal,
     Launch,
+    Thunder,
+    Impact,
 }
 
 impl Cue {
-    pub const ALL: [Cue; 27] = [
+    pub const ALL: [Cue; 29] = [
         Cue::Beep,
         Cue::Go,
         Cue::Start,
@@ -74,6 +76,8 @@ impl Cue {
         Cue::Bump,
         Cue::Portal,
         Cue::Launch,
+        Cue::Thunder,
+        Cue::Impact,
     ];
 
     pub fn name(self) -> &'static str {
@@ -102,6 +106,8 @@ impl Cue {
             Cue::Bump => "block.anvil.land",
             Cue::Portal => "block.portal.trigger",
             Cue::Launch => "entity.ghast.shoot",
+            Cue::Thunder => "entity.lightning_bolt.thunder",
+            Cue::Impact => "entity.lightning_bolt.impact",
         }
     }
 

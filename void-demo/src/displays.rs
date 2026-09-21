@@ -8,13 +8,18 @@ use voidmc::{
 };
 use voidmc_data::v26_1_2::{blocks as b, items as i};
 
-use crate::items::{BURST_LIFE, BurstKind, Items, MISSILE_LIFE};
+use crate::items::{BURST_LIFE, Bolt, BurstKind, Items, MISSILE_LIFE};
 use crate::kart::{FIREBALL_CHARGE, Kart, PowerUp};
 use crate::race::{Phase, Race};
 use crate::track::Track;
 
 pub const KEYFRAME_TICKS: u16 = 2;
 pub const JUMP: f64 = 6.0;
+pub const BOLT_SEGMENTS: usize = 7;
+pub const BOLT_HEIGHT: f64 = 12.0;
+pub const BOLT_FLASH: u8 = 4;
+const BOLT_WIDTH: f64 = 0.2;
+const BOLT_SWAY: f64 = 0.9;
 const BRIGHTNESS: (u8, u8) = (15, 15);
 const VIEW_RANGE: f32 = 2.0;
 pub const RAINBOW: [i32; 11] = [
@@ -47,6 +52,7 @@ pub enum Kind {
     Burst,
     Rainbow,
     Blaze,
+    Bolt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -324,51 +330,71 @@ pub fn sync(
         );
         let age = f64::from(burst.age);
         let fade = smoothstep((f64::from(BURST_LIFE) - 2.0 - age) / 6.0);
-        if burst.kind == BurstKind::Lightning {
-            for i in 0..5 {
-                let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
-                g.block(
+        let r = burst.current_radius();
+        for i in 0..12 {
+            let a = f64::from(i) * TAU / 12.0;
+            let state = match burst.kind {
+                BurstKind::Recharge => b::EMERALD_BLOCK,
+                BurstKind::Impact => b::ORANGE_STAINED_GLASS,
+                BurstKind::Shockwave | BurstKind::Lightning => {
                     if i % 2 == 0 {
                         b::SEA_LANTERN
                     } else {
-                        b::YELLOW_CONCRETE
-                    },
-                    [sign * 0.22, 0.5 + f64::from(i) * 1.1, 0.0],
-                    [0.2 * fade, 1.35, 0.2 * fade],
-                    0.3,
-                    sign * 0.45,
-                );
-            }
-        } else {
-            let r = burst.current_radius();
-            for i in 0..12 {
-                let a = f64::from(i) * TAU / 12.0;
-                let state = match burst.kind {
-                    BurstKind::Recharge => b::EMERALD_BLOCK,
-                    BurstKind::Impact => b::ORANGE_STAINED_GLASS,
-                    BurstKind::Shockwave | BurstKind::Lightning => {
-                        if i % 2 == 0 {
-                            b::SEA_LANTERN
-                        } else {
-                            b::CYAN_STAINED_GLASS
-                        }
+                        b::CYAN_STAINED_GLASS
                     }
-                };
-                g.block(
-                    state,
-                    [a.cos() * r, 0.0, a.sin() * r],
-                    [
-                        0.16 * fade,
-                        0.3 * fade,
-                        (2.0 * r * (PI / 12.0).sin()).max(0.01),
-                    ],
-                    -a,
-                    0.0,
-                );
-            }
+                }
+            };
+            g.block(
+                state,
+                [a.cos() * r, 0.0, a.sin() * r],
+                [
+                    0.16 * fade,
+                    0.3 * fade,
+                    (2.0 * r * (PI / 12.0).sin()).max(0.01),
+                ],
+                -a,
+                0.0,
+            );
+        }
+    }
+    for bolt in &items.bolts {
+        let mut g = Group::new(&mut stage, bolt.id, Kind::Bolt, (bolt.x, bolt.y, bolt.z));
+        let fade = if bolt.age < BOLT_FLASH { 1.0 } else { 0.0 };
+        let path = bolt_path(bolt);
+        for (i, pair) in path.windows(2).enumerate() {
+            let (from, to) = (pair[0], pair[1]);
+            let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+            let reach = d[0].hypot(d[2]);
+            let len = reach.hypot(d[1]);
+            g.block(
+                if i % 2 == 0 {
+                    b::SEA_LANTERN
+                } else {
+                    b::YELLOW_CONCRETE
+                },
+                std::array::from_fn(|k| (from[k] + to[k]) * 0.5),
+                [BOLT_WIDTH * fade, len * fade, BOLT_WIDTH * fade],
+                d[2].atan2(-d[0]),
+                reach.atan2(d[1]),
+            );
         }
     }
     stage.finish();
+}
+
+pub fn bolt_path(bolt: &Bolt) -> [[f64; 3]; BOLT_SEGMENTS + 1] {
+    let sway = |bits: u64| (bits % 1000) as f64 / 1000.0 * 2.0 * BOLT_SWAY - BOLT_SWAY;
+    std::array::from_fn(|i| {
+        if i == 0 {
+            return [0.0; 3];
+        }
+        let bits = bolt.seed.rotate_right(9 * i as u32);
+        [
+            sway(bits),
+            i as f64 * BOLT_HEIGHT / BOLT_SEGMENTS as f64,
+            sway(bits >> 10),
+        ]
+    })
 }
 
 fn kart_frames(stage: &mut Stage, source: u64, k: &Kart, time: f64) {
@@ -608,6 +634,7 @@ mod tests {
     use voidmc_protocol::clientbound::SetEntityData;
 
     use super::*;
+    use crate::items::Lightning;
     use crate::race::tests::{Harness, Out};
 
     fn keyframe(h: &mut Harness) {
@@ -1093,6 +1120,7 @@ mod tests {
             Kind::Burst,
             Kind::Rainbow,
             Kind::Blaze,
+            Kind::Bolt,
         ] {
             assert!(kinds.contains(&kind), "{kind:?}");
         }
@@ -1128,6 +1156,162 @@ mod tests {
         }
         assert!(scene(&h).is_empty());
         assert!(props(&mut h).is_empty());
+    }
+
+    #[test]
+    fn a_bolt_is_a_seeded_zigzag_of_upright_segments_from_the_sky_to_the_kart() {
+        let seeded = |seed| Bolt {
+            id: 1,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            seed,
+            age: 0,
+        };
+        let path = bolt_path(&seeded(0x1234_5678_9abc_def0));
+        assert_eq!(path[0], [0.0; 3]);
+        assert_eq!(path[BOLT_SEGMENTS][1], BOLT_HEIGHT);
+        for (i, point) in path.iter().enumerate() {
+            let height = i as f64 * BOLT_HEIGHT / BOLT_SEGMENTS as f64;
+            assert!((point[1] - height).abs() < 1e-9);
+            assert!(point[0].abs() <= BOLT_SWAY && point[2].abs() <= BOLT_SWAY);
+        }
+        assert!(path.iter().any(|p| p[0].abs() > 0.2));
+        assert!(path.iter().any(|p| p[2].abs() > 0.2));
+        assert_ne!(path, bolt_path(&seeded(0x0fed_cba9_8765_4321)));
+        for pair in path.windows(2) {
+            let d = [
+                pair[1][0] - pair[0][0],
+                pair[1][1] - pair[0][1],
+                pair[1][2] - pair[0][2],
+            ];
+            let reach = d[0].hypot(d[2]);
+            let len = reach.hypot(d[1]);
+            let up = rotate(
+                rotation(d[2].atan2(-d[0]), reach.atan2(d[1])),
+                [0.0, len as f32, 0.0],
+            );
+            for k in 0..3 {
+                assert!((f64::from(up[k]) - d[k]).abs() < 0.0001, "{up:?} vs {d:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_strike_spawns_its_segments_once_fades_them_in_one_keyframe_and_removes_them() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        h.kart_mut(b).contact_cooldown = 200;
+        h.tick();
+        h.drain();
+        use_item(&mut h, a, PowerUp::Lightning);
+        let delay = h
+            .app
+            .world()
+            .get::<Lightning>(h.kart_entity(b))
+            .unwrap()
+            .delay;
+        h.ticks(usize::from(delay));
+        h.drain();
+        h.tick();
+        let (bx, bz) = (h.kart(b).x, h.kart(b).z);
+        let bolt = *h
+            .app
+            .world()
+            .resource::<Items>()
+            .bolts
+            .iter()
+            .find(|bolt| (bolt.x - bx).abs() <= 0.4 + 1e-9 && (bolt.z - bz).abs() <= 0.4 + 1e-9)
+            .unwrap();
+        assert_eq!(bolt.age, 0);
+        assert_ne!(bolt.seed, 0);
+        let mut out = h.drain();
+        if !h.race().tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+            h.tick();
+            out.extend(h.drain());
+        }
+        let segments: Vec<i32> = (0..u8::MAX)
+            .map_while(|part| scene(&h).entity(Key(bolt.id, Kind::Bolt, part)))
+            .map(|entity| network_id(&h, entity))
+            .collect();
+        assert_eq!(segments.len(), BOLT_SEGMENTS);
+        let path = bolt_path(&bolt);
+        for (part, id) in segments.iter().enumerate() {
+            let spawns: Vec<Out> = touching(&out, *id)
+                .into_iter()
+                .filter(|o| matches!(o, Out::Spawn { client: 1, .. }))
+                .collect();
+            assert_eq!(spawns.len(), 1);
+            assert!(matches!(
+                spawns[0],
+                Out::Spawn { kind, x, y, z, .. }
+                    if kind == EntityKind::BlockDisplay.id() && (x, y, z) == (bolt.x, bolt.y, bolt.z)
+            ));
+            let frame = scene(&h)
+                .frame(Key(bolt.id, Kind::Bolt, part as u8))
+                .unwrap();
+            let state = if part % 2 == 0 {
+                b::SEA_LANTERN
+            } else {
+                b::YELLOW_CONCRETE
+            };
+            assert_eq!(frame.model, Model::Block(state));
+            let len = (0..3)
+                .map(|k| (path[part + 1][k] - path[part][k]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert_eq!(frame.transform.scale[0], BOLT_WIDTH as f32);
+            assert!((f64::from(frame.transform.scale[1]) - len).abs() < 0.0001);
+            let mid: [f64; 3] = std::array::from_fn(|k| (path[part][k] + path[part + 1][k]) * 0.5);
+            let corner = rotate(
+                frame.transform.left_rotation,
+                frame.transform.scale.map(|v| v * 0.5),
+            );
+            for k in 0..3 {
+                assert!(
+                    (f64::from(frame.transform.translation[k] + corner[k]) - mid[k]).abs() < 0.001
+                );
+            }
+        }
+        let mut fades = 0;
+        let mut dead = Vec::new();
+        let mut alive = true;
+        while alive {
+            h.tick();
+            let out = h.drain();
+            dead.extend(removals(&out, 1));
+            alive = h
+                .app
+                .world()
+                .resource::<Items>()
+                .bolts
+                .iter()
+                .any(|b| b.id == bolt.id);
+            for id in &segments {
+                let events = touching(&out, *id)
+                    .into_iter()
+                    .filter(|o| !matches!(o, Out::Remove(2, _) | Out::Metadata(2, _, _)))
+                    .collect::<Vec<_>>();
+                for event in &events {
+                    match event {
+                        Out::Metadata(1, _, _) => fades += 1,
+                        Out::Remove(1, _) => assert!(!alive),
+                        other => panic!("{other:?}"),
+                    }
+                }
+            }
+        }
+        assert_eq!(fades, BOLT_SEGMENTS);
+        if !h.race().tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+            h.tick();
+        }
+        for part in 0..BOLT_SEGMENTS as u8 {
+            assert!(scene(&h).frame(Key(bolt.id, Kind::Bolt, part)).is_none());
+        }
+        dead.extend(removals(&h.drain(), 1));
+        assert!(segments.iter().all(|id| dead.contains(id)));
     }
 
     #[test]
