@@ -744,7 +744,7 @@ mod tests {
         h.tick();
         h.drain();
         assert!(items(&h).is_empty());
-        h.shortcut_to_countdown(a, &[]);
+        let mut out = h.shortcut_to_countdown(a, &[]);
         let map = h.app.world().resource::<Track>().clone();
         let pickups = items(&h).pickups.clone();
         assert_eq!(pickups.len(), GATES * 3);
@@ -782,7 +782,7 @@ mod tests {
             let meta = h.app.world().get::<EntityMetadata>(crystal).unwrap();
             assert!(meta.get(8).is_some() && meta.get(9).is_some());
         }
-        let out = h.drain();
+        out.extend(h.drain());
         for client in [1, 2] {
             let spawns = crystal_spawns(&out, client);
             assert_eq!(spawns.len(), GATES * 3);
@@ -1180,6 +1180,8 @@ mod tests {
         h.ticks(10);
         assert_eq!(particle_count(&h.drain(), 1), 0);
         h.shortcut_to_countdown(a, &[]);
+        h.world().get_mut::<LoadedChunks>(far).unwrap().0.clear();
+        h.tick();
         h.drain();
         let pickups = items(&h).pickups.clone();
         let mut seen = 0;

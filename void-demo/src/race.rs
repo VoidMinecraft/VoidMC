@@ -5,7 +5,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
     Audience, BossBar, BossBarColor, ChunkPos, Command, CommandBuilder, CommandRegistry,
-    CommandSystems, IntegerArg, Messages,
+    CommandSystems, IntegerArg, Messages, VoidSystems,
     components::PlayerName,
     events::{PlayerQuitEvent, PlayerReadyEvent},
     plugins::boss_bar::BossBarState,
@@ -17,6 +17,7 @@ use crate::items::{self, Items};
 use crate::kart::{Kart, PowerUp};
 use crate::terrain::mix;
 use crate::track::{GATES, Track};
+use crate::travel::{self, Transfer, Travel};
 use crate::vehicle::{self, Karts, Pilot};
 
 pub const LAPS: usize = 3;
@@ -108,12 +109,13 @@ impl Race {
         self.milestone = MILESTONE;
     }
 
-    fn status(&self, kart: &Kart) -> String {
+    fn status(&self, kart: &Kart, transferring: bool) -> String {
         match self.phase {
             Phase::Generating => format!("Construction du circuit : {}%", self.construction()),
             Phase::Destroying => format!("Destruction du circuit : {}%", self.construction()),
             Phase::Lobby | Phase::Results => "Vol libre | /race pour lancer une course".into(),
             Phase::Loading => "Chargement des chunks / synchronisation des pilotes...".into(),
+            _ if transferring => "Chargement des chunks / synchronisation des pilotes...".into(),
             _ if !kart.participant => "Prochaine course : attends l'arrivee des pilotes".into(),
             Phase::Countdown => format!("DEPART DANS {}...", self.countdown().div_ceil(20)),
             Phase::Racing => match kart.finished {
@@ -297,6 +299,8 @@ impl Plugin for RacePlugin {
             .add_observer(launch)
             .add_observer(scores)
             .add_observer(vehicle::input)
+            .add_observer(travel::arrived)
+            .add_observer(travel::keep_flying)
             .add_systems(
                 Update,
                 (
@@ -316,7 +320,8 @@ impl Plugin for RacePlugin {
                     displays::sync,
                 )
                     .chain()
-                    .after(CommandSystems::DrainQueue),
+                    .after(CommandSystems::DrainQueue)
+                    .after(VoidSystems::TeleportBarrier),
             );
         app.world_mut().spawn((
             RaceBar,
@@ -367,8 +372,9 @@ fn request<E: Event<Trigger<'static>: Default>>(
         .build()
 }
 
-fn ready(event: On<PlayerReadyEvent>, mut grid: Grid) {
+fn ready(event: On<PlayerReadyEvent>, mut grid: Grid, mut travel: Travel) {
     let player = event.entity;
+    travel.fly(player);
     let name = grid.chat.name(player);
     grid.chat
         .all(format!("[+] {name} rejoint Alpine Rush. Bienvenue !"));
@@ -401,11 +407,12 @@ fn join(event: On<Join>, mut grid: Grid) {
     grid.join(event.0);
 }
 
-fn leave(event: On<Leave>, mut grid: Grid) {
+fn leave(event: On<Leave>, mut grid: Grid, mut travel: Travel) {
     let player = event.0;
     if !grid.leave(player) {
         return;
     }
+    travel.to_lobby(player);
     let name = grid.chat.name(player);
     grid.chat.all(format!(
         "{name} quitte la grille et rejoint les spectateurs."
@@ -438,6 +445,7 @@ fn launch(
     mut race: ResMut<Race>,
     arena: Res<Arena>,
     mut karts: Karts,
+    mut travel: Travel,
     chat: Chat,
     mut commands: Commands,
 ) {
@@ -460,6 +468,7 @@ fn launch(
             kart.participant = true;
         }
     }
+    travel.everyone_to_lobby();
     let map = Track::new(mix(arena
         .map
         .seed
@@ -515,6 +524,7 @@ fn construct(
     arena: Res<Arena>,
     mut racers: Query<&mut Racer>,
     mut karts: Query<&mut Kart>,
+    mut travel: Travel,
     chat: Chat,
     mut commands: Commands,
 ) {
@@ -556,6 +566,7 @@ fn construct(
             }
             kart.grid(&track, slot);
             racer.gate = kart.next_gate;
+            travel.board(*pilot, &kart);
             slot += 1;
         }
         items.place(&track);
@@ -570,8 +581,19 @@ fn construct(
     }
 }
 
-fn load(mut race: ResMut<Race>, chat: Chat) {
+fn load(
+    mut race: ResMut<Race>,
+    karts: Query<(&Pilot, &Kart)>,
+    transfers: Query<(), With<Transfer>>,
+    chat: Chat,
+) {
     if race.phase != Phase::Loading {
+        return;
+    }
+    if karts
+        .iter()
+        .any(|(pilot, kart)| kart.participant && transfers.contains(pilot.0))
+    {
         return;
     }
     race.phase = Phase::Countdown;
@@ -602,6 +624,7 @@ fn racing(
     map: Res<Track>,
     mut racers: Query<&mut Racer>,
     mut karts: Query<(&Pilot, &mut Kart)>,
+    mut travel: Travel,
     chat: Chat,
 ) {
     if race.phase != Phase::Racing {
@@ -682,14 +705,20 @@ fn racing(
             kart.wait(slot);
         }
     }
+    travel.everyone_to_lobby();
 }
 
-fn hud(race: Res<Race>, karts: Query<(&Pilot, &Kart)>, chat: Chat) {
+fn hud(
+    race: Res<Race>,
+    karts: Query<(&Pilot, &Kart)>,
+    transfers: Query<(), With<Transfer>>,
+    chat: Chat,
+) {
     if !race.tick.is_multiple_of(HUD_PERIOD) {
         return;
     }
     for (pilot, kart) in &karts {
-        chat.bar(pilot.0, race.status(kart));
+        chat.bar(pilot.0, race.status(kart, transfers.contains(pilot.0)));
     }
 }
 
@@ -774,15 +803,20 @@ pub(crate) mod tests {
     use voidmc::commands::{dispatch_command, plugin::CommandPlugin};
     use voidmc::components::{
         ClientId, LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerReady, Position,
+        Rotation, TeleportState,
     };
-    use voidmc::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use voidmc::network::{IncomingPacket, NetworkChannels, OutgoingPacket, PacketEvent};
+    use voidmc::plugins::abilities::AbilitiesPlugin;
     use voidmc::plugins::boss_bar::BossBarPlugin;
+    use voidmc::plugins::movement::MovementPlugin;
+    use voidmc::plugins::teleport::TeleportPlugin;
     use voidmc::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
     use voidmc::world::{ChunkIndex, DimensionId};
-    use voidmc::{EntityPlugin, Particle, VoidSystems};
+    use voidmc::{EntityPlugin, Particle, Teleport};
     use voidmc_protocol::clientbound::{
         BossEventAction, ClientboundPacket, ManualPlayPacket, Parser, PlayPacket,
     };
+    use voidmc_protocol::serverbound::{ConfirmTeleportation, Pong};
 
     use super::*;
     use crate::arena::WAIT_Y;
@@ -834,6 +868,22 @@ pub(crate) mod tests {
         },
         HeadRotation(u32, i32),
         Metadata(u32, i32, Vec<u8>),
+        Ping(u32, i32),
+        Sync {
+            client: u32,
+            id: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            yaw: f32,
+            pitch: f32,
+        },
+        Abilities {
+            client: u32,
+            flags: u8,
+            flying_speed: f32,
+            walking_speed: f32,
+        },
         Particles {
             client: u32,
             particle: Particle,
@@ -896,6 +946,9 @@ pub(crate) mod tests {
                 CommandPlugin,
                 BossBarPlugin,
                 EntityPlugin,
+                TeleportPlugin,
+                MovementPlugin,
+                AbilitiesPlugin,
                 RacePlugin(Arena::new(Alpine { seed })),
             ));
             Self { app, rx }
@@ -940,11 +993,102 @@ pub(crate) mod tests {
                     PlayerReady,
                     MinecraftEntityId::allocate(),
                     Position::default(),
+                    Rotation::default(),
+                    TeleportState {
+                        next_id: 1,
+                        pending_id: None,
+                    },
                     PlayerName(format!("Pilot{id}")),
                     PlayerDimension(DimensionId::Overworld),
                     LoadedChunks(loaded),
                 ))
                 .id()
+        }
+
+        pub(crate) fn client_id(&self, player: Entity) -> u32 {
+            self.app.world().get::<ClientId>(player).unwrap().0
+        }
+
+        pub(crate) fn pong(&mut self, player: Entity, id: i32) {
+            let client_id = self.client_id(player);
+            self.world().trigger(PacketEvent {
+                client_id,
+                entity: player,
+                packet: Pong { id },
+            });
+            self.world().flush();
+        }
+
+        pub(crate) fn confirm(&mut self, player: Entity, teleport_id: i32) {
+            let client_id = self.client_id(player);
+            self.world().trigger(PacketEvent {
+                client_id,
+                entity: player,
+                packet: ConfirmTeleportation { teleport_id },
+            });
+            self.world().flush();
+        }
+
+        pub(crate) fn transfers(&mut self) -> Vec<(Entity, Teleport)> {
+            self.world()
+                .query::<(Entity, &Teleport)>()
+                .iter(self.app.world())
+                .map(|(e, t)| (e, t.clone()))
+                .collect()
+        }
+
+        pub(crate) fn load_destination(&mut self, player: Entity, teleport: &Teleport) {
+            let around = ChunkPos::from_block(teleport.x, teleport.z)
+                .chunks_in_radius(teleport.preload_radius);
+            self.world()
+                .get_mut::<LoadedChunks>(player)
+                .unwrap()
+                .0
+                .extend(around);
+        }
+
+        pub(crate) fn settle_transfers(&mut self) -> Vec<Out> {
+            let mut out = Vec::new();
+            for _ in 0..8 {
+                let transfers = self.transfers();
+                if transfers.is_empty() {
+                    break;
+                }
+                for (player, teleport) in &transfers {
+                    self.load_destination(*player, teleport);
+                    self.world().entity_mut(*player).insert(teleport.clone());
+                }
+                self.tick();
+                let sent = self.drain();
+                for o in &sent {
+                    if let Out::Ping(client, id) = o {
+                        let player = self.player(*client);
+                        self.pong(player, *id);
+                    }
+                }
+                out.extend(sent);
+                let sent = self.drain();
+                for o in &sent {
+                    if let Out::Sync { client, id, .. } = o {
+                        let player = self.player(*client);
+                        self.confirm(player, *id);
+                    }
+                }
+                out.extend(sent);
+                self.tick();
+                out.extend(self.drain());
+            }
+            assert!(self.transfers().is_empty());
+            out
+        }
+
+        pub(crate) fn player(&mut self, client: u32) -> Entity {
+            self.world()
+                .query::<(Entity, &ClientId)>()
+                .iter(self.app.world())
+                .find(|(_, id)| id.0 == client)
+                .map(|(e, _)| e)
+                .unwrap()
         }
 
         pub(crate) fn connect(&mut self, id: u32) -> Entity {
@@ -1070,6 +1214,24 @@ pub(crate) mod tests {
                         p.entity_id,
                         p.entries.iter().map(|e| e.index).collect(),
                     ),
+                    ClientboundPacket::Play(PlayPacket::Ping(p)) => Out::Ping(out.client_id, p.id),
+                    ClientboundPacket::Play(PlayPacket::SynchronizePlayerPosition(p)) => {
+                        Out::Sync {
+                            client: out.client_id,
+                            id: p.teleport_id,
+                            x: p.x,
+                            y: p.y,
+                            z: p.z,
+                            yaw: p.yaw,
+                            pitch: p.pitch,
+                        }
+                    }
+                    ClientboundPacket::Play(PlayPacket::PlayerAbilities(p)) => Out::Abilities {
+                        client: out.client_id,
+                        flags: p.flags,
+                        flying_speed: p.flying_speed,
+                        walking_speed: p.walking_speed,
+                    },
                     ClientboundPacket::Play(PlayPacket::LevelParticles(p)) => Out::Particles {
                         client: out.client_id,
                         particle: p.particle,
@@ -1099,12 +1261,17 @@ pub(crate) mod tests {
                 .collect()
         }
 
-        pub(crate) fn shortcut_to_countdown(&mut self, player: Entity, laps: &[&str]) {
+        pub(crate) fn shortcut_to_countdown(&mut self, player: Entity, laps: &[&str]) -> Vec<Out> {
             self.command(player, "race", laps);
             assert_eq!(self.race().phase, Phase::Generating);
+            let mut out = self.settle_transfers();
             self.race_mut().pending.clear();
             self.tick();
+            assert_eq!(self.race().phase, Phase::Loading);
+            out.extend(self.drain());
+            out.extend(self.settle_transfers());
             assert_eq!(self.race().phase, Phase::Countdown);
+            out
         }
 
         pub(crate) fn shortcut_to_racing(&mut self, player: Entity, laps: &[&str]) {
@@ -1370,6 +1537,11 @@ pub(crate) mod tests {
             assert!(iterations <= chunk_count * 2);
         }
         assert_eq!(iterations, chunk_count * 2);
+        assert_eq!(h.race().phase, Phase::Loading);
+        h.ticks(3);
+        announced.extend(h.chats(2));
+        assert_eq!(h.race().phase, Phase::Loading);
+        announced.extend(texts(&h.settle_transfers(), 2));
         assert_eq!(
             announced,
             vec![
@@ -1628,8 +1800,11 @@ pub(crate) mod tests {
             "Le nouveau circuit se construit. Tu participeras a la prochaine manche."
         )));
         assert!(!h.kart(b).participant);
+        h.settle_transfers();
         h.race_mut().pending.clear();
         h.tick();
+        assert_eq!(h.race().phase, Phase::Loading);
+        h.settle_transfers();
         assert_eq!(h.race().phase, Phase::Countdown);
         assert!(h.kart(a).y < WAIT_Y);
         assert_eq!(h.kart(b).y, WAIT_Y);
@@ -1774,7 +1949,7 @@ pub(crate) mod tests {
         let out = h.drain();
         let updates = bars(&out, 1);
         assert!(
-            updates
+            updates[..updates.len() - 1]
                 .iter()
                 .all(|(action, _, _)| ["title", "progress", "style"].contains(&action.as_str())),
             "{updates:?}"
@@ -1784,13 +1959,17 @@ pub(crate) mod tests {
             .filter(|(action, _, _)| action == "title")
             .count();
         assert!(titles <= h.race().tick as usize / 2);
+        assert_eq!(updates[updates.len() - 1], ("remove".into(), None, None));
+        h.ticks(4);
+        assert!(bars(&h.drain(), 1).is_empty());
+        let out = h.settle_transfers();
         assert_eq!(
-            updates[updates.len() - 3..],
-            [
-                ("progress".into(), None, Some(1.0)),
-                ("title".into(), Some("Depart dans 5...".into()), None),
-                ("style".into(), None, None)
-            ]
+            bars(&out, 1),
+            vec![(
+                "add".into(),
+                Some("Depart dans 5...".into()),
+                Some(1.0)
+            )]
         );
         h.ticks((COUNTDOWN - 1) as usize);
         let out = h.drain();
@@ -1853,7 +2032,11 @@ pub(crate) mod tests {
         let a = h.connect(1);
         h.command(a, "race", &[]);
         while h.race().phase != Phase::Racing {
-            h.tick();
+            if h.race().phase == Phase::Loading {
+                h.settle_transfers();
+            } else {
+                h.tick();
+            }
         }
         h.tick();
         h.drain();

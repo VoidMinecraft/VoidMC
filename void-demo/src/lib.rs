@@ -5,4 +5,5 @@ pub mod kart;
 pub mod race;
 pub mod terrain;
 pub mod track;
+pub mod travel;
 pub mod vehicle;

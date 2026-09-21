@@ -18,7 +18,7 @@ pub fn spawn(commands: &mut Commands, player: Entity, kart: Kart) -> Entity {
         .at(kart.x, kart.y, kart.z)
         .rotation(kart.model_yaw(), 0.0)
         .with(Pilot(player))
-        .with(Passengers::new([player]))
+        .with(Passengers::default())
         .with(kart)
         .spawn(commands)
         .id()
@@ -56,7 +56,7 @@ pub fn input(
     let Ok((mut kart, mut passengers)) = karts.get_mut(racer.kart) else {
         return;
     };
-    if event.sneak && !kart.input.sneak {
+    if event.sneak && !kart.input.sneak && !passengers.0.is_empty() {
         passengers.set_changed();
     }
     kart.use_item |= event.sprint && !kart.input.sprint;
@@ -91,10 +91,19 @@ pub fn drive(race: Res<Race>, map: Res<Track>, mut karts: Query<&mut Kart>) {
 pub const SEAT_HEIGHT: f64 = 0.35;
 
 pub fn pose(
-    mut karts: Query<(&Kart, &Pilot, &mut Position, &mut Rotation), Changed<Kart>>,
+    mut karts: Query<
+        (
+            &Kart,
+            &Pilot,
+            &Passengers,
+            &mut Position,
+            &mut Rotation,
+        ),
+        Changed<Kart>,
+    >,
     mut pilots: Query<&mut Position, Without<Kart>>,
 ) {
-    for (kart, pilot, mut position, mut rotation) in &mut karts {
+    for (kart, pilot, seats, mut position, mut rotation) in &mut karts {
         let next = Position {
             x: kart.x,
             y: kart.y,
@@ -106,6 +115,9 @@ pub fn pose(
         let yaw = kart.model_yaw();
         if rotation.yaw != yaw {
             rotation.yaw = yaw;
+        }
+        if !seats.0.contains(&pilot.0) {
+            continue;
         }
         if let Ok(mut seat) = pilots.get_mut(pilot.0) {
             let next = Position {
@@ -235,14 +247,14 @@ mod tests {
     }
 
     #[test]
-    fn join_spawns_one_minecart_entity_with_the_pilot_as_passenger() {
+    fn join_spawns_one_parked_minecart_without_passenger() {
         let mut h = Harness::new(42);
         let a = h.connect(1);
         let listed = karts(&mut h);
         assert_eq!(listed.len(), 1);
         let (kart, pilot, seats) = listed[0].clone();
         assert_eq!(pilot, Pilot(a));
-        assert_eq!(seats, Passengers::new([a]));
+        assert_eq!(seats, Passengers::default());
         assert_eq!(h.kart_entity(a), kart);
         assert_eq!(
             h.app.world().get::<EntityType>(kart).unwrap().0,
@@ -279,7 +291,7 @@ mod tests {
                 192
             )
         );
-        assert_eq!(passengers(&out, 1), vec![(kart_id, vec![player_id])]);
+        assert!(passengers(&out, 1).is_empty());
         assert!(movement(&out, 1, kart_id).is_empty());
 
         h.ticks(20);
@@ -294,18 +306,8 @@ mod tests {
         let other = h.kart_entity(b);
         assert_eq!(karts(&mut h).len(), 2);
         assert_eq!(spawns(&out, 1).len() + spawns(&out, 2).len(), 3, "{out:?}");
-        let mut seen = passengers(&out, 2);
-        seen.sort();
-        let mut expected = vec![
-            (kart_id, vec![player_id]),
-            (network_id(&h, other), vec![network_id(&h, b)]),
-        ];
-        expected.sort();
-        assert_eq!(seen, expected);
-        assert_eq!(
-            passengers(&out, 1),
-            vec![(network_id(&h, other), vec![network_id(&h, b)])]
-        );
+        assert!(passengers(&out, 1).is_empty() && passengers(&out, 2).is_empty());
+        let _ = (player_id, other);
     }
 
     #[test]
@@ -346,6 +348,12 @@ mod tests {
 
         press(&mut h, a, &["sneak"]);
         h.tick();
+        assert!(passengers(&h.drain(), 1).is_empty());
+        press(&mut h, a, &[]);
+        h.shortcut_to_countdown(a, &[]);
+        h.drain();
+        press(&mut h, a, &["sneak"]);
+        h.tick();
         assert_eq!(
             passengers(&h.drain(), 1),
             vec![(kart_id, vec![network_id(&h, a)])]
@@ -368,10 +376,9 @@ mod tests {
         let a = h.connect(1);
         let b = h.connect(2);
         h.tick();
-        h.shortcut_to_countdown(a, &[]);
+        let out = h.shortcut_to_countdown(a, &[]);
         let (ka, kb) = (h.kart_entity(a), h.kart_entity(b));
         let (ida, idb) = (network_id(&h, ka), network_id(&h, kb));
-        let out = h.drain();
         let grid = h.kart(a).clone();
         assert!(grid.y < WAIT_Y);
         assert_eq!(
@@ -467,8 +474,7 @@ mod tests {
         let a = h.connect(1);
         let b = h.connect(2);
         h.tick();
-        assert_eq!(position(&h, a), seated(&h, a));
-        assert_eq!(position(&h, a).y, WAIT_Y + SEAT_HEIGHT);
+        assert_eq!(position(&h, a), Position::default());
         h.shortcut_to_countdown(a, &[]);
         assert_eq!(position(&h, a), seated(&h, a));
         assert_eq!(position(&h, b), seated(&h, b));
@@ -542,7 +548,7 @@ mod tests {
         let rejoined = h.kart_entity(a);
         assert_ne!(rejoined, ka);
         assert_eq!(spawns(&out, 2).len(), 1);
-        assert_eq!(passengers(&out, 2).len(), 1);
+        assert!(passengers(&out, 2).is_empty());
 
         h.disconnect(b);
         assert!(h.app.world().get_entity(kb).is_err());
@@ -551,7 +557,7 @@ mod tests {
         h.tick();
         assert_eq!(
             h.app.world().get::<Passengers>(rejoined).unwrap(),
-            &Passengers::new([a])
+            &Passengers::default()
         );
     }
 
