@@ -17,6 +17,7 @@ pub mod scoreboard;
 pub mod sidebar;
 pub mod status;
 pub mod teleport;
+pub mod tab_list;
 
 pub struct DefaultPlugins;
 
@@ -35,7 +36,11 @@ impl Plugin for DefaultPlugins {
             inventory::InventoryPlugin,
             item_drops::ItemDropsPlugin,
             boss_bar::BossBarPlugin,
-            (scoreboard::ScoreboardPlugin, sidebar::SidebarPlugin),
+            (
+                scoreboard::ScoreboardPlugin,
+                sidebar::SidebarPlugin,
+                tab_list::TabListPlugin,
+            ),
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,
         ));

@@ -33,6 +33,7 @@ mod set_objective;
 mod set_passengers;
 mod set_player_team;
 mod set_score;
+mod set_tab_list_header_footer;
 mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
@@ -80,6 +81,7 @@ pub use set_objective::*;
 pub use set_passengers::*;
 pub use set_player_team::*;
 pub use set_score::*;
+pub use set_tab_list_header_footer::*;
 pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
@@ -170,6 +172,8 @@ pub enum PlayPacket {
     StopSound(StopSound),
     #[codec(packet_id = 0x79)]
     SystemChat(SystemChat),
+    #[codec(packet_id = 0x7A)]
+    SetTabListHeaderFooter(SetTabListHeaderFooter),
     #[codec(packet_id = 0x7D)]
     TeleportEntity(TeleportEntity),
 }

@@ -76,6 +76,7 @@ pub use plugins::sidebar::{
     Labeled, MAX_LINE_CHARS, MAX_SIDEBAR_LINES, Ornament, Progress, Ranking, Sidebar, SidebarState,
     Text, Timer, Widget, WidgetId,
 };
+pub use plugins::tab_list::{TabEntry, TabEntryState, TabList, TabListState};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;

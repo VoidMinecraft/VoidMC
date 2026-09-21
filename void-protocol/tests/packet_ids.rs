@@ -133,6 +133,7 @@ const SPECS: &[EnumSpec] = &[
             ("SetPlayerTeam", "minecraft:set_player_team"),
             ("SetScore", "minecraft:set_score"),
             ("SystemChat", "minecraft:system_chat"),
+            ("SetTabListHeaderFooter", "minecraft:tab_list"),
             ("TeleportEntity", "minecraft:teleport_entity"),
             ("PlayerInfoUpdate", "minecraft:player_info_update"),
             ("PlayerInfoRemove", "minecraft:player_info_remove"),
