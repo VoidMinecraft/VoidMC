@@ -44,7 +44,7 @@ mod tests {
     use super::DefaultPlugins;
     use crate::commands::plugin::CommandPlugin;
     use crate::config::{ServerConfig, ServerConfigResource};
-    use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
+    use crate::network::{ClientConnected, IncomingPacket, NetworkPlugin, OutgoingPacket};
     use crate::registry::RegistryDataStore;
     use crate::systems::GameSystemsPlugin;
     use crate::world::ChunkIndex;
@@ -56,6 +56,7 @@ mod tests {
         let (outgoing_tx, _outgoing_rx) = flume::unbounded::<OutgoingPacket>();
         let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
         let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
+        let (_connected_tx, connected_rx) = flume::unbounded::<ClientConnected>();
 
         let mut app = App::new();
         app.add_plugins(NetworkPlugin::new(
@@ -63,6 +64,7 @@ mod tests {
             outgoing_tx,
             disconnect_rx,
             kick_tx,
+            connected_rx,
         ))
         .add_plugins(DefaultPlugins)
         .add_plugins(CommandPlugin)

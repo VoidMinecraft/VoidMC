@@ -84,7 +84,7 @@ When a client disconnects:
 1. The network thread detects the TCP connection closed
 2. Client ID is sent through the `disconnect` channel
 3. `ingest_network_packets` drains the disconnect channel
-4. The entity is removed from `ClientToEntityMap`
+4. The entity is removed from `ClientToEntityMap` and its sender from `ClientSenders`
 5. If the player was ready (`PlayerReady` present):
    - `PlayerQuitEvent` is triggered
    - The `on_player_quit` observer broadcasts to all remaining ready players:

@@ -8,7 +8,7 @@ use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
 use crate::config::{ServerConfig, ServerConfigResource};
 use crate::metrics::MetricsPlugin;
-use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
+use crate::network::{ClientConnected, IncomingPacket, NetworkPlugin, OutgoingPacket};
 use crate::plugins::DefaultPlugins;
 use crate::registry::RegistryDataStore;
 use crate::server_status::ServerStatusSnapshot;
@@ -59,9 +59,10 @@ impl VoidServer {
         let world_gen = WorldGen(self.config.world_generator);
 
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
-        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (outgoing_tx, _) = flume::unbounded::<OutgoingPacket>();
         let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
         let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        let (connected_tx, connected_rx) = flume::unbounded::<ClientConnected>();
 
         // Start the network server in a separate thread
         let network_server_status = server_status.clone();
@@ -78,7 +79,7 @@ impl VoidServer {
                 server
                     .run_with_status(
                         incoming_tx,
-                        outgoing_rx,
+                        connected_tx,
                         disconnect_tx,
                         kick_rx,
                         network_server_status,
@@ -101,6 +102,7 @@ impl VoidServer {
             outgoing_tx,
             disconnect_rx,
             kick_tx,
+            connected_rx,
         ))
         .add_plugins(DefaultPlugins)
         .add_plugins(CommandPlugin)

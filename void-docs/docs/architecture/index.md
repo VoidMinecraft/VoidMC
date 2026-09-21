@@ -23,7 +23,7 @@ flowchart LR
     Net --> Tokio[Tokio network runtime]
     Tokio -->|IncomingPacket| In[flume incoming channel]
     In --> Game[void Bevy ECS game loop]
-    Game -->|OutgoingPacket| Out[flume outgoing channel]
+    Game -->|OutgoingPacket| Out[bounded per-client flume channel]
     Out --> Tokio
     Game --> Logs[logs/*.log]
     Game --> Metrics[TPS CSV / flame traces]
