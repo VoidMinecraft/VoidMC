@@ -66,6 +66,10 @@ pub use messages::{MessageRequest, Messages, WorldMessages};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
+pub use plugins::weather::{Weather, WeatherKind, WeatherState};
+pub use plugins::world_time::{
+    TICKS_PER_DAY, TIME_SYNC_INTERVAL, WorldClock, WorldTime, WorldTimeState,
+};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;

@@ -18,6 +18,7 @@ mod biome;
 mod boss_bar;
 mod circle;
 mod entities;
+mod environment;
 mod menu;
 mod particle;
 mod sign;
@@ -102,6 +103,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
+            registry.register(environment::time_command());
+            registry.register(environment::weather_command());
+            environment::spawn_environment(app.world_mut());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);

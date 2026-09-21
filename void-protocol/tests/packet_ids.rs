@@ -126,6 +126,7 @@ const SPECS: &[EnumSpec] = &[
             ("SetCursorItem", "minecraft:set_cursor_item"),
             ("SetEntityData", "minecraft:set_entity_data"),
             ("SetHeldSlot", "minecraft:set_held_slot"),
+            ("SetTime", "minecraft:set_time"),
             ("SystemChat", "minecraft:system_chat"),
             ("TeleportEntity", "minecraft:teleport_entity"),
             ("PlayerInfoUpdate", "minecraft:player_info_update"),

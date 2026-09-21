@@ -26,6 +26,7 @@ mod set_entity_motion;
 mod set_head_rotation;
 mod set_held_slot;
 mod set_passengers;
+mod set_time;
 mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
@@ -66,6 +67,7 @@ pub use set_entity_motion::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
 pub use set_passengers::*;
+pub use set_time::*;
 pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
@@ -136,6 +138,8 @@ pub enum PlayPacket {
     SetEntityData(SetEntityData),
     #[codec(packet_id = 0x69)]
     SetHeldSlot(SetHeldSlot),
+    #[codec(packet_id = 0x71)]
+    SetTime(SetTime),
     #[codec(packet_id = 0x74)]
     EntitySoundEffect(EntitySoundEffect),
     #[codec(packet_id = 0x75)]
