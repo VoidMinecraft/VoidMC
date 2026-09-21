@@ -20,9 +20,9 @@ cargo run --release -p voidmc-demo
 
 La démo écoute par défaut sur toutes les interfaces IPv4 (`0.0.0.0:25565`).
 Se connecter à `127.0.0.1:25565` depuis la machine hôte, ou à son adresse IP depuis
-une autre machine. Le joueur arrive **en vol libre à Y = 110**, au-dessus de la
-vallée (mode aventure, vol autorisé). Il peut se déplacer pour observer le paysage :
-aucune plateforme ne gêne la vue.
+une autre machine. Le joueur apparaît à **Y = 110**, au-dessus de la vallée, et
+retombe sur le relief ; le vol libre revient avec l'unité travel (D5). Aucune
+plateforme ne gêne la vue du paysage.
 
 Pour utiliser une autre carte :
 

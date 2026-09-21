@@ -380,6 +380,9 @@ mod tests {
         assert!(crosses_gate(TAU / 8.0 - 0.01, TAU / 8.0 + 0.01, 1));
         assert!(!crosses_gate(TAU / 8.0 - 0.01, TAU / 8.0 + 0.01, 2));
         assert!(!crosses_gate(0.5, 0.5, 1));
+        assert!(crosses_gate(3.13, -3.13, 4));
+        assert!(crosses_gate(0.7, 0.9, 1));
+        assert!(!crosses_gate(0.7, 0.9, 2));
     }
 
     #[test]
