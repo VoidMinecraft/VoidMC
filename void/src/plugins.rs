@@ -30,6 +30,7 @@ impl Plugin for DefaultPlugins {
             inventory::InventoryPlugin,
             item_drops::ItemDropsPlugin,
             boss_bar::BossBarPlugin,
+            crate::entity::EntityPlugin,
         ));
     }
 }
@@ -40,7 +41,6 @@ mod tests {
 
     use super::DefaultPlugins;
     use crate::commands::plugin::CommandPlugin;
-    use crate::components::EntityIdCounter;
     use crate::config::{ServerConfig, ServerConfigResource};
     use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
     use crate::registry::RegistryDataStore;
@@ -65,7 +65,6 @@ mod tests {
         .add_plugins(DefaultPlugins)
         .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin)
-        .insert_resource(EntityIdCounter(1))
         .insert_resource(RegistryDataStore::default())
         .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
         .insert_resource(WorldGen(Box::new(DefaultWorldGenerator::default())))

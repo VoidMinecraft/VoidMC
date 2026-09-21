@@ -19,8 +19,12 @@ pub enum VoidSystems {
     /// `Update`.
     ItemPickup,
 
-    /// `PostUpdate`: spawn/movement/motion/metadata of non-player entities.
+    /// `PostUpdate`, after `ChunkStreaming`: movement/motion of non-player
+    /// entities to their current viewers.
     EntityBroadcast,
+    /// `PostUpdate`, after `EntityBroadcast`: viewer diff — `SpawnEntity` /
+    /// `RemoveEntities` as players start or stop seeing an entity's chunk.
+    EntityVisibility,
     /// `PostUpdate`: other players' movement and head rotation.
     PlayerBroadcast,
     /// `PostUpdate`: chunk load/unload packets, updates `LoadedChunks`.

@@ -4,98 +4,12 @@ use voidmc_protocol::clientbound;
 use voidmc_protocol::types::LpVec3;
 
 use crate::components::{
-    EntityDimension, EntityType, EntityUuid, Grounded, MinecraftEntityId, PlayerDimension,
-    Position, PreviousPosition, Rotation, SpawnedEntity, Velocity,
+    EntityViewers, Grounded, MinecraftEntityId, Position, PreviousPosition, Rotation,
+    SpawnedEntity, Velocity,
 };
-use crate::events::{EntityDespawnEvent, PlayerReadyEvent};
 use crate::players::Players;
 
 const RELATIVE_MOVE_SCALE: f64 = 4096.0;
-
-#[instrument(
-    name = "entity_join_sync",
-    level = "info",
-    skip(event, players, new_player, spawned_entities)
-)]
-pub fn on_player_ready_spawn_entities(
-    event: On<PlayerReadyEvent>,
-    players: Players,
-    new_player: Query<Option<&PlayerDimension>>,
-    spawned_entities: Query<
-        (
-            &MinecraftEntityId,
-            &EntityUuid,
-            &Position,
-            &Rotation,
-            &Velocity,
-            &EntityType,
-            Option<&EntityDimension>,
-        ),
-        With<SpawnedEntity>,
-    >,
-) {
-    let Ok(player_dimension) = new_player.get(event.entity) else {
-        return;
-    };
-
-    for (entity_id, entity_uuid, position, rotation, velocity, entity_type, entity_dimension) in
-        spawned_entities.iter()
-    {
-        if !is_visible_to(entity_dimension, player_dimension) {
-            continue;
-        }
-
-        players.send(
-            event.entity,
-            spawn_entity_packet(
-                entity_id.0,
-                entity_uuid.0,
-                entity_type.0,
-                position,
-                rotation,
-                velocity,
-            ),
-        );
-    }
-}
-
-#[instrument(
-    name = "entity_spawn_broadcast",
-    level = "info",
-    skip(players, spawned_entities)
-)]
-pub fn broadcast_entity_spawns(
-    players: Players,
-    spawned_entities: Query<
-        (
-            &MinecraftEntityId,
-            &EntityUuid,
-            &Position,
-            &Rotation,
-            &Velocity,
-            &EntityType,
-            Option<&EntityDimension>,
-        ),
-        Added<SpawnedEntity>,
-    >,
-) {
-    let ready = players.ready();
-    for (entity_id, entity_uuid, position, rotation, velocity, entity_type, entity_dimension) in
-        spawned_entities.iter()
-    {
-        let packet = spawn_entity_packet(
-            entity_id.0,
-            entity_uuid.0,
-            entity_type.0,
-            position,
-            rotation,
-            velocity,
-        );
-
-        let dimension = entity_dimension.map(|d| d.0);
-        ready.send_where(|r| r.visible_from(dimension), packet);
-    }
-}
 
 #[instrument(
     name = "entity_movement_broadcast",
@@ -112,7 +26,7 @@ pub fn broadcast_entity_movement(
             Ref<Rotation>,
             &Velocity,
             Option<&Grounded>,
-            Option<&EntityDimension>,
+            &EntityViewers,
         ),
         (
             With<SpawnedEntity>,
@@ -121,10 +35,10 @@ pub fn broadcast_entity_movement(
     >,
 ) {
     let ready = players.ready();
-    for (entity_id, position, previous_position, rotation, velocity, grounded, entity_dimension) in
+    for (entity_id, position, previous_position, rotation, velocity, grounded, viewers) in
         moved_entities.iter()
     {
-        if position.is_added() || rotation.is_added() {
+        if position.is_added() || rotation.is_added() || viewers.is_empty() {
             continue;
         }
 
@@ -153,10 +67,9 @@ pub fn broadcast_entity_movement(
             ))
         });
 
-        let dimension = entity_dimension.map(|d| d.0);
-        ready.send_where(|r| r.visible_from(dimension), movement_packet);
+        ready.send_where(|r| viewers.contains(r.entity()), movement_packet);
         if let Some(packet) = head_rotation_packet {
-            ready.send_where(|r| r.visible_from(dimension), packet);
+            ready.send_where(|r| viewers.contains(r.entity()), packet);
         }
     }
 }
@@ -169,13 +82,13 @@ pub fn broadcast_entity_movement(
 pub fn broadcast_entity_motion(
     players: Players,
     moved_entities: Query<
-        (&MinecraftEntityId, Ref<Velocity>, Option<&EntityDimension>),
+        (&MinecraftEntityId, Ref<Velocity>, &EntityViewers),
         (With<SpawnedEntity>, Changed<Velocity>),
     >,
 ) {
     let ready = players.ready();
-    for (entity_id, velocity, entity_dimension) in moved_entities.iter() {
-        if velocity.is_added() {
+    for (entity_id, velocity, viewers) in moved_entities.iter() {
+        if velocity.is_added() || viewers.is_empty() {
             continue;
         }
 
@@ -184,8 +97,7 @@ pub fn broadcast_entity_motion(
             velocity: velocity_to_lp_vec3(&velocity),
         };
 
-        let dimension = entity_dimension.map(|d| d.0);
-        ready.send_where(|r| r.visible_from(dimension), packet);
+        ready.send_where(|r| viewers.contains(r.entity()), packet);
     }
 }
 
@@ -197,26 +109,6 @@ pub fn update_previous_entity_positions(
         previous_position.y = position.y;
         previous_position.z = position.z;
     }
-}
-
-pub fn on_entity_despawn(
-    event: On<EntityDespawnEvent>,
-    players: Players,
-    mut commands: Commands,
-    entities: Query<(&MinecraftEntityId, Option<&EntityDimension>), With<SpawnedEntity>>,
-) {
-    let Ok((entity_id, entity_dimension)) = entities.get(event.entity) else {
-        return;
-    };
-
-    players
-        .ready()
-        .visible_from(entity_dimension.map(|d| d.0))
-        .send(clientbound::RemoveEntities {
-            entity_ids: vec![entity_id.0],
-        });
-
-    commands.entity(event.entity).despawn();
 }
 
 pub fn spawn_entity_packet(
@@ -339,18 +231,6 @@ pub(crate) fn relative_delta(current: f64, previous: f64) -> Option<i16> {
 
 fn angle_to_byte(angle: f32) -> u8 {
     (angle.rem_euclid(360.0) / 360.0 * 256.0) as u8
-}
-
-fn is_visible_to(
-    entity_dimension: Option<&EntityDimension>,
-    player_dimension: Option<&PlayerDimension>,
-) -> bool {
-    match entity_dimension {
-        Some(entity_dimension) => player_dimension
-            .map(|player_dimension| player_dimension.0 == entity_dimension.0)
-            .unwrap_or(false),
-        None => true,
-    }
 }
 
 #[cfg(test)]

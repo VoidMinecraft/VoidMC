@@ -4,7 +4,7 @@ use bevy_app::{App, Plugin};
 use bevy_ecs::{
     entity::Entity,
     observer::On,
-    system::{Commands, Query, Res, ResMut},
+    system::{Commands, Query, Res},
 };
 use voidmc_protocol::{
     State, clientbound,
@@ -14,9 +14,9 @@ use voidmc_protocol::{
 use crate::{
     CommandRegistry, RegistryDataStore, ServerConfigResource, WorldGen,
     components::{
-        ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance, EntityIdCounter,
-        KeepAliveState, LoadedChunks, MinecraftEntityId, PlayerDimension, Position,
-        PreviousPosition, Rotation, TeleportState,
+        ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance, KeepAliveState,
+        LoadedChunks, MinecraftEntityId, PlayerDimension, Position, PreviousPosition, Rotation,
+        TeleportState,
     },
     events::PlayerJoinEvent,
     network::PacketEvent,
@@ -101,7 +101,6 @@ fn build_update_tags(registries: &RegistryDataStore) -> clientbound::UpdateTags 
 fn handle_finish_configuration(
     event: On<PacketEvent<FinishConfigurationAcknowledged>>,
     mut commands: Commands,
-    mut entity_id_counter: ResMut<EntityIdCounter>,
     command_registry: Res<CommandRegistry>,
     config: Res<ServerConfigResource>,
     world_gen: Res<WorldGen>,
@@ -109,10 +108,6 @@ fn handle_finish_configuration(
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
 ) {
-    // Allocate entity ID
-    let minecraft_entity_id = entity_id_counter.0;
-    entity_id_counter.0 += 1;
-
     // Determine spawn position
     let spawn_y = config.spawn_y.unwrap_or_else(|| {
         world_gen
@@ -123,10 +118,12 @@ fn handle_finish_configuration(
     });
     let spawn_chunk = ChunkPos::from_block(config.spawn_x, config.spawn_z);
 
+    let minecraft_entity_id = MinecraftEntityId::allocate();
+
     // Update entity with new components
     commands.entity(event.entity).insert((
         ConnectionState(State::Play),
-        MinecraftEntityId(minecraft_entity_id),
+        minecraft_entity_id,
         Position {
             x: config.spawn_x,
             y: spawn_y,
@@ -164,7 +161,7 @@ fn handle_finish_configuration(
     players.send(
         event.entity,
         clientbound::Login {
-            entity_id: minecraft_entity_id,
+            entity_id: minecraft_entity_id.0,
             is_hardcore: config.hardcore,
             dimension_names: vec![
                 "minecraft:overworld".to_string(),

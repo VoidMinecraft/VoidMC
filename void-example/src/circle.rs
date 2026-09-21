@@ -1,15 +1,13 @@
 use std::sync::Arc;
 
 use bevy_ecs::prelude::{Component, Entity, Query, With, Without};
-use voidmc::components::{
-    EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded, MinecraftEntityId,
-    MovementConfig, PlayerDimension, PlayerName, PlayerReady, Position, PreviousPosition,
-    RecentlySpawned, Rotation, SpawnedEntity, Velocity, VerticalVelocity,
-};
-use voidmc::events::EntityDespawnEvent;
+use voidmc::components::{PlayerDimension, PlayerName, PlayerReady, Position, Rotation};
 use voidmc::world::DimensionId;
-use voidmc::{Command, CommandBuilder, CommandContext, GameProfileArg, SummonableEntityArg};
-use voidmc_data::{Version, entity_type_id, is_summonable_entity_type};
+use voidmc::{
+    Command, CommandBuilder, CommandContext, EntityBuilder, EntityKind, GameProfileArg,
+    SummonableEntityArg,
+};
+use voidmc_data::{Version, is_summonable_entity_type};
 
 const CIRCLE_ENTITY_COUNT: u32 = 36;
 const CIRCLE_RADIUS: f64 = 2.0;
@@ -77,12 +75,9 @@ fn handle_circle(ctx: &mut CommandContext) {
         .cloned()
         .unwrap_or_else(|| "minecraft:pig".to_string());
 
-    let entity_type_id = match entity_type_id(Version::V26_1_2, &entity_name) {
-        Some(id) => id,
-        None => {
-            ctx.reply_error(&format!("Unknown entity type '{}'.", entity_name));
-            return;
-        }
+    let Some(kind) = EntityKind::from_name(&entity_name) else {
+        ctx.reply_error(&format!("Unknown entity type '{}'.", entity_name));
+        return;
     };
 
     if !is_summonable_entity_type(Version::V26_1_2, &entity_name) {
@@ -127,42 +122,20 @@ fn handle_circle(ctx: &mut CommandContext) {
         let y = target_position.y;
         let z = target_position.z + angle_rad.cos() * CIRCLE_RADIUS;
 
-        let entity_id = ctx.with_world_mut(|world| {
-            let mut counter = world.resource_mut::<EntityIdCounter>();
-            let id = counter.0;
-            counter.0 += 1;
-            id
-        });
-
         ctx.with_world_mut(|world| {
-            world.spawn((
-                MinecraftEntityId(entity_id),
-                EntityUuid(uuid::Uuid::new_v4()),
-                Position { x, y, z },
-                PreviousPosition { x, y, z },
-                Rotation {
-                    yaw: 0.0,
-                    pitch: 0.0,
-                },
-                Velocity {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                EntityType(entity_type_id),
-                EntityDimension(dimension),
-                SpawnedEntity,
-                MovementConfig::default(),
-                VerticalVelocity(0.0),
-                Grounded(true),
-                RecentlySpawned(5),
-                CircleEntity,
-                CircleState {
-                    angle,
-                    owner: executor,
-                    target,
-                },
-            ));
+            EntityBuilder::new(kind)
+                .at(x, y, z)
+                .in_dimension(dimension)
+                .settle_ticks(5)
+                .spawn_in(world)
+                .insert((
+                    CircleEntity,
+                    CircleState {
+                        angle,
+                        owner: executor,
+                        target,
+                    },
+                ));
         });
     }
 
@@ -195,7 +168,7 @@ fn dismiss_circle(ctx: &mut CommandContext, executor: Entity) -> bool {
 
     ctx.with_world_mut(|world| {
         for entity in existing {
-            world.trigger(EntityDespawnEvent { entity });
+            world.despawn(entity);
         }
     });
 

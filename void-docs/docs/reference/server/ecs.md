@@ -64,8 +64,9 @@ to ready players by `systems::entities`.
 | `MinecraftEntityId(i32)` | Entity ID | Server-assigned ID used by entity packets |
 | `EntityUuid(Uuid)` | UUID | UUID sent once in `Add Entity` |
 | `EntityType(i32)` | Registry ID | Protocol ID from `minecraft:entity_type` |
-| `SpawnedEntity` | (marker) | Marks a non-player entity managed by the entity lifecycle systems |
-| `EntityDimension(DimensionId)` | Dimension | Dimension visibility filter for player recipients |
+| `SpawnedEntity` | (marker) | Marks a non-player entity; `#[require]`s every component below plus `EntityViewers`. Requirements are runtime defaults, not compile-time checks: `EntityType` has no usable default and panics, so inserting the marker without going through `EntityBuilder` fails loudly instead of replicating a wrong entity |
+| `EntityDimension(DimensionId)` | Dimension | Dimension the entity lives in (default `Overworld`) |
+| `EntityViewers` | Player set | Players currently receiving this entity's packets; maintained by the visibility tracker |
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |
 | `Rotation { yaw, pitch }` | `f32` angles | Current body/look rotation |
@@ -93,7 +94,6 @@ Chunks are also ECS entities with these components:
 | `ServerConfigResource` | Runtime-readable server configuration (see [Configuration](/reference/server/configuration)) |
 | `WorldGen(Box<dyn WorldGenerator>)` | Active world generator |
 | `RegistryDataStore` | Minecraft registry data (see [Registry](/reference/gameplay/registry)) |
-| `EntityIdCounter(i32)` | Auto-incrementing counter for Minecraft entity IDs |
 | `ChunkIndex(HashMap<(DimensionId, ChunkPos), Entity>)` | Spatial index for O(1) chunk entity lookup |
 | `NetworkChannels` | Flume channel senders/receivers for network communication |
 | `ClientToEntityMap(HashMap<u32, Entity>)` | Maps network client IDs to ECS entities |
@@ -133,26 +133,37 @@ Non-player entities use the same `MinecraftEntityId`, `Position`,
 `PreviousPosition`, and `Rotation` components as players, plus the dedicated
 components listed above.
 
-1. Spawn an entity with `SpawnedEntity`, `EntityType`, `EntityUuid`,
-   `EntityDimension`, `Velocity`, and position/rotation components. The
-   default `/summon` command does this after validating the entity type through
-   `voidmc-data`.
-2. During `PostUpdate`, `broadcast_entity_spawns` detects newly added
-   `SpawnedEntity` entities and sends `Add Entity` to ready players in the same
-   dimension.
-3. When a player becomes ready, `on_player_ready_spawn_entities` replays all
-   currently visible spawned entities to that player.
-4. Position or rotation changes are broadcast by `broadcast_entity_movement`.
-   Small movements use relative move packets; moves outside the ±8 block delta
-   budget use `Teleport Entity`. Rotation changes also send `Rotate Head`.
-5. Velocity changes are broadcast by `broadcast_entity_motion` using `Set Entity
-   Motion`. LP Vec3 values are used directly; the old `velocity * 8000` short
-   encoding is not used by protocol 26.1.2.
-6. Trigger `EntityDespawnEvent { entity }` to remove a spawned entity through
-   the lifecycle system. Observers send `Remove Entities` to visible players and
-   then despawn the ECS entity.
+1. Spawn with `EntityBuilder`:
+   `EntityBuilder::new(EntityKind::Zombie).at(x, y, z).in_dimension(dim).gravity(true).spawn(&mut commands)`
+   (or `.spawn_in(&mut world)`). It allocates the network id and UUID and
+   fills every component `SpawnedEntity` requires; extra components are
+   inserted on the returned `EntityCommands`. `EntityKind` is generated from
+   `minecraft:entity_type` (`EntityKind::from_name`, `.id()`, `.name()`).
+   `.settle_ticks(n)` bounds the ground-snap window of `settle_recent_spawns`
+   (default 15).
+2. `PostUpdate` (`VoidSystems::EntityVisibility`, after chunk streaming): the
+   tracker diffs each entity's viewers against the ready players whose
+   `LoadedChunks` contain the entity's chunk in its dimension. New viewers get
+   `Add Entity` (and an `EntityShownEvent`), viewers that stopped seeing the
+   chunk get `Remove Entities` (and an `EntityHiddenEvent`). Late joiners are
+   covered the same way once their chunks load; disconnected players simply
+   drop out of the set. The diff runs only for entities whose chunk or
+   dimension changed, or on ticks where some player's `LoadedChunks`,
+   `PlayerDimension` or readiness changed.
+3. Position or rotation changes are broadcast by `broadcast_entity_movement`
+   to current viewers only (`VoidSystems::EntityBroadcast`, before the
+   tracker, so a newly shown viewer never receives a delta on top of the spawn
+   position). Small movements use relative move packets; moves outside the ±8
+   block delta budget use `Teleport Entity`. Rotation changes also send
+   `Rotate Head`.
+4. Velocity changes are broadcast by `broadcast_entity_motion` using `Set Entity
+   Motion` to current viewers.
+5. Remove with `commands.entity(e).despawn()` (or `world.despawn(e)`). An
+   `On<Remove, SpawnedEntity>` observer sends `Remove Entities` to every
+   current viewer, so a client can never keep a ghost. `EntityDespawnEvent`
+   remains as a trigger-style hook that does the same despawn.
 
-This lifecycle currently handles visibility, spawn/replay, motion, movement,
-simple opt-in wandering and collision physics, and removal. It does not yet
-implement production mob AI, general entity metadata (`Set Entity Data`),
-equipment, passengers, or per-entity view-distance culling.
+Features that need extra packets per viewer (item metadata, later entity
+metadata and passengers) observe `EntityShownEvent { entity, viewer }` instead
+of broadcasting on spawn. Not yet implemented: mob AI, general entity metadata,
+equipment, passengers.

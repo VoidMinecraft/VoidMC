@@ -303,11 +303,12 @@ application/plugin crate instead of in `void` itself.
 |---|---|---|
 | `/circle` | Spawn or remove an orbiting entity ring | `[entity:resource_location] [player:player] [--stop]` |
 
-`/circle` defaults to `minecraft:pig` and the executor. `/circle --stop`
-removes the executor's active ring through `EntityDespawnEvent`, so clients see
-the same `RemoveEntities` lifecycle path as other spawned entities. The command
-uses the public command API plus public ECS components from `void`, while its
-own marker components and movement system stay local to `void-example`.
+`/circle` defaults to `minecraft:pig` and the executor and spawns the ring
+through `EntityBuilder`. `/circle --stop` despawns the entities directly; the
+`RemoveEntities` packets follow from the lifecycle observer like for any other
+spawned entity. The command uses the public command API plus public ECS
+components from `void`, while its own marker components and movement system
+stay local to `void-example`.
 
 ## Tab-Completion
 

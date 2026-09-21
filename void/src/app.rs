@@ -6,7 +6,6 @@ use bevy_ecs::prelude::*;
 use crate::Server;
 use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
-use crate::components::EntityIdCounter;
 use crate::config::{ServerConfig, ServerConfigResource};
 use crate::metrics::MetricsPlugin;
 use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
@@ -111,8 +110,7 @@ impl VoidServer {
             app.add_plugins(MetricsPlugin::new(self.config.metrics_tps_output.clone()));
         }
 
-        app.insert_resource(EntityIdCounter(1))
-            .insert_resource(self.config.registries)
+        app.insert_resource(self.config.registries)
             .insert_resource(config_resource)
             .insert_resource(server_status)
             .insert_resource(world_gen)

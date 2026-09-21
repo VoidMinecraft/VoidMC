@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use bevy_ecs::prelude::*;
 use uuid::Uuid;
@@ -24,28 +25,43 @@ pub struct PlayerName(pub String);
 #[derive(Component)]
 pub struct PlayerUuid(pub Uuid);
 
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Position {
     pub x: f64,
     pub y: f64,
     pub z: f64,
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rotation {
     pub yaw: f32,
     pub pitch: f32,
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct PreviousPosition {
     pub x: f64,
     pub y: f64,
     pub z: f64,
 }
 
-#[derive(Component)]
+/// Network entity id. `Default` allocates a fresh one, so every entity that
+/// requires this component gets a unique id without touching a resource.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MinecraftEntityId(pub i32);
+
+impl MinecraftEntityId {
+    pub fn allocate() -> Self {
+        static NEXT: AtomicI32 = AtomicI32::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Default for MinecraftEntityId {
+    fn default() -> Self {
+        Self::allocate()
+    }
+}
 
 #[derive(Component)]
 pub struct TeleportState {
@@ -110,27 +126,89 @@ impl ContainerSync {
 }
 
 /// Numeric entity type ID from the `minecraft:entity_type` registry.
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityType(pub i32);
 
-/// Marker component for non-player summoned entities.
-#[derive(Component)]
+impl Default for EntityType {
+    fn default() -> Self {
+        panic!("SpawnedEntity inserted without an EntityType; spawn through EntityBuilder")
+    }
+}
+
+/// Marker for non-player, server-owned entities. Requiring it pulls in every
+/// component the replication and simulation systems read, so an entity can
+/// never be half-spawned; [`crate::entity::EntityBuilder`] fills the values.
+#[derive(Component, Default)]
+#[require(
+    MinecraftEntityId,
+    EntityUuid,
+    EntityType,
+    Position,
+    PreviousPosition,
+    Rotation,
+    Velocity,
+    EntityDimension,
+    EntityCollider,
+    MovementConfig,
+    VerticalVelocity,
+    Grounded,
+    RecentlySpawned,
+    EntityViewers
+)]
 pub struct SpawnedEntity;
 
 /// Which dimension a non-player entity belongs to.
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityDimension(pub DimensionId);
 
+impl Default for EntityDimension {
+    fn default() -> Self {
+        Self(DimensionId::Overworld)
+    }
+}
+
 /// UUID for a non-player summoned entity, matching the UUID sent in SpawnEntity.
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityUuid(pub uuid::Uuid);
 
+impl Default for EntityUuid {
+    fn default() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
 /// Entity velocity in blocks/tick, encoded directly as protocol LP Vec3.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Velocity {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+}
+
+/// Players currently receiving packets for this entity; maintained by the
+/// visibility tracker in `PostUpdate`.
+#[derive(Component, Debug, Default)]
+pub struct EntityViewers {
+    pub(crate) players: HashSet<Entity>,
+    pub(crate) chunk: Option<(DimensionId, ChunkPos)>,
+}
+
+impl EntityViewers {
+    pub fn contains(&self, player: Entity) -> bool {
+        self.players.contains(&player)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.players.iter().copied()
+    }
+
+    pub fn len(&self) -> usize {
+        self.players.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.players.is_empty()
+    }
 }
 
 /// Movement feature flags for a server-owned entity.
@@ -209,8 +287,5 @@ pub struct ItemEntity {
 #[derive(Component)]
 pub struct PickupDelay(pub u8);
 
-#[derive(Resource)]
-pub struct EntityIdCounter(pub i32);
-
-#[derive(Component)]
+#[derive(Component, Clone, Copy, Debug, Default)]
 pub struct RecentlySpawned(pub u8);

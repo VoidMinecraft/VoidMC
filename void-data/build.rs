@@ -213,6 +213,7 @@ fn main() {
         let blocks_json: Value = serde_json::from_str(&txt).expect("parse blocks.json");
         let items = load_item_entries(&crate_dir, version);
         let packets = load_packets(&crate_dir, version);
+        let entity_types = load_registry_entries(&crate_dir, version, "minecraft:entity_type");
         emit_blocks_module(
             &mut blocks_code,
             version,
@@ -220,6 +221,7 @@ fn main() {
             shapes_value.as_ref(),
             &items,
             &packets,
+            &entity_types,
         );
     }
     fs::write(out_dir.join("blocks.rs"), blocks_code).unwrap();
@@ -274,6 +276,10 @@ struct BlockDef {
 /// empty vec if the file or registry is absent so the build never fails when the
 /// item data has not been extracted yet.
 fn load_item_entries(crate_dir: &Path, version: &str) -> Vec<(String, i32)> {
+    load_registry_entries(crate_dir, version, "minecraft:item")
+}
+
+fn load_registry_entries(crate_dir: &Path, version: &str, registry: &str) -> Vec<(String, i32)> {
     let registries_path = crate_dir
         .join("assets")
         .join(version)
@@ -286,7 +292,7 @@ fn load_item_entries(crate_dir: &Path, version: &str) -> Vec<(String, i32)> {
     let value: Value = serde_json::from_str(&json_text)
         .unwrap_or_else(|e| panic!("parse {}: {e}", registries_path.display()));
     let Some(entries) = value
-        .get("minecraft:item")
+        .get(registry)
         .and_then(|r| r.get("entries"))
         .and_then(Value::as_object)
     else {
@@ -311,6 +317,7 @@ fn emit_blocks_module(
     shapes_json: Option<&Value>,
     items: &[(String, i32)],
     packets: &PacketTable,
+    entity_types: &[(String, i32)],
 ) {
     let blocks_obj = blocks_json
         .as_object()
@@ -540,6 +547,9 @@ fn emit_blocks_module(
 
     // ---- packets module
     emit_packets_module(out, packets);
+
+    // ---- entity kinds
+    emit_entity_kinds(out, entity_types);
 
     let _ = writeln!(out, "}}");
 }
@@ -1265,6 +1275,72 @@ fn emit_version_info(crate_dir: &Path, codegen: &mut String) {
     }
     codegen.push_str("];\n");
     println!("cargo::metadata=versions={}", versions.join(","));
+}
+
+fn emit_entity_kinds(out: &mut String, entity_types: &[(String, i32)]) {
+    let variants: Vec<(String, &str, i32)> = entity_types
+        .iter()
+        .map(|(name, id)| {
+            let short = name.strip_prefix("minecraft:").unwrap_or(name);
+            (pascal_case(short), name.as_str(), *id)
+        })
+        .collect();
+
+    let _ = writeln!(
+        out,
+        "    /// `minecraft:entity_type` entries; `id()` is the protocol id."
+    );
+    let _ = writeln!(
+        out,
+        "    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]"
+    );
+    let _ = writeln!(out, "    #[repr(i32)]");
+    let _ = writeln!(out, "    pub enum EntityKind {{");
+    for (variant, name, id) in &variants {
+        let _ = writeln!(out, "        /// `{name}`.");
+        let _ = writeln!(out, "        {variant} = {id},");
+    }
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    impl EntityKind {{");
+    let _ = writeln!(out, "        pub const ALL: &[EntityKind] = &[");
+    for (variant, _, _) in &variants {
+        let _ = writeln!(out, "            EntityKind::{variant},");
+    }
+    let _ = writeln!(out, "        ];");
+    let _ = writeln!(
+        out,
+        "        pub const fn id(self) -> i32 {{ self as i32 }}"
+    );
+    let _ = writeln!(out, "        pub const fn name(self) -> &'static str {{");
+    let _ = writeln!(out, "            match self {{");
+    for (variant, name, _) in &variants {
+        let _ = writeln!(out, "                EntityKind::{variant} => {name:?},");
+    }
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(
+        out,
+        "        pub fn from_name(name: &str) -> Option<Self> {{"
+    );
+    let _ = writeln!(out, "            match name {{");
+    for (variant, name, _) in &variants {
+        let _ = writeln!(
+            out,
+            "                {name:?} => Some(EntityKind::{variant}),"
+        );
+    }
+    let _ = writeln!(out, "                _ => None,");
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(out, "        pub fn from_id(id: i32) -> Option<Self> {{");
+    let _ = writeln!(out, "            match id {{");
+    for (variant, _, id) in &variants {
+        let _ = writeln!(out, "                {id} => Some(EntityKind::{variant}),");
+    }
+    let _ = writeln!(out, "                _ => None,");
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(out, "    }}");
 }
 
 fn packet_const_name(name: &str) -> String {
