@@ -34,7 +34,6 @@ pub fn broadcast_entity_movement(
         ),
     >,
 ) {
-    let ready = players.ready();
     for (entity_id, position, previous_position, rotation, velocity, grounded, viewers) in
         moved_entities.iter()
     {
@@ -67,9 +66,9 @@ pub fn broadcast_entity_movement(
             ))
         });
 
-        ready.send_where(|r| viewers.contains(r.entity()), movement_packet);
+        players.send_to(viewers.iter(), movement_packet);
         if let Some(packet) = head_rotation_packet {
-            ready.send_where(|r| viewers.contains(r.entity()), packet);
+            players.send_to(viewers.iter(), packet);
         }
     }
 }
@@ -86,7 +85,6 @@ pub fn broadcast_entity_motion(
         (With<SpawnedEntity>, Changed<Velocity>),
     >,
 ) {
-    let ready = players.ready();
     for (entity_id, velocity, viewers) in moved_entities.iter() {
         if velocity.is_added() || viewers.is_empty() {
             continue;
@@ -97,7 +95,7 @@ pub fn broadcast_entity_motion(
             velocity: velocity_to_lp_vec3(&velocity),
         };
 
-        ready.send_where(|r| viewers.contains(r.entity()), packet);
+        players.send_to(viewers.iter(), packet);
     }
 }
 

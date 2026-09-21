@@ -144,14 +144,16 @@ components listed above.
    `.settle_ticks(n)` bounds the ground-snap window of `settle_recent_spawns`
    (default 15).
 2. `PostUpdate` (`VoidSystems::EntityVisibility`, after chunk streaming): the
-   tracker diffs each entity's viewers against the ready players whose
-   `LoadedChunks` contain the entity's chunk in its dimension. New viewers get
+   tracker resolves each entity's viewers from a chunk-indexed lookup of the
+   ready players whose `LoadedChunks` contain the entity's chunk in its
+   dimension, rather than scanning every ready player. New viewers get
    `Add Entity` (and an `EntityShownEvent`), viewers that stopped seeing the
    chunk get `Remove Entities` (and an `EntityHiddenEvent`). Late joiners are
    covered the same way once their chunks load; disconnected players simply
    drop out of the set. The diff runs only for entities whose chunk or
-   dimension changed, or on ticks where some player's `LoadedChunks`,
-   `PlayerDimension` or readiness changed.
+   dimension changed, or that stand in a chunk whose viewer set changed this
+   tick (a player loading or unloading it, changing dimension, joining or
+   leaving).
 3. Position or rotation changes are broadcast by `broadcast_entity_movement`
    to current viewers only (`VoidSystems::EntityBroadcast`, before the
    tracker, so a newly shown viewer never receives a delta on top of the spawn
