@@ -88,8 +88,13 @@ pub fn drive(race: Res<Race>, map: Res<Track>, mut karts: Query<&mut Kart>) {
     }
 }
 
-pub fn pose(mut karts: Query<(&Kart, &mut Position, &mut Rotation), Changed<Kart>>) {
-    for (kart, mut position, mut rotation) in &mut karts {
+pub const SEAT_HEIGHT: f64 = 0.35;
+
+pub fn pose(
+    mut karts: Query<(&Kart, &Pilot, &mut Position, &mut Rotation), Changed<Kart>>,
+    mut pilots: Query<&mut Position, Without<Kart>>,
+) {
+    for (kart, pilot, mut position, mut rotation) in &mut karts {
         let next = Position {
             x: kart.x,
             y: kart.y,
@@ -101,6 +106,15 @@ pub fn pose(mut karts: Query<(&Kart, &mut Position, &mut Rotation), Changed<Kart
         let yaw = kart.model_yaw();
         if rotation.yaw != yaw {
             rotation.yaw = yaw;
+        }
+        if let Ok(mut seat) = pilots.get_mut(pilot.0) {
+            let next = Position {
+                y: kart.y + SEAT_HEIGHT,
+                ..next
+            };
+            if *seat != next {
+                *seat = next;
+            }
         }
     }
 }
@@ -147,14 +161,23 @@ mod tests {
         *h.app.world().get::<Position>(kart).unwrap()
     }
 
-    fn position_changed_since(h: &mut Harness, kart: Entity, since: Tick) -> bool {
+    fn position_changed_since(h: &mut Harness, entity: Entity, since: Tick) -> bool {
         let now = h.world().change_tick();
         h.world()
             .query::<Ref<Position>>()
-            .get(h.app.world(), kart)
+            .get(h.app.world(), entity)
             .unwrap()
             .last_changed()
             .is_newer_than(since, now)
+    }
+
+    fn seated(h: &Harness, player: Entity) -> Position {
+        let kart = h.kart(player);
+        Position {
+            x: kart.x,
+            y: kart.y + SEAT_HEIGHT,
+            z: kart.z,
+        }
     }
 
     fn movement(out: &[Out], client: u32, id: i32) -> Vec<Out> {
@@ -371,6 +394,8 @@ mod tests {
                 z: grid.z
             }
         );
+        assert_eq!(position(&h, a), seated(&h, a));
+        assert_eq!(position(&h, b), seated(&h, b));
 
         let tick = h.race().tick;
         h.race_mut().start = tick;
@@ -399,6 +424,9 @@ mod tests {
         );
         assert!(position_changed_since(&mut h, ka, since));
         assert!(!position_changed_since(&mut h, kb, since));
+        assert_eq!(position(&h, a), seated(&h, a));
+        assert!(position_changed_since(&mut h, a, since));
+        assert!(!position_changed_since(&mut h, b, since));
         let out = h.drain();
         let moved = movement(&out, 1, ida);
         assert_eq!(moved.len(), 1);
@@ -419,6 +447,9 @@ mod tests {
         h.ticks(10);
         assert_eq!(position(&h, kb), stationary);
         assert!(!position_changed_since(&mut h, kb, since));
+        assert_eq!(position(&h, b), seated(&h, b));
+        assert!(!position_changed_since(&mut h, b, since));
+        assert_eq!(position(&h, a), seated(&h, a));
         let out = h.drain();
         assert!(movement(&out, 1, idb).is_empty());
         assert!(movement(&out, 2, idb).is_empty());
@@ -428,6 +459,33 @@ mod tests {
                 .iter()
                 .all(|o| matches!(o, Out::Move { .. }))
         );
+    }
+
+    #[test]
+    fn pilot_position_follows_the_kart_seat() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.tick();
+        assert_eq!(position(&h, a), seated(&h, a));
+        assert_eq!(position(&h, a).y, WAIT_Y + SEAT_HEIGHT);
+        h.shortcut_to_countdown(a, &[]);
+        assert_eq!(position(&h, a), seated(&h, a));
+        assert_eq!(position(&h, b), seated(&h, b));
+        assert!(position(&h, a).y < WAIT_Y);
+        let tick = h.race().tick;
+        h.race_mut().start = tick;
+        h.tick();
+        assert_eq!(h.race().phase, Phase::Racing);
+        let grid = position(&h, a);
+        press(&mut h, a, &["forward"]);
+        let since = h.world().change_tick();
+        h.ticks(5);
+        assert_ne!(position(&h, a), grid);
+        assert_eq!(position(&h, a), seated(&h, a));
+        assert!(position_changed_since(&mut h, a, since));
+        assert_eq!(position(&h, b), seated(&h, b));
+        assert!(!position_changed_since(&mut h, b, since));
     }
 
     #[test]

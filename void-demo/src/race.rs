@@ -763,7 +763,7 @@ pub(crate) mod tests {
     use ussr_nbt::owned::{Nbt, Tag};
     use voidmc::commands::{dispatch_command, plugin::CommandPlugin};
     use voidmc::components::{
-        ClientId, LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerReady,
+        ClientId, LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerReady, Position,
     };
     use voidmc::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
     use voidmc::plugins::boss_bar::BossBarPlugin;
@@ -920,6 +920,7 @@ pub(crate) mod tests {
                     ClientId(id),
                     PlayerReady,
                     MinecraftEntityId::allocate(),
+                    Position::default(),
                     PlayerName(format!("Pilot{id}")),
                     PlayerDimension(DimensionId::Overworld),
                     LoadedChunks(loaded),

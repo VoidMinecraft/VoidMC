@@ -41,9 +41,11 @@ entier non signé sur 64 bits ; sa valeur par défaut est `42`. Le serveur tourn
 Chaque pilote inscrit est assis dans **un minecart** qui lui appartient (`src/vehicle.rs`).
 Le minecart est une entité du moteur : le serveur le fait apparaître chez les joueurs
 qui ont chargé son chunk, le retire quand ils s'éloignent ou se déconnectent, et
-transmet ses déplacements. Le pilote en est le passager ; s'il descend (touche
-Sneak), le serveur le remet en selle aussitôt — uniquement sur cette pression, jamais
-périodiquement.
+transmet ses déplacements. Le pilote en est le passager. Sur une pression de Sneak,
+le serveur renvoie la liste des passagers du kart (fidèle à la référence) — uniquement
+sur cette pression, jamais périodiquement ; comme la descente d'un véhicule est
+décidée côté serveur en 26.1.2 et que ce moteur ne l'implémente pas, le client ne
+quitte jamais son kart de lui-même.
 
 Le pilotage utilise les touches de déplacement du client (`ServerboundPlayerInput`) :
 **Avancer** accélère, **Reculer** freine puis passe en marche arrière, **Gauche/Droite**
@@ -54,6 +56,11 @@ boost rechargeable, rebonds sur les glissières, chocs entre minecarts) sont cel
 serveur déplace l'entité minecart vers la position simulée ; le moteur choisit
 lui-même entre un déplacement relatif et une téléportation (au-delà de 8 blocs, par
 exemple lors de la mise en grille). Un kart immobile ne génère aucun paquet.
+
+Un client assis dans un minecart ne rapporte plus sa position (il n'envoie que sa
+rotation) : `pose` écrit donc aussi la `Position` du pilote, 0,35 bloc au-dessus du
+kart comme dans la référence, pour que le chargement des chunks et la position vue
+par les autres joueurs suivent le kart pendant toute la course.
 
 La manche est complète (`src/race.rs`) :
 
@@ -142,9 +149,9 @@ est recommandé.
 - `src/vehicle.rs` : le kart comme entité du moteur — `spawn` (`EntityBuilder`
   minecart + `Kart` + `Pilot` + `Passengers`), `Karts` (accès au kart d'un joueur via
   `Racer::kart`), l'observateur `input` (`PlayerInputEvent` → `Kart::input`,
-  remontée sur Sneak), le système `drive` (`Kart::drive` puis `collide` pendant la
-  course) et `pose`, qui ne réécrit `Position`/`Rotation` que si la simulation a
-  bougé le kart.
+  renvoi des passagers sur Sneak), le système `drive` (`Kart::drive` puis `collide`
+  pendant la course) et `pose`, qui ne réécrit `Position`/`Rotation` du kart et la
+  `Position` du pilote (`SEAT_HEIGHT` au-dessus) que si la simulation a bougé le kart.
 - `src/race.rs` : phases, commandes, annonces, bossbars et HUD ; `Racer` relie le
   joueur à son kart.
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
@@ -161,6 +168,7 @@ géométries, les checkpoints ordonnés, la marche arrière, les rebonds, les bu
 boucliers, les bonus à usage unique et leurs effets, la préservation du paysage
 pendant la construction et la restauration exacte au démontage. Les tests d'`App`
 sans réseau vérifient l'inscription (un seul minecart par pilote, passager compris),
-la remontée unique par pression de Sneak, le déplacement de l'entité pendant la
-course (et l'absence de tout paquet pour un kart immobile), la disparition du kart
+le renvoi unique des passagers par pression de Sneak, le déplacement de l'entité et
+du pilote pendant la course (et l'absence de tout paquet ou écriture pour un kart
+immobile), la disparition du kart
 au départ du joueur et le choc entre deux karts, identique à la simulation pure.
