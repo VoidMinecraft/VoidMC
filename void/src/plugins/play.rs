@@ -36,7 +36,9 @@ fn handle_pong(_event: On<PacketEvent<Pong>>) {}
 
 fn handle_keep_alive(event: On<PacketEvent<KeepAlive>>, world: &World, mut commands: Commands) {
     if let Some(keep_alive_state) = world.get::<KeepAliveState>(event.entity) {
-        if keep_alive_state.last_sent_id == event.packet.keep_alive_id {
+        if keep_alive_state.awaiting_response
+            && keep_alive_state.last_sent_id == event.packet.keep_alive_id
+        {
             commands.entity(event.entity).insert(KeepAliveState {
                 awaiting_response: false,
                 latency: round_trip_millis(keep_alive_state.last_sent_id),
@@ -123,5 +125,31 @@ mod tests {
         assert!((250..1250).contains(&latency), "latency {latency}");
         assert_eq!(round_trip_millis(i64::MAX), 0);
         assert_eq!(round_trip_millis(0), i32::MAX);
+    }
+
+    #[test]
+    fn replayed_keep_alive_is_ignored() {
+        let mut app = App::new();
+        app.add_plugins(PlayPlugin);
+
+        let entity = app
+            .world_mut()
+            .spawn(KeepAliveState {
+                last_sent_id: 42,
+                awaiting_response: false,
+                latency: 17,
+            })
+            .id();
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 7,
+            entity,
+            packet: KeepAlive { keep_alive_id: 42 },
+        });
+        app.update();
+
+        let state = app.world().get::<KeepAliveState>(entity).unwrap();
+        assert_eq!(state.latency, 17);
+        assert!(!state.awaiting_response);
     }
 }

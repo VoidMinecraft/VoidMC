@@ -248,8 +248,13 @@ mod tests {
     }
 
     fn drain(rx: &Receiver<OutgoingPacket>) -> Vec<Sent> {
-        let mut sent: Vec<Sent> = rx
-            .try_iter()
+        let mut sent = drain_in_order(rx);
+        sent.sort();
+        sent
+    }
+
+    fn drain_in_order(rx: &Receiver<OutgoingPacket>) -> Vec<Sent> {
+        rx.try_iter()
             .map(|out| match out.packet {
                 ClientboundPacket::ManualPlay(ManualPlayPacket::PlayerInfoUpdate(p)) => Sent::Info(
                     out.client_id,
@@ -282,9 +287,7 @@ mod tests {
                 }
                 other => panic!("unexpected packet {other:?}"),
             })
-            .collect();
-        sent.sort();
-        sent
+            .collect()
     }
 
     #[test]
@@ -323,6 +326,27 @@ mod tests {
             app.world().get::<TabEntry>(beta).unwrap().display_name,
             Some("Beta".into())
         );
+    }
+
+    #[test]
+    fn join_lists_the_player_before_spawning_it_for_every_receiver() {
+        let (mut app, rx) = join_app();
+        join(&mut app, 1, "alpha", None);
+        drain(&rx);
+        join(&mut app, 2, "beta", None);
+
+        let sent = drain_in_order(&rx);
+        for receiver in [1, 2] {
+            let listed = sent
+                .iter()
+                .position(|p| matches!(p, Sent::Info(id, 0xFF, _) if *id == receiver))
+                .unwrap();
+            let spawned = sent
+                .iter()
+                .position(|p| matches!(p, Sent::Spawn(id, _) if *id == receiver))
+                .unwrap();
+            assert!(listed < spawned, "receiver {receiver}: {sent:?}");
+        }
     }
 
     #[test]

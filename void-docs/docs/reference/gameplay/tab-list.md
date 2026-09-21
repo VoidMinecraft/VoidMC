@@ -80,8 +80,11 @@ fn vanish(mut commands: Commands, player: Entity) {
 The builder methods (`.display_name()`, `.color()`, `.listed()`, `.hidden()`,
 `.latency()`, `.game_mode()`, `.list_order()`, `.show_hat()`) set the same
 fields. Each change becomes one Player Info Update packet carrying only the
-changed actions, sent to every ready player. Removing the component reverts the
-row to the defaults with the same diff.
+changed actions, sent to every ready player. Rows changed in the same tick that
+share the same set of actions travel in one packet. To revert a row, mutate the
+component back to `TabEntry::new()` rather than removing it: removal also
+reverts the row, but the player then no longer matches `Query<&mut TabEntry>`
+until you insert a new one.
 
 `latency: None` shows the keep-alive round trip the engine measures
 (`KeepAliveState::latency`, refreshed every keep-alive, about every ten

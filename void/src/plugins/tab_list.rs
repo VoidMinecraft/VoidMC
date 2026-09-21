@@ -322,6 +322,9 @@ impl Plugin for TabListPlugin {
 }
 
 fn sync_tab_lists(players: Players, mut lists: Query<(&TabList, &mut TabListState)>) {
+    if lists.is_empty() {
+        return;
+    }
     let ready = players.ready();
     for (list, mut state) in lists.iter_mut() {
         let members = || {
@@ -380,6 +383,7 @@ fn sync_tab_entries(
     >,
 ) {
     let default_game_mode = config.as_ref().map_or(0, |config| config.game_mode);
+    let mut batches: Vec<PlayerInfoUpdate> = Vec::new();
     for (uuid, entry, keep_alive, mut state) in rows.iter_mut() {
         let changed = state.dirty
             || entry.as_ref().is_some_and(|entry| entry.is_changed())
@@ -398,10 +402,19 @@ fn sync_tab_entries(
         if actions.is_empty() {
             continue;
         }
-        players
-            .ready()
-            .send(PlayerInfoUpdate::single(actions, current.wire(uuid.0)));
+        let row = current.wire(uuid.0);
+        match batches.iter_mut().find(|batch| batch.actions == actions) {
+            Some(batch) => batch.entries.push(row),
+            None => batches.push(PlayerInfoUpdate::single(actions, row)),
+        }
         state.sent = Some(current);
+    }
+    if batches.is_empty() {
+        return;
+    }
+    let ready = players.ready();
+    for batch in batches {
+        ready.send(batch);
     }
 }
 
@@ -539,6 +552,22 @@ mod tests {
                     )
                 }
                 other => panic!("unexpected packet {other:?}"),
+            })
+            .collect();
+        sent.sort();
+        sent
+    }
+
+    fn info_bytes(rx: &Receiver<OutgoingPacket>) -> Vec<(u32, Vec<u8>)> {
+        let mut sent: Vec<(u32, Vec<u8>)> = rx
+            .try_iter()
+            .map(|out| {
+                let ClientboundPacket::ManualPlay(packet) = out.packet else {
+                    panic!("unexpected packet {:?}", out.packet);
+                };
+                let mut buf = Vec::new();
+                voidmc_codec::Encode::encode(&packet, &mut buf);
+                (out.client_id, buf)
             })
             .collect();
         sent.sort();
@@ -805,6 +834,93 @@ mod tests {
             .latency = 99;
         app.update();
         assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn rows_changed_in_one_tick_are_batched_per_action_mask() {
+        let (mut app, rx) = test_app();
+        let alpha = known_player(&mut app, 1, TabEntry::new());
+        let beta = known_player(&mut app, 2, TabEntry::new());
+        let gamma = known_player(&mut app, 3, TabEntry::new());
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut()
+            .get_mut::<KeepAliveState>(alpha)
+            .unwrap()
+            .latency = 1;
+        app.world_mut()
+            .get_mut::<KeepAliveState>(beta)
+            .unwrap()
+            .latency = 300;
+        app.world_mut().get_mut::<TabEntry>(gamma).unwrap().listed = false;
+        app.update();
+
+        let mut latency = vec![0x46, 0x10, 0x02];
+        latency.extend(Uuid::from_u128(1).as_bytes());
+        latency.push(0x01);
+        latency.extend(Uuid::from_u128(2).as_bytes());
+        latency.extend([0xAC, 0x02]);
+        let mut listed = vec![0x46, 0x08, 0x01];
+        listed.extend(Uuid::from_u128(3).as_bytes());
+        listed.push(0x00);
+        assert_eq!(
+            info_bytes(&rx),
+            vec![
+                (1, listed.clone()),
+                (1, latency.clone()),
+                (2, listed.clone()),
+                (2, latency.clone()),
+                (3, listed),
+                (3, latency),
+            ]
+        );
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn replayed_keep_alive_does_not_resend_latency() {
+        let (mut app, rx) = test_app();
+        app.add_plugins(crate::plugins::play::PlayPlugin);
+        let leo = known_player(&mut app, 1, TabEntry::new());
+        let sent_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            - 100;
+        app.world_mut().entity_mut(leo).insert(KeepAliveState {
+            last_sent_id: sent_at,
+            awaiting_response: true,
+            latency: 0,
+        });
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        let reply = || crate::network::PacketEvent {
+            client_id: 1,
+            entity: leo,
+            packet: voidmc_protocol::serverbound::KeepAlive {
+                keep_alive_id: sent_at,
+            },
+        };
+        app.world_mut().trigger(reply());
+        app.update();
+        let sent = drain(&rx);
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(&sent[0], Sent::Info(1, 0x10, rows) if rows[0].3 >= 100));
+        let latency = app.world().get::<KeepAliveState>(leo).unwrap().latency;
+
+        for _ in 0..3 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            app.world_mut().trigger(reply());
+            app.update();
+        }
+        assert!(drain(&rx).is_empty());
+        assert_eq!(
+            app.world().get::<KeepAliveState>(leo).unwrap().latency,
+            latency
+        );
     }
 
     #[test]
