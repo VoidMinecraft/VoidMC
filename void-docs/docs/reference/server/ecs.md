@@ -74,6 +74,7 @@ to ready players by `systems::entities`.
 | `EntityViewers` | Player set | Players currently receiving this entity's packets; maintained by the visibility tracker |
 | `EntityMetadata` | Indexed values | Synched entity data with dirty tracking; typed components (`CustomName`, `Glowing`, `Display`, ...) project into it |
 | `Passengers(Vec<Entity>)` | Riders | Entities riding this one; changes send `SetPassengers` to viewers |
+| `Hidden` | (marker) | Hides the entity from every player without despawning it: `RemoveEntities` on insert, the normal spawn path on remove |
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |
 | `Rotation { yaw, pitch }` | `f32` angles | Current body/look rotation |
