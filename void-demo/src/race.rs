@@ -5,7 +5,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
     Audience, BossBar, BossBarColor, ChunkPos, Command, CommandBuilder, CommandRegistry,
-    CommandSystems, IntegerArg, Messages, VoidSystems,
+    CommandSystems, IntegerArg, Messages, TextColor, VoidSystems,
     components::PlayerName,
     events::{PlayerQuitEvent, PlayerReadyEvent},
     plugins::boss_bar::BossBarState,
@@ -31,7 +31,7 @@ const HUD_PERIOD: u64 = 5;
 const TIME_WARNINGS: [u64; 3] = [1200, 600, 200];
 const ROUND_STRIDE: u64 = 0x9e3779b97f4a7c15;
 const PREFIX: &str = "[Alpine Rush] ";
-const COLOR: &str = "gold";
+const COLOR: TextColor = TextColor::Gold;
 const BOOST_TITLE: &str = "Boost — Saut pour accelerer";
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1224,6 +1224,14 @@ pub(crate) mod tests {
                         z: p.z,
                         yaw: p.yaw,
                     },
+                    ClientboundPacket::Play(PlayPacket::EntityPositionSync(p)) => Out::Teleport {
+                        client: out.client_id,
+                        id: p.entity_id,
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        yaw: p.yaw,
+                    },
                     ClientboundPacket::Play(PlayPacket::SetHeadRotation(p)) => {
                         Out::HeadRotation(out.client_id, p.entity_id)
                     }
@@ -1367,7 +1375,7 @@ pub(crate) mod tests {
         let out = h.drain();
         assert!(
             out.iter()
-                .all(|o| matches!(o, Out::Chat { color, .. } if color == COLOR))
+                .all(|o| matches!(o, Out::Chat { color, .. } if *color == COLOR.to_string()))
         );
         assert_eq!(
             texts(&out, 1),
@@ -1881,10 +1889,9 @@ pub(crate) mod tests {
             overlays(&out, 1),
             vec!["Vol libre | /race pour lancer une course".to_string()]
         );
-        assert!(
-            out.iter()
-                .all(|o| !matches!(o, Out::Chat { overlay: true, color, .. } if color != COLOR))
-        );
+        assert!(out.iter().all(
+            |o| !matches!(o, Out::Chat { overlay: true, color, .. } if *color != COLOR.to_string())
+        ));
         h.shortcut_to_countdown(a, &[]);
         let c = h.connect(3);
         let tick = h.race().tick;
