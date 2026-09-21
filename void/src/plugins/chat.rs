@@ -5,9 +5,8 @@ use bevy_ecs::{
     query::With,
     system::{Commands, Query, Res, ResMut},
 };
-use voidmc_protocol::{
-    clientbound,
-    serverbound::{ChatCommand, ChatMessage, CommandSuggestionsRequest, SignedChatCommand},
+use voidmc_protocol::serverbound::{
+    ChatCommand, ChatMessage, CommandSuggestionsRequest, SignedChatCommand,
 };
 
 use crate::{
@@ -15,6 +14,7 @@ use crate::{
     commands::{CommandEnqueueSequence, CommandQueue, enqueue_command},
     components::{PlayerName, PlayerReady},
     events::{ChatCommandEvent, ChatMessageEvent},
+    messages::Messages,
     network::PacketEvent,
     players::Players,
 };
@@ -100,7 +100,7 @@ fn handle_chat_message(
     mut commands: Commands,
     queue: ResMut<CommandQueue>,
     sequence: ResMut<CommandEnqueueSequence>,
-    players: Players,
+    messages: Messages,
     player_names: Query<&PlayerName>,
 ) {
     // If the client doesn't recognise a command in its tree, it sends
@@ -129,14 +129,9 @@ fn handle_chat_message(
         "Chat message"
     );
 
-    let formatted = format!("<{}> {}", player_name, event.packet.message);
-    let nbt = crate::commands::text_to_nbt(&formatted, "white");
-
-    // Broadcast the chat message to all ready players
-    players.broadcast(clientbound::SystemChat {
-        content: nbt,
-        overlay: false,
-    });
+    messages
+        .broadcast(format!("<{}> {}", player_name, event.packet.message))
+        .send();
 
     commands.trigger(ChatMessageEvent {
         entity: event.entity,

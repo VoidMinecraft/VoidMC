@@ -12,6 +12,7 @@ use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::commands::{CommandNode, Commands, Parser, StringType};
 
 use crate::components::{PlayerName, Position};
+use crate::messages::WorldMessages;
 use crate::players::WorldPlayers;
 
 pub use error::ParseError;
@@ -263,17 +264,22 @@ impl<'a> CommandContext<'a> {
 
     /// Send a system message to the command sender.
     pub fn reply(&self, message: &str) {
-        send_system_chat(self.world, self.entity, message, "white");
+        WorldMessages::new(self.world)
+            .message(self.entity, message)
+            .send();
     }
 
     /// Send an error message (red) to the command sender.
     pub fn reply_error(&self, message: &str) {
-        send_system_chat(self.world, self.entity, message, "red");
+        WorldMessages::new(self.world)
+            .message(self.entity, message)
+            .color("red")
+            .send();
     }
 
     /// Broadcast a system message to all ready players.
     pub fn broadcast(&mut self, message: &str) {
-        WorldPlayers::new(self.world).broadcast(system_chat(message, "white"));
+        WorldMessages::new(self.world).broadcast(message).send();
     }
 
     pub fn players(&self) -> WorldPlayers<'_> {
@@ -303,19 +309,14 @@ pub fn system_chat(message: &str, color: &str) -> voidmc_protocol::clientbound::
 }
 
 pub(crate) fn send_system_chat(world: &World, player: Entity, message: &str, color: &str) {
-    WorldPlayers::new(world).send(player, system_chat(message, color));
+    WorldMessages::new(world)
+        .message(player, message)
+        .color(color)
+        .send();
 }
 
 pub fn text_to_nbt(text: &str, color: &str) -> ussr_nbt::owned::Nbt {
-    use ussr_nbt::owned::{Nbt, Tag};
-    Nbt {
-        name: "".into(),
-        compound: vec![
-            ("text".into(), Tag::String(text.into())),
-            ("color".into(), Tag::String(color.into())),
-        ]
-        .into(),
-    }
+    crate::messages::text_component(text, color)
 }
 
 // ---------------------------------------------------------------------------

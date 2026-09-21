@@ -15,7 +15,7 @@ fn my_system(players: Players, me: Query<Entity, With<Operator>>) {
     let me = me.single().unwrap();
 
     players.send(me, KeepAlive { keep_alive_id: 1 });       // one client
-    players.broadcast(SystemChat { content, overlay: false });  // every ready player
+    players.broadcast(SystemChat { content, overlay: false });  // every ready player (prefer `Messages`)
     players.broadcast_except(me, packet);                   // everyone but one
     players.broadcast_chunk(DimensionId::Overworld, ChunkPos::new(0, 0), packet);
 
@@ -93,6 +93,18 @@ fn handle(ctx: &mut CommandContext) {
 ```
 
 `WorldPlayers` needs no `&mut World` and no prior component registration.
+
+### Higher-level send APIs
+
+`Players` is the raw layer; each feature has a fire-and-forget request API on
+top of it with the same `Audience` / `viewers` vocabulary:
+
+| Content | API |
+|---|---|
+| Chat and action-bar text | [`Messages` / `WorldMessages`](../gameplay/messages.md) — the text-messaging entry point. |
+| Particles | [`Particles` / `WorldParticles`](../gameplay/particles.md) |
+| Sounds | [`Sounds` / `WorldSounds`](../gameplay/sounds.md) |
+| Boss bars | [`BossBar` component](../gameplay/boss-bars.md) |
 
 ### Failure handling
 

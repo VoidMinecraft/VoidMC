@@ -16,6 +16,7 @@ pub mod inventory;
 pub mod item;
 pub mod item_behavior;
 pub mod menu;
+pub mod messages;
 mod metrics;
 pub mod network;
 pub mod particles;
@@ -61,6 +62,7 @@ pub use menu::{
     ContainerIds, ContainerInput, Menu, MenuClickContext, MenuClickEvent, MenuCloseReason,
     MenuClosedEvent, MenuSlot, MenuType, Menus, OpenMenu, WorldMenus,
 };
+pub use messages::{MessageRequest, Messages, WorldMessages};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
