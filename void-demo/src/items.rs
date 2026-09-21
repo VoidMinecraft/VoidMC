@@ -38,6 +38,7 @@ pub struct Pickup {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Trap {
+    pub id: u64,
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -67,6 +68,7 @@ impl Trap {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Missile {
+    pub id: u64,
     pub owner: Entity,
     pub target: Option<Entity>,
     pub phase: f64,
@@ -97,6 +99,7 @@ impl BurstKind {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Burst {
+    pub id: u64,
     pub x: f64,
     pub y: f64,
     pub z: f64,
@@ -106,8 +109,9 @@ pub struct Burst {
 }
 
 impl Burst {
-    fn at(kart: &Kart, radius: f64, kind: BurstKind) -> Self {
+    fn at(id: u64, kart: &Kart, radius: f64, kind: BurstKind) -> Self {
         Self {
+            id,
             x: kart.x,
             y: kart.y + 0.6,
             z: kart.z,
@@ -132,9 +136,15 @@ pub struct Items {
     pub traps: Vec<Trap>,
     pub missiles: Vec<Missile>,
     pub bursts: Vec<Burst>,
+    serial: u64,
 }
 
 impl Items {
+    pub fn serial(&mut self) -> u64 {
+        self.serial += 1;
+        self.serial
+    }
+
     pub fn place(&mut self, map: &Track) {
         self.pickups = (0..GATES)
             .flat_map(|gate| {
@@ -267,12 +277,14 @@ impl Field<'_, '_> {
         match item {
             PowerUp::Turbo | PowerUp::Shield => {}
             PowerUp::Recharge => {
-                let burst = Burst::at(&kart, 3.0, BurstKind::Recharge);
+                let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Recharge);
                 self.items.bursts.push(burst);
             }
             PowerUp::Banana | PowerUp::Ice => {
                 let (x, y, z) = kart.trap_drop();
+                let id = self.items.serial();
                 self.items.traps.push(Trap {
+                    id,
                     x,
                     y,
                     z,
@@ -287,6 +299,7 @@ impl Field<'_, '_> {
                     .filter(|r| r.kart != racer.kart && r.progress > racer.progress)
                     .min_by(|a, b| a.progress.total_cmp(&b.progress));
                 let missile = Missile {
+                    id: self.items.serial(),
                     owner: racer.kart,
                     target: target.map(|r| r.kart),
                     phase: self.map.project(kart.x, kart.z).phase,
@@ -307,6 +320,7 @@ impl Field<'_, '_> {
             PowerUp::Shockwave | PowerUp::Lightning => {
                 let shockwave = item == PowerUp::Shockwave;
                 let burst = Burst::at(
+                    self.items.serial(),
                     &kart,
                     if shockwave { SHOCKWAVE_RADIUS } else { 3.0 },
                     if shockwave {
@@ -335,6 +349,7 @@ impl Field<'_, '_> {
                     let mut kart = self.karts.get_mut(other.kart).unwrap().3;
                     let shielded = kart.strike(strike);
                     let burst = Burst::at(
+                        self.items.serial(),
                         &kart,
                         2.5,
                         if shockwave {
@@ -437,9 +452,8 @@ impl Field<'_, '_> {
                 }
                 let mut kart = self.karts.get_mut(racer.kart).unwrap().3;
                 let shielded = kart.strike(Strike::Missile);
-                self.items
-                    .bursts
-                    .push(Burst::at(&kart, 3.0, BurstKind::Impact));
+                let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Impact);
+                self.items.bursts.push(burst);
                 self.chat.tell(
                     racer.player,
                     if shielded {
@@ -844,7 +858,11 @@ mod tests {
         h.kart_mut(b).next_gate = done;
         h.tick();
         assert_eq!(h.race().phase, Phase::Destroying);
-        assert_eq!(crystals(&mut h).len(), GATES * 3 - 1);
+        let ids: Vec<i32> = crystals(&mut h)
+            .iter()
+            .map(|c| network_id(&h, *c))
+            .collect();
+        assert_eq!(ids.len(), GATES * 3 - 1);
         h.tick();
         assert!(crystals(&mut h).is_empty());
         assert!(items(&h).is_empty());
@@ -856,6 +874,7 @@ mod tests {
                 _ => None,
             })
             .flatten()
+            .filter(|id| ids.contains(id))
             .collect();
         assert_eq!(removed.len(), GATES * 3 - 1);
         h.ticks(3);

@@ -12,6 +12,7 @@ use voidmc::{
 };
 
 use crate::arena::Arena;
+use crate::displays;
 use crate::items::{self, Items};
 use crate::kart::{Kart, PowerUp};
 use crate::terrain::mix;
@@ -287,6 +288,7 @@ impl Plugin for RacePlugin {
             .insert_resource(self.0.clone())
             .init_resource::<Race>()
             .init_resource::<Items>()
+            .init_resource::<displays::Scene>()
             .add_observer(ready)
             .add_observer(quit)
             .add_observer(join)
@@ -311,6 +313,7 @@ impl Plugin for RacePlugin {
                     boost_bar,
                     vehicle::pose,
                     items::effects,
+                    displays::sync,
                 )
                     .chain()
                     .after(CommandSystems::DrainQueue),

@@ -1948,6 +1948,7 @@ dependencies = [
  "tracing-subscriber",
  "ussr-nbt",
  "voidmc",
+ "voidmc-codec",
  "voidmc-data",
  "voidmc-protocol",
 ]

@@ -8,10 +8,11 @@ sur une chaussée : ses déplacements sont simulés par le serveur.
 > API actuelles du moteur — génération du monde, géométrie du circuit et simulation
 > pure des karts —, la machine à états de la course (D1) : phases, commandes,
 > annonces et bossbars, les karts en tant qu'entités du moteur (D2) : minecart
-> monté, pilotage au clavier et déplacement piloté par le serveur, et l'arsenal
-> arcade (D3) : cristaux de bonus, pièges, missiles, ondes et particules. Le reste —
-> affichages et barrière de téléportation — est **en cours de portage** et arrive
-> dans les unités suivantes.
+> monté, pilotage au clavier et déplacement piloté par le serveur, l'arsenal
+> arcade (D3) : cristaux de bonus, pièges, missiles, ondes et particules, et les
+> affichages animés (D4) : bonus tenu, réacteurs, bouclier, recharge, débuffs, pièges,
+> missiles et ondes en entités *display* persistantes. Le reste — barrière de
+> téléportation — est **en cours de portage** et arrive dans l'unité suivante.
 
 ## Lancer
 
@@ -132,13 +133,53 @@ seuls spectateurs, selon leur état : `crit` (choc), `electric_spark` (bouclier)
 `end_rod` (glace ou ralenti), `happy_villager` (super-recharge), `flame` (turbo ou
 boost), `cloud` (vitesse > 0,25). Un kart immobile sans effet n'émet rien.
 
-L'état complet — pièges, missiles, ondes (positions, âges, rayons) et emplacements de
-cristaux — est exposé par la ressource `Items` pour l'unité affichages (D4). Tout est
-retiré à la fin de la manche, cristaux compris.
+L'état complet — pièges, missiles, ondes (positions, âges, rayons, identifiant unique)
+et emplacements de cristaux — est exposé par la ressource `Items`. Tout est retiré à la
+fin de la manche, cristaux compris.
 
 ### Visuels et animation
 
-*En cours de portage (D4).*
+Les effets prennent corps par des **entités display du moteur** (`src/displays.rs`),
+en plus des particules. Chaque élément de décor animé est identifié par une clé
+stable — source (kart, piège, missile ou onde), genre et numéro de pièce — et
+correspond à **une seule entité** `block_display` ou `item_display`, créée à
+l'apparition de la clé et retirée à sa disparition, jamais recréée entre-temps. Le
+moteur se charge du reste : apparition chez les joueurs qui chargent le chunk,
+retrait quand ils s'éloignent, métadonnées complètes pour un spectateur qui arrive
+en cours d'animation.
+
+Les huit genres reprennent les modèles de la référence, tous issus de `voidmc_data` :
+
+- **Bonus tenu** : l'objet du bonus (`fire_charge`, `shield`, `yellow_dye`,
+  `firework_rocket`, `ender_pearl`, `blue_ice`, `lightning_rod`, `nether_star`) flotte
+  2,5 blocs au-dessus du kart, oscille et tourne lentement.
+- **Réacteurs** (turbo ou boost) : deux flammes de verre orange et sea lantern à
+  l'arrière du kart, dont la longueur pulse.
+- **Bouclier** : huit facettes de verre cyan (blocs, pas des panneaux) en orbite
+  ondulante autour du kart, apparition et extinction en fondu.
+- **Super-recharge** : trois blocs d'émeraude en orbite inverse.
+- **Débuff** (glace ou ralenti) : trois éclats de glace bleue qui tournent au ras du
+  kart.
+- **Pièges** : la banane est une hélice de béton jaune sur un pied d'or ; la glace,
+  une nappe octogonale de glace bleue et quatre cristaux de verre bleu clair qui
+  tournent lentement.
+- **Missile** : fuselage de fer, ogive de béton rouge et tuyère sea lantern en
+  rotation, orientés selon la piste.
+- **Ondes** : douze segments en anneau (`emerald_block`, `orange_stained_glass`, ou
+  sea lantern et verre cyan alternés) dont le rayon suit l'onde ; l'éclair est une
+  colonne de cinq prismes en zigzag.
+
+L'animation est **échantillonnée tous les deux ticks** (10 Hz), la cadence native de
+l'interpolation client : les displays reçoivent `interpolation_ticks = 2` et
+`teleport_ticks = 2`, luminosité maximale et portée de vue doublée. À chaque image,
+le serveur ne réécrit que ce qui a changé — position de l'entité, transformation
+(translation, échelle, rotation) ou modèle — et le moteur n'envoie que les entrées
+de métadonnées modifiées, précédées du redémarrage de l'horloge d'interpolation.
+Un décor immobile (une banane posée) ne génère aucun paquet. Les ticks impairs sont
+ignorés en bloc. Les rotations sont des quaternions composés (lacet puis tangage)
+pour rester continues au passage de ±180° ; les modèles de bloc, qui pivotent autour
+de leur coin, sont recentrés sur le point demandé. Les fondus utilisent `smoothstep`
+et une enveloppe qui atteint zéro deux ticks avant le retrait.
 
 ## Carte procédurale
 
@@ -192,6 +233,11 @@ est recommandé.
   changement d'état seulement), `update` (activation des bonus, ramassage, pièges,
   guidage des missiles, vieillissement des ondes ; vide tout hors course) et
   `effects` (émission des particules via `Particles`, aux cadences de référence).
+- `src/displays.rs` : les affichages — `Scene` (une entité display persistante par
+  `Key`), le système `sync` (images tous les deux ticks, réécriture sur changement
+  seulement, retrait hors course), les modèles par genre (`kart_frames`, pièges,
+  missiles, ondes) et les mathématiques de rotation et de fondu (`rotation`,
+  `rotate`, `smoothstep`, `envelope`).
 - `src/race.rs` : phases, commandes, annonces, bossbars et HUD ; `Racer` relie le
   joueur à son kart.
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
@@ -219,4 +265,14 @@ pilote devant (géométrie de référence, bouclier, cible qui quitte, tir sans 
 les ondes de choc et éclairs (portée, bouclier, spectateurs et pilotes arrivés
 ignorés, vieillissement), les pièges (délai du poseur, glace persistante, banane
 consommée, expiration) et les particules capturées sur le fil aux ticks attendus,
-avec les types, quantités, offsets et audiences de référence.
+avec les types, quantités, offsets et audiences de référence. Pour les affichages :
+un bonus tenu produit exactement une entité `item_display` qui persiste sur dix ticks,
+ne reçoit une métadonnée (redémarrage d'interpolation, translation, rotation) qu'aux
+ticks pairs, change d'objet sans être recréée et disparaît chez tous les spectateurs
+quand le bonus est utilisé ; une banane posée n'émet plus rien une fois stabilisée et
+un joueur qui arrive ensuite reçoit ses quatre blocs avec leurs métadonnées complètes
+par le moteur ; les huit genres ont une géométrie bornée (translations, échelles,
+quaternions unitaires) sur 250 ticks sans aucun nouveau spawn et la scène se vide
+d'elle-même ; les fondus et le recentrage des blocs sont vérifiés à l'unité, et
+les octets d'une image de métadonnées est comparé à la disposition Paper 26.1.2
+(index, sérialiseurs `Int`/`Vector3`/`Quaternion`, terminateur).
