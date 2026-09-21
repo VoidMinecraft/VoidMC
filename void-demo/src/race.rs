@@ -62,6 +62,7 @@ pub struct Race {
     pub round: u64,
     pub results: Vec<(String, u64)>,
     pub best: HashMap<(u64, usize, String), u64>,
+    pub record: Option<u64>,
     pub roster: Vec<Entity>,
     pub pending: Vec<ChunkPos>,
     pub total_chunks: usize,
@@ -77,6 +78,7 @@ impl Default for Race {
             round: 0,
             results: Vec::new(),
             best: HashMap::new(),
+            record: None,
             roster: Vec::new(),
             pending: Vec::new(),
             total_chunks: 0,
@@ -474,6 +476,12 @@ fn launch(
     commands.insert_resource(map);
     race.round += 1;
     race.laps = laps;
+    race.record = race
+        .best
+        .iter()
+        .filter(|((s, l, _), _)| *s == seed && *l == laps)
+        .map(|(_, best)| *best)
+        .min();
     race.results.clear();
     race.schedule(Phase::Generating, arena.chunks());
     let (name, round) = (chat.name(player), race.round);
@@ -687,13 +695,7 @@ fn racing(
             let name = chat.name(player);
             race.results.push((name.clone(), time));
             race.results.sort_by_key(|(_, time)| *time);
-            let record = race
-                .best
-                .iter()
-                .filter(|((s, l, _), _)| *s == map.seed && *l == laps)
-                .map(|(_, best)| *best)
-                .min()
-                .is_some_and(|best| time < best);
+            let record = race.record.is_some_and(|best| time < best);
             race.best
                 .entry((map.seed, laps, name.clone()))
                 .and_modify(|best| *best = (*best).min(time))
@@ -855,7 +857,7 @@ pub(crate) mod tests {
     use voidmc::plugins::teleport::TeleportPlugin;
     use voidmc::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
     use voidmc::world::{ChunkIndex, DimensionId};
-    use voidmc::{EntityPlugin, Particle, Teleport};
+    use voidmc::{EntityPlugin, Particle, Teleport, TextColor};
     use voidmc_codec::{Encode, VarI32};
     use voidmc_protocol::clientbound::{
         BossEventAction, ClientboundPacket, ManualPlayPacket, Parser, PlayPacket, SoundEffect,
@@ -1596,32 +1598,49 @@ pub(crate) mod tests {
 
     #[test]
     fn race_command_validates_laps_and_refuses_double_starts() {
+        let seed_error = |value: &str| {
+            format!(
+                "Invalid value '{value}' for <seed>: expected seed ('{value}' is not a circuit seed (unsigned 64-bit integer))"
+            )
+        };
         for (args, expected) in [
-            (vec![], Some(3)),
-            (vec!["1"], Some(1)),
-            (vec!["5"], Some(5)),
-            (vec!["20"], Some(20)),
-            (vec!["0"], None),
-            (vec!["-1"], None),
-            (vec!["21"], None),
-            (vec!["abc"], None),
-            (vec!["2", "3"], Some(2)),
-            (vec!["2", "0"], Some(2)),
-            (vec!["2", "18446744073709551615"], Some(2)),
-            (vec!["2", "18446744073709551616"], None),
-            (vec!["2", "-1"], None),
-            (vec!["2", "x"], None),
-            (vec!["2", "3", "4"], None),
+            (vec![], Ok(3)),
+            (vec!["1"], Ok(1)),
+            (vec!["5"], Ok(5)),
+            (vec!["20"], Ok(20)),
+            (vec!["0"], Err("Invalid value '0' for <tours>: expected integer (0 is below minimum 1)".to_string())),
+            (vec!["-1"], Err("Invalid value '-1' for <tours>: expected integer (-1 is below minimum 1)".to_string())),
+            (vec!["21"], Err("Invalid value '21' for <tours>: expected integer (21 is above maximum 20)".to_string())),
+            (vec!["abc"], Err("Invalid value 'abc' for <tours>: expected integer ('abc' is not a valid integer)".to_string())),
+            (vec!["2", "3"], Ok(2)),
+            (vec!["2", "0"], Ok(2)),
+            (vec!["2", "18446744073709551615"], Ok(2)),
+            (vec!["2", "18446744073709551616"], Err(seed_error("18446744073709551616"))),
+            (vec!["2", "-1"], Err(seed_error("-1"))),
+            (vec!["2", "x"], Err(seed_error("x"))),
+            (vec!["2", "3", "4"], Err("Too many arguments: expected 2, got 3".to_string())),
         ] {
             let mut h = Harness::new(42);
             let a = h.connect(1);
             h.drain();
             h.command(a, "race", &args);
-            let Some(laps) = expected else {
-                assert_eq!(h.race().phase, Phase::Lobby);
-                assert_eq!(h.race().round, 0);
-                assert!(!h.chats(1).is_empty());
-                continue;
+            let laps = match expected {
+                Ok(laps) => laps,
+                Err(error) => {
+                    assert_eq!(h.race().phase, Phase::Lobby);
+                    assert_eq!(h.race().round, 0);
+                    assert_eq!(
+                        colored(&h.drain(), 1),
+                        vec![
+                            (error, TextColor::Red.to_string()),
+                            (
+                                "Usage: /race [tours:integer] [seed:seed]".to_string(),
+                                TextColor::Gray.to_string()
+                            ),
+                        ]
+                    );
+                    continue;
+                }
             };
             assert_eq!(h.race().phase, Phase::Generating);
             assert_eq!((h.race().laps, h.race().round), (laps, 1));
@@ -2176,17 +2195,18 @@ pub(crate) mod tests {
 
     #[test]
     fn a_record_is_announced_only_when_a_replayed_circuit_is_beaten() {
-        let mut h = Harness::new(42);
-        let a = h.connect(1);
-        let b = h.connect(2);
-        let seed = "7";
-        let mut rounds = Vec::new();
-        for (player, client, delay) in [(a, 1, 10), (b, 2, 3), (a, 1, 3), (b, 2, 5)] {
-            h.shortcut_to_racing(a, &["1", seed]);
-            assert_eq!(h.app.world().resource::<Track>().seed, 7);
+        fn finish(
+            h: &mut Harness,
+            player: Entity,
+            client: u32,
+            delay: usize,
+            penalty: u64,
+        ) -> (u64, bool) {
             h.ticks(delay);
             h.drain();
-            h.kart_mut(player).next_gate = GATES + 1;
+            let mut kart = h.kart_mut(player);
+            kart.penalty = penalty;
+            kart.next_gate = GATES + 1;
             h.tick();
             let out = h.drain();
             let time = h.kart(player).finished.unwrap();
@@ -2197,24 +2217,47 @@ pub(crate) mod tests {
             assert_eq!(sounds(&out, 1, Cue::Record).len(), usize::from(record));
             assert_eq!(sounds(&out, 2, Cue::Record).len(), usize::from(record));
             assert_eq!(sounds(&out, client, Cue::Finish).len(), 1);
-            rounds.push((time, record));
-            let other = if player == a { b } else { a };
-            h.kart_mut(other).next_gate = GATES + 1;
+            (time, record)
+        }
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        let seed = "7";
+        let mut rounds = Vec::new();
+        for [first, second] in [
+            [(a, 1, 10, 60), (b, 2, 2, 0)],
+            [(b, 2, 3, 0), (a, 1, 20, 0)],
+            [(a, 1, 3, 0), (b, 2, 5, 0)],
+        ] {
+            h.shortcut_to_racing(a, &["1", seed]);
+            assert_eq!(h.app.world().resource::<Track>().seed, 7);
+            let previous = h.race().record;
+            let round = [first, second].map(|(player, client, delay, penalty)| {
+                finish(&mut h, player, client, delay, penalty)
+            });
+            assert_eq!(h.race().record, previous);
             while h.race().phase != Phase::Results {
                 h.tick();
             }
             h.drain();
+            rounds.push(round);
         }
-        assert!(rounds[0].0 > rounds[1].0);
-        assert_eq!(rounds[1].0, rounds[2].0);
-        assert!(rounds[3].0 > rounds[2].0);
+        let [[a1, b1], [b2, a2], [a3, b3]] = rounds[..] else {
+            unreachable!()
+        };
+        assert!(b1.0 < a1.0);
+        assert!(b2.0 < b1.0);
+        assert!(a2.0 > b1.0);
+        assert_eq!(a3.0, b2.0);
+        assert!(b3.0 > b2.0);
         assert_eq!(
-            rounds.iter().map(|(_, record)| *record).collect::<Vec<_>>(),
-            vec![false, true, false, false]
+            [a1.1, b1.1, b2.1, a2.1, a3.1, b3.1],
+            [false, false, true, false, false, false]
         );
+        assert_eq!(h.race().record, Some(b2.0));
         assert_eq!(h.race().best.len(), 2);
-        assert_eq!(h.race().best[&(7, 1, "Pilot1".into())], rounds[2].0);
-        assert_eq!(h.race().best[&(7, 1, "Pilot2".into())], rounds[1].0);
+        assert_eq!(h.race().best[&(7, 1, "Pilot1".into())], a3.0);
+        assert_eq!(h.race().best[&(7, 1, "Pilot2".into())], b2.0);
     }
 
     #[test]

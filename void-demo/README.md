@@ -81,7 +81,9 @@ La manche est complète (`src/race.rs`) :
 - `/race [tours] [seed]` accepte **1 à 20 tours** (3 par défaut) et, en option, la
   **seed d'un circuit** (entier non signé sur 64 bits) pour le **rejouer** à
   l'identique. Sans seed, chaque manche tire un nouveau circuit de la séquence
-  déterminée par `VOID_DEMO_SEED`. La seed du circuit est écrite dans le log au
+  déterminée par `VOID_DEMO_SEED` ; un rejeu consomme lui aussi un numéro de
+  manche, donc la manche suivante sans seed tire un circuit différent de celui
+  qu'elle aurait tiré sans le rejeu. La seed du circuit est écrite dans le log au
   lancement et affichée dans le chat au lancement (« Circuit #… ») comme à la fin
   de la manche, avec la commande exacte pour le rejouer. Le nombre de tours choisi
   vaut pour tous les pilotes de la manche ; une commande invalide ne lance pas de
