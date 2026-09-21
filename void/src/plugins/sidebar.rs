@@ -5,12 +5,14 @@
 //! scoreboard sync only sends the lines whose text changed.
 
 use std::collections::BTreeMap;
+use std::ops::{Index, IndexMut};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::prelude::*;
 use tracing::warn;
+use voidmc_protocol::clientbound::DisplaySlot;
 
 use crate::messages::TextColor;
 use crate::players::Audience;
@@ -414,9 +416,13 @@ pub struct Sidebar {
     pub title: String,
     pub color: TextColor,
     pub ornament: Ornament,
-    pub widgets: Vec<Widget>,
     pub audience: Audience,
+    widgets: Vec<(WidgetId, Widget)>,
+    next_id: u32,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WidgetId(u32);
 
 impl Sidebar {
     pub fn new(title: impl Into<String>) -> Self {
@@ -424,8 +430,9 @@ impl Sidebar {
             title: title.into(),
             color: TextColor::White,
             ornament: Ornament::None,
-            widgets: Vec::new(),
             audience: Audience::All,
+            widgets: Vec::new(),
+            next_id: 0,
         }
     }
 
@@ -445,7 +452,7 @@ impl Sidebar {
     }
 
     pub fn widget(mut self, widget: impl Into<Widget>) -> Self {
-        self.widgets.push(widget.into());
+        self.push(widget);
         self
     }
 
@@ -462,37 +469,91 @@ impl Sidebar {
         self.title = title.into();
     }
 
-    pub fn push(&mut self, widget: impl Into<Widget>) -> usize {
-        self.widgets.push(widget.into());
-        self.widgets.len() - 1
+    fn next_id(&mut self) -> WidgetId {
+        let id = WidgetId(self.next_id);
+        self.next_id += 1;
+        id
     }
 
-    pub fn insert(&mut self, index: usize, widget: impl Into<Widget>) {
-        self.widgets.insert(index, widget.into());
+    fn position(&self, id: WidgetId) -> Option<usize> {
+        self.widgets.iter().position(|(held, _)| *held == id)
     }
 
-    pub fn set(&mut self, index: usize, widget: impl Into<Widget>) {
-        self.widgets[index] = widget.into();
+    pub fn push(&mut self, widget: impl Into<Widget>) -> WidgetId {
+        let id = self.next_id();
+        self.widgets.push((id, widget.into()));
+        id
     }
 
-    pub fn remove(&mut self, index: usize) -> Widget {
-        self.widgets.remove(index)
+    pub fn insert_before(&mut self, id: WidgetId, widget: impl Into<Widget>) -> Option<WidgetId> {
+        let index = self.position(id)?;
+        let new = self.next_id();
+        self.widgets.insert(index, (new, widget.into()));
+        Some(new)
+    }
+
+    pub fn insert_after(&mut self, id: WidgetId, widget: impl Into<Widget>) -> Option<WidgetId> {
+        let index = self.position(id)?;
+        let new = self.next_id();
+        self.widgets.insert(index + 1, (new, widget.into()));
+        Some(new)
+    }
+
+    pub fn set(&mut self, id: WidgetId, widget: impl Into<Widget>) -> bool {
+        match self.get_mut(id) {
+            Some(slot) => {
+                *slot = widget.into();
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn remove(&mut self, id: WidgetId) -> Option<Widget> {
+        let index = self.position(id)?;
+        Some(self.widgets.remove(index).1)
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        self.widgets.truncate(len);
     }
 
     pub fn clear(&mut self) {
         self.widgets.clear();
     }
 
-    pub fn get(&self, index: usize) -> Option<&Widget> {
-        self.widgets.get(index)
+    pub fn len(&self) -> usize {
+        self.widgets.len()
     }
 
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut Widget> {
-        self.widgets.get_mut(index)
+    pub fn is_empty(&self) -> bool {
+        self.widgets.is_empty()
     }
 
-    pub fn set_value(&mut self, index: usize, value: impl Into<String>) -> bool {
-        match self.widgets.get_mut(index) {
+    pub fn ids(&self) -> impl Iterator<Item = WidgetId> + '_ {
+        self.widgets.iter().map(|(id, _)| *id)
+    }
+
+    pub fn widgets(&self) -> impl Iterator<Item = (WidgetId, &Widget)> + '_ {
+        self.widgets.iter().map(|(id, widget)| (*id, widget))
+    }
+
+    pub fn get(&self, id: WidgetId) -> Option<&Widget> {
+        self.widgets
+            .iter()
+            .find(|(held, _)| *held == id)
+            .map(|(_, widget)| widget)
+    }
+
+    pub fn get_mut(&mut self, id: WidgetId) -> Option<&mut Widget> {
+        self.widgets
+            .iter_mut()
+            .find(|(held, _)| *held == id)
+            .map(|(_, widget)| widget)
+    }
+
+    pub fn set_value(&mut self, id: WidgetId, value: impl Into<String>) -> bool {
+        match self.get_mut(id) {
             Some(Widget::Labeled(labeled)) => {
                 labeled.set_value(value);
                 true
@@ -505,29 +566,29 @@ impl Sidebar {
         }
     }
 
-    pub fn labeled_mut(&mut self, index: usize) -> Option<&mut Labeled> {
-        match self.widgets.get_mut(index) {
+    pub fn labeled_mut(&mut self, id: WidgetId) -> Option<&mut Labeled> {
+        match self.get_mut(id) {
             Some(Widget::Labeled(labeled)) => Some(labeled),
             _ => None,
         }
     }
 
-    pub fn ranking_mut(&mut self, index: usize) -> Option<&mut Ranking> {
-        match self.widgets.get_mut(index) {
+    pub fn ranking_mut(&mut self, id: WidgetId) -> Option<&mut Ranking> {
+        match self.get_mut(id) {
             Some(Widget::Ranking(ranking)) => Some(ranking),
             _ => None,
         }
     }
 
-    pub fn timer_mut(&mut self, index: usize) -> Option<&mut Timer> {
-        match self.widgets.get_mut(index) {
+    pub fn timer_mut(&mut self, id: WidgetId) -> Option<&mut Timer> {
+        match self.get_mut(id) {
             Some(Widget::Timer(timer)) => Some(timer),
             _ => None,
         }
     }
 
-    pub fn progress_mut(&mut self, index: usize) -> Option<&mut Progress> {
-        match self.widgets.get_mut(index) {
+    pub fn progress_mut(&mut self, id: WidgetId) -> Option<&mut Progress> {
+        match self.get_mut(id) {
             Some(Widget::Progress(progress)) => Some(progress),
             _ => None,
         }
@@ -539,7 +600,7 @@ impl Sidebar {
 
     pub fn render(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        for widget in &self.widgets {
+        for (_, widget) in &self.widgets {
             widget.render(&mut lines);
         }
         for line in &mut lines {
@@ -567,6 +628,20 @@ impl Sidebar {
     }
 }
 
+impl Index<WidgetId> for Sidebar {
+    type Output = Widget;
+
+    fn index(&self, id: WidgetId) -> &Widget {
+        self.get(id).expect("unknown sidebar widget id")
+    }
+}
+
+impl IndexMut<WidgetId> for Sidebar {
+    fn index_mut(&mut self, id: WidgetId) -> &mut Widget {
+        self.get_mut(id).expect("unknown sidebar widget id")
+    }
+}
+
 pub fn line_owner(index: usize) -> String {
     format!("line{index:02}")
 }
@@ -574,6 +649,7 @@ pub fn line_owner(index: usize) -> String {
 fn fit(line: &mut String) {
     let mut visible = 0;
     let mut skip_code = false;
+    let mut trailing_code = None;
     for (index, c) in line.char_indices() {
         if skip_code {
             skip_code = false;
@@ -581,13 +657,18 @@ fn fit(line: &mut String) {
         }
         if c == LEGACY_PREFIX {
             skip_code = true;
+            trailing_code.get_or_insert(index);
             continue;
         }
         if visible == MAX_LINE_CHARS {
-            line.truncate(index);
+            line.truncate(trailing_code.unwrap_or(index));
             return;
         }
+        trailing_code = None;
         visible += 1;
+    }
+    if let Some(index) = trailing_code {
+        line.truncate(index);
     }
 }
 
@@ -614,7 +695,14 @@ impl Plugin for SidebarPlugin {
             PostUpdate,
             VoidSystems::SidebarSync.before(VoidSystems::ScoreboardSync),
         )
-        .add_systems(PostUpdate, render_sidebars.in_set(VoidSystems::SidebarSync));
+        .add_systems(PostUpdate, render_sidebars.in_set(VoidSystems::SidebarSync))
+        .add_observer(remove_board);
+    }
+}
+
+fn remove_board(event: On<Remove, Sidebar>, mut commands: Commands) {
+    if let Ok(mut entity) = commands.get_entity(event.entity) {
+        entity.remove::<Objective>();
     }
 }
 
@@ -651,6 +739,15 @@ fn render_sidebars(mut sidebars: Query<(Entity, Ref<Sidebar>, &mut Objective, &m
             current.format = Some(ScoreFormat::Blank);
             dirty = true;
         }
+        if current.slot != DisplaySlot::Sidebar {
+            warn!(
+                ?entity,
+                slot = ?current.slot,
+                "sidebar objective was on another display slot; moved to the sidebar slot"
+            );
+            current.slot = DisplaySlot::Sidebar;
+            dirty = true;
+        }
         if current.scores != scores {
             current.scores = scores;
             dirty = true;
@@ -671,7 +768,7 @@ mod tests {
     use flume::Receiver;
     use ussr_nbt::owned::Tag;
     use voidmc_protocol::clientbound::{
-        ClientboundPacket, DisplaySlot, NumberFormat, ObjectiveAction, PlayPacket,
+        ClientboundPacket, NumberFormat, ObjectiveAction, PlayPacket,
     };
 
     use super::*;
@@ -744,12 +841,11 @@ mod tests {
                     PlayPacket::SetDisplayObjective(p) => Sent::Display(id, p.slot),
                     PlayPacket::SetScore(p) => {
                         assert_eq!(p.number_format, None);
-                        Sent::Score(
-                            id,
-                            p.owner,
-                            p.value,
-                            p.display_name.as_ref().map(text).unwrap_or_default(),
-                        )
+                        let display = p
+                            .display_name
+                            .as_ref()
+                            .expect("sidebar lines carry a display name");
+                        Sent::Score(id, p.owner, p.value, text(display))
                     }
                     PlayPacket::ResetScore(p) => Sent::Reset(id, p.owner),
                     other => panic!("unexpected packet {other:?}"),
@@ -822,7 +918,7 @@ mod tests {
                 "§a▮§8▯▯▯▯",
                 "§fHP §c▮▮▮▮▮▮▮§8▯▯▯",
                 "§a§8▯▯▯▯▯▯▯▯▯▯",
-                "§a▮▮▮▮§8",
+                "§a▮▮▮▮",
             ]
         );
     }
@@ -875,7 +971,13 @@ mod tests {
             .widget(Widget::labeled("é".repeat(38), "value"));
         let rendered = lines(&sidebar);
         assert_eq!(rendered[0], format!("§6{}", "x".repeat(MAX_LINE_CHARS)));
-        assert_eq!(rendered[1], format!("§f{}: §f", "é".repeat(38)));
+        assert_eq!(rendered[1], format!("§f{}: ", "é".repeat(38)));
+        let mut trailing = String::from("§fa§b§c");
+        fit(&mut trailing);
+        assert_eq!(trailing, "§fa");
+        let mut cut = format!("{}§6§7x", "x".repeat(MAX_LINE_CHARS));
+        fit(&mut cut);
+        assert_eq!(cut, "x".repeat(MAX_LINE_CHARS));
     }
 
     #[test]
@@ -892,23 +994,31 @@ mod tests {
         );
     }
 
+    fn ids(sidebar: &Sidebar) -> Vec<WidgetId> {
+        sidebar.ids().collect()
+    }
+
     #[test]
     fn mutators_edit_widgets_in_place() {
         let mut sidebar = race();
-        assert!(sidebar.set_value(0, "2/3"));
-        assert!(!sidebar.set_value(1, "nope"));
-        assert!(!sidebar.set_value(9, "nope"));
-        sidebar.ranking_mut(1).unwrap().set([("Zoe", 1)]);
-        assert!(sidebar.ranking_mut(0).is_none());
-        assert!(sidebar.labeled_mut(0).is_some());
-        assert!(sidebar.timer_mut(0).is_none());
-        assert!(sidebar.progress_mut(0).is_none());
-        let index = sidebar.push(Widget::timer_ticks(200));
-        sidebar.timer_mut(index).unwrap().set_ticks(1200);
-        let index = sidebar.push(Widget::progress(0, 4));
-        sidebar.progress_mut(index).unwrap().set(2);
-        sidebar.insert(0, Widget::separator('='));
-        assert_eq!(sidebar.remove(3), Widget::Blank);
+        let [tour, ranking, blank, best] = ids(&sidebar)[..] else {
+            panic!("four widgets");
+        };
+        assert!(sidebar.set_value(tour, "2/3"));
+        assert!(!sidebar.set_value(ranking, "nope"));
+        sidebar.ranking_mut(ranking).unwrap().set([("Zoe", 1)]);
+        assert!(sidebar.ranking_mut(tour).is_none());
+        assert!(sidebar.labeled_mut(tour).is_some());
+        assert!(sidebar.timer_mut(tour).is_none());
+        assert!(sidebar.progress_mut(tour).is_none());
+        let timer = sidebar.push(Widget::timer_ticks(200));
+        sidebar.timer_mut(timer).unwrap().set_ticks(1200);
+        let progress = sidebar.push(Widget::progress(0, 4));
+        sidebar.progress_mut(progress).unwrap().set(2);
+        let separator = sidebar.insert_before(tour, Widget::separator('=')).unwrap();
+        assert_eq!(sidebar.remove(blank), Some(Widget::Blank));
+        assert_eq!(sidebar.remove(blank), None);
+        assert!(sidebar.set_value(best, "01:02"));
         sidebar.set_title("Rush");
         assert_eq!(
             lines(&sidebar),
@@ -916,16 +1026,76 @@ mod tests {
                 "§8====================",
                 "§fTour: §f2/3",
                 "§71. §fZoe §71",
-                "§fMeilleur tour: §f--:--",
+                "§fMeilleur tour: §f01:02",
                 "§f01:00",
                 "§a▮▮▮▮▮§8▯▯▯▯▯",
             ]
         );
         assert_eq!(sidebar.rendered_title(), "✦ Rush ✦");
-        assert!(matches!(sidebar.get(0), Some(Widget::Separator('='))));
-        assert!(sidebar.get_mut(99).is_none());
+        assert!(matches!(
+            sidebar.get(separator),
+            Some(Widget::Separator('='))
+        ));
+        assert!(matches!(sidebar[separator], Widget::Separator('=')));
+        sidebar[separator] = Widget::separator('-');
+        assert_eq!(lines(&sidebar)[0], "§8--------------------");
+        assert!(sidebar.set(separator, Widget::blank()));
+        assert_eq!(lines(&sidebar)[0], "");
+        assert_eq!(sidebar.len(), 6);
+        sidebar.truncate(2);
+        assert_eq!(ids(&sidebar), [separator, tour]);
         sidebar.clear();
+        assert!(sidebar.is_empty());
         assert!(lines(&sidebar).is_empty());
+    }
+
+    #[test]
+    fn unknown_ids_are_refused_without_panicking() {
+        let mut sidebar = race();
+        let mut other = Sidebar::new("other");
+        for _ in 0..10 {
+            other.push(Widget::blank());
+        }
+        let foreign = other.push(Widget::blank());
+        assert!(sidebar.get(foreign).is_none());
+        assert!(sidebar.get_mut(foreign).is_none());
+        assert!(!sidebar.set(foreign, Widget::blank()));
+        assert!(!sidebar.set_value(foreign, "x"));
+        assert!(sidebar.remove(foreign).is_none());
+        assert!(sidebar.insert_before(foreign, Widget::blank()).is_none());
+        assert!(sidebar.insert_after(foreign, Widget::blank()).is_none());
+        assert!(sidebar.labeled_mut(foreign).is_none());
+        assert!(sidebar.ranking_mut(foreign).is_none());
+        assert!(sidebar.timer_mut(foreign).is_none());
+        assert!(sidebar.progress_mut(foreign).is_none());
+        assert_eq!(sidebar.len(), 4);
+    }
+
+    #[test]
+    fn ids_survive_inserts_and_removals() {
+        let mut sidebar = Sidebar::new("t");
+        let a = sidebar.push(Widget::text("a"));
+        let b = sidebar.push(Widget::labeled("b", "1"));
+        let c = sidebar.push(Widget::text("c"));
+        let before = sidebar.insert_before(a, Widget::text("before")).unwrap();
+        let after = sidebar.insert_after(c, Widget::text("after")).unwrap();
+        assert_eq!(ids(&sidebar), [before, a, b, c, after]);
+        assert_eq!(
+            sidebar
+                .remove(a)
+                .map(|w| lines(&Sidebar::new("").widget(w))),
+            Some(vec!["a".into()])
+        );
+        assert!(sidebar.set_value(b, "2"));
+        assert_eq!(sidebar.labeled_mut(b).unwrap().value, "2");
+        let again = sidebar.push(Widget::text("a"));
+        assert_ne!(again, a);
+        assert!(sidebar.get(a).is_none());
+        assert_eq!(lines(&sidebar), ["before", "§fb: §f2", "c", "after", "a"]);
+        assert_eq!(
+            sidebar.widgets().map(|(id, _)| id).collect::<Vec<_>>(),
+            [before, b, c, after, again]
+        );
     }
 
     #[test]
@@ -958,17 +1128,18 @@ mod tests {
         app.update();
         drain(&rx);
 
+        let tour = ids(app.world().get::<Sidebar>(board).unwrap())[0];
         app.world_mut()
             .get_mut::<Sidebar>(board)
             .unwrap()
-            .set_value(0, "2/3");
+            .set_value(tour, "2/3");
         app.update();
         assert_eq!(drain(&rx), [score(1, 0, "§fTour: §f2/3")]);
 
         app.world_mut()
             .get_mut::<Sidebar>(board)
             .unwrap()
-            .set_value(0, "2/3");
+            .set_value(tour, "2/3");
         app.update();
         assert!(drain(&rx).is_empty());
     }
@@ -981,10 +1152,11 @@ mod tests {
         app.update();
         drain(&rx);
 
+        let ranking = ids(app.world().get::<Sidebar>(board).unwrap())[1];
         app.world_mut()
             .get_mut::<Sidebar>(board)
             .unwrap()
-            .ranking_mut(1)
+            .ranking_mut(ranking)
             .unwrap()
             .set([("Leo", 1200), ("Adam", 1300)]);
         app.update();
@@ -999,7 +1171,7 @@ mod tests {
         app.world_mut()
             .get_mut::<Sidebar>(board)
             .unwrap()
-            .ranking_mut(1)
+            .ranking_mut(ranking)
             .unwrap()
             .set([("Adam", 1300)]);
         app.update();
@@ -1034,10 +1206,11 @@ mod tests {
         player(&mut app, 1, "Leo");
         let board = app.world_mut().spawn(race()).id();
         app.update();
+        let tour = ids(app.world().get::<Sidebar>(board).unwrap())[0];
         app.world_mut()
             .get_mut::<Sidebar>(board)
             .unwrap()
-            .set_value(0, "3/3");
+            .set_value(tour, "3/3");
         app.update();
         drain(&rx);
 
@@ -1080,7 +1253,6 @@ mod tests {
         app.world_mut()
             .get_mut::<Sidebar>(board)
             .unwrap()
-            .widgets
             .truncate(3);
         app.update();
         let sent = drain(&rx);
@@ -1116,6 +1288,39 @@ mod tests {
     }
 
     #[test]
+    fn a_custom_audience_hands_a_player_over_to_a_personal_board() {
+        let (mut app, rx) = test_app();
+        let leo = player(&mut app, 1, "Leo");
+        player(&mut app, 2, "Adam");
+        let personal = Arc::new(std::sync::RwLock::new(std::collections::HashSet::new()));
+        let shared = personal.clone();
+        app.world_mut()
+            .spawn(race().audience(Audience::custom(move |r| {
+                !shared.read().unwrap().contains(&r.entity())
+            })));
+        app.update();
+        let sent = drain(&rx);
+        assert_eq!(
+            sent.iter()
+                .filter(|s| matches!(s, Sent::Create(..)))
+                .count(),
+            2
+        );
+
+        app.world_mut().spawn(race().title("Leo").viewers([leo]));
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        personal.write().unwrap().insert(leo);
+        app.update();
+        app.update();
+        let sent = sorted(&rx);
+        assert_eq!(sent[0], Sent::Create(1, "✦ Leo ✦".into(), true));
+        assert!(sent.contains(&Sent::Remove(1)));
+        assert!(!sent.iter().any(|s| matches!(s, Sent::Remove(2))));
+    }
+
+    #[test]
     fn despawning_removes_the_board() {
         let (mut app, rx) = test_app();
         player(&mut app, 1, "Leo");
@@ -1125,5 +1330,53 @@ mod tests {
         app.world_mut().despawn(board);
         app.update();
         assert_eq!(drain(&rx), [Sent::Remove(1)]);
+    }
+
+    #[test]
+    fn removing_the_component_removes_the_board() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1, "Leo");
+        let board = app.world_mut().spawn(race()).id();
+        app.update();
+        drain(&rx);
+        app.world_mut().entity_mut(board).remove::<Sidebar>();
+        app.update();
+        assert_eq!(drain(&rx), [Sent::Remove(1)]);
+        assert!(app.world().get::<Objective>(board).is_none());
+
+        app.world_mut().spawn(race().title("Next"));
+        app.update();
+        let sent = sorted(&rx);
+        assert_eq!(sent[0], Sent::Create(1, "✦ Next ✦".into(), true));
+        assert_eq!(sent[1], Sent::Display(1, DisplaySlot::Sidebar));
+    }
+
+    #[test]
+    fn an_existing_objective_is_moved_to_the_sidebar_slot() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1, "Leo");
+        let board = app
+            .world_mut()
+            .spawn(Objective::list("custom").score(
+                "someone",
+                Score {
+                    value: 3,
+                    display: Some("x".into()),
+                    format: None,
+                },
+            ))
+            .id();
+        app.update();
+        drain(&rx);
+        app.world_mut().entity_mut(board).insert(race());
+        app.update();
+        let sent = sorted(&rx);
+        assert!(sent.contains(&Sent::Display(1, DisplaySlot::Sidebar)));
+        assert!(sent.contains(&Sent::Display(1, DisplaySlot::List)));
+        assert!(sent.contains(&Sent::Reset(1, "someone".into())));
+        assert!(sent.contains(&score(1, 0, "§fTour: §f1/3")));
+        let objective = app.world().get::<Objective>(board).unwrap();
+        assert_eq!(objective.slot, DisplaySlot::Sidebar);
+        assert_eq!(objective.name, "custom");
     }
 }

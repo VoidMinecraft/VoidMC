@@ -9,25 +9,30 @@ entity's managed `Objective`, and the scoreboard sync then sends only the
 lines whose text actually changed. Nothing is sent on quiet ticks.
 
 ```rust
-use voidmc::{Audience, Ornament, Sidebar, TextColor, Widget};
+use voidmc::{Audience, Ornament, Sidebar, TextColor, Widget, WidgetId};
 
-fn start_race(mut commands: Commands) {
-    commands.spawn(
-        Sidebar::new("Alpine Rush")
-            .color(TextColor::Gold)
-            .ornament(Ornament::brackets("✦"))
-            .widget(Widget::labeled("Tour", "1/3"))
-            .widget(Widget::ranking().limit(5))
-            .widget(Widget::blank())
-            .widget(Widget::labeled("Meilleur tour", "--:--"))
-            .audience(Audience::All),
-    );
+#[derive(Component)]
+struct RaceBoard {
+    tour: WidgetId,
+    ranking: WidgetId,
 }
 
-fn lap_done(mut sidebars: Query<&mut Sidebar, With<Race>>, standings: Vec<(String, i32)>) {
-    for mut sidebar in &mut sidebars {
-        sidebar.set_value(0, "2/3");
-        if let Some(ranking) = sidebar.ranking_mut(1) {
+fn start_race(mut commands: Commands) {
+    let mut sidebar = Sidebar::new("Alpine Rush")
+        .color(TextColor::Gold)
+        .ornament(Ornament::brackets("✦"))
+        .audience(Audience::All);
+    let tour = sidebar.push(Widget::labeled("Tour", "1/3"));
+    let ranking = sidebar.push(Widget::ranking().limit(5));
+    sidebar.push(Widget::blank());
+    sidebar.push(Widget::labeled("Meilleur tour", "--:--"));
+    commands.spawn((sidebar, RaceBoard { tour, ranking }));
+}
+
+fn lap_done(mut boards: Query<(&mut Sidebar, &RaceBoard)>, standings: Vec<(String, i32)>) {
+    for (mut sidebar, board) in &mut boards {
+        sidebar.set_value(board.tour, "2/3");
+        if let Some(ranking) = sidebar.ranking_mut(board.ranking) {
             ranking.set(standings.clone());
         }
     }
@@ -39,11 +44,12 @@ fn lap_done(mut sidebars: Query<&mut Sidebar, With<Race>>, standings: Vec<(Strin
 | `title` | `String` | required |
 | `color` | [`TextColor`](messages.md#colours) | `White` |
 | `ornament` | `Ornament` (`None`, `Brackets(glyph)`, `Line`) | `None` |
-| `widgets` | `Vec<Widget>` | empty |
 | `audience` | [`Audience`](../server/sending-packets.md#audiences) | `Audience::All` |
 
-Builder methods `.title()`, `.color()`, `.ornament()`, `.widget(..)` (any
-widget or widget builder), `.audience()`, `.viewers([..])` set the same fields.
+Builder methods `.title()`, `.color()`, `.ornament()`, `.audience()`,
+`.viewers([..])` set the same fields; `.widget(..)` appends a widget (any
+widget or widget builder) when its handle is not needed. The widget list is
+private and reached through handles (below).
 
 ## Title
 
@@ -56,7 +62,8 @@ renders `◆ Alpine Rush ◆`, `Ornament::Line` renders `─ Alpine Rush ─`,
 
 Each widget renders one or more lines. `Widget::xxx(..)` returns a builder for
 the widgets that have options; every builder converts into a `Widget`, so it
-can be passed to `.widget(..)`, `push`, `insert` or `set` directly.
+can be passed to `.widget(..)`, `push`, `insert_before` / `insert_after` or
+`set` directly.
 
 | Widget | Builder | Renders |
 |---|---|---|
@@ -72,14 +79,26 @@ Colours on lines are the 16 named `TextColor`s; an RGB colour falls back to
 white with a warning (score lines carry legacy colour codes, which have no
 RGB form).
 
-Mutate widgets through the sidebar:
+Widgets are addressed by a `WidgetId`, the opaque handle `push` returns. A
+handle stays valid for the life of its widget whatever is inserted or removed
+around it, so keep the handles of the widgets you update in a component next
+to the sidebar (as `RaceBoard` above) rather than positions. Every method
+taking a handle is fallible in one way: it returns `false` / `None` when the
+handle does not belong to this sidebar (or, for the typed accessors, when the
+widget is of another kind), never panics. The only panicking access is
+`sidebar[id]` / `&mut sidebar[id]`, which behaves like `Vec` indexing.
 
 | Method | Effect |
 |---|---|
-| `push(widget) -> usize` / `insert(index, widget)` / `set(index, widget)` / `remove(index)` / `clear()` | edit the widget list; `push` returns the new widget's index |
-| `set_value(index, text) -> bool` | new value of a `Labeled` (or text of a `Text`); `false` if the widget is something else |
-| `labeled_mut(i)`, `ranking_mut(i)`, `timer_mut(i)`, `progress_mut(i)` | `Option<&mut ..>` typed access: `ranking.set(entries)`, `ranking.set_highlight(Some("Leo"))`, `timer.set(Duration)` / `timer.set_ticks(t)`, `progress.set(v)` / `progress.set_max(m)`, `labeled.set_value(..)` |
-| `get(i)` / `get_mut(i)` | the raw `Widget` |
+| `push(widget) -> WidgetId` | append a widget and return its handle |
+| `insert_before(id, widget)` / `insert_after(id, widget)` `-> Option<WidgetId>` | insert next to an existing widget; `None` if `id` is unknown |
+| `set(id, widget) -> bool` | replace a widget, keeping its handle |
+| `remove(id) -> Option<Widget>` | remove a widget; its handle is never reused |
+| `set_value(id, text) -> bool` | new value of a `Labeled` (or text of a `Text`); `false` if the widget is something else |
+| `labeled_mut(id)`, `ranking_mut(id)`, `timer_mut(id)`, `progress_mut(id)` | `Option<&mut ..>` typed access: `ranking.set(entries)`, `ranking.set_highlight(Some("Leo"))`, `timer.set(Duration)` / `timer.set_ticks(t)`, `progress.set(v)` / `progress.set_max(m)`, `labeled.set_value(..)` |
+| `get(id)` / `get_mut(id)` / `sidebar[id]` | the raw `Widget` |
+| `widgets()` / `ids()` / `len()` / `is_empty()` | iterate `(WidgetId, &Widget)` pairs or handles in display order |
+| `truncate(len)` / `clear()` | drop the widgets past `len`, or all of them |
 | `render()` / `rendered_title()` | the lines and title as they will be sent, for tests |
 
 Any mutation through `Mut<Sidebar>` marks the sidebar changed and re-renders
@@ -93,8 +112,9 @@ the example server's `altitude_system` does.
 The sidebar shows at most **15 lines** (vanilla limit): widgets past the
 fifteenth line are rendered but not shown, and a warning is logged once when a
 sidebar starts overflowing. Each line is cut to `MAX_LINE_CHARS` (40) visible
-characters; the wire has no limit but longer lines only stretch the panel.
-Lines are keyed by position (`line00`..`line14`) with descending scores and a
+characters (colour codes do not count, and a code left dangling at the end
+of a line is dropped); the wire has no limit but longer lines only stretch the
+panel. Lines are keyed by position (`line00`..`line14`) with descending scores and a
 `Blank` number format, so no numbers show; changing one widget resends its
 line only, while inserting or removing a widget resends every line below it.
 
@@ -106,7 +126,26 @@ the slot is per client, so two sidebars with disjoint audiences coexist (a
 personal board per player is simply one `Sidebar` per player with
 `.viewers([player])`), while a second sidebar shown to a player who already
 has one is refused for that player with a warning until the first goes away
-(see [Audience and uniqueness](scoreboard.md#audience-and-uniqueness)).
+(see [Audience and uniqueness](scoreboard.md#audience-and-uniqueness)). The
+first board to reach a player keeps them; a later one does not take over.
+
+Audiences must therefore not overlap. A global board plus a personal
+"highlight me" board for some players is written as one board per player, or
+as a global board whose audience excludes the players who have their own:
+
+```rust
+let personal: Arc<RwLock<HashSet<Entity>>> = ..;
+let shared = personal.clone();
+commands.spawn(
+    Sidebar::new("Alpine Rush")
+        .audience(Audience::custom(move |r| !shared.read().unwrap().contains(&r.entity()))),
+);
+commands.spawn(Sidebar::new("Alpine Rush").viewers([leo]));
+```
+
+The custom audience is re-evaluated every tick: adding a player to `personal`
+removes the global board from them on the next tick, and their own board
+(spawned earlier and refused so far) takes the freed slot the tick after.
 
 Header and footer are not sidebar lines: they belong to the tab list
 (`TabList::new().header(..).footer(..)`). The three together:
@@ -123,10 +162,12 @@ commands.spawn(BossBar::new("Tour 1/3").progress(0.0));
 
 `Sidebar` requires a managed `Objective` (named `"sidebar"`, `Blank` format)
 and a `SidebarState`. The objective's title, colour, scores and audience are
-overwritten from the sidebar on every change: do not edit them directly, and
-read the viewers from `ObjectiveState::viewers()`. Despawning the entity or
-removing the `Sidebar` component removes the board; the objective layer
-handles the packets.
+overwritten from the sidebar on every change, and an objective found on another
+display slot is moved to the sidebar slot with a warning: do not edit them
+directly, and read the viewers from `ObjectiveState::viewers()`. Despawning the
+entity or removing the `Sidebar` component removes the board (the `Objective`
+goes with it); the objective layer handles the packets and releases the
+per-viewer name and slot.
 
 The example server shows an altitude ranking with the player count and the
 server uptime (`void-example/src/sidebar.rs`).
