@@ -7,8 +7,9 @@ use voidmc::{
 };
 
 use crate::arena::WAIT_Y;
+use crate::audio::{Audio, Cue};
+use crate::chat::{Chat, Tone};
 use crate::kart::Kart;
-use crate::race::Chat;
 use crate::vehicle::{Pilot, SEAT_HEIGHT};
 
 pub const FLYING_SPEED: f32 = 0.07;
@@ -46,6 +47,7 @@ pub struct Travel<'w, 's> {
     abilities: Query<'w, 's, &'static PlayerAbilities>,
     seats: Query<'w, 's, (Entity, &'static Pilot, &'static mut Passengers)>,
     ready: Query<'w, 's, Entity, With<PlayerReady>>,
+    audio: Audio<'w, 's>,
 }
 
 impl Travel<'_, '_> {
@@ -81,6 +83,7 @@ impl Travel<'_, '_> {
                 Transfer::Lobby,
                 Teleport::to(LOBBY.0, LOBBY.1, LOBBY.2).facing(LOBBY_YAW, LOBBY_PITCH),
             ));
+            self.audio.ui(player, Cue::Portal);
         }
     }
 
@@ -138,7 +141,7 @@ pub fn arrived(
             {
                 kart.participant = false;
             }
-            chat.tell(player, TIMEOUT_MESSAGE);
+            chat.say(player, Tone::Warn, TIMEOUT_MESSAGE);
             travel.to_lobby(player);
         }
         (Transfer::Boarding, TeleportOutcome::Cancelled) => {
@@ -444,11 +447,6 @@ mod tests {
         );
         let out = h.drain();
         assert_eq!(abilities(&out, 1), vec![(0x01, FLYING_SPEED, 0.1)]);
-        assert!(out.iter().any(|o| matches!(
-            o,
-            Out::Chat { client: 1, overlay: false, text, .. }
-                if text == "[Alpine Rush] Tous les pilotes sont charges ! Depart dans 5 secondes !"
-        )));
         stream.extend(out);
         let spawn = stream
             .iter()
@@ -506,25 +504,21 @@ mod tests {
         let slow_kart = kart_id(&h, a);
         assert!(out.contains(&Out::Remove(2, vec![slow_kart])));
         assert!(out.contains(&Out::Remove(1, vec![slow_kart])));
-        let texts: Vec<String> = out
+        let texts: Vec<(String, String)> = out
             .iter()
             .filter_map(|o| match o {
                 Out::Chat {
                     client: 1,
                     overlay: false,
                     text,
-                    ..
-                } => Some(text.clone()),
+                    color,
+                } => Some((text.clone(), color.clone())),
                 _ => None,
             })
             .collect();
         assert_eq!(
             texts,
-            vec![
-                format!("[Alpine Rush] {TIMEOUT_MESSAGE}"),
-                "[Alpine Rush] Tous les pilotes sont charges ! Depart dans 5 secondes !"
-                    .to_string(),
-            ]
+            vec![(TIMEOUT_MESSAGE.to_string(), Tone::Warn.color().to_string())]
         );
         h.settle_transfers();
         assert!(!controlled(&h, a) && airborne(&h, a));

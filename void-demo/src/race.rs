@@ -5,13 +5,14 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
     Audience, BossBar, BossBarColor, ChunkPos, Command, CommandBuilder, CommandRegistry,
-    CommandSystems, IntegerArg, Messages, TextColor, VoidSystems,
-    components::PlayerName,
+    CommandSystems, IntegerArg, VoidSystems,
     events::{PlayerQuitEvent, PlayerReadyEvent},
     plugins::boss_bar::BossBarState,
 };
 
 use crate::arena::Arena;
+use crate::audio::{Audio, Cue};
+use crate::chat::{Chat, Flash, Tone};
 use crate::displays;
 use crate::items::{self, Items};
 use crate::kart::{Kart, PowerUp};
@@ -26,12 +27,9 @@ pub const COUNTDOWN: u64 = 100;
 pub const TIME_LIMIT: u64 = 20 * 60 * 10;
 pub const GRID: usize = 8;
 const BUILD_PERIOD: u64 = 2;
-const MILESTONE: usize = 25;
 const HUD_PERIOD: u64 = 5;
 const TIME_WARNINGS: [u64; 3] = [1200, 600, 200];
 const ROUND_STRIDE: u64 = 0x9e3779b97f4a7c15;
-const PREFIX: &str = "[Alpine Rush] ";
-const COLOR: TextColor = TextColor::Gold;
 const BOOST_TITLE: &str = "Boost — Saut pour accelerer";
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +62,6 @@ pub struct Race {
     pub roster: Vec<Entity>,
     pub pending: Vec<ChunkPos>,
     pub total_chunks: usize,
-    pub milestone: usize,
 }
 
 impl Default for Race {
@@ -80,7 +77,6 @@ impl Default for Race {
             roster: Vec::new(),
             pending: Vec::new(),
             total_chunks: 0,
-            milestone: 0,
         }
     }
 }
@@ -106,7 +102,6 @@ impl Race {
         self.phase = phase;
         self.total_chunks = pending.len();
         self.pending = pending;
-        self.milestone = MILESTONE;
     }
 
     fn status(&self, kart: &Kart, transferring: bool) -> String {
@@ -168,46 +163,6 @@ pub struct Launch {
 pub struct Scores(pub Entity);
 
 #[derive(SystemParam)]
-pub struct Chat<'w, 's> {
-    messages: Messages<'w, 's>,
-    names: Query<'w, 's, &'static PlayerName>,
-}
-
-impl Chat<'_, '_> {
-    pub fn name(&self, player: Entity) -> String {
-        self.names
-            .get(player)
-            .map_or_else(|_| "Pilote".into(), |n| n.0.clone())
-    }
-
-    pub fn tell(&self, player: Entity, text: impl AsRef<str>) {
-        self.messages
-            .message(player, format!("{PREFIX}{}", text.as_ref()))
-            .color(COLOR)
-            .send();
-    }
-
-    pub fn all(&self, text: impl AsRef<str>) {
-        self.messages
-            .broadcast(format!("{PREFIX}{}", text.as_ref()))
-            .color(COLOR)
-            .send();
-    }
-
-    pub fn others(&self, player: Entity, text: impl AsRef<str>) {
-        self.messages
-            .broadcast(format!("{PREFIX}{}", text.as_ref()))
-            .color(COLOR)
-            .audience(Audience::custom(move |r| r.entity() != player))
-            .send();
-    }
-
-    pub fn bar(&self, player: Entity, text: impl Into<String>) {
-        self.messages.action_bar(player, text).color(COLOR).send();
-    }
-}
-
-#[derive(SystemParam)]
 struct Grid<'w, 's> {
     race: ResMut<'w, Race>,
     chat: Chat<'w, 's>,
@@ -222,8 +177,11 @@ impl Grid<'_, '_> {
         }
         let slot = self.race.roster.len();
         if slot >= GRID {
-            self.chat
-                .tell(player, format!("La grille est pleine ({GRID} pilotes)."));
+            self.chat.say(
+                player,
+                Tone::Warn,
+                format!("La grille est pleine ({GRID} pilotes)."),
+            );
             return;
         }
         if self.commands.get_entity(player).is_err() {
@@ -239,29 +197,29 @@ impl Grid<'_, '_> {
         let kart = vehicle::spawn(&mut self.commands, player, kart);
         self.commands.entity(player).insert((
             Racer { gate: 1, kart },
+            Flash::default(),
             BossBar::new(BOOST_TITLE)
                 .color(BossBarColor::Blue)
                 .viewers([player]),
         ));
         let name = self.chat.name(player);
-        self.chat.all(format!(
-            "{name} prend un minecart ({}/{GRID} pilotes).",
-            slot + 1
-        ));
-        self.chat.tell(
+        self.chat.say_all(
+            Tone::Info,
+            format!("{name} prend un minecart ({}/{GRID} pilotes).", slot + 1),
+        );
+        self.chat.say(
             player,
+            Tone::Notice,
             match self.race.phase {
                 Phase::Generating => {
-                    "Le nouveau circuit se construit. Tu participeras a la prochaine manche."
+                    "Le circuit se construit : tu participeras a la prochaine manche."
                 }
                 Phase::Loading | Phase::Countdown | Phase::Racing => {
                     "Manche en cours : observe en vol, tu participeras a la suivante."
                 }
-                Phase::Destroying => {
-                    "Demontage du circuit en cours. /race sera disponible juste apres."
-                }
+                Phase::Destroying => "Demontage en cours : /race sera disponible juste apres.",
                 Phase::Lobby | Phase::Results => {
-                    "En vol au-dessus de la vallee ! /race genere un circuit et inscrit tous les pilotes presents."
+                    "En vol au-dessus de la vallee. /race lance un circuit avec tous les pilotes presents."
                 }
             },
         );
@@ -277,7 +235,7 @@ impl Grid<'_, '_> {
         }
         self.commands
             .entity(player)
-            .remove::<(Racer, BossBar, BossBarState)>();
+            .remove::<(Racer, Flash, BossBar, BossBarState)>();
         true
     }
 }
@@ -311,6 +269,7 @@ impl Plugin for RacePlugin {
                     items::update,
                     items::crystals,
                     vehicle::drive,
+                    vehicle::bumps,
                     racing,
                     hud,
                     race_bar,
@@ -375,17 +334,20 @@ fn request<E: Event<Trigger<'static>: Default>>(
 fn ready(event: On<PlayerReadyEvent>, mut grid: Grid, mut travel: Travel) {
     let player = event.entity;
     travel.fly(player);
-    let name = grid.chat.name(player);
-    grid.chat
-        .all(format!("[+] {name} rejoint Alpine Rush. Bienvenue !"));
-    grid.join(player);
-    grid.chat.tell(
-        player,
-        "Alpine Rush | /race [tours] : depart (1–20, defaut 3) | /leave : spectateur | /join : revenir",
+    grid.chat.say_all(
+        Tone::Event,
+        format!("{} rejoint Alpine Rush !", grid.chat.name(player)),
     );
-    grid.chat.tell(
+    grid.join(player);
+    grid.chat.say(
         player,
-        "Avancer : accelerer | Reculer : frein / marche arriere | Direction : gauche/droite | Saut : boost | Sprint : bonus | /reset : secours (+3s). F5 conseille.",
+        Tone::Info,
+        "/race [tours] : depart (1–20, defaut 3) | /leave : spectateur | /join : revenir | /reset : secours (+3 s)",
+    );
+    grid.chat.say(
+        player,
+        Tone::Info,
+        "Avancer : accelerer | Reculer : frein / marche arriere | Saut : boost | Sprint : bonus. F5 conseille.",
     );
 }
 
@@ -394,10 +356,11 @@ fn quit(event: On<PlayerQuitEvent>, karts: Karts, mut grid: Grid) {
     let racing = grid.race.phase == Phase::Racing && karts.get(player).is_some_and(Kart::racing);
     grid.leave(player);
     let name = grid.chat.name(player);
-    grid.chat.others(
+    grid.chat.say_others(
         player,
+        Tone::Info,
         format!(
-            "[-] {name} quitte Alpine Rush.{}",
+            "{name} quitte Alpine Rush.{}",
             if racing { " Abandon de la manche." } else { "" }
         ),
     );
@@ -414,16 +377,18 @@ fn leave(event: On<Leave>, mut grid: Grid, mut travel: Travel) {
     }
     travel.to_lobby(player);
     let name = grid.chat.name(player);
-    grid.chat.all(format!(
-        "{name} quitte la grille et rejoint les spectateurs."
-    ));
-    grid.chat.tell(
+    grid.chat.say_all(
+        Tone::Info,
+        format!("{name} quitte la grille et rejoint les spectateurs."),
+    );
+    grid.chat.say(
         player,
-        "Mode spectateur en vol. /join pour revenir sur la grille.",
+        Tone::Notice,
+        "Spectateur en vol. /join pour revenir sur la grille.",
     );
 }
 
-fn rescue(event: On<Rescue>, race: Res<Race>, map: Res<Track>, mut karts: Karts, chat: Chat) {
+fn rescue(event: On<Rescue>, race: Res<Race>, map: Res<Track>, mut karts: Karts, mut chat: Chat) {
     if race.phase != Phase::Racing {
         return;
     }
@@ -434,9 +399,10 @@ fn rescue(event: On<Rescue>, race: Res<Race>, map: Res<Track>, mut karts: Karts,
         return;
     }
     kart.reset(&map);
-    chat.tell(
+    chat.flash(
         event.0,
-        "Retour au dernier checkpoint : +3 secondes de penalite. Bonus retires.",
+        Tone::Warn,
+        "Retour au checkpoint : +3 s de penalite, bonus retires",
     );
 }
 
@@ -451,15 +417,19 @@ fn launch(
 ) {
     let (player, laps) = (event.player, event.laps);
     if !(1..=MAX_LAPS).contains(&laps) {
-        chat.tell(player, "Utilisation : /race [tours], de 1 a 20 (defaut 3).");
+        chat.say(
+            player,
+            Tone::Warn,
+            "Utilisation : /race [tours], de 1 a 20 (defaut 3).",
+        );
         return;
     }
     if !race.roster.contains(&player) {
-        chat.tell(player, "Utilise /join avant /race.");
+        chat.say(player, Tone::Warn, "Utilise /join avant /race.");
         return;
     }
     if !race.phase.idle() {
-        chat.tell(player, "Une course est deja en cours.");
+        chat.say(player, Tone::Warn, "Une course est deja en cours.");
         return;
     }
     for (slot, pilot) in race.roster.iter().enumerate() {
@@ -481,26 +451,35 @@ fn launch(
     race.results.clear();
     race.schedule(Phase::Generating, arena.chunks());
     let (name, round) = (chat.name(player), race.round);
-    chat.all(format!(
-        "{name} lance la manche {round} : {laps} tour(s) ! Nouveau trace : {length:.0} m par tour | seed {seed}."
-    ));
-    chat.all(format!(
-        "Tous en vol ! La piste se construit dans le paysage. Depart apres l'assemblage ; {laps} tour(s), bonus et boost rechargeable."
-    ));
+    chat.say_all(
+        Tone::Event,
+        format!(
+            "{name} lance la manche {round} : {laps} tour(s), {length:.0} m par tour (seed {seed})."
+        ),
+    );
 }
 
 fn scores(event: On<Scores>, race: Res<Race>, map: Res<Track>, chat: Chat) {
     let player = event.0;
+    if !race.results.is_empty() {
+        chat.say(
+            player,
+            Tone::Event,
+            format!("Manche {} — {} tour(s) :", race.round, race.laps),
+        );
+    }
     for (i, (name, time)) in race.results.iter().enumerate() {
-        chat.tell(player, format!("{}. {name} — {}s", i + 1, seconds(*time)));
+        chat.say(
+            player,
+            Tone::Info,
+            format!("{}. {name} — {}s", i + 1, seconds(*time)),
+        );
     }
     let seed = map.seed;
-    chat.tell(
+    chat.say(
         player,
-        format!(
-            "Records du circuit actuel (seed {seed}, {} tour(s)) :",
-            race.laps
-        ),
+        Tone::Record,
+        format!("Records du circuit (seed {seed}, {} tour(s)) :", race.laps),
     );
     let mut best: Vec<_> = race
         .best
@@ -510,7 +489,7 @@ fn scores(event: On<Scores>, race: Res<Race>, map: Res<Track>, chat: Chat) {
         .collect();
     best.sort();
     for (time, name) in best.into_iter().take(GRID) {
-        chat.tell(player, format!("{name} : {}s", seconds(time)));
+        chat.say(player, Tone::Info, format!("{name} : {}s", seconds(time)));
     }
 }
 
@@ -521,7 +500,7 @@ fn clock(mut race: ResMut<Race>) {
 #[derive(SystemParam)]
 struct Placement<'w, 's> {
     racers: Query<'w, 's, &'static mut Racer>,
-    karts: Query<'w, 's, &'static mut Kart>,
+    karts: Query<'w, 's, (&'static Pilot, &'static mut Kart)>,
     travel: Travel<'w, 's>,
 }
 
@@ -545,14 +524,6 @@ fn construct(
         let arena = arena.clone();
         commands.queue(move |world: &mut World| arena.replace(world, pos, build));
     }
-    let progress = race.construction();
-    if progress >= race.milestone && progress < 100 {
-        race.milestone = (progress / MILESTONE + 1) * MILESTONE;
-        chat.all(format!(
-            "{} du circuit : {progress}%.",
-            if build { "Construction" } else { "Demontage" }
-        ));
-    }
     if !race.pending.is_empty() {
         return;
     }
@@ -563,7 +534,7 @@ fn construct(
             let Ok(mut racer) = placement.racers.get_mut(*pilot) else {
                 continue;
             };
-            let Ok(mut kart) = placement.karts.get_mut(racer.kart) else {
+            let Ok((_, mut kart)) = placement.karts.get_mut(racer.kart) else {
                 continue;
             };
             if !kart.participant {
@@ -576,12 +547,15 @@ fn construct(
         }
         items.place(&track);
         race.phase = Phase::Loading;
-        chat.all("Circuit pret ! Chargement de la grille chez chaque pilote avant le compte a rebours...");
-        chat.all("Traversez les End Crystals pour un bonus, puis Sprint pour l'utiliser. Saut + Avancer = boost.");
+        chat.say_all(
+            Tone::Info,
+            "Circuit pret. Traversez les End Crystals pour un bonus, Sprint pour l'utiliser, Saut + Avancer pour le boost.",
+        );
     } else {
         race.phase = Phase::Results;
-        chat.all(
-            "Piste demontee, vallee restauree ! /scores : resultats | /race : nouveau circuit.",
+        chat.say_all(
+            Tone::Info,
+            "Piste demontee. /scores : resultats | /race : nouveau circuit.",
         );
     }
 }
@@ -590,7 +564,6 @@ fn load(
     mut race: ResMut<Race>,
     karts: Query<(&Pilot, &Kart)>,
     transfers: Query<(), With<Transfer>>,
-    chat: Chat,
 ) {
     if race.phase != Phase::Loading {
         return;
@@ -603,23 +576,21 @@ fn load(
     }
     race.phase = Phase::Countdown;
     race.start = race.tick + COUNTDOWN;
-    chat.all("Tous les pilotes sont charges ! Depart dans 5 secondes !");
 }
 
-fn countdown(mut race: ResMut<Race>, chat: Chat) {
+fn countdown(mut race: ResMut<Race>, chat: Chat, audio: Audio) {
     if race.phase != Phase::Countdown {
         return;
     }
     let remaining = race.countdown();
     if remaining > 0 && remaining <= 60 && remaining.is_multiple_of(20) {
-        chat.all(format!("Depart dans {}...", remaining / 20));
+        audio.everyone(Cue::Beep);
     }
     if remaining == 0 {
         race.phase = Phase::Racing;
-        chat.all(format!(
-            "GO ! {} tour(s) — bonne course a tous !",
-            race.laps
-        ));
+        audio.everyone(Cue::Go);
+        audio.everyone(Cue::Start);
+        chat.say_all(Tone::Event, format!("GO ! {} tour(s) !", race.laps));
     }
 }
 
@@ -627,23 +598,30 @@ fn racing(
     mut race: ResMut<Race>,
     arena: Res<Arena>,
     map: Res<Track>,
-    mut racers: Query<&mut Racer>,
-    mut karts: Query<(&Pilot, &mut Kart)>,
-    mut travel: Travel,
-    chat: Chat,
+    mut placement: Placement,
+    mut chat: Chat,
+    audio: Audio,
 ) {
     if race.phase != Phase::Racing {
         return;
     }
+    let Placement {
+        racers,
+        karts,
+        travel,
+    } = &mut placement;
     let (laps, time_limit, elapsed) = (race.laps, race.time_limit(), race.elapsed());
     if TIME_WARNINGS.contains(&time_limit.saturating_sub(elapsed)) {
-        chat.all(format!(
-            "Il reste {} secondes pour terminer !",
-            (time_limit - elapsed) / 20
-        ));
+        chat.say_all(
+            Tone::Warn,
+            format!(
+                "Il reste {} secondes pour terminer !",
+                (time_limit - elapsed) / 20
+            ),
+        );
     }
     let mut unfinished = 0;
-    for (pilot, mut kart) in &mut karts {
+    for (pilot, mut kart) in karts.iter_mut() {
         let player = pilot.0;
         if !kart.racing() {
             continue;
@@ -655,17 +633,17 @@ fn racing(
             racer.gate = kart.next_gate;
             if (kart.next_gate - 1).is_multiple_of(GATES) && kart.next_gate <= laps * GATES {
                 let lap = (kart.next_gate - 1) / GATES + 1;
-                chat.tell(
-                    player,
-                    format!(
-                        "Tour {lap}/{laps} ! {}",
-                        if lap == laps {
-                            "Dernier tour, donne tout !"
-                        } else {
-                            "Garde le rythme !"
-                        }
-                    ),
-                );
+                if lap == laps {
+                    audio.ui(player, Cue::FinalLap);
+                    chat.flash(
+                        player,
+                        Tone::Alert,
+                        format!("Dernier tour ({lap}/{laps}) !"),
+                    );
+                } else {
+                    audio.ui(player, Cue::Lap);
+                    chat.flash(player, Tone::Notice, format!("Tour {lap}/{laps}"));
+                }
             }
         }
         if kart.next_gate > laps * GATES {
@@ -675,11 +653,29 @@ fn racing(
             let name = chat.name(player);
             race.results.push((name.clone(), time));
             race.results.sort_by_key(|(_, time)| *time);
+            let record = race
+                .best
+                .iter()
+                .filter(|((s, l, _), _)| *s == map.seed && *l == laps)
+                .map(|(_, best)| *best)
+                .min()
+                .is_some_and(|best| time < best);
             race.best
                 .entry((map.seed, laps, name.clone()))
                 .and_modify(|best| *best = (*best).min(time))
                 .or_insert(time);
-            chat.all(format!("{name} termine en {}s ! /scores", seconds(time)));
+            audio.ui(player, Cue::Finish);
+            chat.say_all(
+                Tone::Event,
+                format!("{name} termine en {}s !", seconds(time)),
+            );
+            if record {
+                audio.everyone(Cue::Record);
+                chat.say_all(
+                    Tone::Record,
+                    format!("Record du circuit : {name} en {}s !", seconds(time)),
+                );
+            }
         } else {
             unfinished += 1;
         }
@@ -690,18 +686,21 @@ fn racing(
     let mut chunks = arena.chunks();
     chunks.reverse();
     race.schedule(Phase::Destroying, chunks);
-    chat.all(if elapsed >= time_limit {
-        "Temps limite atteint !"
+    if elapsed >= time_limit {
+        chat.say_all(Tone::Warn, "Temps limite atteint !");
     } else {
-        "Course terminee !"
-    });
+        chat.say_all(Tone::Event, "Course terminee !");
+    }
     if race.results.is_empty() {
-        chat.all("Aucun pilote n'a termine cette manche.");
+        chat.say_all(Tone::Info, "Aucun pilote n'a termine cette manche.");
     }
     for (i, (name, time)) in race.results.iter().take(3).enumerate() {
-        chat.all(format!("Podium #{} : {name} — {}s", i + 1, seconds(*time)));
+        chat.podium(i + 1, format!("#{} {name} — {}s", i + 1, seconds(*time)));
     }
-    chat.all("Retour en vol : demontage de la piste. /scores pour le classement complet.");
+    chat.say_all(
+        Tone::Info,
+        "Retour en vol, demontage de la piste. /scores : classement complet.",
+    );
     for (slot, pilot) in race.roster.iter().enumerate() {
         let Ok(racer) = racers.get(*pilot) else {
             continue;
@@ -717,13 +716,15 @@ fn hud(
     race: Res<Race>,
     karts: Query<(&Pilot, &Kart)>,
     transfers: Query<(), With<Transfer>>,
-    chat: Chat,
+    mut chat: Chat,
 ) {
     if !race.tick.is_multiple_of(HUD_PERIOD) {
         return;
     }
     for (pilot, kart) in &karts {
-        chat.bar(pilot.0, race.status(kart, transfers.contains(pilot.0)));
+        if chat.hud_free(pilot.0) {
+            chat.hud(pilot.0, race.status(kart, transfers.contains(pilot.0)));
+        }
     }
 }
 
@@ -807,8 +808,8 @@ pub(crate) mod tests {
     use ussr_nbt::owned::{Nbt, Tag};
     use voidmc::commands::{dispatch_command, plugin::CommandPlugin};
     use voidmc::components::{
-        ClientId, LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerReady, Position,
-        Rotation, TeleportState,
+        ClientId, LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerName, PlayerReady,
+        Position, Rotation, TeleportState,
     };
     use voidmc::network::{IncomingPacket, NetworkChannels, OutgoingPacket, PacketEvent};
     use voidmc::plugins::abilities::AbilitiesPlugin;
@@ -818,13 +819,16 @@ pub(crate) mod tests {
     use voidmc::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
     use voidmc::world::{ChunkIndex, DimensionId};
     use voidmc::{EntityPlugin, Particle, Teleport};
+    use voidmc_codec::{Encode, VarI32};
     use voidmc_protocol::clientbound::{
-        BossEventAction, ClientboundPacket, ManualPlayPacket, Parser, PlayPacket,
+        BossEventAction, ClientboundPacket, ManualPlayPacket, Parser, PlayPacket, SoundEffect,
+        SoundEvent, SoundSource,
     };
     use voidmc_protocol::serverbound::{ConfirmTeleportation, Pong};
 
     use super::*;
     use crate::arena::WAIT_Y;
+    use crate::chat::{FLASH_PERIODS, HUD_COLOR, podium};
     use crate::kart::RESET_PENALTY;
     use crate::terrain::Alpine;
 
@@ -898,11 +902,35 @@ pub(crate) mod tests {
             speed: f32,
             long_distance: bool,
         },
+        Sound {
+            client: u32,
+            sound: i32,
+            source: SoundSource,
+            emitter: Option<i32>,
+            at: Option<(i32, i32, i32)>,
+            volume: f32,
+            pitch: f32,
+        },
     }
 
     pub(crate) struct Harness {
         pub(crate) app: App,
         pub(crate) rx: Receiver<OutgoingPacket>,
+    }
+
+    fn registry(event: &SoundEvent) -> i32 {
+        match event {
+            SoundEvent::Registry(id) => *id,
+            other => panic!("expected a registry sound, got {other:?}"),
+        }
+    }
+
+    pub(crate) fn sounds(out: &[Out], client: u32, cue: Cue) -> Vec<Out> {
+        let id = voidmc::sounds::resolve(cue.name()).unwrap();
+        out.iter()
+            .filter(|o| matches!(o, Out::Sound { client: c, sound, .. } if *c == client && *sound == id))
+            .cloned()
+            .collect()
     }
 
     fn text(nbt: &Nbt, key: &str) -> String {
@@ -1151,6 +1179,13 @@ pub(crate) mod tests {
             }
         }
 
+        pub(crate) fn packets(&self) -> Vec<(u32, ClientboundPacket)> {
+            self.rx
+                .try_iter()
+                .map(|out| (out.client_id, out.packet))
+                .collect()
+        }
+
         pub(crate) fn drain(&self) -> Vec<Out> {
             self.rx
                 .try_iter()
@@ -1224,14 +1259,6 @@ pub(crate) mod tests {
                         z: p.z,
                         yaw: p.yaw,
                     },
-                    ClientboundPacket::Play(PlayPacket::EntityPositionSync(p)) => Out::Teleport {
-                        client: out.client_id,
-                        id: p.entity_id,
-                        x: p.x,
-                        y: p.y,
-                        z: p.z,
-                        yaw: p.yaw,
-                    },
                     ClientboundPacket::Play(PlayPacket::SetHeadRotation(p)) => {
                         Out::HeadRotation(out.client_id, p.entity_id)
                     }
@@ -1266,6 +1293,24 @@ pub(crate) mod tests {
                         offset: (p.offset_x, p.offset_y, p.offset_z),
                         speed: p.max_speed,
                         long_distance: p.long_distance,
+                    },
+                    ClientboundPacket::Play(PlayPacket::SoundEffect(p)) => Out::Sound {
+                        client: out.client_id,
+                        sound: registry(&p.sound),
+                        source: p.source,
+                        emitter: None,
+                        at: Some((p.x, p.y, p.z)),
+                        volume: p.volume,
+                        pitch: p.pitch,
+                    },
+                    ClientboundPacket::Play(PlayPacket::EntitySoundEffect(p)) => Out::Sound {
+                        client: out.client_id,
+                        sound: registry(&p.sound),
+                        source: p.source,
+                        emitter: Some(p.entity_id),
+                        at: None,
+                        volume: p.volume,
+                        pitch: p.pitch,
                     },
                     other => panic!("unexpected packet {other:?}"),
                 })
@@ -1311,7 +1356,37 @@ pub(crate) mod tests {
     }
 
     fn chat(text: &str) -> String {
-        format!("{PREFIX}{text}")
+        text.to_string()
+    }
+
+    fn colored(out: &[Out], client: u32) -> Vec<(String, String)> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Chat {
+                    client: c,
+                    overlay: false,
+                    text,
+                    color,
+                } if *c == client => Some((text.clone(), color.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn flashes(out: &[Out], client: u32) -> Vec<(String, String)> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Chat {
+                    client: c,
+                    overlay: true,
+                    text,
+                    color,
+                } if *c == client && *color != HUD_COLOR.to_string() => {
+                    Some((text.clone(), color.clone()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     fn texts(out: &[Out], client: u32) -> Vec<String> {
@@ -1373,26 +1448,29 @@ pub(crate) mod tests {
         assert!(matches!(&bar.audience, Audience::Explicit(v) if v.len() == 1 && v.contains(&a)));
         assert_eq!(h.race().roster, vec![a]);
         let out = h.drain();
-        assert!(
-            out.iter()
-                .all(|o| matches!(o, Out::Chat { color, .. } if *color == COLOR.to_string()))
-        );
+        let gold = Tone::Event.color().to_string();
+        let gray = Tone::Info.color().to_string();
+        let aqua = Tone::Notice.color().to_string();
         assert_eq!(
-            texts(&out, 1),
+            colored(&out, 1),
             vec![
-                chat("[+] Pilot1 rejoint Alpine Rush. Bienvenue !"),
-                chat("Pilot1 prend un minecart (1/8 pilotes)."),
-                chat(
-                    "En vol au-dessus de la vallee ! /race genere un circuit et inscrit tous les pilotes presents."
+                ("Pilot1 rejoint Alpine Rush !".to_string(), gold.clone()),
+                ("Pilot1 prend un minecart (1/8 pilotes).".to_string(), gray.clone()),
+                (
+                    "En vol au-dessus de la vallee. /race lance un circuit avec tous les pilotes presents.".to_string(),
+                    aqua
                 ),
-                chat(
-                    "Alpine Rush | /race [tours] : depart (1–20, defaut 3) | /leave : spectateur | /join : revenir"
+                (
+                    "/race [tours] : depart (1–20, defaut 3) | /leave : spectateur | /join : revenir | /reset : secours (+3 s)".to_string(),
+                    gray.clone()
                 ),
-                chat(
-                    "Avancer : accelerer | Reculer : frein / marche arriere | Direction : gauche/droite | Saut : boost | Sprint : bonus | /reset : secours (+3s). F5 conseille."
+                (
+                    "Avancer : accelerer | Reculer : frein / marche arriere | Saut : boost | Sprint : bonus. F5 conseille.".to_string(),
+                    gray
                 ),
             ]
         );
+        assert!(sounds(&out, 1, Cue::Portal).is_empty());
         h.tick();
         let out = h.drain();
         assert_eq!(
@@ -1413,7 +1491,7 @@ pub(crate) mod tests {
         assert_eq!(
             to_a,
             vec![
-                chat("[+] Pilot2 rejoint Alpine Rush. Bienvenue !"),
+                chat("Pilot2 rejoint Alpine Rush !"),
                 chat("Pilot2 prend un minecart (2/8 pilotes)."),
             ]
         );
@@ -1428,10 +1506,10 @@ pub(crate) mod tests {
         assert_eq!(h.race().roster.len(), GRID);
         assert!(h.app.world().get::<Racer>(pilots[8]).is_none());
         assert!(h.app.world().get::<BossBar>(pilots[8]).is_none());
-        assert!(
-            h.chats(9)
-                .contains(&chat("La grille est pleine (8 pilotes)."))
-        );
+        assert!(colored(&h.drain(), 9).contains(&(
+            "La grille est pleine (8 pilotes).".to_string(),
+            Tone::Warn.color().to_string()
+        )));
         h.command(pilots[0], "join", &[]);
         assert!(h.chats(1).is_empty());
         assert_eq!(h.race().roster.len(), GRID);
@@ -1502,21 +1580,27 @@ pub(crate) mod tests {
             assert_eq!((h.race().laps, h.race().round), (laps, 1));
             assert!(h.kart(a).participant);
             let seed = h.app.world().resource::<Track>().seed;
+            let out = h.drain();
             assert_eq!(
-                h.chats(1),
-                vec![
-                    chat(&format!(
-                        "Pilot1 lance la manche 1 : {laps} tour(s) ! Nouveau trace : {:.0} m par tour | seed {seed}.",
+                colored(&out, 1),
+                vec![(
+                    format!(
+                        "Pilot1 lance la manche 1 : {laps} tour(s), {:.0} m par tour (seed {seed}).",
                         h.app.world().resource::<Track>().length
-                    )),
-                    chat(&format!(
-                        "Tous en vol ! La piste se construit dans le paysage. Depart apres l'assemblage ; {laps} tour(s), bonus et boost rechargeable."
-                    )),
-                ]
+                    ),
+                    Tone::Event.color().to_string()
+                )]
             );
+            assert_eq!(sounds(&out, 1, Cue::Portal).len(), 1);
             h.command(a, "race", &["2"]);
             assert_eq!(h.race().laps, laps);
-            assert_eq!(h.chats(1), vec![chat("Une course est deja en cours.")]);
+            assert_eq!(
+                colored(&h.drain(), 1),
+                vec![(
+                    "Une course est deja en cours.".to_string(),
+                    Tone::Warn.color().to_string()
+                )]
+            );
             assert!(h.race().time_limit() >= TIME_LIMIT / LAPS as u64 * laps as u64);
         }
     }
@@ -1570,18 +1654,9 @@ pub(crate) mod tests {
         announced.extend(texts(&h.settle_transfers(), 2));
         assert_eq!(
             announced,
-            vec![
-                chat("Construction du circuit : 25%."),
-                chat("Construction du circuit : 50%."),
-                chat("Construction du circuit : 75%."),
-                chat(
-                    "Circuit pret ! Chargement de la grille chez chaque pilote avant le compte a rebours..."
-                ),
-                chat(
-                    "Traversez les End Crystals pour un bonus, puis Sprint pour l'utiliser. Saut + Avancer = boost."
-                ),
-                chat("Tous les pilotes sont charges ! Depart dans 5 secondes !"),
-            ]
+            vec![chat(
+                "Circuit pret. Traversez les End Crystals pour un bonus, Sprint pour l'utiliser, Saut + Avancer pour le boost."
+            )]
         );
         assert_eq!(h.race().phase, Phase::Countdown);
         assert_eq!(h.race().start, h.race().tick + COUNTDOWN);
@@ -1595,30 +1670,51 @@ pub(crate) mod tests {
         while h.race().phase == Phase::Countdown {
             h.tick();
             ticks += 1;
-            countdown.extend(h.chats(1));
+            countdown.extend(h.drain());
         }
         assert_eq!(ticks, COUNTDOWN);
         assert_eq!(
-            countdown,
-            vec![
-                chat("Depart dans 3..."),
-                chat("Depart dans 2..."),
-                chat("Depart dans 1..."),
-                chat("GO ! 3 tour(s) — bonne course a tous !"),
-            ]
+            colored(&countdown, 1),
+            vec![(
+                "GO ! 3 tour(s) !".to_string(),
+                Tone::Event.color().to_string()
+            )]
         );
+        let beeps = sounds(&countdown, 2, Cue::Beep);
+        assert_eq!(beeps.len(), 4);
+        assert!(beeps[..3].iter().all(
+            |b| matches!(b, Out::Sound { pitch, source: SoundSource::Ui, emitter: None, .. } if *pitch == 1.0)
+        ));
+        assert!(matches!(beeps[3], Out::Sound { pitch, .. } if pitch == 2.0));
+        assert_eq!(sounds(&countdown, 2, Cue::Start).len(), 1);
+        assert_eq!(sounds(&countdown, 1, Cue::Beep).len(), 4);
 
         h.kart_mut(a).next_gate = GATES + 1;
         h.tick();
-        assert_eq!(h.chats(1), vec![chat("Tour 2/3 ! Garde le rythme !")]);
+        let out = h.drain();
+        assert!(texts(&out, 1).is_empty());
+        assert_eq!(
+            flashes(&out, 1),
+            vec![("Tour 2/3".to_string(), Tone::Notice.color().to_string())]
+        );
+        assert_eq!(sounds(&out, 1, Cue::Lap).len(), 1);
+        assert!(sounds(&out, 2, Cue::Lap).is_empty());
         h.tick();
-        assert!(h.chats(1).is_empty());
+        let out = h.drain();
+        assert!(texts(&out, 1).is_empty() && sounds(&out, 1, Cue::Lap).is_empty());
         h.kart_mut(a).next_gate = 2 * GATES + 1;
         h.tick();
+        let out = h.drain();
+        assert!(texts(&out, 1).is_empty());
         assert_eq!(
-            h.chats(1),
-            vec![chat("Tour 3/3 ! Dernier tour, donne tout !")]
+            flashes(&out, 1),
+            vec![(
+                "Dernier tour (3/3) !".to_string(),
+                Tone::Alert.color().to_string()
+            )]
         );
+        assert_eq!(sounds(&out, 1, Cue::FinalLap).len(), 1);
+        assert!(sounds(&out, 1, Cue::Lap).is_empty());
         {
             let mut kart = h.kart_mut(a);
             kart.next_gate = 3 * GATES + 1;
@@ -1636,15 +1732,31 @@ pub(crate) mod tests {
         assert_eq!(h.race().pending.len(), chunk_count);
         assert_eq!(h.kart(a).y, WAIT_Y);
         let stamp = seconds(time);
+        let out = h.drain();
         assert_eq!(
-            h.chats(2),
+            colored(&out, 2),
             vec![
-                chat(&format!("Pilot1 termine en {stamp}s ! /scores")),
-                chat("Course terminee !"),
-                chat(&format!("Podium #1 : Pilot1 — {stamp}s")),
-                chat("Retour en vol : demontage de la piste. /scores pour le classement complet."),
+                (
+                    format!("Pilot1 termine en {stamp}s !"),
+                    Tone::Event.color().to_string()
+                ),
+                (
+                    "Course terminee !".to_string(),
+                    Tone::Event.color().to_string()
+                ),
+                (format!("#1 Pilot1 — {stamp}s"), podium(1).to_string()),
+                (
+                    "Retour en vol, demontage de la piste. /scores : classement complet."
+                        .to_string(),
+                    Tone::Info.color().to_string()
+                ),
             ]
         );
+        assert_eq!(sounds(&out, 1, Cue::Finish).len(), 1);
+        assert!(sounds(&out, 2, Cue::Finish).is_empty());
+        assert!(sounds(&out, 1, Cue::Record).is_empty());
+        assert_eq!(sounds(&out, 1, Cue::Portal).len(), 1);
+        assert_eq!(sounds(&out, 2, Cue::Portal).len(), 1);
 
         let mut demolition = Vec::new();
         while h.race().phase == Phase::Destroying {
@@ -1653,25 +1765,28 @@ pub(crate) mod tests {
         }
         assert_eq!(
             demolition,
-            vec![
-                chat("Demontage du circuit : 25%."),
-                chat("Demontage du circuit : 50%."),
-                chat("Demontage du circuit : 75%."),
-                chat(
-                    "Piste demontee, vallee restauree ! /scores : resultats | /race : nouveau circuit."
-                ),
-            ]
+            vec![chat(
+                "Piste demontee. /scores : resultats | /race : nouveau circuit."
+            )]
         );
         assert_eq!(h.race().phase, Phase::Results);
         h.command(a, "scores", &[]);
         assert_eq!(
-            h.chats(1),
+            colored(&h.drain(), 1),
             vec![
-                chat(&format!("1. Pilot1 — {stamp}s")),
-                chat(&format!(
-                    "Records du circuit actuel (seed {first_seed}, 3 tour(s)) :"
-                )),
-                chat(&format!("Pilot1 : {stamp}s")),
+                (
+                    "Manche 1 — 3 tour(s) :".to_string(),
+                    Tone::Event.color().to_string()
+                ),
+                (
+                    format!("1. Pilot1 — {stamp}s"),
+                    Tone::Info.color().to_string()
+                ),
+                (
+                    format!("Records du circuit (seed {first_seed}, 3 tour(s)) :"),
+                    Tone::Record.color().to_string()
+                ),
+                (format!("Pilot1 : {stamp}s"), Tone::Info.color().to_string()),
             ]
         );
         h.command(a, "race", &["2"]);
@@ -1699,10 +1814,11 @@ pub(crate) mod tests {
             }
             h.tick();
             assert_eq!(
-                h.chats(1),
-                vec![chat(&format!(
-                    "Il reste {seconds} secondes pour terminer !"
-                ))]
+                colored(&h.drain(), 1),
+                vec![(
+                    format!("Il reste {seconds} secondes pour terminer !"),
+                    Tone::Warn.color().to_string()
+                )]
             );
         }
         {
@@ -1714,11 +1830,21 @@ pub(crate) mod tests {
         assert_eq!(h.race().phase, Phase::Destroying);
         assert!(h.kart(a).finished.is_none());
         assert_eq!(
-            h.chats(1),
+            colored(&h.drain(), 1),
             vec![
-                chat("Temps limite atteint !"),
-                chat("Aucun pilote n'a termine cette manche."),
-                chat("Retour en vol : demontage de la piste. /scores pour le classement complet."),
+                (
+                    "Temps limite atteint !".to_string(),
+                    Tone::Warn.color().to_string()
+                ),
+                (
+                    "Aucun pilote n'a termine cette manche.".to_string(),
+                    Tone::Info.color().to_string()
+                ),
+                (
+                    "Retour en vol, demontage de la piste. /scores : classement complet."
+                        .to_string(),
+                    Tone::Info.color().to_string()
+                ),
             ]
         );
     }
@@ -1752,9 +1878,10 @@ pub(crate) mod tests {
             to_c,
             vec![
                 chat("Pilot3 quitte la grille et rejoint les spectateurs."),
-                chat("Mode spectateur en vol. /join pour revenir sur la grille."),
+                chat("Spectateur en vol. /join pour revenir sur la grille."),
             ]
         );
+        assert_eq!(sounds(&out, 3, Cue::Portal).len(), 1);
         h.command(c, "leave", &[]);
         assert!(h.drain().is_empty());
         h.command(c, "join", &[]);
@@ -1787,14 +1914,8 @@ pub(crate) mod tests {
         assert_eq!(
             farewells,
             vec![
-                (
-                    1,
-                    chat("[-] Pilot2 quitte Alpine Rush. Abandon de la manche.")
-                ),
-                (
-                    3,
-                    chat("[-] Pilot2 quitte Alpine Rush. Abandon de la manche.")
-                ),
+                (1, chat("Pilot2 quitte Alpine Rush. Abandon de la manche.")),
+                (3, chat("Pilot2 quitte Alpine Rush. Abandon de la manche.")),
             ]
         );
         h.tick();
@@ -1802,7 +1923,7 @@ pub(crate) mod tests {
         h.disconnect(a);
         assert_eq!(
             h.chats(3),
-            vec![chat("[-] Pilot1 quitte Alpine Rush. Abandon de la manche.")]
+            vec![chat("Pilot1 quitte Alpine Rush. Abandon de la manche.")]
         );
         h.tick();
         assert_eq!(h.race().phase, Phase::Destroying);
@@ -1823,7 +1944,7 @@ pub(crate) mod tests {
         h.command(a, "race", &[]);
         let b = h.connect(2);
         assert!(h.chats(2).contains(&chat(
-            "Le nouveau circuit se construit. Tu participeras a la prochaine manche."
+            "Le circuit se construit : tu participeras a la prochaine manche."
         )));
         assert!(!h.kart(b).participant);
         h.settle_transfers();
@@ -1846,7 +1967,7 @@ pub(crate) mod tests {
         assert_eq!(h.race().phase, Phase::Destroying);
         let d = h.connect(4);
         assert!(h.chats(4).contains(&chat(
-            "Demontage du circuit en cours. /race sera disponible juste apres."
+            "Demontage en cours : /race sera disponible juste apres."
         )));
         assert_eq!(h.race().roster, vec![a, b, c, d]);
     }
@@ -1867,10 +1988,13 @@ pub(crate) mod tests {
         h.kart_mut(a).next_gate = 3;
         h.command(a, "reset", &[]);
         assert_eq!(h.kart(a).penalty, RESET_PENALTY);
+        let out = h.drain();
+        assert!(texts(&out, 1).is_empty());
         assert_eq!(
-            h.chats(1),
-            vec![chat(
-                "Retour au dernier checkpoint : +3 secondes de penalite. Bonus retires."
+            flashes(&out, 1),
+            vec![(
+                "Retour au checkpoint : +3 s de penalite, bonus retires".to_string(),
+                Tone::Warn.color().to_string()
             )]
         );
         let (x, z) = (h.kart(a).x, h.kart(a).z);
@@ -1889,9 +2013,7 @@ pub(crate) mod tests {
             overlays(&out, 1),
             vec!["Vol libre | /race pour lancer une course".to_string()]
         );
-        assert!(out.iter().all(
-            |o| !matches!(o, Out::Chat { overlay: true, color, .. } if *color != COLOR.to_string())
-        ));
+        assert!(flashes(&out, 1).is_empty() && flashes(&out, 2).is_empty());
         h.shortcut_to_countdown(a, &[]);
         let c = h.connect(3);
         let tick = h.race().tick;
@@ -1948,6 +2070,98 @@ pub(crate) mod tests {
             assert!(shown[0].starts_with("Destruction du circuit : "));
         }
         let _ = c;
+    }
+
+    #[test]
+    fn a_flash_holds_the_action_bar_for_eight_hud_periods_then_the_hud_resumes() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        h.shortcut_to_racing(a, &[]);
+        let tick = h.race().tick;
+        h.ticks((5 - tick % 5) as usize);
+        h.drain();
+        h.kart_mut(a).next_gate = GATES + 1;
+        h.tick();
+        let out = h.drain();
+        assert_eq!(overlays(&out, 1), vec!["Tour 2/3".to_string()]);
+        assert_eq!(h.app.world().get::<Flash>(a), Some(&Flash(FLASH_PERIODS)));
+        h.ticks(FLASH_PERIODS as usize * HUD_PERIOD as usize);
+        assert!(overlays(&h.drain(), 1).is_empty());
+        assert_eq!(h.app.world().get::<Flash>(a), Some(&Flash(0)));
+        h.ticks(HUD_PERIOD as usize);
+        let out = h.drain();
+        assert_eq!(overlays(&out, 1).len(), 1);
+        assert!(overlays(&out, 1)[0].starts_with("Tour 2/3 | CP 0/8"));
+        assert!(flashes(&out, 1).is_empty());
+        h.command(a, "leave", &[]);
+        assert!(h.app.world().get::<Flash>(a).is_none());
+    }
+
+    #[test]
+    fn a_record_is_announced_only_when_the_circuit_best_is_beaten() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        {
+            let mut kart = h.kart_mut(a);
+            kart.next_gate = LAPS * GATES + 1;
+            kart.penalty = 600;
+        }
+        h.tick();
+        let out = h.drain();
+        assert!(sounds(&out, 1, Cue::Record).is_empty());
+        assert!(
+            colored(&out, 2)
+                .iter()
+                .all(|(_, color)| *color != Tone::Record.color().to_string())
+        );
+        h.kart_mut(b).next_gate = LAPS * GATES + 1;
+        h.tick();
+        let out = h.drain();
+        let time = h.kart(b).finished.unwrap();
+        assert!(time < h.kart(a).finished.unwrap());
+        assert!(colored(&out, 1).contains(&(
+            format!("Record du circuit : Pilot2 en {}s !", seconds(time)),
+            Tone::Record.color().to_string()
+        )));
+        assert_eq!(sounds(&out, 1, Cue::Record).len(), 1);
+        assert_eq!(sounds(&out, 2, Cue::Record).len(), 1);
+        assert_eq!(sounds(&out, 2, Cue::Finish).len(), 1);
+    }
+
+    #[test]
+    fn countdown_beep_is_a_registry_ui_sound_with_the_paper_layout() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        h.shortcut_to_countdown(a, &[]);
+        let tick = h.race().tick;
+        h.race_mut().start = tick + 62;
+        h.tick();
+        h.packets();
+        let position = *h.app.world().get::<Position>(a).unwrap();
+        h.tick();
+        let beeps: Vec<SoundEffect> = h
+            .packets()
+            .into_iter()
+            .filter_map(|(client, packet)| match packet {
+                ClientboundPacket::Play(PlayPacket::SoundEffect(p)) if client == 1 => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(beeps.len(), 1);
+        let mut bytes = Vec::new();
+        PlayPacket::SoundEffect(beeps[0].clone()).encode(&mut bytes);
+        let mut expected = vec![0x75];
+        VarI32(voidmc::sounds::resolve(Cue::Beep.name()).unwrap() + 1).encode(&mut expected);
+        expected.push(SoundSource::Ui as u8);
+        for coordinate in [position.x, position.y, position.z] {
+            expected.extend(((coordinate * 8.0) as i32).to_be_bytes());
+        }
+        expected.extend(1.0f32.to_be_bytes());
+        expected.extend(1.0f32.to_be_bytes());
+        expected.extend(0i64.to_be_bytes());
+        assert_eq!(bytes, expected);
     }
 
     #[test]

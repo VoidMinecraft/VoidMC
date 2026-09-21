@@ -6,9 +6,13 @@ use voidmc::{
     Audience, EndCrystal, EntityBuilder, EntityKind, Particle, Particles,
     components::{EntityViewers, MinecraftEntityId},
 };
+use voidmc_data::v26_1_2::items as i;
+use voidmc_protocol::clientbound::ItemStackTemplate;
 
+use crate::audio::{Audio, Cue};
+use crate::chat::{Chat, Tone};
 use crate::kart::{Kart, PowerUp, Strike};
-use crate::race::{Chat, Phase, Race};
+use crate::race::{Phase, Race};
 use crate::terrain::mix;
 use crate::track::{GATES, Track};
 use crate::vehicle::Pilot;
@@ -26,6 +30,8 @@ const MISSILE_PERIOD: u64 = 2;
 const BURST_PERIOD: u64 = 4;
 const GROUND_PERIOD: u64 = 10;
 const RING_POINTS: u32 = 6;
+const BOOST_RING_POINTS: u32 = 12;
+const BOOST_RING_RADIUS: f64 = 1.2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pickup {
@@ -130,12 +136,52 @@ pub fn ease_out(t: f64) -> f64 {
     1.0 - (1.0 - t.clamp(0.0, 1.0)).powi(3)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SparkKind {
+    Explosion,
+    Lightning,
+    Slide,
+    Ice,
+    Boost,
+    Shield,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spark {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f64,
+    pub kind: SparkKind,
+}
+
+impl Spark {
+    fn at(kart: &Kart, kind: SparkKind) -> Self {
+        Self {
+            x: kart.x,
+            y: kart.y + 0.5,
+            z: kart.z,
+            yaw: kart.yaw,
+            kind,
+        }
+    }
+
+    fn along(&self) -> (f32, f32, f32) {
+        (
+            (self.yaw.sin().abs() * 1.5 + 0.3) as f32,
+            0.25,
+            (self.yaw.cos().abs() * 1.5 + 0.3) as f32,
+        )
+    }
+}
+
 #[derive(Resource, Default, Debug)]
 pub struct Items {
     pub pickups: Vec<Pickup>,
     pub traps: Vec<Trap>,
     pub missiles: Vec<Missile>,
     pub bursts: Vec<Burst>,
+    pub sparks: Vec<Spark>,
     serial: u64,
 }
 
@@ -171,6 +217,7 @@ impl Items {
         self.traps.clear();
         self.missiles.clear();
         self.bursts.clear();
+        self.sparks.clear();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -226,16 +273,16 @@ type KartQuery<'w, 's> = Query<
     ),
 >;
 
-fn describe(item: PowerUp) -> &'static str {
+pub fn describe(item: PowerUp) -> &'static str {
     match item {
-        PowerUp::Turbo => "Acceleration 3 s, +35 % de boost.",
-        PowerUp::Shield => "Protection pendant 6 s.",
-        PowerUp::Banana => "Piege depose pour 12 s.",
-        PowerUp::Missile => "Projectile guide vers le prochain pilote devant toi (8 s maximum).",
-        PowerUp::Shockwave => "Les rivaux a moins de 9 blocs sont repousses !",
-        PowerUp::Ice => "Nappe de glace deposee pour 10 s : perte d'adherence pendant 3 s.",
-        PowerUp::Lightning => "Les adversaires sont ralentis pendant 2,5 s !",
-        PowerUp::Recharge => "Boost rempli et gratuit pendant 5 s : maintiens Saut + Avancer !",
+        PowerUp::Turbo => "acceleration 3 s",
+        PowerUp::Shield => "protege 6 s",
+        PowerUp::Banana => "piege depose 12 s",
+        PowerUp::Missile => "vise le pilote devant toi",
+        PowerUp::Shockwave => "rivaux a moins de 9 blocs repousses",
+        PowerUp::Ice => "nappe deposee 10 s",
+        PowerUp::Lightning => "adversaires ralentis 2,5 s",
+        PowerUp::Recharge => "boost gratuit 5 s : Saut + Avancer",
     }
 }
 
@@ -245,6 +292,7 @@ pub struct Field<'w, 's> {
     items: ResMut<'w, Items>,
     karts: KartQuery<'w, 's>,
     chat: Chat<'w, 's>,
+    audio: Audio<'w, 's>,
     commands: Commands<'w, 's>,
 }
 
@@ -267,15 +315,54 @@ impl Field<'_, '_> {
         racers
     }
 
+    fn struck(
+        &mut self,
+        target: &Contender,
+        strike: Strike,
+        shielded: bool,
+        what: &str,
+        hit: &str,
+    ) {
+        let kind = if shielded {
+            SparkKind::Shield
+        } else {
+            match strike {
+                Strike::Missile | Strike::Shockwave { .. } => SparkKind::Explosion,
+                Strike::Lightning => SparkKind::Lightning,
+                Strike::Banana => SparkKind::Slide,
+                Strike::Ice => SparkKind::Ice,
+            }
+        };
+        let spark = Spark::at(self.karts.get(target.kart).unwrap().3, kind);
+        self.items.sparks.push(spark);
+        if shielded {
+            self.audio.at(target.kart, Cue::Shielded);
+            self.chat.flash(
+                target.player,
+                Tone::Good,
+                format!("Bouclier ! {what} sans effet"),
+            );
+        } else {
+            self.audio.at(target.kart, Cue::Hit(strike.into()));
+            self.chat.flash(target.player, Tone::Warn, hit);
+        }
+    }
+
     fn activate(&mut self, item: PowerUp, racer: &Contender, racers: &[Contender], tick: u64) {
-        self.chat.tell(
+        self.chat.flash(
             racer.player,
-            format!("{} active ! {}", item.name(), describe(item)),
+            Tone::Good,
+            format!("{} : {}", item.name(), describe(item)),
         );
+        self.audio.at(racer.kart, Cue::Activate(item));
         let mut kart = self.karts.get_mut(racer.kart).unwrap().3;
         kart.activate(item);
         match item {
-            PowerUp::Turbo | PowerUp::Shield => {}
+            PowerUp::Shield => {}
+            PowerUp::Turbo => {
+                let spark = Spark::at(&kart, SparkKind::Boost);
+                self.items.sparks.push(spark);
+            }
             PowerUp::Recharge => {
                 let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Recharge);
                 self.items.bursts.push(burst);
@@ -311,9 +398,10 @@ impl Field<'_, '_> {
                 };
                 self.items.missiles.push(missile);
                 if target.is_none() {
-                    self.chat.tell(
+                    self.chat.flash(
                         racer.player,
-                        "Aucune cible devant : missile tire le long de la piste.",
+                        Tone::Notice,
+                        "MISSILE GUIDE : aucune cible devant, tir en ligne droite",
                     );
                 }
             }
@@ -330,6 +418,10 @@ impl Field<'_, '_> {
                     },
                 );
                 self.items.bursts.push(burst);
+                if shockwave {
+                    let spark = Spark::at(&kart, SparkKind::Explosion);
+                    self.items.sparks.push(spark);
+                }
                 for other in racers.iter().filter(|r| r.kart != racer.kart) {
                     let (dx, dz) = (other.x - racer.x, other.z - racer.z);
                     let distance = dx.hypot(dz);
@@ -359,13 +451,12 @@ impl Field<'_, '_> {
                         },
                     );
                     self.items.bursts.push(burst);
-                    self.chat.tell(
-                        other.player,
-                        if shielded {
-                            "Bouclier : attaque absorbee !".to_string()
-                        } else {
-                            format!("Touche par {} !", item.name())
-                        },
+                    self.struck(
+                        other,
+                        strike,
+                        shielded,
+                        item.name(),
+                        &format!("Touche par {} !", item.name()),
                     );
                 }
             }
@@ -388,12 +479,11 @@ impl Field<'_, '_> {
             despawn(&mut self.commands, crystal);
         }
         self.karts.get_mut(racer.kart).unwrap().3.collect(item);
-        self.chat.tell(
+        self.audio.ui(racer.player, Cue::Pickup);
+        self.chat.flash(
             racer.player,
-            format!(
-                "Bonus obtenu : {} ! Appuie sur Sprint pour l'utiliser.",
-                item.name()
-            ),
+            Tone::Notice,
+            format!("Bonus : {} — Sprint pour l'utiliser", item.name()),
         );
     }
 
@@ -407,17 +497,22 @@ impl Field<'_, '_> {
             if trap.ice {
                 let fresh = kart.ice == 0;
                 if !kart.strike(Strike::Ice) && fresh {
-                    self.chat
-                        .tell(racer.player, "Glace ! Adherence reduite pendant 3 s.");
+                    self.struck(
+                        racer,
+                        Strike::Ice,
+                        false,
+                        "Glace",
+                        "Glace ! Adherence reduite 3 s",
+                    );
                 }
             } else {
-                self.chat.tell(
-                    racer.player,
-                    if kart.strike(Strike::Banana) {
-                        "Le bouclier a absorbe une banane !"
-                    } else {
-                        "Banane ! Derapage — contre-braque pour repartir."
-                    },
+                let shielded = kart.strike(Strike::Banana);
+                self.struck(
+                    racer,
+                    Strike::Banana,
+                    shielded,
+                    "Banane",
+                    "Banane ! Derapage — contre-braque",
                 );
             }
             trap.ice
@@ -427,6 +522,7 @@ impl Field<'_, '_> {
 
     fn missiles(&mut self, racers: &[Contender]) {
         let map = &self.map;
+        let mut hits: Vec<Contender> = Vec::new();
         let mut missiles = std::mem::take(&mut self.items.missiles);
         missiles.retain_mut(|missile| {
             missile.age += 1;
@@ -446,27 +542,28 @@ impl Field<'_, '_> {
             missile.phase = (missile.phase + 2.0 / map.length * TAU).rem_euclid(TAU);
             (missile.x, missile.y, missile.z) = map.point(missile.phase, missile.offset);
             missile.y += 0.6;
-            for racer in racers.iter().filter(|r| r.kart != missile.owner) {
-                if (racer.x - missile.x).hypot(racer.z - missile.z) >= MISSILE_RADIUS {
-                    continue;
-                }
-                let mut kart = self.karts.get_mut(racer.kart).unwrap().3;
-                let shielded = kart.strike(Strike::Missile);
-                let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Impact);
-                self.items.bursts.push(burst);
-                self.chat.tell(
-                    racer.player,
-                    if shielded {
-                        "Bouclier : missile intercepte !"
-                    } else {
-                        "Missile ! Ralentissement pendant 1,5 s."
-                    },
-                );
-                return false;
+            let hit = racers.iter().find(|r| {
+                r.kart != missile.owner && (r.x - missile.x).hypot(r.z - missile.z) < MISSILE_RADIUS
+            });
+            if let Some(racer) = hit {
+                hits.push(*racer);
             }
-            true
+            hit.is_none()
         });
         self.items.missiles = missiles;
+        for racer in &hits {
+            let mut kart = self.karts.get_mut(racer.kart).unwrap().3;
+            let shielded = kart.strike(Strike::Missile);
+            let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Impact);
+            self.items.bursts.push(burst);
+            self.struck(
+                racer,
+                Strike::Missile,
+                shielded,
+                "Missile",
+                "Missile ! Ralenti 1,5 s",
+            );
+        }
     }
 }
 
@@ -517,12 +614,17 @@ pub fn update(race: Res<Race>, mut field: Field) {
 
 pub fn effects(
     race: Res<Race>,
-    items: Res<Items>,
+    mut items: ResMut<Items>,
     particles: Particles,
     karts: Query<(&Kart, &EntityViewers)>,
     viewers: Query<&EntityViewers>,
 ) {
     let tick = race.tick;
+    if !items.sparks.is_empty() {
+        for spark in items.sparks.drain(..) {
+            emit(&particles, &spark);
+        }
+    }
     let cloud = |particle: Particle, at: [f64; 3], count: i32| {
         particles
             .spawn(particle)
@@ -620,6 +722,66 @@ pub fn effects(
     }
 }
 
+fn emit(particles: &Particles, spark: &Spark) {
+    let at = [spark.x, spark.y, spark.z];
+    let seed = particles
+        .spawn(Particle::Explosion)
+        .at(at)
+        .long_distance(true)
+        .audience(Audience::All);
+    let everyone = seed.recipients();
+    let cloud = |particle: Particle, count: i32, offset: (f32, f32, f32), speed: f32| {
+        particles
+            .spawn(particle)
+            .at(at)
+            .count(count)
+            .offset(offset.0, offset.1, offset.2)
+            .speed(speed)
+            .long_distance(true)
+            .packet()
+    };
+    match spark.kind {
+        SparkKind::Explosion => {
+            everyone.send(seed.packet());
+            everyone.send(cloud(Particle::LargeSmoke, 10, (0.6, 0.6, 0.6), 0.05));
+            everyone.send(cloud(Particle::Flame, 8, (0.3, 0.3, 0.3), 0.1));
+            everyone.send(cloud(Particle::Crit, 6, (0.4, 0.4, 0.4), 0.2));
+        }
+        SparkKind::Lightning => {
+            everyone.send(seed.packet());
+            everyone.send(cloud(Particle::ElectricSpark, 24, (0.5, 0.8, 0.5), 0.3));
+        }
+        SparkKind::Slide => {
+            let along = spark.along();
+            let banana = Particle::Item {
+                stack: ItemStackTemplate::simple(i::YELLOW_DYE, 1),
+            };
+            everyone.send(cloud(banana, 12, along, 0.05));
+            everyone.send(cloud(Particle::Cloud, 8, along, 0.02));
+        }
+        SparkKind::Ice => {
+            let along = spark.along();
+            everyone.send(cloud(Particle::Snowflake, 20, along, 0.02));
+            everyone.send(cloud(Particle::ItemSnowball, 6, along, 0.05));
+        }
+        SparkKind::Boost => {
+            let mut dot = particles.spawn(Particle::Flame).at(at).long_distance(true);
+            for i in 0..BOOST_RING_POINTS {
+                let angle = f64::from(i) * TAU / f64::from(BOOST_RING_POINTS);
+                dot = dot.at([
+                    at[0] + angle.cos() * BOOST_RING_RADIUS,
+                    at[1],
+                    at[2] + angle.sin() * BOOST_RING_RADIUS,
+                ]);
+                everyone.send(dot.packet());
+            }
+        }
+        SparkKind::Shield => {
+            everyone.send(cloud(Particle::ElectricSpark, 30, (0.8, 0.8, 0.8), 0.05));
+        }
+    }
+}
+
 pub fn trail(kart: &Kart) -> Option<Particle> {
     if kart.impact > 0 {
         Some(Particle::Crit)
@@ -646,7 +808,9 @@ mod tests {
     use voidmc::{EntityKind, EntityMetadata};
 
     use super::*;
-    use crate::race::tests::{Harness, Out};
+    use crate::audio::Hit;
+    use crate::chat::HUD_COLOR;
+    use crate::race::tests::{Harness, Out, sounds};
 
     fn items(h: &Harness) -> &Items {
         h.app.world().resource::<Items>()
@@ -727,6 +891,26 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn flashes(out: &[Out], client: u32) -> Vec<(String, String)> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Chat {
+                    client: c,
+                    overlay: true,
+                    text,
+                    color,
+                } if *c == client && *color != HUD_COLOR.to_string() => {
+                    Some((text.clone(), color.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn flash(tone: Tone, text: &str) -> (String, String) {
+        (text.to_string(), tone.color().to_string())
     }
 
     fn as_seen_by(out: &[Out], client: u32) -> Vec<Out> {
@@ -852,8 +1036,17 @@ mod tests {
         let out = h.drain();
         assert!(out.contains(&Out::Remove(1, vec![id])));
         assert!(out.contains(&Out::Remove(2, vec![id])));
-        assert!(h.chats(1).is_empty());
-        assert!(out.iter().any(|o| matches!(o, Out::Chat { client: 1, text, .. } if *text == format!("[Alpine Rush] Bonus obtenu : {} ! Appuie sur Sprint pour l'utiliser.", item.name()))));
+        assert!(chats(&out, 1).is_empty());
+        assert_eq!(
+            flashes(&out, 1),
+            vec![flash(
+                Tone::Notice,
+                &format!("Bonus : {} — Sprint pour l'utiliser", item.name())
+            )]
+        );
+        assert_eq!(sounds(&out, 1, Cue::Pickup).len(), 1);
+        assert!(sounds(&out, 2, Cue::Pickup).is_empty());
+        assert!(flashes(&out, 2).is_empty());
 
         h.ticks((PICKUP_RESPAWN - 1) as usize);
         assert_eq!(crystals(&mut h).len(), GATES * 3 - 1);
@@ -945,8 +1138,8 @@ mod tests {
                 "{client}"
             );
         }
-        assert_eq!(chats(&out, 1).len(), 1);
-        assert!(chats(&out, 2).is_empty());
+        assert_eq!(flashes(&out, 1).len(), 1);
+        assert!(flashes(&out, 2).is_empty());
         h.tick();
         assert_eq!(h.kart(b).item, None);
     }
@@ -993,10 +1186,9 @@ mod tests {
         assert_eq!(h.kart(b).slow, 29);
         assert_eq!(h.kart(c).slow, 0);
         assert_eq!(items(&h).bursts[0].kind, BurstKind::Impact);
-        assert!(
-            h.chats(2)
-                .contains(&"[Alpine Rush] Missile ! Ralentissement pendant 1,5 s.".to_string())
-        );
+        let out = h.drain();
+        assert!(chats(&out, 2).is_empty());
+        assert!(flashes(&out, 2).contains(&flash(Tone::Warn, "Missile ! Ralenti 1,5 s")));
     }
 
     #[test]
@@ -1043,7 +1235,7 @@ mod tests {
                 |o| matches!(o, Out::Remove(_, ids) if ids.iter().any(|id| alive.contains(id)))
             )
         );
-        assert_eq!(chats(&out, 1).len(), 1);
+        assert_eq!(flashes(&out, 1).len(), 1);
         park(&mut h, b, target.x, target.z);
         h.ticks((PICKUP_RESPAWN - 1) as usize);
         assert_eq!(h.kart(b).item, None);
@@ -1118,10 +1310,15 @@ mod tests {
         assert_eq!((h.kart(a).slow, h.kart(c).slow), (0, 0));
         let burst = items(&h).bursts[0];
         assert_eq!((burst.kind, burst.radius), (BurstKind::Impact, 3.0));
+        let out = h.drain();
+        assert!(chats(&out, 2).is_empty());
+        assert!(flashes(&out, 2).contains(&flash(Tone::Warn, "Missile ! Ralenti 1,5 s")));
+        let hit = sounds(&out, 2, Cue::Hit(Hit::Missile));
+        assert_eq!(hit.len(), 1);
         assert!(
-            h.chats(2)
-                .contains(&"[Alpine Rush] Missile ! Ralentissement pendant 1,5 s.".to_string())
+            matches!(hit[0], Out::Sound { emitter: Some(id), .. } if id == network_id(&h, h.kart_entity(b)))
         );
+        assert_eq!(sounds(&out, 1, Cue::Hit(Hit::Missile)).len(), 1);
 
         h.kart_mut(b).slow = 0;
         h.kart_mut(b).shield = 200;
@@ -1131,10 +1328,10 @@ mod tests {
         }
         assert!(items(&h).missiles.is_empty());
         assert_eq!(h.kart(b).slow, 0);
-        assert!(
-            h.chats(2)
-                .contains(&"[Alpine Rush] Bouclier : missile intercepte !".to_string())
-        );
+        let out = h.drain();
+        assert!(flashes(&out, 2).contains(&flash(Tone::Good, "Bouclier ! Missile sans effet")));
+        assert_eq!(sounds(&out, 2, Cue::Shielded).len(), 1);
+        assert!(sounds(&out, 2, Cue::Hit(Hit::Missile)).is_empty());
 
         use_item(&mut h, a, PowerUp::Missile);
         assert_eq!(items(&h).missiles[0].target, Some(kb));
@@ -1145,9 +1342,10 @@ mod tests {
         place(&mut h, c, 0.05, 0.0);
         use_item(&mut h, a, PowerUp::Missile);
         assert_eq!(items(&h).missiles[0].target, None);
-        assert!(h.chats(1).contains(
-            &"[Alpine Rush] Aucune cible devant : missile tire le long de la piste.".to_string()
-        ));
+        assert!(flashes(&h.drain(), 1).contains(&flash(
+            Tone::Notice,
+            "MISSILE GUIDE : aucune cible devant, tir en ligne droite"
+        )));
         for _ in 0..(MISSILE_LIFE - 2) {
             h.tick();
             assert_eq!(items(&h).missiles.len(), 1);
@@ -1156,6 +1354,149 @@ mod tests {
         h.tick();
         assert!(items(&h).missiles.is_empty());
         assert_eq!((h.kart(a).slow, h.kart(c).slow), (0, 0));
+    }
+
+    #[test]
+    fn a_shielded_kart_sitting_on_ice_stays_silent() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        place(&mut h, a, 0.1, 0.0);
+        place(&mut h, b, 0.1, 0.0);
+        use_item(&mut h, a, PowerUp::Ice);
+        let trap = items(&h).traps[0];
+        h.kart_mut(b).shield = 200;
+        h.drain();
+        for _ in 0..5 {
+            park(&mut h, b, trap.x, trap.z);
+            h.tick();
+            assert_eq!(h.kart(b).ice, 0);
+            let out = h.drain();
+            assert!(flashes(&out, 2).is_empty());
+            assert!(sounds(&out, 2, Cue::Shielded).is_empty());
+            assert!(sounds(&out, 2, Cue::Hit(Hit::Ice)).is_empty());
+            assert!(particles(&out, 1, Particle::Snowflake).is_empty());
+        }
+        h.kart_mut(b).shield = 0;
+        park(&mut h, b, trap.x, trap.z);
+        h.tick();
+        assert_eq!(h.kart(b).ice, 59);
+        let out = h.drain();
+        assert_eq!(flashes(&out, 2).len(), 1);
+        assert_eq!(sounds(&out, 2, Cue::Hit(Hit::Ice)).len(), 1);
+    }
+
+    #[test]
+    fn impact_bursts_are_emitted_once_on_the_event_tick_to_everyone() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        let watcher = h.connect(3);
+        h.shortcut_to_racing(a, &[]);
+        h.kart_mut(watcher).participant = false;
+        place(&mut h, a, 0.1, 0.0);
+        place(&mut h, b, 0.13, 1.0);
+        h.tick();
+        h.drain();
+
+        let (x, y, z) = (h.kart(a).x, h.kart(a).y + 0.5, h.kart(a).z);
+        use_item(&mut h, a, PowerUp::Turbo);
+        let out = h.drain();
+        for client in [1, 2, 3] {
+            let ring = particles(&out, client, Particle::Flame);
+            assert_eq!(ring.len(), BOOST_RING_POINTS as usize, "{client}");
+            assert!(ring.iter().all(|o| matches!(
+                o,
+                Out::Particles { at, count: 1, long_distance: true, .. }
+                    if ((at.0 - x).hypot(at.2 - z) - BOOST_RING_RADIUS).abs() < 1e-9 && at.1 == y
+            )));
+        }
+        assert!(items(&h).sparks.is_empty());
+        h.tick();
+        assert!(
+            particles(&h.drain(), 1, Particle::Flame)
+                .iter()
+                .all(|o| matches!(o, Out::Particles { count: 3, .. }))
+        );
+
+        use_item(&mut h, a, PowerUp::Shockwave);
+        let out = h.drain();
+        assert_eq!(particles(&out, 3, Particle::Explosion).len(), 2);
+        assert_eq!(particles(&out, 3, Particle::LargeSmoke).len(), 2);
+        assert!(
+            particles(&out, 3, Particle::Crit)
+                .iter()
+                .all(|o| matches!(o, Out::Particles { count: 6, .. }))
+        );
+        h.tick();
+        let out = h.drain();
+        assert!(particles(&out, 3, Particle::Explosion).is_empty());
+        assert!(particles(&out, 3, Particle::LargeSmoke).is_empty());
+
+        h.kart_mut(b).shield = 200;
+        place(&mut h, a, 0.1, 0.0);
+        place(&mut h, b, 0.13, 1.0);
+        use_item(&mut h, a, PowerUp::Lightning);
+        let out = h.drain();
+        let shell: Vec<Out> = particles(&out, 3, Particle::ElectricSpark)
+            .into_iter()
+            .filter(|o| matches!(o, Out::Particles { count: 30, .. }))
+            .collect();
+        assert_eq!(shell.len(), 1);
+        assert!(matches!(
+            shell[0],
+            Out::Particles {
+                offset: (0.8, 0.8, 0.8),
+                speed: 0.05,
+                ..
+            }
+        ));
+        assert!(particles(&out, 3, Particle::Explosion).is_empty());
+        h.kart_mut(b).shield = 0;
+        use_item(&mut h, a, PowerUp::Lightning);
+        let out = h.drain();
+        assert_eq!(particles(&out, 3, Particle::Explosion).len(), 1);
+        assert!(
+            particles(&out, 3, Particle::ElectricSpark)
+                .iter()
+                .any(|o| matches!(o, Out::Particles { count: 24, .. }))
+        );
+
+        h.kart_mut(b).ice = 0;
+        use_item(&mut h, a, PowerUp::Ice);
+        let trap = items(&h).traps[0];
+        park(&mut h, b, trap.x, trap.z);
+        let yaw = h.kart(b).yaw;
+        h.tick();
+        let out = h.drain();
+        let snow = particles(&out, 3, Particle::Snowflake);
+        assert_eq!(snow.len(), 1);
+        let along = (
+            (yaw.sin().abs() * 1.5 + 0.3) as f32,
+            0.25,
+            (yaw.cos().abs() * 1.5 + 0.3) as f32,
+        );
+        assert!(matches!(snow[0], Out::Particles { count: 20, offset, .. } if offset == along));
+        assert_eq!(particles(&out, 3, Particle::ItemSnowball).len(), 1);
+        h.tick();
+        assert!(particles(&h.drain(), 3, Particle::Snowflake).is_empty());
+
+        h.kart_mut(b).spin = 0.0;
+        use_item(&mut h, a, PowerUp::Banana);
+        let trap = items(&h).traps.last().copied().unwrap();
+        park(&mut h, b, trap.x, trap.z);
+        h.tick();
+        let out = h.drain();
+        let banana = Particle::Item {
+            stack: ItemStackTemplate::simple(i::YELLOW_DYE, 1),
+        };
+        let peel = particles(&out, 3, banana);
+        assert_eq!(peel.len(), 1);
+        assert!(matches!(peel[0], Out::Particles { count: 12, .. }));
+        assert_eq!(particles(&out, 3, Particle::Cloud).len(), 1);
+        h.tick();
+        assert!(particles(&h.drain(), 3, Particle::Cloud).is_empty());
     }
 
     #[test]
@@ -1203,16 +1544,21 @@ mod tests {
         assert_eq!((bursts[1].x, bursts[1].z), (bx, bz));
         assert_eq!(bursts[2].kind, BurstKind::Impact);
         let out = h.drain();
-        assert!(chats(&out, 2).contains(&"[Alpine Rush] Touche par ONDE DE CHOC !".to_string()));
+        for client in [1, 2, 3, 4] {
+            assert!(chats(&out, client).is_empty(), "{client}");
+        }
+        assert!(flashes(&out, 2).contains(&flash(Tone::Warn, "Touche par ONDE DE CHOC !")));
         assert!(
-            chats(&out, 3).contains(&"[Alpine Rush] Bouclier : attaque absorbee !".to_string())
+            flashes(&out, 3).contains(&flash(Tone::Good, "Bouclier ! ONDE DE CHOC sans effet"))
         );
-        assert!(chats(&out, 4).is_empty());
-        assert!(
-            chats(&out, 1)
-                .iter()
-                .any(|t| t.starts_with("[Alpine Rush] ONDE DE CHOC active !"))
-        );
+        assert!(flashes(&out, 4).is_empty());
+        assert!(flashes(&out, 1).contains(&flash(
+            Tone::Good,
+            &format!("ONDE DE CHOC : {}", describe(PowerUp::Shockwave))
+        )));
+        assert_eq!(sounds(&out, 1, Cue::Activate(PowerUp::Shockwave)).len(), 1);
+        assert_eq!(sounds(&out, 1, Cue::Hit(Hit::Shockwave)).len(), 1);
+        assert_eq!(sounds(&out, 1, Cue::Shielded).len(), 1);
         for age in 1..BURST_LIFE {
             h.tick();
             assert_eq!(items(&h).bursts.len(), 3);
@@ -1270,13 +1616,14 @@ mod tests {
         assert_eq!(h.kart(a).ice, 0);
         assert_eq!(h.kart(b).ice, 59);
         assert_eq!(items(&h).traps.len(), 1);
-        assert!(
-            h.chats(2)
-                .contains(&"[Alpine Rush] Glace ! Adherence reduite pendant 3 s.".to_string())
-        );
+        let out = h.drain();
+        assert!(chats(&out, 2).is_empty());
+        assert!(flashes(&out, 2).contains(&flash(Tone::Warn, "Glace ! Adherence reduite 3 s")));
+        assert_eq!(sounds(&out, 2, Cue::Hit(Hit::Ice)).len(), 1);
         h.tick();
         assert_eq!(h.kart(b).ice, 59);
-        assert!(h.chats(2).is_empty());
+        let out = h.drain();
+        assert!(flashes(&out, 2).is_empty() && sounds(&out, 2, Cue::Hit(Hit::Ice)).is_empty());
         park(&mut h, b, trap.x + 2.6, trap.z);
         for _ in 0..25 {
             h.tick();
@@ -1317,9 +1664,10 @@ mod tests {
         assert_eq!(h.kart(b).spin, 0.45);
         assert_eq!(h.kart(b).impact, 5);
         assert!(h.kart(b).speed < 0.3);
-        assert!(h.chats(2).contains(
-            &"[Alpine Rush] Banane ! Derapage — contre-braque pour repartir.".to_string()
-        ));
+        let out = h.drain();
+        assert!(chats(&out, 2).is_empty());
+        assert!(flashes(&out, 2).contains(&flash(Tone::Warn, "Banane ! Derapage — contre-braque")));
+        assert_eq!(sounds(&out, 2, Cue::Hit(Hit::Banana)).len(), 1);
 
         use_item(&mut h, a, PowerUp::Banana);
         let trap = items(&h).traps[0];
@@ -1329,10 +1677,10 @@ mod tests {
         h.tick();
         assert!(items(&h).traps.is_empty());
         assert_eq!(h.kart(b).spin, 0.0);
-        assert!(
-            h.chats(2)
-                .contains(&"[Alpine Rush] Le bouclier a absorbe une banane !".to_string())
-        );
+        let out = h.drain();
+        assert!(flashes(&out, 2).contains(&flash(Tone::Good, "Bouclier ! Banane sans effet")));
+        assert_eq!(sounds(&out, 2, Cue::Shielded).len(), 1);
+        assert!(sounds(&out, 2, Cue::Hit(Hit::Banana)).is_empty());
 
         use_item(&mut h, a, PowerUp::Banana);
         while h.race().tick < placed + 300 {
@@ -1466,7 +1814,10 @@ mod tests {
                 items(&h).traps.first().copied(),
             );
             let out = h.drain();
-            let flames = particles(&out, 1, Particle::Flame);
+            let flames: Vec<Out> = particles(&out, 1, Particle::Flame)
+                .into_iter()
+                .filter(|o| matches!(o, Out::Particles { count: 2, .. }))
+                .collect();
             let smoke = particles(&out, 1, Particle::Smoke);
             if let (true, Some(m)) = (tick.is_multiple_of(2), snapshot.0) {
                 checked.0 = true;

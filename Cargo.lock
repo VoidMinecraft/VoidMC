@@ -1944,6 +1944,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "flume",
+ "rand 0.8.6",
  "tracing",
  "tracing-subscriber",
  "ussr-nbt",

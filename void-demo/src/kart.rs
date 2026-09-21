@@ -9,6 +9,7 @@ pub const MIN_SPEED: f64 = -0.38;
 pub const MAX_SPEED: f64 = 0.72;
 pub const BOOST_SPEED: f64 = 1.15;
 pub const RESET_PENALTY: u64 = 60;
+pub const BUMP_COOLDOWN: u8 = 10;
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
@@ -85,6 +86,7 @@ pub struct Kart {
     pub spin: f64,
     pub impact: u8,
     pub contact_cooldown: u8,
+    pub bump: u8,
     pub item: Option<PowerUp>,
     pub use_item: bool,
     pub turbo: u16,
@@ -112,6 +114,7 @@ impl Kart {
         self.spin = 0.0;
         self.impact = 0;
         self.contact_cooldown = 0;
+        self.bump = 0;
         self.item = None;
         self.use_item = false;
         self.turbo = 0;
@@ -139,6 +142,16 @@ impl Kart {
         self.participant && self.finished.is_none()
     }
 
+    pub fn knock(&mut self) {
+        if self.bump == 0 {
+            self.bump = BUMP_COOLDOWN;
+        }
+    }
+
+    pub fn knocked(&self) -> bool {
+        self.bump == BUMP_COOLDOWN
+    }
+
     pub fn reset(&mut self, map: &Track) {
         let angle = (self.next_gate - 1) as f64 * TAU / GATES as f64;
         (self.x, self.y, self.z) = map.point(angle + 0.015, 0.0);
@@ -160,6 +173,7 @@ impl Kart {
     pub fn drive(&mut self, map: &Track) {
         self.impact = self.impact.saturating_sub(1);
         self.contact_cooldown = self.contact_cooldown.saturating_sub(1);
+        self.bump = self.bump.saturating_sub(1);
         self.shield = self.shield.saturating_sub(1);
         self.turbo = self.turbo.saturating_sub(1);
         self.slow = self.slow.saturating_sub(1);
@@ -222,6 +236,7 @@ impl Kart {
                 vz - 1.65 * dot * nz - self.yaw.cos() * self.speed,
             );
             self.impact = 6;
+            self.knock();
         }
     }
 
@@ -346,6 +361,7 @@ pub fn collide(a: &mut Kart, b: &mut Kart) {
         }
         kart.impact = 6;
         kart.contact_cooldown = 10;
+        kart.knock();
     }
 }
 

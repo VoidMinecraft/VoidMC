@@ -6,6 +6,7 @@ use voidmc::{
     events::PlayerInputEvent,
 };
 
+use crate::audio::{Audio, Cue};
 use crate::kart::{Input, Kart, collide};
 use crate::race::{Phase, Race, Racer};
 use crate::track::Track;
@@ -89,6 +90,17 @@ pub fn drive(race: Res<Race>, map: Res<Track>, mut karts: Query<&mut Kart>) {
     }
 }
 
+pub fn bumps(race: Res<Race>, karts: Query<(Entity, &Kart), Changed<Kart>>, audio: Audio) {
+    if race.phase != Phase::Racing {
+        return;
+    }
+    for (entity, kart) in &karts {
+        if kart.knocked() {
+            audio.at(entity, Cue::Bump);
+        }
+    }
+}
+
 pub const SEAT_HEIGHT: f64 = 0.35;
 
 pub fn pose(
@@ -130,9 +142,12 @@ mod tests {
     use bevy_ecs::change_detection::Tick;
     use voidmc::components::{EntityType, MinecraftEntityId};
 
+    use voidmc_protocol::clientbound::SoundSource;
+
     use super::*;
     use crate::arena::WAIT_Y;
-    use crate::race::tests::{Harness, Out};
+    use crate::kart::BUMP_COOLDOWN;
+    use crate::race::tests::{Harness, Out, sounds};
 
     fn press(h: &mut Harness, player: Entity, keys: &[&str]) {
         let key = |k: &str| keys.contains(&k);
@@ -536,6 +551,45 @@ mod tests {
             h.app.world().get::<Passengers>(rejoined).unwrap(),
             &Passengers::default()
         );
+    }
+
+    #[test]
+    fn a_bump_rings_once_per_kart_per_ten_ticks_from_the_kart() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        let (x, z) = (h.kart(a).x, h.kart(a).z);
+        let ids = (
+            network_id(&h, h.kart_entity(a)),
+            network_id(&h, h.kart_entity(b)),
+        );
+        let mut rings = Vec::new();
+        for _ in 0..25 {
+            for player in [a, b] {
+                let mut kart = h.kart_mut(player);
+                kart.x = x;
+                kart.z = z;
+                kart.speed = 0.0;
+            }
+            h.tick();
+            let out = h.drain();
+            let to_a = sounds(&out, 1, Cue::Bump);
+            assert_eq!(to_a.len(), sounds(&out, 2, Cue::Bump).len());
+            assert!(to_a.len() <= 2);
+            if !to_a.is_empty() {
+                assert!(to_a.iter().all(|s| matches!(
+                    s,
+                    Out::Sound { emitter: Some(id), at: None, source: SoundSource::Players, .. }
+                        if *id == ids.0 || *id == ids.1
+                )));
+                rings.push((h.race().tick, to_a.len()));
+            }
+        }
+        assert_eq!(rings.len(), 3);
+        assert!(rings.iter().all(|(_, count)| *count == 2));
+        assert_eq!(rings[1].0 - rings[0].0, u64::from(BUMP_COOLDOWN));
+        assert_eq!(rings[2].0 - rings[1].0, u64::from(BUMP_COOLDOWN));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use voidmc::{ServerConfigBuilder, SpawnPosition, VoidServer};
-use voidmc_demo::{arena, race::RacePlugin, terrain};
+use voidmc_demo::{SEED_VAR, Seed, arena, race::RacePlugin, terrain};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -7,12 +7,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
-    let seed = std::env::var("VOID_DEMO_SEED")
-        .unwrap_or_else(|_| "42".into())
-        .parse::<u64>()?;
+    let seed = voidmc_demo::seed(std::env::var(SEED_VAR).ok().as_deref())?;
     let address = std::env::var("VOID_DEMO_ADDRESS").unwrap_or_else(|_| "0.0.0.0:25565".into());
-    let arena = arena::Arena::new(terrain::Alpine { seed });
-    tracing::info!(seed, %address, "Alpine Rush — Java 26.1.2");
+    let arena = arena::Arena::new(terrain::Alpine { seed: seed.value() });
+    match seed {
+        Seed::Random(seed) => tracing::info!(
+            seed,
+            %address,
+            "Alpine Rush — Java 26.1.2 (seed aleatoire : {SEED_VAR}={seed} pour rejouer cette carte)"
+        ),
+        Seed::Configured(seed) => tracing::info!(seed, %address, "Alpine Rush — Java 26.1.2"),
+    }
     let config = ServerConfigBuilder::new()
         .address(address)
         .tick_rate(20)

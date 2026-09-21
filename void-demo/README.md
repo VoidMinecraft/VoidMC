@@ -13,7 +13,9 @@ sur une chaussée : ses déplacements sont simulés par le serveur.
 > affichages animés (D4) : bonus tenu, réacteurs, bouclier, recharge, débuffs, pièges,
 > missiles et ondes en entités *display* persistantes, et les déplacements (D5) :
 > vol libre des spectateurs, barrière de téléportation et embarquement dans le kart
-> une fois les chunks de la grille reçus par le client.
+> une fois les chunks de la grille reçus par le client, puis la passe d'interface (D6) :
+> chat hiérarchisé et coloré, barre d'action pour l'éphémère, sons, seed aléatoire et
+> particules d'impact.
 
 ## Lancer
 
@@ -30,15 +32,17 @@ une autre machine. Le joueur apparaît à **Y = 110**, au-dessus de la vallée, 
 invisible, sur la ligne de stationnement aérienne. Aucune plateforme ne gêne la vue du
 paysage.
 
-Pour utiliser une autre carte :
+Sans `VOID_DEMO_SEED`, la carte est **tirée au hasard** à chaque lancement ; la seed
+choisie est écrite dans le log de démarrage (`seed aleatoire : VOID_DEMO_SEED=… pour
+rejouer cette carte`). Pour rejouer une carte précise :
 
 ```sh
 VOID_DEMO_SEED=2026 cargo run --release -p voidmc-demo
 ```
 
 `VOID_DEMO_ADDRESS` permet de modifier l'adresse et le port d'écoute. La seed est un
-entier non signé sur 64 bits ; sa valeur par défaut est `42`. Le serveur tourne
-à 20 ticks/s. `RUST_LOG` règle la verbosité des logs.
+entier non signé sur 64 bits (jamais zéro quand elle est tirée au hasard). Le serveur
+tourne à 20 ticks/s. `RUST_LOG` règle la verbosité des logs.
 
 ## Jouer
 
@@ -80,7 +84,8 @@ La manche est complète (`src/race.rs`) :
 - `/race` renvoie d'abord **tout le monde en vol au-dessus du point d'attente**
   (`Teleport` du moteur vers `travel::LOBBY`, orientation 180°/15°) et décroche les
   pilotes de leur kart. Chaque manche construit ensuite un **nouveau tracé** dans la
-  vallée, un chunk tous les deux ticks, avec une annonce à 25/50/75 %.
+  vallée, un chunk tous les deux ticks ; la progression est affichée par la bossbar
+  partagée et le HUD.
 - Circuit prêt : les karts des participants sont placés sur la grille (téléportation
   d'entité par le moteur) et chaque pilote **embarque** via la barrière de
   téléportation du moteur (`Teleport::to(siège).facing(cap, 0)`) : position tenue par
@@ -97,7 +102,8 @@ La manche est complète (`src/race.rs`) :
   reste en vol) et une déconnexion libère simplement le joueur. Le compte à rebours de
   cinq secondes démarre quand tous les participants sont à bord.
 - Le nombre de tours choisi, avec huit checkpoints par tour, à franchir dans l'ordre.
-  Le chat annonce chaque nouveau tour au pilote concerné, les arrivées, puis le podium.
+  Chaque nouveau tour est signalé au pilote concerné sur sa barre d'action ; le chat
+  annonce les arrivées, les records du circuit et le podium.
   La limite de temps est de dix minutes jusqu'à trois tours, puis de 200 secondes par
   tour ; le chat prévient à 60, 30 et 10 secondes de la fin.
 - La **barre d'action** des pilotes affiche la phase, puis tour, checkpoint, temps,
@@ -108,7 +114,9 @@ La manche est complète (`src/race.rs`) :
   y est téléporté par le moteur.
 - `/scores` affiche les temps de la manche et les meilleurs temps du circuit actuel
   pour le même nombre de tours. Les records sont en mémoire, par seed de circuit,
-  nombre de tours et nom de joueur, et disparaissent au redémarrage.
+  nombre de tours et nom de joueur, et disparaissent au redémarrage. Un pilote qui
+  bat le meilleur temps connu du circuit (tous pilotes confondus) déclenche une
+  annonce **Record du circuit** dans le chat.
 - `/leave` passe en spectateur : le kart disparaît et le joueur repart **en vol** vers
   le point d'attente par la même barrière ; `/join` inscrit pour le prochain départ
   sans renvoyer d'abilities déjà en place. Chaque joueur qui arrive est inscrit
@@ -121,6 +129,65 @@ La manche est complète (`src/race.rs`) :
 - Lorsque tous les participants ont terminé ou quitté, le circuit se démonte dans
   l'ordre inverse et le terrain initial est restauré ; `/race` redevient disponible
   à la fin du démontage.
+
+### Interface & sons
+
+Le chat ne reçoit que des **événements** : arrivées et départs de joueurs, lancement
+de manche, GO, arrivées, records, podium, fin de manche, avertissements de temps,
+délais dépassés et erreurs de commande. Tout ce qui est éphémère — tour bouclé,
+bonus ramassé ou activé, coup reçu, bouclier, retour au checkpoint, missile sans
+cible — passe par la **barre d'action** (`Chat::flash`) ; la progression de
+construction, « tous les pilotes chargés » et le compte à rebours chiffré ont disparu
+du chat, la bossbar et le HUD les affichent déjà. Aucun préfixe : la couleur porte la
+catégorie, définie une seule fois dans `src/chat.rs` (`Tone`) :
+
+| Ton | Couleur | Usage |
+|---|---|---|
+| `Info` | gris | système : arrivées/départs, aide, démontage, `/scores` |
+| `Event` | or | événements de course : lancement, GO, arrivée, fin de manche |
+| `Notice` | aqua | notices personnelles : statut à l'arrivée, spectateur, bonus, tour |
+| `Good` | vert | bonus activé, bouclier qui absorbe |
+| `Warn` | rouge | erreurs de commande, temps, délai, coup reçu, `/reset` |
+| `Alert` | jaune | dernier tour |
+| `Record` | violet clair | records du circuit |
+| podium | or / gris / bronze | 1er / 2e / 3e |
+
+Un flash occupe la barre d'action pendant **huit rafraîchissements du HUD** (2 s,
+`chat::FLASH_PERIODS`) : le HUD, émis toutes les cinq ticks en or, ne réécrit la barre
+qu'une fois le flash expiré (`Chat::hud_free`, composant `Flash` sur le pilote).
+
+Les **sons** passent par l'API `Sounds` du moteur (`src/audio.rs`, `Cue`) ; chaque
+identifiant est résolu dans le registre `sound_event` de `voidmc_data`, et un test
+vérifie qu'ils existent tous. Les sons d'interface (`play_to`, catégorie *UI*) vont au
+seul joueur concerné ; les sons de jeu sont émis **depuis l'entité kart**
+(`EntitySoundEffect`, catégorie *Players*) pour les joueurs qui voient son chunk :
+
+| Événement | Son | Cible |
+|---|---|---|
+| Compte à rebours 3-2-1 / GO | `block.note_block.pling` grave (1.0) / aigu (2.0) | tous |
+| Départ | `entity.firework_rocket.large_blast` | tous |
+| Tour bouclé / dernier tour | `block.note_block.bell` (1.5) / `block.bell.use` | pilote |
+| Arrivée / record | `entity.player.levelup` / `ui.toast.challenge_complete` | pilote / tous |
+| Bonus ramassé | `entity.item.pickup` (1.2) | pilote |
+| Turbo / Bouclier / Banane / Glace | `firework_rocket.launch` / `beacon.activate` / `slime_block.place` / `glass.place` | au kart |
+| Missile / Onde / Éclair / Super-recharge | `wither.shoot` / `generic.explode` / `lightning_bolt.thunder` / `respawn_anchor.charge` | au kart |
+| Touché : missile / éclair / onde / banane / glace | `generic.explode` / `lightning_bolt.impact` / `player.hurt` / `slime.squish` / `glass.break` | au kart |
+| Bouclier qui absorbe | `item.shield.block` | au kart |
+| Choc (kart ou glissière) | `block.anvil.land` (0.5, 1.6) | au kart |
+| Retour au point d'attente, délai dépassé | `block.portal.trigger` (0.6) | joueur |
+
+Les chocs sont limités à **un son par kart toutes les dix ticks** (`Kart::knock`,
+`kart::BUMP_COOLDOWN`), quels que soient les rebonds ou contacts intermédiaires ; un
+kart protégé qui reste sur une nappe de glace ne produit ni son ni flash.
+
+Les **impacts** ajoutent une rafale de particules **une seule fois, au tick de
+l'événement** (`Items::sparks`, vidé par `effects`), destinataires résolus une fois par
+rafale : explosion + grosse fumée + flammes + crit pour un missile, une onde de choc ou
+un coup d'onde ; explosion + étincelles pour un éclair ; flocons et boules de neige
+étalés dans l'axe du kart pour la glace, teinture jaune et nuages pour la banane ;
+un anneau de douze flammes (rayon 1,2) à l'activation du turbo ; une coque de trente
+étincelles quand le bouclier absorbe. Les traînées, orbites et anneaux gardent leur
+cadence.
 
 ### Power-ups et effets
 
@@ -281,8 +348,14 @@ est recommandé.
   (`PlayerTeleportEvent` : embarquement, délai dépassé, annulation) et `keep_flying`
   (`PlayerToggleFlyEvent`). L'état de la barrière vit dans le moteur ; aucun travail
   par tick pour un joueur qui n'est pas en transfert.
+- `src/chat.rs` : palette et surfaces des messages — `Tone`, `Chat` (`say`,
+  `say_all`, `say_others`, `podium`, `hud`, `flash`, `hud_free`) et le composant
+  `Flash`.
+- `src/audio.rs` : les sons — `Cue` (nom d'événement, volume, hauteur, catégorie) et
+  `Audio` (`ui`, `everyone`, `at`) au-dessus de `voidmc::Sounds`.
 - `src/race.rs` : phases, commandes, annonces, bossbars et HUD ; `Racer` relie le
   joueur à son kart.
+- `src/lib.rs` : `seed` (variable d'environnement ou tirage aléatoire non nul).
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
 
 ## Vérifications
@@ -332,4 +405,13 @@ par le moteur ; les huit genres ont une géométrie bornée (translations, éche
 quaternions unitaires) sur 250 ticks sans aucun nouveau spawn et la scène se vide
 d'elle-même ; les fondus et le recentrage des blocs sont vérifiés à l'unité, et
 les octets d'une image de métadonnées est comparé à la disposition Paper 26.1.2
-(index, sérialiseurs `Int`/`Vector3`/`Quaternion`, terminateur).
+(index, sérialiseurs `Int`/`Vector3`/`Quaternion`, terminateur). Pour l'interface :
+chaque message part avec la couleur de sa catégorie et sur la bonne surface (chat ou
+barre d'action), un flash tient huit périodes de HUD avant que le HUD ne reprenne, le
+record n'est annoncé qu'en battant le meilleur temps du circuit, le compte à rebours
+produit quatre bips (trois graves, un aigu) et un départ, le tour bouclé un seul son,
+un choc un son par kart toutes les dix ticks exactement, chaque `Cue` résout un
+`sound_event` du registre, et les octets d'un bip (`SoundEffect` : holder, catégorie,
+position en huitièmes, volume, hauteur, seed) suivent Paper 26.1.2 ; les rafales
+d'impact partent au tick de l'événement et jamais au suivant ; la seed est reprise
+telle quelle depuis l'environnement ou tirée non nulle et différente à chaque appel.
