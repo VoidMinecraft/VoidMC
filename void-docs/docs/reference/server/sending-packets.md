@@ -106,6 +106,7 @@ top of it with the same `Audience` / `viewers` vocabulary:
 | Sounds | [`Sounds` / `WorldSounds`](../gameplay/sounds.md) |
 | Boss bars | [`BossBar` component](../gameplay/boss-bars.md) |
 | Scoreboards | [`Objective` / `Team` components](../gameplay/scoreboard.md), [`Sidebar` widgets](../gameplay/sidebar.md) |
+| Tab list | [`TabList` / `TabEntry` components](../gameplay/tab-list.md) |
 
 ### Failure handling
 
@@ -160,6 +161,7 @@ inside one schedule.
 | `AbilitiesSync` | `PostUpdate` | Player Abilities packets for changed `PlayerAbilities`. |
 | `SidebarSync` | `PostUpdate`, before `ScoreboardSync` | Renders changed sidebars into their objective (see [Sidebar](../gameplay/sidebar.md)). |
 | `ScoreboardSync` | `PostUpdate` | Objective, score and team packets for changed scoreboards (see [Scoreboard](../gameplay/scoreboard.md)). |
+| `TabListSync` | `PostUpdate` | Tab list header/footer and changed player entry actions (see [Tab List](../gameplay/tab-list.md)). |
 | `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
 | `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |
 

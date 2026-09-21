@@ -36,6 +36,11 @@
   },
   {
     "type": "file",
+    "name": "tab-list",
+    "label": "Tab List"
+  },
+  {
+    "type": "file",
     "name": "sounds",
     "label": "Sounds"
   },
