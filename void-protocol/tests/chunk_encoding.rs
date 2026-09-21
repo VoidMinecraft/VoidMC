@@ -21,13 +21,13 @@ fn test_single_value_section_encoding() {
     // ----------------------------------------------------------------
     // Create a ChunkSection with:
     //   block_state = SingleValue(8)  -- grass_block (snowy=false)
-    //   biome       = SingleValue(0)  -- plains
+    //   biome       = SingleValue(plains) -- registry index, not hardcoded
     //   block_count = 4096            -- fully filled section
     // ----------------------------------------------------------------
     let section = ChunkSection {
         block_count: 4096,
         block_state: PaletteData::SingleValue(blocks::GRASS_BLOCK), // 8
-        biome: PaletteData::SingleValue(biomes::PLAINS),            // 0
+        biome: PaletteData::SingleValue(biomes::plains()),
     };
 
     let bytes = section.encode_to_bytes();
@@ -57,7 +57,7 @@ fn test_single_value_section_encoding() {
     //   data_array_len:   VarInt(0)  -> 0x00
     // [Biomes]
     //   bits_per_entry:   u8  = 0   (single value palette)
-    //   palette_value:    VarInt(0)  -> 0x00
+    //   palette_value:    VarInt(plains index)
     //   data_array_len:   VarInt(0)  -> 0x00
     // ----------------------------------------------------------------
 
@@ -74,7 +74,7 @@ fn test_single_value_section_encoding() {
 
     // 3) Biome palette (single value) — 1.21.5+: no data array.
     expected.push(0x00); // bits_per_entry = 0
-    expected.extend(encode_varint(0)); // palette value = plains = 0
+    expected.extend(encode_varint(biomes::plains())); // palette value = plains
 
     println!("=== Expected bytes ===");
     print!("Hex: ");
@@ -143,18 +143,21 @@ fn test_single_value_section_encoding() {
     assert_eq!(bytes[offset], 0, "biome bits_per_entry should be 0");
     offset += 1;
 
-    // Biome palette: VarInt palette value = 0
-    let actual_biome_bytes = &bytes[offset..offset + varint_0.len()];
+    // Biome palette: VarInt palette value = registry index of plains
+    let varint_plains = encode_varint(biomes::plains());
+    let actual_biome_bytes = &bytes[offset..offset + varint_plains.len()];
     println!(
-        "  [{:02}]      biome palette_value = VarInt(0) -> {:02x?}",
-        offset, actual_biome_bytes
+        "  [{:02}]      biome palette_value = VarInt({}) -> {:02x?}",
+        offset,
+        biomes::plains(),
+        actual_biome_bytes
     );
     assert_eq!(
         actual_biome_bytes,
-        &varint_0[..],
-        "biome palette value should encode VarInt(0)"
+        &varint_plains[..],
+        "biome palette value should encode the plains registry index"
     );
-    offset += varint_0.len();
+    offset += varint_plains.len();
 
     // No biome data array on SingleValue (1.21.5+).
     let _ = varint_0;
@@ -214,15 +217,15 @@ fn test_full_chunk_24_sections_encoding() {
     //   - Section  4     -> filled with DIRT (id=10)
     //   - Section  5     -> filled with GRASS_BLOCK (id=8)
     //   - Sections 6..23 -> empty (AIR)
-    // All biomes = PLAINS (0)
+    // All biomes = plains
 
     let mut sections = Vec::with_capacity(24);
 
     for i in 0..24 {
         let section = match i {
-            0..=3 => ChunkSection::filled(blocks::STONE, biomes::PLAINS),
-            4 => ChunkSection::filled(blocks::DIRT, biomes::PLAINS),
-            5 => ChunkSection::filled(blocks::GRASS_BLOCK, biomes::PLAINS),
+            0..=3 => ChunkSection::filled(blocks::STONE, biomes::plains()),
+            4 => ChunkSection::filled(blocks::DIRT, biomes::plains()),
+            5 => ChunkSection::filled(blocks::GRASS_BLOCK, biomes::plains()),
             _ => ChunkSection::empty(),
         };
         sections.push(section);
@@ -311,9 +314,11 @@ fn test_full_chunk_24_sections_encoding() {
             idx
         );
         assert_eq!(bpe_biome, 0, "section {} biome bpe", idx);
+        // Empty sections keep biome 0; filled ones use the plains index.
+        let exp_biome = if exp_count == 0 { 0 } else { biomes::plains() };
         assert_eq!(
-            palette_biome, 0,
-            "section {} biome palette value (plains=0)",
+            palette_biome as i32, exp_biome,
+            "section {} biome palette value",
             idx
         );
     }
@@ -357,7 +362,7 @@ fn test_full_chunk_24_sections_encoding() {
 
 #[test]
 fn set_block_state_promotes_single_to_indirect() {
-    let mut section = ChunkSection::filled(blocks::STONE, biomes::PLAINS);
+    let mut section = ChunkSection::filled(blocks::STONE, biomes::plains());
     let initial_count = section.block_count;
 
     let old = section.set_block_state(3, 7, 11, blocks::DIRT);
@@ -370,7 +375,7 @@ fn set_block_state_promotes_single_to_indirect() {
 
 #[test]
 fn set_block_state_to_air_decrements_block_count() {
-    let mut section = ChunkSection::filled(blocks::STONE, biomes::PLAINS);
+    let mut section = ChunkSection::filled(blocks::STONE, biomes::plains());
     let before = section.block_count;
     let old = section.set_block_state(1, 1, 1, blocks::AIR);
     assert_eq!(old, blocks::STONE);
@@ -404,7 +409,7 @@ fn set_block_state_grows_palette_bits() {
 
 #[test]
 fn set_block_state_idempotent_on_same_id() {
-    let mut section = ChunkSection::filled(blocks::STONE, biomes::PLAINS);
+    let mut section = ChunkSection::filled(blocks::STONE, biomes::plains());
     let before = section.block_count;
     let prev_kind = matches!(section.block_state, PaletteData::SingleValue(_));
     let old = section.set_block_state(0, 0, 0, blocks::STONE);

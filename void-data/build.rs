@@ -100,7 +100,7 @@ fn main() {
                 let value: Value = serde_json::from_str(&json_text)
                     .unwrap_or_else(|e| panic!("parse {}: {e}", json_path.display()));
 
-                let nbt = json_to_nbt(&value, registry_id);
+                let nbt = json_to_nbt(&value, registry_id, entry_id);
 
                 let nbt_rel = Path::new("nbt")
                     .join(version)
@@ -177,6 +177,12 @@ fn main() {
     // ---- Non-summonable entity type static --------------------------------
     emit_non_summonable_entity_types(&crate_dir, &mut codegen);
 
+    // ---- Packet IDs static -------------------------------------------------
+    emit_packets_table(&crate_dir, &mut codegen);
+
+    // ---- Version info (version.json) ---------------------------------------
+    emit_version_info(&crate_dir, &mut codegen);
+
     let out_file = out_dir.join("registries.rs");
     fs::write(&out_file, codegen).unwrap();
 
@@ -205,12 +211,14 @@ fn main() {
             .unwrap_or_else(|e| panic!("read {}: {e}", blocks_path.display()));
         let blocks_json: Value = serde_json::from_str(&txt).expect("parse blocks.json");
         let items = load_item_entries(&crate_dir, version);
+        let packets = load_packets(&crate_dir, version);
         emit_blocks_module(
             &mut blocks_code,
             version,
             &blocks_json,
             shapes_value.as_ref(),
             &items,
+            &packets,
         );
     }
     fs::write(out_dir.join("blocks.rs"), blocks_code).unwrap();
@@ -301,6 +309,7 @@ fn emit_blocks_module(
     blocks_json: &Value,
     shapes_json: Option<&Value>,
     items: &[(String, i32)],
+    packets: &PacketTable,
 ) {
     let blocks_obj = blocks_json
         .as_object()
@@ -527,6 +536,9 @@ fn emit_blocks_module(
 
     // ---- items module
     emit_items_module(out, &defs, items);
+
+    // ---- packets module
+    emit_packets_module(out, packets);
 
     let _ = writeln!(out, "}}");
 }
@@ -1098,6 +1110,169 @@ fn emit_non_summonable_entity_types(crate_dir: &Path, codegen: &mut String) {
     codegen.push_str("];\n");
 }
 
+// =============================================================================
+// Packet IDs (reports/packets.json)
+// =============================================================================
+
+type PacketTable = Vec<(String, Vec<(String, Vec<(String, i32)>)>)>;
+
+fn load_packets(crate_dir: &Path, version: &str) -> PacketTable {
+    let path = crate_dir.join("assets").join(version).join("packets.json");
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let value: Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    let states = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{} root is not an object", path.display()));
+
+    let mut out: PacketTable = Vec::new();
+    for (state, directions) in states {
+        let directions = directions
+            .as_object()
+            .unwrap_or_else(|| panic!("state {state} in {} is not an object", path.display()));
+        let mut dirs = Vec::new();
+        for (direction, packets) in directions {
+            let packets = packets.as_object().unwrap_or_else(|| {
+                panic!("{state}/{direction} in {} is not an object", path.display())
+            });
+            let mut entries = Vec::new();
+            for (name, entry) in packets {
+                let id = entry
+                    .get("protocol_id")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{state}/{direction}/{name} in {} has no protocol_id",
+                            path.display()
+                        )
+                    });
+                let id = i32::try_from(id).unwrap_or_else(|_| {
+                    panic!(
+                        "protocol_id for {name} in {} is out of range",
+                        path.display()
+                    )
+                });
+                entries.push((name.clone(), id));
+            }
+            entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+            dirs.push((direction.clone(), entries));
+        }
+        dirs.sort_by(|a, b| a.0.cmp(&b.0));
+        out.push((state.clone(), dirs));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn emit_packets_table(crate_dir: &Path, codegen: &mut String) {
+    codegen.push('\n');
+    codegen.push_str("pub static PACKETS: &[(&str, &[(&str, &[(&str, &[(&str, i32)])])])] = &[\n");
+    for version in VERSIONS {
+        let _ = writeln!(codegen, "    ({version:?}, &[");
+        for (state, directions) in load_packets(crate_dir, version) {
+            let _ = writeln!(codegen, "        ({state:?}, &[");
+            for (direction, packets) in directions {
+                let _ = writeln!(codegen, "            ({direction:?}, &[");
+                for (name, id) in packets {
+                    let _ = writeln!(codegen, "                ({name:?}, {id}),");
+                }
+                codegen.push_str("            ]),\n");
+            }
+            codegen.push_str("        ]),\n");
+        }
+        codegen.push_str("    ]),\n");
+    }
+    codegen.push_str("];\n");
+}
+
+fn emit_packets_module(out: &mut String, table: &PacketTable) {
+    let _ = writeln!(
+        out,
+        "    /// Packet ids from Mojang's `reports/packets.json`, per state and direction."
+    );
+    let _ = writeln!(out, "    pub mod packets {{");
+    for (state, directions) in table {
+        let _ = writeln!(out, "        pub mod {} {{", rust_keyword_safe(state));
+        for (direction, packets) in directions {
+            let _ = writeln!(
+                out,
+                "            pub mod {} {{",
+                rust_keyword_safe(direction)
+            );
+            for (name, id) in packets {
+                let _ = writeln!(out, "                /// `{name}`.");
+                let _ = writeln!(
+                    out,
+                    "                pub const {}: i32 = {id};",
+                    packet_const_name(name)
+                );
+            }
+            let _ = writeln!(out, "            }}");
+        }
+        let _ = writeln!(out, "        }}");
+    }
+    let _ = writeln!(out, "    }}");
+}
+
+// =============================================================================
+// Version info (version.json from the server jar)
+// =============================================================================
+
+// `cargo::metadata` reaches dependents' build scripts as `DEP_VOIDMC_DATA_*`
+// only because Cargo.toml declares `links`; void-protocol/build.rs relies on it.
+fn emit_version_info(crate_dir: &Path, codegen: &mut String) {
+    codegen.push('\n');
+    codegen.push_str("pub static VERSION_INFO: &[(&str, i32, i32)] = &[\n");
+    let mut versions = Vec::new();
+    for version in VERSIONS {
+        let path = crate_dir.join("assets").join(version).join("version.json");
+        if !path.is_file() {
+            panic!(
+                "missing {}: re-run scripts/extract.sh (it copies version.json out of the server jar)",
+                path.display()
+            );
+        }
+        let text =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let value: Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{} has no string `id`", path.display()));
+        if id != *version {
+            panic!(
+                "{}: version.json id {id:?} does not match asset directory {version:?}",
+                path.display()
+            );
+        }
+        let protocol = value
+            .get("protocol_version")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| panic!("{} has no `protocol_version`", path.display()));
+        let world = value
+            .get("world_version")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| panic!("{} has no `world_version`", path.display()));
+        let _ = writeln!(codegen, "    ({version:?}, {protocol}, {world}),");
+        let key = version.replace('.', "_");
+        println!("cargo::metadata=protocol_{key}={protocol}");
+        versions.push(*version);
+    }
+    codegen.push_str("];\n");
+    println!("cargo::metadata=versions={}", versions.join(","));
+}
+
+fn packet_const_name(name: &str) -> String {
+    name.strip_prefix("minecraft:")
+        .unwrap_or(name)
+        .replace(['/', '.', '-'], "_")
+        .to_ascii_uppercase()
+}
+
 fn parse_string_array_file(path: &Path) -> Vec<String> {
     let json_text =
         fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
@@ -1138,8 +1313,16 @@ enum Hint {
     Compound(&'static [(&'static str, &'static Hint)]),
 }
 
-fn json_to_nbt(value: &Value, registry: &str) -> Nbt {
+fn json_to_nbt(value: &Value, registry: &str, entry: &str) -> Nbt {
     let hint = root_hint(registry);
+    let filtered;
+    let value = match registry {
+        "minecraft:worldgen/biome" => {
+            filtered = biome_network_form(value, entry);
+            &filtered
+        }
+        _ => value,
+    };
     let tag = convert(value, hint);
     let compound = match tag {
         Tag::Compound(c) => c,
@@ -1149,6 +1332,113 @@ fn json_to_nbt(value: &Value, registry: &str) -> Nbt {
         name: Default::default(),
         compound,
     }
+}
+
+// `Biome.NETWORK_CODEC` (Paper 26.1.2 `Biome.java`): the datapack JSON also
+// carries worldgen-only keys the client ignores (~163 KB vs ~20 KB per login).
+pub const BIOME_NETWORK_FIELDS: &[&str] = &[
+    "has_precipitation",
+    "temperature",
+    "temperature_modifier",
+    "downfall",
+    "attributes",
+    "effects",
+];
+
+const BIOME_WORLDGEN_FIELDS: &[&str] = &[
+    "carvers",
+    "features",
+    "spawners",
+    "spawn_costs",
+    "creature_spawn_probability",
+];
+
+// `EnvironmentAttributes.java` (Paper 26.1.2): entries registered with
+// `.syncable()`; `EnvironmentAttributeMap.NETWORK_CODEC` drops the rest.
+const BIOME_SYNCABLE_ATTRIBUTES: &[&str] = &[
+    "minecraft:visual/fog_color",
+    "minecraft:visual/fog_start_distance",
+    "minecraft:visual/fog_end_distance",
+    "minecraft:visual/sky_fog_end_distance",
+    "minecraft:visual/cloud_fog_end_distance",
+    "minecraft:visual/water_fog_color",
+    "minecraft:visual/water_fog_start_distance",
+    "minecraft:visual/water_fog_end_distance",
+    "minecraft:visual/sky_color",
+    "minecraft:visual/sunrise_sunset_color",
+    "minecraft:visual/cloud_color",
+    "minecraft:visual/cloud_height",
+    "minecraft:visual/sun_angle",
+    "minecraft:visual/moon_angle",
+    "minecraft:visual/star_angle",
+    "minecraft:visual/moon_phase",
+    "minecraft:visual/star_brightness",
+    "minecraft:visual/block_light_tint",
+    "minecraft:visual/sky_light_color",
+    "minecraft:visual/sky_light_factor",
+    "minecraft:visual/night_vision_color",
+    "minecraft:visual/ambient_light_color",
+    "minecraft:visual/default_dripstone_particle",
+    "minecraft:visual/ambient_particles",
+    "minecraft:audio/background_music",
+    "minecraft:audio/music_volume",
+    "minecraft:audio/ambient_sounds",
+    "minecraft:audio/firefly_bush_sounds",
+    "minecraft:gameplay/sky_light_level",
+    "minecraft:gameplay/water_evaporates",
+    "minecraft:gameplay/fast_lava",
+    "minecraft:gameplay/piglins_zombify",
+    "minecraft:gameplay/creaking_active",
+];
+
+const BIOME_NON_SYNCABLE_ATTRIBUTES: &[&str] = &[
+    "minecraft:gameplay/can_start_raid",
+    "minecraft:gameplay/bed_rule",
+    "minecraft:gameplay/respawn_anchor_works",
+    "minecraft:gameplay/nether_portal_spawns_piglin",
+    "minecraft:gameplay/increased_fire_burnout",
+    "minecraft:gameplay/eyeblossom_open",
+    "minecraft:gameplay/turtle_egg_hatch_chance",
+    "minecraft:gameplay/snow_golem_melts",
+    "minecraft:gameplay/surface_slime_spawn_chance",
+    "minecraft:gameplay/cat_waking_up_gift_chance",
+    "minecraft:gameplay/bees_stay_in_hive",
+    "minecraft:gameplay/monsters_burn",
+    "minecraft:gameplay/can_pillager_patrol_spawn",
+    "minecraft:gameplay/villager_activity",
+    "minecraft:gameplay/baby_villager_activity",
+];
+
+fn biome_network_form(value: &Value, entry: &str) -> Value {
+    let obj = value
+        .as_object()
+        .unwrap_or_else(|| panic!("biome {entry}: root is not an object"));
+    let mut kept = Map::new();
+    for (key, v) in obj {
+        if BIOME_NETWORK_FIELDS.contains(&key.as_str()) {
+            kept.insert(key.clone(), v.clone());
+        } else if !BIOME_WORLDGEN_FIELDS.contains(&key.as_str()) {
+            panic!(
+                "biome {entry}: unknown root field {key:?}; add it to BIOME_NETWORK_FIELDS \
+                 (if Biome.NETWORK_CODEC has it) or BIOME_WORLDGEN_FIELDS in void-data/build.rs"
+            );
+        }
+    }
+    if let Some(Value::Object(attrs)) = kept.get("attributes") {
+        let mut synced = Map::new();
+        for (key, v) in attrs {
+            if BIOME_SYNCABLE_ATTRIBUTES.contains(&key.as_str()) {
+                synced.insert(key.clone(), v.clone());
+            } else if !BIOME_NON_SYNCABLE_ATTRIBUTES.contains(&key.as_str()) {
+                panic!(
+                    "biome {entry}: unknown attribute {key:?}; add it to BIOME_SYNCABLE_ATTRIBUTES \
+                     or BIOME_NON_SYNCABLE_ATTRIBUTES in void-data/build.rs (see EnvironmentAttributes.java)"
+                );
+            }
+        }
+        kept.insert("attributes".into(), Value::Object(synced));
+    }
+    Value::Object(kept)
 }
 
 /// Per-registry root schema. Use `&Hint::Auto` for everything-heuristic.

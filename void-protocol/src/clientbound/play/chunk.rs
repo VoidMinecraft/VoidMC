@@ -8,13 +8,39 @@ pub mod blocks {
     pub const WATER: i32 = 86; // level=0
 }
 
+// Biome ids are the send order of the synced `minecraft:worldgen/biome`
+// registry, so they can only be looked up, never hardcoded.
 pub mod biomes {
-    pub const PLAINS: i32 = 0;
-    pub const DESERT: i32 = 0;
-    pub const FOREST: i32 = 0;
-    pub const SNOWY_PLAINS: i32 = 0;
-    pub const BEACH: i32 = 0;
-    pub const OCEAN: i32 = 0;
+    use std::sync::OnceLock;
+
+    const REGISTRY: &str = "minecraft:worldgen/biome";
+
+    pub fn id(name: &str) -> Option<i32> {
+        voidmc_data::registry_index(voidmc_data::Version::V26_1_2, REGISTRY, name)
+    }
+
+    fn resolve(cell: &OnceLock<i32>, name: &str) -> i32 {
+        *cell.get_or_init(|| {
+            id(name).unwrap_or_else(|| panic!("biome {name} is not in the synced registry"))
+        })
+    }
+
+    macro_rules! vanilla_biome {
+        ($fn:ident, $name:literal) => {
+            pub fn $fn() -> i32 {
+                static ID: OnceLock<i32> = OnceLock::new();
+                resolve(&ID, $name)
+            }
+        };
+    }
+
+    // The client rejects the Play `Login` packet if `minecraft:plains` is absent.
+    vanilla_biome!(plains, "minecraft:plains");
+    vanilla_biome!(desert, "minecraft:desert");
+    vanilla_biome!(forest, "minecraft:forest");
+    vanilla_biome!(snowy_plains, "minecraft:snowy_plains");
+    vanilla_biome!(beach, "minecraft:beach");
+    vanilla_biome!(ocean, "minecraft:ocean");
 }
 
 // ============================================================================
@@ -630,7 +656,7 @@ impl ChunkBuilder {
             x,
             z,
             blocks: vec![vec![vec![blocks::AIR; 16]; 16]; 384],
-            biome_id: biomes::PLAINS,
+            biome_id: biomes::plains(),
         }
     }
 

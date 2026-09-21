@@ -70,6 +70,62 @@ pub fn protocol_registry_index(version: Version, registry_id: &str, entry_id: &s
         .map(|(_, protocol_id)| *protocol_id)
 }
 
+pub fn particle_type_id(version: Version, name: &str) -> Option<i32> {
+    protocol_registry_index(version, "minecraft:particle_type", name)
+}
+
+pub fn sound_event_id(version: Version, name: &str) -> Option<i32> {
+    protocol_registry_index(version, "minecraft:sound_event", name)
+}
+
+pub fn block_entity_type_id(version: Version, name: &str) -> Option<i32> {
+    protocol_registry_index(version, "minecraft:block_entity_type", name)
+}
+
+pub fn menu_id(version: Version, name: &str) -> Option<i32> {
+    protocol_registry_index(version, "minecraft:menu", name)
+}
+
+pub fn data_component_type_id(version: Version, name: &str) -> Option<i32> {
+    protocol_registry_index(version, "minecraft:data_component_type", name)
+}
+
+pub fn protocol_version(version: Version) -> i32 {
+    VERSION_INFO
+        .iter()
+        .find(|(v, _, _)| *v == version.id())
+        .map(|(_, protocol, _)| *protocol)
+        .expect("every Version has a version.json asset")
+}
+
+pub fn world_version(version: Version) -> i32 {
+    VERSION_INFO
+        .iter()
+        .find(|(v, _, _)| *v == version.id())
+        .map(|(_, _, world)| *world)
+        .expect("every Version has a version.json asset")
+}
+
+/// `state`: `handshake` | `status` | `login` | `configuration` | `play`;
+/// `direction`: `clientbound` | `serverbound`. Sorted by id.
+pub fn packets(
+    version: Version,
+    state: &str,
+    direction: &str,
+) -> Option<&'static [(&'static str, i32)]> {
+    let (_, states) = PACKETS.iter().find(|(v, _)| *v == version.id())?;
+    let (_, directions) = states.iter().find(|(s, _)| *s == state)?;
+    let (_, entries) = directions.iter().find(|(d, _)| *d == direction)?;
+    Some(*entries)
+}
+
+pub fn packet_id(version: Version, state: &str, direction: &str, name: &str) -> Option<i32> {
+    packets(version, state, direction)?
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, id)| *id)
+}
+
 /// Returns the protocol item id for a full item id like `"minecraft:stone"`,
 /// or `None` if the name is not in the `minecraft:item` registry for `version`.
 pub fn item_id(version: Version, name: &str) -> Option<i32> {
@@ -244,6 +300,156 @@ mod tests {
             Some(155)
         );
         assert_eq!(entity_type_id(Version::V26_1_2, "minecraft:not_real"), None);
+    }
+
+    #[test]
+    fn hardcoded_registries_are_all_shipped() {
+        let v = Version::V26_1_2;
+        assert_eq!(particle_type_id(v, "minecraft:dust"), Some(14));
+        assert_eq!(particle_type_id(v, "minecraft:not_real"), None);
+        assert_eq!(
+            sound_event_id(v, "minecraft:entity.player.levelup"),
+            Some(1313)
+        );
+        assert_eq!(block_entity_type_id(v, "minecraft:chest"), Some(1));
+        assert_eq!(menu_id(v, "minecraft:generic_9x3"), Some(2));
+        assert_eq!(data_component_type_id(v, "minecraft:custom_data"), Some(0));
+        assert_eq!(
+            protocol_registry_index(v, "minecraft:entity_type", "minecraft:creeper"),
+            Some(32)
+        );
+        assert!(
+            protocol_registry(v, "minecraft:sound_event").unwrap().len() > 1500,
+            "sound_event registry looks truncated"
+        );
+    }
+
+    #[test]
+    fn version_info_comes_from_server_jar() {
+        assert_eq!(protocol_version(Version::V26_1_2), 775);
+        assert_eq!(world_version(Version::V26_1_2), 4790);
+    }
+
+    #[test]
+    fn packet_ids_come_from_mojang_report() {
+        let v = Version::V26_1_2;
+        assert_eq!(
+            packet_id(v, "play", "clientbound", "minecraft:bundle_delimiter"),
+            Some(0)
+        );
+        assert_eq!(
+            packet_id(v, "play", "clientbound", "minecraft:add_entity"),
+            Some(1)
+        );
+        assert_eq!(
+            packet_id(v, "play", "serverbound", "minecraft:accept_teleportation"),
+            Some(0)
+        );
+        assert_eq!(
+            packet_id(v, "handshake", "serverbound", "minecraft:intention"),
+            Some(0)
+        );
+        assert_eq!(
+            packet_id(v, "handshake", "clientbound", "minecraft:intention"),
+            None
+        );
+        assert_eq!(
+            packet_id(v, "status", "clientbound", "minecraft:status_response"),
+            Some(0)
+        );
+        assert_eq!(
+            packet_id(v, "login", "clientbound", "minecraft:login_finished"),
+            Some(2)
+        );
+        assert_eq!(
+            packet_id(v, "configuration", "clientbound", "minecraft:registry_data"),
+            Some(7)
+        );
+        assert_eq!(v26_1_2::packets::play::clientbound::ADD_ENTITY, 1);
+        assert_eq!(v26_1_2::packets::play::clientbound::DEBUG_BLOCK_VALUE, 26);
+        for (state, dirs) in [
+            ("handshake", &["serverbound"][..]),
+            ("status", &["clientbound", "serverbound"]),
+            ("login", &["clientbound", "serverbound"]),
+            ("configuration", &["clientbound", "serverbound"]),
+            ("play", &["clientbound", "serverbound"]),
+        ] {
+            for dir in dirs {
+                let table =
+                    packets(v, state, dir).unwrap_or_else(|| panic!("{state}/{dir} missing"));
+                assert!(!table.is_empty(), "{state}/{dir} is empty");
+                for (i, (_, id)) in table.iter().enumerate() {
+                    assert_eq!(*id, i as i32, "{state}/{dir} ids are not dense");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn biome_nbt_contains_exactly_network_fields() {
+        const NETWORK_FIELDS: &[&str] = &[
+            "has_precipitation",
+            "temperature",
+            "temperature_modifier",
+            "downfall",
+            "attributes",
+            "effects",
+        ];
+        const REQUIRED: &[&str] = &["has_precipitation", "temperature", "downfall", "effects"];
+        let biomes = registry(Version::V26_1_2, "minecraft:worldgen/biome").unwrap();
+        assert!(biomes.len() >= 60, "expected the vanilla biome set");
+        for (id, _) in biomes {
+            let nbt = entry_nbt(Version::V26_1_2, "minecraft:worldgen/biome", id).unwrap();
+            let keys: Vec<String> = nbt
+                .compound
+                .tags
+                .iter()
+                .map(|(k, _)| k.to_string())
+                .collect();
+            for key in &keys {
+                assert!(
+                    NETWORK_FIELDS.contains(&key.as_str()),
+                    "{id}: non-network field {key:?} shipped"
+                );
+            }
+            for req in REQUIRED {
+                assert!(
+                    keys.iter().any(|k| k == req),
+                    "{id}: required field {req:?} missing"
+                );
+            }
+            if let Some((_, ussr_nbt::owned::Tag::Compound(attrs))) = nbt
+                .compound
+                .tags
+                .iter()
+                .find(|(k, _)| k.to_string() == "attributes")
+            {
+                for (key, _) in &attrs.tags {
+                    let key = key.to_string();
+                    assert!(
+                        !key.starts_with("minecraft:gameplay/")
+                            || [
+                                "minecraft:gameplay/sky_light_level",
+                                "minecraft:gameplay/water_evaporates",
+                                "minecraft:gameplay/fast_lava",
+                                "minecraft:gameplay/piglins_zombify",
+                                "minecraft:gameplay/creaking_active",
+                            ]
+                            .contains(&key.as_str()),
+                        "{id}: non-syncable attribute {key:?} shipped"
+                    );
+                }
+            }
+        }
+        assert!(
+            registry_index(
+                Version::V26_1_2,
+                "minecraft:worldgen/biome",
+                "minecraft:plains"
+            )
+            .is_some(),
+            "minecraft:plains must be in the synced biome registry (client rejects login otherwise)"
+        );
     }
 
     #[test]

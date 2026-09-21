@@ -1973,6 +1973,7 @@ dependencies = [
  "uuid",
  "voidmc-codec",
  "voidmc-codec-macros",
+ "voidmc-data",
 ]
 
 [[package]]

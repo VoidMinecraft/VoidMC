@@ -1,6 +1,8 @@
 [package]
 name = "voidmc-data"
 edition = "2024"
+# No native library; required for build.rs `cargo::metadata` to reach dependents.
+links = "voidmc-data"
 description = "Vanilla Minecraft registry data, extracted from Paper and embedded as NBT blobs at build time."
 version = "0.1.2"
 license.workspace = true
