@@ -116,7 +116,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                         let variant_attrs = parse_variant_attrs(&v.attrs)?;
 
                         let packet_id = match variant_attrs.packet_id {
-                            Some(id) => id as i32,
+                            Some(id) => id,
                             None => {
                                 return Err(Error::new_spanned(
                                 v,

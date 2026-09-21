@@ -24,9 +24,11 @@ pub struct AttributeModifier {
     pub operation: ModifierOperation,
 }
 
-/// `AttributeModifier.Operation`, applied in this order on top of the base.
+/// `AttributeModifier.Operation`, applied in this order on top of the base;
+/// a VarInt on the wire (`ByteBufCodecs.idMapper`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Encode, Decode)]
-#[repr(u8)]
+#[codec(varint32)]
+#[repr(i32)]
 pub enum ModifierOperation {
     #[default]
     AddValue = 0,
@@ -127,12 +129,19 @@ mod tests {
     }
 
     #[test]
-    fn operation_ids_match_paper() {
-        assert_eq!(ModifierOperation::AddValue as u8, 0);
-        assert_eq!(ModifierOperation::AddMultipliedBase as u8, 1);
-        assert_eq!(ModifierOperation::AddMultipliedTotal as u8, 2);
+    fn operation_ids_match_paper_and_travel_as_varints() {
+        assert_eq!(ModifierOperation::AddValue as i32, 0);
+        assert_eq!(ModifierOperation::AddMultipliedBase as i32, 1);
+        assert_eq!(ModifierOperation::AddMultipliedTotal as i32, 2);
         let mut buf = Vec::new();
         ModifierOperation::AddMultipliedTotal.encode(&mut buf);
         assert_eq!(buf, [2]);
+        let mut slice = &buf[..];
+        assert_eq!(
+            ModifierOperation::decode(&mut slice).unwrap(),
+            ModifierOperation::AddMultipliedTotal
+        );
+        let mut slice: &[u8] = &[0x82, 0x01];
+        assert!(ModifierOperation::decode(&mut slice).is_err());
     }
 }

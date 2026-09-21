@@ -130,16 +130,18 @@ pub enum PlayPacket {
     Ping(Ping),
     #[codec(packet_id = 0x48)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
+    #[codec(packet_id = 0x4E)]
+    RemoveMobEffect(RemoveMobEffect),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
-    #[codec(packet_id = 0x65)]
-    SetEntityMotion(SetEntityMotion),
     #[codec(packet_id = 0x5E)]
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]
     SetCursorItem(SetCursorItem),
     #[codec(packet_id = 0x63)]
     SetEntityData(SetEntityData),
+    #[codec(packet_id = 0x65)]
+    SetEntityMotion(SetEntityMotion),
     #[codec(packet_id = 0x69)]
     SetHeldSlot(SetHeldSlot),
     #[codec(packet_id = 0x74)]
@@ -152,8 +154,6 @@ pub enum PlayPacket {
     SystemChat(SystemChat),
     #[codec(packet_id = 0x7D)]
     TeleportEntity(TeleportEntity),
-    #[codec(packet_id = 0x4E)]
-    RemoveMobEffect(RemoveMobEffect),
     #[codec(packet_id = 0x83)]
     UpdateAttributes(UpdateAttributes),
     #[codec(packet_id = 0x84)]

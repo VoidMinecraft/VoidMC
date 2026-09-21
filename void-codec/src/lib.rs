@@ -425,6 +425,30 @@ mod tests {
     }
 
     #[test]
+    fn tagged_enum_packet_id_above_0xff_is_accepted() {
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
+        #[codec(tagged)]
+        pub enum StatePacket {
+            #[codec(packet_id = 0x100)]
+            Wide(u8),
+        }
+
+        let mut buf = Vec::new();
+        StatePacket::Wide(3).encode(&mut buf);
+        assert_eq!(buf, vec![0x80, 0x02, 3]);
+
+        let mut slice = buf.as_slice();
+        assert_eq!(StatePacket::decode(&mut slice), Ok(StatePacket::Wide(3)));
+        assert!(slice.is_empty());
+
+        let mut slice: &[u8] = &[0x81, 0x02, 3];
+        assert_eq!(
+            StatePacket::decode(&mut slice),
+            Err(DecodeError::InvalidPacketId(None))
+        );
+    }
+
+    #[test]
     fn test_unit_struct() {
         #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, PartialEq, Debug)]
         pub struct UnitPacket;

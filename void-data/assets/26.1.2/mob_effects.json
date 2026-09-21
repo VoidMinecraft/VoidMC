@@ -143,19 +143,23 @@
   },
   "minecraft:wind_charged": {
     "category": "harmful",
-    "color": 12438015
+    "color": 12438015,
+    "particle": "minecraft:small_gust"
   },
   "minecraft:weaving": {
     "category": "harmful",
-    "color": 7891290
+    "color": 7891290,
+    "particle": "minecraft:item_cobweb"
   },
   "minecraft:oozing": {
     "category": "harmful",
-    "color": 10092451
+    "color": 10092451,
+    "particle": "minecraft:item_slime"
   },
   "minecraft:infested": {
     "category": "harmful",
-    "color": 9214860
+    "color": 9214860,
+    "particle": "minecraft:infested"
   },
   "minecraft:breath_of_the_nautilus": {
     "category": "beneficial",

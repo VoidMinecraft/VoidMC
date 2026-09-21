@@ -90,7 +90,7 @@
     "syncable": true
   },
   "minecraft:jump_strength": {
-    "default": 0.42,
+    "default": 0.41999998688697815,
     "min": 0.0,
     "max": 32.0,
     "syncable": true

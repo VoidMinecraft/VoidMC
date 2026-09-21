@@ -216,6 +216,8 @@ fn main() {
         let entity_types = load_registry_entries(&crate_dir, version, "minecraft:entity_type");
         let mob_effects = load_mob_effects(&crate_dir, version);
         let attributes = load_attributes(&crate_dir, version);
+        let entity_attributes =
+            load_entity_attributes(&crate_dir, version, &entity_types, &attributes);
         let block_entity_hosts = load_block_entity_hosts(&crate_dir, version);
         emit_blocks_module(
             &mut blocks_code,
@@ -228,6 +230,7 @@ fn main() {
                 entity_types: &entity_types,
                 mob_effects: &mob_effects,
                 attributes: &attributes,
+                entity_attributes: &entity_attributes,
                 block_entity_hosts: &block_entity_hosts,
             },
         );
@@ -327,6 +330,7 @@ struct BlocksModuleInput<'a> {
     entity_types: &'a [(String, i32)],
     mob_effects: &'a [MobEffectDef],
     attributes: &'a [AttributeDef],
+    entity_attributes: &'a [EntityAttributesDef],
     block_entity_hosts: &'a BTreeMap<String, Vec<String>>,
 }
 
@@ -340,6 +344,7 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
         entity_types,
         mob_effects,
         attributes,
+        entity_attributes,
         block_entity_hosts,
     } = input;
     let blocks_obj = blocks_json
@@ -582,6 +587,7 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
 
     // ---- attributes
     emit_attributes(out, attributes);
+    emit_entity_attributes(out, entity_attributes);
 
     let _ = writeln!(out, "}}");
 }
@@ -1709,6 +1715,110 @@ fn emit_attributes(out: &mut String, attributes: &[AttributeDef]) {
             def.syncable
         );
     }
+    let _ = writeln!(out, "            }}");
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(out, "    }}");
+}
+
+struct EntityAttributesDef {
+    variant: String,
+    overrides: Vec<(String, f64)>,
+}
+
+/// Joins `entity_attributes.json` (Paper's `DefaultAttributes` table, per
+/// entity kind, extracted by `scripts/extract_entity_attributes.py`) with the
+/// entity and attribute registries. Only values that differ from the
+/// attribute's registry default are kept: the generated lookup falls back to
+/// `EntityAttribute::default_value()`.
+fn load_entity_attributes(
+    crate_dir: &Path,
+    version: &str,
+    entity_types: &[(String, i32)],
+    attributes: &[AttributeDef],
+) -> Vec<EntityAttributesDef> {
+    let path = crate_dir
+        .join("assets")
+        .join(version)
+        .join("entity_attributes.json");
+    let table = load_json_object(&path, "scripts/extract_entity_attributes.py");
+    let registry_default: BTreeMap<&str, f64> = attributes
+        .iter()
+        .map(|a| (a.name.as_str(), a.default))
+        .collect();
+    table
+        .iter()
+        .map(|(entity, record)| {
+            if !entity_types.iter().any(|(name, _)| name == entity) {
+                panic!(
+                    "{entity} is in {} but not in registries.json",
+                    path.display()
+                );
+            }
+            let short = entity.strip_prefix("minecraft:").unwrap_or(entity);
+            let overrides = record
+                .as_object()
+                .unwrap_or_else(|| panic!("{entity} in {} is not an object", path.display()))
+                .iter()
+                .filter_map(|(attribute, value)| {
+                    let default = registry_default.get(attribute.as_str()).unwrap_or_else(|| {
+                        panic!(
+                            "{entity} in {} has unknown attribute {attribute}",
+                            path.display()
+                        )
+                    });
+                    let value = value.as_f64().unwrap_or_else(|| {
+                        panic!("{entity}.{attribute} in {} is not a number", path.display())
+                    });
+                    let short = attribute.strip_prefix("minecraft:").unwrap_or(attribute);
+                    (value != *default).then(|| (pascal_case(short), value))
+                })
+                .collect();
+            EntityAttributesDef {
+                variant: pascal_case(short),
+                overrides,
+            }
+        })
+        .collect()
+}
+
+fn emit_entity_attributes(out: &mut String, entities: &[EntityAttributesDef]) {
+    let _ = writeln!(out, "    impl EntityKind {{");
+    let _ = writeln!(
+        out,
+        "        /// Kinds backed by a `LivingEntity` (vanilla registers an `AttributeSupplier` for them)."
+    );
+    let _ = writeln!(out, "        pub const fn is_living(self) -> bool {{");
+    let _ = writeln!(out, "            matches!(");
+    let _ = writeln!(out, "                self,");
+    for (i, def) in entities.iter().enumerate() {
+        let sep = if i + 1 == entities.len() { "" } else { " |" };
+        let _ = writeln!(out, "                EntityKind::{}{sep}", def.variant);
+    }
+    let _ = writeln!(out, "            )");
+    let _ = writeln!(out, "        }}");
+    let _ = writeln!(
+        out,
+        "        /// Base value vanilla gives this kind for `attribute` (`DefaultAttributes`);"
+    );
+    let _ = writeln!(
+        out,
+        "        /// the registry default when the kind does not override it."
+    );
+    let _ = writeln!(
+        out,
+        "        pub const fn default_attribute(self, attribute: EntityAttribute) -> f64 {{"
+    );
+    let _ = writeln!(out, "            match (self, attribute) {{");
+    for def in entities {
+        for (attribute, value) in &def.overrides {
+            let _ = writeln!(
+                out,
+                "                (EntityKind::{}, EntityAttribute::{attribute}) => {value:?},",
+                def.variant
+            );
+        }
+    }
+    let _ = writeln!(out, "                _ => attribute.default_value(),");
     let _ = writeln!(out, "            }}");
     let _ = writeln!(out, "        }}");
     let _ = writeln!(out, "    }}");
