@@ -1,5 +1,5 @@
-//! Synched-data indices from Paper 26.1.2 (`Entity`, `Display` and its
-//! subclasses), in `defineId` order.
+//! Synched-data indices from Paper 26.1.2 (`Entity`, `EndCrystal`, `Display`
+//! and its subclasses), in `defineId` order.
 
 use super::{EntityMetadataEntry, EntityMetadataValue as Value};
 
@@ -26,6 +26,11 @@ pub mod entity_flag {
 
 pub mod item_entity_index {
     pub const ITEM: u8 = 8;
+}
+
+pub mod end_crystal_index {
+    pub const BEAM_TARGET: u8 = 8;
+    pub const SHOW_BOTTOM: u8 = 9;
 }
 
 pub mod display_index {

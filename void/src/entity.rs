@@ -16,9 +16,9 @@ use bevy_ecs::system::EntityCommands;
 use voidmc_protocol::clientbound;
 
 pub use metadata::{
-    Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EntityMetadata, Glowing,
-    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
-    Silent, TextAlignment, TextDisplay,
+    Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityMetadata,
+    Glowing, Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt,
+    NoGravity, Silent, TextAlignment, TextDisplay,
 };
 pub use passengers::Passengers;
 pub use voidmc_data::v26_1_2::EntityKind;
