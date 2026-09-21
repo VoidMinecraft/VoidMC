@@ -7,10 +7,11 @@ sur une chaussée : ses déplacements sont simulés par le serveur.
 > **État du portage.** Cette version couvre le socle (D0) du portage de la démo sur les
 > API actuelles du moteur — génération du monde, géométrie du circuit et simulation
 > pure des karts —, la machine à états de la course (D1) : phases, commandes,
-> annonces et bossbars, et les karts en tant qu'entités du moteur (D2) : minecart
-> monté, pilotage au clavier et déplacement piloté par le serveur. Le reste —
-> cristaux, bonus, affichages et barrière de téléportation — est **en cours de
-> portage** et arrive dans les unités suivantes.
+> annonces et bossbars, les karts en tant qu'entités du moteur (D2) : minecart
+> monté, pilotage au clavier et déplacement piloté par le serveur, et l'arsenal
+> arcade (D3) : cristaux de bonus, pièges, missiles, ondes et particules. Le reste —
+> affichages et barrière de téléportation — est **en cours de portage** et arrive
+> dans les unités suivantes.
 
 ## Lancer
 
@@ -50,7 +51,7 @@ quitte jamais son kart de lui-même.
 Le pilotage utilise les touches de déplacement du client (`ServerboundPlayerInput`) :
 **Avancer** accélère, **Reculer** freine puis passe en marche arrière, **Gauche/Droite**
 tournent, **Saut** enclenche le boost (tant qu'il reste du carburant), **Sprint**
-utilisera le bonus ramassé (D3). Les règles de conduite (accélération, traînée,
+utilise le bonus ramassé. Les règles de conduite (accélération, traînée,
 boost rechargeable, rebonds sur les glissières, chocs entre minecarts) sont celles de
 `src/kart.rs` ; elles ne s'appliquent que pendant la course. À chaque tick, le
 serveur déplace l'entité minecart vers la position simulée ; le moteur choisit
@@ -95,11 +96,45 @@ La manche est complète (`src/race.rs`) :
 
 ### Power-ups et effets
 
-*En cours de portage (D3).* Les huit bonus — Turbo, Bouclier, Banane, Missile guidé,
-Onde de choc, Nappe de glace, Éclair, Super-recharge — et leurs effets sur le
-véhicule (durées, ralentissements, dérapages, absorption par le bouclier) sont déjà
-définis dans `src/kart.rs` (`PowerUp`, `Kart::activate`, `Kart::strike`). Les
-cristaux flottants, pièges, projectiles et particules suivront.
+Dès que le circuit est prêt, **24 End Crystals** flottent au-dessus de la piste
+(`src/items.rs`) : trois par checkpoint, à gauche, au centre et à droite, à mi-chemin
+du checkpoint suivant. Chaque cristal est une entité du moteur (`EntityBuilder` +
+`EndCrystal::floating()`, sans socle ni rayon) que le serveur fait apparaître chez les
+joueurs qui ont chargé son chunk. Un pilote qui passe à moins de 1,6 bloc d'un
+cristal, sans bonus en main, ramasse un des huit bonus (tirage déterministe à partir de
+la seed du circuit, du tick, de l'emplacement et du kart) ; le cristal disparaît et
+réapparaît **huit secondes** plus tard. Quatre particules `end_rod` orbitent autour de
+chaque cristal présent, toutes les dix ticks, pour ses seuls spectateurs.
+
+**Sprint** active le bonus tenu. Les effets sur le véhicule sont ceux de `src/kart.rs`
+(`Kart::activate`, `Kart::strike`) ; la partie « monde » vit dans `src/items.rs` :
+
+- **Turbo**, **Bouclier**, **Super-recharge** : effets sur le kart seul ; la recharge
+  émet une onde `happy_villager` de 3 blocs.
+- **Banane** et **Nappe de glace** : un piège déposé 2,8 blocs derrière le kart, actif
+  12 s (banane, 1,5 bloc, consommée au contact) ou 10 s (glace, 2,5 blocs,
+  persistante). Le poseur n'est pas concerné pendant une seconde. Une banane fait
+  déraper, la glace réduit l'adhérence 3 s ; le bouclier absorbe les deux.
+- **Missile guidé** : vise le pilote le plus proche devant le tireur (ordre de
+  progression) et remonte la piste à 2 blocs/tick en glissant latéralement vers sa
+  cible (0,3 bloc/tick, ±5,5 blocs) ; il touche à 2,5 blocs, s'éteint après 8 s ou si
+  la cible quitte la course. Sans cible, il file le long de la piste.
+- **Onde de choc** : repousse et fait tourner tous les pilotes à moins de 9 blocs.
+  **Éclair** : ralentit tous les adversaires en course 2,5 s, où qu'ils soient.
+
+Chaque impact, onde ou éclair produit une **onde** (`Burst`) qui vieillit 12 ticks et
+dont le rayon grandit en `ease_out` ; elle est dessinée tous les quatre ticks par un
+anneau de six particules (`electric_spark`, `firework` ou `happy_villager`). Les
+missiles laissent `flame` et `smoke` tous les deux ticks ; les pièges se signalent
+tous les dix ticks (`item_slime` pour la banane, anneau `end_rod` de 2,5 blocs pour la
+glace). Les karts en course émettent leur traînée tous les trois ticks, pour leurs
+seuls spectateurs, selon leur état : `crit` (choc), `electric_spark` (bouclier),
+`end_rod` (glace ou ralenti), `happy_villager` (super-recharge), `flame` (turbo ou
+boost), `cloud` (vitesse > 0,25). Un kart immobile sans effet n'émet rien.
+
+L'état complet — pièges, missiles, ondes (positions, âges, rayons) et emplacements de
+cristaux — est exposé par la ressource `Items` pour l'unité affichages (D4). Tout est
+retiré à la fin de la manche, cristaux compris.
 
 ### Visuels et animation
 
@@ -152,6 +187,11 @@ est recommandé.
   renvoi des passagers sur Sneak), le système `drive` (`Kart::drive` puis `collide`
   pendant la course) et `pose`, qui ne réécrit `Position`/`Rotation` du kart et la
   `Position` du pilote (`SEAT_HEIGHT` au-dessus) que si la simulation a bougé le kart.
+- `src/items.rs` : arsenal arcade — la ressource `Items` (`Pickup`, `Trap`, `Missile`,
+  `Burst`), le système `crystals` (End Crystals du moteur, apparition/disparition sur
+  changement d'état seulement), `update` (activation des bonus, ramassage, pièges,
+  guidage des missiles, vieillissement des ondes ; vide tout hors course) et
+  `effects` (émission des particules via `Particles`, aux cadences de référence).
 - `src/race.rs` : phases, commandes, annonces, bossbars et HUD ; `Racer` relie le
   joueur à son kart.
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
@@ -172,3 +212,11 @@ le renvoi unique des passagers par pression de Sneak, le déplacement de l'entit
 du pilote pendant la course (et l'absence de tout paquet ou écriture pour un kart
 immobile), la disparition du kart
 au départ du joueur et le choc entre deux karts, identique à la simulation pure.
+Pour l'arsenal : le cycle apparition / ramassage / réapparition des 24 cristaux
+(entités, métadonnées End Crystal, paquets spawn/remove, aucun renvoi entre-temps,
+retrait en fin de manche), le tirage des huit bonus, le guidage du missile sur le
+pilote devant (géométrie de référence, bouclier, cible qui quitte, tir sans cible),
+les ondes de choc et éclairs (portée, bouclier, spectateurs et pilotes arrivés
+ignorés, vieillissement), les pièges (délai du poseur, glace persistante, banane
+consommée, expiration) et les particules capturées sur le fil aux ticks attendus,
+avec les types, quantités, offsets et audiences de référence.

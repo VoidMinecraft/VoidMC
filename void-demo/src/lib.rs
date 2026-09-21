@@ -1,4 +1,5 @@
 pub mod arena;
+pub mod items;
 pub mod kart;
 pub mod race;
 pub mod terrain;

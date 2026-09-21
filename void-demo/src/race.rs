@@ -12,6 +12,7 @@ use voidmc::{
 };
 
 use crate::arena::Arena;
+use crate::items::{self, Items};
 use crate::kart::{Kart, PowerUp};
 use crate::terrain::mix;
 use crate::track::{GATES, Track};
@@ -285,6 +286,7 @@ impl Plugin for RacePlugin {
         app.insert_resource(self.0.track())
             .insert_resource(self.0.clone())
             .init_resource::<Race>()
+            .init_resource::<Items>()
             .add_observer(ready)
             .add_observer(quit)
             .add_observer(join)
@@ -300,12 +302,15 @@ impl Plugin for RacePlugin {
                     construct,
                     load,
                     countdown,
+                    items::update,
+                    items::crystals,
                     vehicle::drive,
                     racing,
                     hud,
                     race_bar,
                     boost_bar,
                     vehicle::pose,
+                    items::effects,
                 )
                     .chain()
                     .after(CommandSystems::DrainQueue),
@@ -503,6 +508,7 @@ fn clock(mut race: ResMut<Race>) {
 
 fn construct(
     mut race: ResMut<Race>,
+    mut items: ResMut<Items>,
     arena: Res<Arena>,
     mut racers: Query<&mut Racer>,
     mut karts: Query<&mut Kart>,
@@ -549,6 +555,7 @@ fn construct(
             racer.gate = kart.next_gate;
             slot += 1;
         }
+        items.place(&track);
         race.phase = Phase::Loading;
         chat.all("Circuit pret ! Chargement de la grille chez chaque pilote avant le compte a rebours...");
         chat.all("Traversez les End Crystals pour un bonus, puis Sprint pour l'utiliser. Saut + Avancer = boost.");
@@ -769,7 +776,7 @@ pub(crate) mod tests {
     use voidmc::plugins::boss_bar::BossBarPlugin;
     use voidmc::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
     use voidmc::world::{ChunkIndex, DimensionId};
-    use voidmc::{EntityPlugin, VoidSystems};
+    use voidmc::{EntityPlugin, Particle, VoidSystems};
     use voidmc_protocol::clientbound::{
         BossEventAction, ClientboundPacket, ManualPlayPacket, Parser, PlayPacket,
     };
@@ -823,7 +830,16 @@ pub(crate) mod tests {
             yaw: f32,
         },
         HeadRotation(u32, i32),
-        Metadata(u32, i32),
+        Metadata(u32, i32, Vec<u8>),
+        Particles {
+            client: u32,
+            particle: Particle,
+            at: (f64, f64, f64),
+            count: i32,
+            offset: (f32, f32, f32),
+            speed: f32,
+            long_distance: bool,
+        },
     }
 
     pub(crate) struct Harness {
@@ -1046,9 +1062,20 @@ pub(crate) mod tests {
                     ClientboundPacket::Play(PlayPacket::SetHeadRotation(p)) => {
                         Out::HeadRotation(out.client_id, p.entity_id)
                     }
-                    ClientboundPacket::Play(PlayPacket::SetEntityData(p)) => {
-                        Out::Metadata(out.client_id, p.entity_id)
-                    }
+                    ClientboundPacket::Play(PlayPacket::SetEntityData(p)) => Out::Metadata(
+                        out.client_id,
+                        p.entity_id,
+                        p.entries.iter().map(|e| e.index).collect(),
+                    ),
+                    ClientboundPacket::Play(PlayPacket::LevelParticles(p)) => Out::Particles {
+                        client: out.client_id,
+                        particle: p.particle,
+                        at: (p.x, p.y, p.z),
+                        count: p.count,
+                        offset: (p.offset_x, p.offset_y, p.offset_z),
+                        speed: p.max_speed,
+                        long_distance: p.long_distance,
+                    },
                     other => panic!("unexpected packet {other:?}"),
                 })
                 .collect()
