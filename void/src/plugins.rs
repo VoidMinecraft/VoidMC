@@ -13,6 +13,7 @@ pub mod login;
 pub mod movement;
 pub mod play;
 pub mod status;
+pub mod world_border;
 
 pub struct DefaultPlugins;
 
@@ -31,6 +32,7 @@ impl Plugin for DefaultPlugins {
             inventory::InventoryPlugin,
             item_drops::ItemDropsPlugin,
             boss_bar::BossBarPlugin,
+            world_border::WorldBorderPlugin,
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,
         ));

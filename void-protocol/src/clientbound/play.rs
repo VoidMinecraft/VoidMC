@@ -35,6 +35,7 @@ mod unload_chunk;
 mod update_entity_position;
 mod update_entity_position_and_rotation;
 mod update_entity_rotation;
+mod world_border;
 
 pub use block_changed_ack::*;
 pub use block_entity_data::*;
@@ -76,6 +77,7 @@ pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
 pub use update_entity_rotation::*;
 use voidmc_codec::{Decode, Encode};
+pub use world_border::*;
 
 #[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Play)]
@@ -106,6 +108,8 @@ pub enum PlayPacket {
     UnloadChunk(UnloadChunk),
     #[codec(packet_id = 0x26)]
     GameEvent(GameEvent),
+    #[codec(packet_id = 0x2B)]
+    InitializeBorder(InitializeBorder),
     #[codec(packet_id = 0x2C)]
     KeepAlive(KeepAlive),
     #[codec(packet_id = 0x2F)]
@@ -128,6 +132,16 @@ pub enum PlayPacket {
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x65)]
     SetEntityMotion(SetEntityMotion),
+    #[codec(packet_id = 0x58)]
+    SetBorderCenter(SetBorderCenter),
+    #[codec(packet_id = 0x59)]
+    SetBorderLerpSize(SetBorderLerpSize),
+    #[codec(packet_id = 0x5A)]
+    SetBorderSize(SetBorderSize),
+    #[codec(packet_id = 0x5B)]
+    SetBorderWarningDelay(SetBorderWarningDelay),
+    #[codec(packet_id = 0x5C)]
+    SetBorderWarningDistance(SetBorderWarningDistance),
     #[codec(packet_id = 0x5E)]
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]

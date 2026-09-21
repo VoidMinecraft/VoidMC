@@ -105,6 +105,7 @@ top of it with the same `Audience` / `viewers` vocabulary:
 | Particles | [`Particles` / `WorldParticles`](../gameplay/particles.md) |
 | Sounds | [`Sounds` / `WorldSounds`](../gameplay/sounds.md) |
 | Boss bars | [`BossBar` component](../gameplay/boss-bars.md) |
+| World border | [`WorldBorder` component](../gameplay/world-border.md) |
 
 ### Failure handling
 
@@ -155,6 +156,7 @@ inside one schedule.
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
+| `WorldBorderSync` | `PostUpdate` | World border initialize / update / reset packets (see [World Border](../gameplay/world-border.md)). |
 | `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
 | `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |
 

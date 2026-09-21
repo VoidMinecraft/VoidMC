@@ -40,6 +40,8 @@ pub enum VoidSystems {
     InventorySync,
     /// `PostUpdate`: boss bar add/update/remove packets.
     BossBarSync,
+    /// `PostUpdate`: world border initialize/update/reset packets.
+    WorldBorderSync,
     /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
     StatusSnapshot,
     /// `PostUpdate`: TPS tracking (only with `metrics_debug`).
