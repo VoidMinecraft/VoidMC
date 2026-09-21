@@ -1,0 +1,24 @@
+[package]
+name = "voidmc-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Alpine Rush: procedural multiplayer minecart racing with VoidMC"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+voidmc = { version = "0.2.0", path = "../void" }
+voidmc-data = { version = "0.1.2", path = "../void-data" }
+voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
+bevy_app = "0.18.0"
+bevy_ecs = "0.18.0"
+rand = "0.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+flume = "0.12.0"
+voidmc-codec = { version = "0.1.1", path = "../void-codec" }
+ussr-nbt = "0.2.1"

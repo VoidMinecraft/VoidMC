@@ -18,6 +18,7 @@ Instead of shipping a monolithic server with every feature enabled, Void follows
 |---|---|
 | `void/` | Core server framework: ECS app, systems, plugins, commands, client state, world state, metrics. |
 | `void-example/` | Runnable example server and logging/metrics setup reference. |
+| `void-demo/` | Alpine Rush: procedural minecart-racing demo (world generation and kart physics; gameplay port in progress). |
 | `void-net/` | Tokio-based TCP networking layer. |
 | `void-protocol/` | Minecraft packet definitions and protocol types. |
 | `void-codec/` | Binary `Encode`/`Decode` primitives. |
@@ -48,6 +49,14 @@ cargo run -p voidmc-example
 ```
 
 The example binds to `127.0.0.1:25565` by default. It creates runtime logs in `logs/`.
+
+Run the **Alpine Rush** demo world (Minecraft Java 26.1.2):
+
+```bash
+cargo run --release -p voidmc-demo
+```
+
+See the [demo guide](void-demo/README.md) for seeds, configuration and porting status.
 
 Run tests:
 
