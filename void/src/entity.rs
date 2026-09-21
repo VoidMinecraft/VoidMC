@@ -37,7 +37,26 @@ use crate::world::{ChunkPos, DimensionId};
 // first ticks; the window must outlast chunk generation for the spawn column.
 const SETTLE_TICKS: u8 = 15;
 
-#[derive(Debug, Clone)]
+/// A component or bundle staged by [`EntityBuilder::with`], applied to the
+/// spawned entity right after its base bundle so the `Commands` and the `World`
+/// spawn paths land the same components in the same order.
+trait DeferredInsert {
+    fn apply_commands(self: Box<Self>, entity: &mut EntityCommands);
+    fn apply_world(self: Box<Self>, entity: &mut EntityWorldMut);
+}
+
+struct Insert<B>(B);
+
+impl<B: Bundle> DeferredInsert for Insert<B> {
+    fn apply_commands(self: Box<Self>, entity: &mut EntityCommands) {
+        entity.insert(self.0);
+    }
+
+    fn apply_world(self: Box<Self>, entity: &mut EntityWorldMut) {
+        entity.insert(self.0);
+    }
+}
+
 pub struct EntityBuilder {
     kind: EntityKind,
     position: Position,
@@ -47,6 +66,23 @@ pub struct EntityBuilder {
     collider: Option<EntityCollider>,
     movement: MovementConfig,
     settle_ticks: u8,
+    extras: Vec<Box<dyn DeferredInsert>>,
+}
+
+impl std::fmt::Debug for EntityBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EntityBuilder")
+            .field("kind", &self.kind)
+            .field("position", &self.position)
+            .field("rotation", &self.rotation)
+            .field("velocity", &self.velocity)
+            .field("dimension", &self.dimension)
+            .field("collider", &self.collider)
+            .field("movement", &self.movement)
+            .field("settle_ticks", &self.settle_ticks)
+            .field("extras", &self.extras.len())
+            .finish()
+    }
 }
 
 impl EntityBuilder {
@@ -60,6 +96,7 @@ impl EntityBuilder {
             collider: None,
             movement: MovementConfig::default(),
             settle_ticks: SETTLE_TICKS,
+            extras: Vec::new(),
         }
     }
 
@@ -122,6 +159,24 @@ impl EntityBuilder {
         self.kind
     }
 
+    /// Stage an extra component to attach the moment the entity is spawned, so
+    /// it can be declared before `spawn`/`spawn_in` instead of inserted after.
+    /// Staged components are applied in call order, on both spawn paths.
+    pub fn with<C: Component>(mut self, component: C) -> Self {
+        self.extras.push(Box::new(Insert(component)));
+        self
+    }
+
+    /// Stage a whole bundle at once, the multi-component form of [`Self::with`].
+    pub fn with_bundle<B: Bundle>(mut self, bundle: B) -> Self {
+        self.extras.push(Box::new(Insert(bundle)));
+        self
+    }
+
+    /// The base bundle every spawned entity needs. This is the raw escape hatch
+    /// for handing a bundle straight to Bevy (`commands.spawn(builder.bundle())`);
+    /// it does not carry components staged with [`Self::with`], since those are
+    /// applied by `spawn`/`spawn_in` after the base bundle lands.
     pub fn bundle(self) -> impl Bundle {
         let gravity = self.movement.gravity_enabled;
         (
@@ -147,12 +202,22 @@ impl EntityBuilder {
         )
     }
 
-    pub fn spawn<'a>(self, commands: &'a mut Commands) -> EntityCommands<'a> {
-        commands.spawn(self.bundle())
+    pub fn spawn<'a>(mut self, commands: &'a mut Commands) -> EntityCommands<'a> {
+        let extras = std::mem::take(&mut self.extras);
+        let mut entity = commands.spawn(self.bundle());
+        for extra in extras {
+            extra.apply_commands(&mut entity);
+        }
+        entity
     }
 
-    pub fn spawn_in(self, world: &mut World) -> EntityWorldMut<'_> {
-        world.spawn(self.bundle())
+    pub fn spawn_in(mut self, world: &mut World) -> EntityWorldMut<'_> {
+        let extras = std::mem::take(&mut self.extras);
+        let mut entity = world.spawn(self.bundle());
+        for extra in extras {
+            extra.apply_world(&mut entity);
+        }
+        entity
     }
 }
 
@@ -330,6 +395,8 @@ mod tests {
     use flume::Receiver;
     use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket, PlayPacket};
 
+    use bevy_ecs::system::RunSystemOnce;
+
     use super::*;
     use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
@@ -447,6 +514,48 @@ mod tests {
             *world.get::<EntityCollider>(b).unwrap(),
             EntityCollider::for_entity_name("minecraft:pig")
         );
+    }
+
+    #[test]
+    fn with_puts_a_single_component_on_the_spawned_entity() {
+        let (mut app, _rx) = test_app();
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .with(CustomName::new("Bob"))
+            .spawn_in(app.world_mut())
+            .id();
+
+        let world = app.world();
+        assert_eq!(world.get::<CustomName>(zombie).unwrap().text, "Bob");
+        assert!(world.get::<SpawnedEntity>(zombie).is_some());
+    }
+
+    #[test]
+    fn chained_with_calls_all_land_in_order() {
+        let (mut app, _rx) = test_app();
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .with(CustomName::new("Bob"))
+            .with(Glowing)
+            .with_bundle((Invisible, NoGravity))
+            .spawn_in(app.world_mut())
+            .id();
+
+        let world = app.world();
+        assert_eq!(world.get::<CustomName>(zombie).unwrap().text, "Bob");
+        assert!(world.get::<Glowing>(zombie).is_some());
+        assert!(world.get::<Invisible>(zombie).is_some());
+        assert!(world.get::<NoGravity>(zombie).is_some());
+    }
+
+    #[test]
+    fn with_lands_on_the_commands_spawn_path_too() {
+        let (mut app, _rx) = test_app();
+        let entity = app.world_mut().run_system_once(|mut commands: Commands| {
+            EntityBuilder::new(EntityKind::Zombie)
+                .with(Glowing)
+                .spawn(&mut commands)
+                .id()
+        });
+        assert!(app.world().get::<Glowing>(entity.unwrap()).is_some());
     }
 
     #[test]

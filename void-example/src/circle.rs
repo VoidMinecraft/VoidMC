@@ -127,15 +127,15 @@ fn handle_circle(ctx: &mut CommandContext) {
                 .at(x, y, z)
                 .in_dimension(dimension)
                 .settle_ticks(5)
-                .spawn_in(world)
-                .insert((
+                .with_bundle((
                     CircleEntity,
                     CircleState {
                         angle,
                         owner: executor,
                         target,
                     },
-                ));
+                ))
+                .spawn_in(world);
         });
     }
 
