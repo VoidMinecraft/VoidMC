@@ -206,9 +206,19 @@ impl<'a> Sink<'a> {
     }
 }
 
-enum Target {
+pub(crate) enum Target {
     Player(Entity),
     Audience(Audience),
+}
+
+impl Target {
+    pub(crate) fn except(self, entity: Entity) -> Self {
+        let audience = match self {
+            Target::Audience(audience) => audience,
+            Target::Player(_) => Audience::All,
+        };
+        Target::Audience(audience.except(entity))
+    }
 }
 
 #[must_use = "a message request does nothing until `.send()`"]
@@ -251,13 +261,7 @@ impl<'a> MessageRequest<'a> {
     /// Narrows the current audience (`Audience::All` for a single-player
     /// request) so `entity` is skipped.
     pub fn except(mut self, entity: Entity) -> Self {
-        self.target = Target::Audience(
-            match std::mem::replace(&mut self.target, Target::Audience(Audience::All)) {
-                Target::Audience(audience) => audience,
-                Target::Player(_) => Audience::All,
-            }
-            .except(entity),
-        );
+        self.target = self.target.except(entity);
         self
     }
 

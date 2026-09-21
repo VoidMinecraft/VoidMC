@@ -71,7 +71,7 @@ pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
 pub use sounds::{Sound, SoundPosition, SoundSource, SoundStop, Sounds, WorldSounds};
-pub use titles::{ClearRequest, TitleRequest, Titles, WorldTitles};
+pub use titles::{ClearTitlesRequest, TitleRequest, Titles, WorldTitles};
 pub use ussr_nbt::owned::Tag;
 pub use voidmc_codec::{DecodeLimits, LimitKind};
 pub use voidmc_net::socket::FrameLimits;

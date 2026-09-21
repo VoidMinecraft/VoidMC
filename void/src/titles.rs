@@ -10,7 +10,7 @@ use voidmc_protocol::clientbound::{
     ClearTitles, ClientboundPacket, SetSubtitleText, SetTitleText, SetTitlesAnimation,
 };
 
-use crate::messages::{TextColor, text_component};
+use crate::messages::{Target, TextColor, text_component};
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 
 #[derive(SystemParam)]
@@ -35,12 +35,12 @@ impl Titles<'_, '_> {
         .title(text)
     }
 
-    pub fn clear(&self, player: Entity) -> ClearRequest<'_> {
-        ClearRequest::new(Sink::Players(&self.players), Target::Player(player), false)
+    pub fn clear(&self, player: Entity) -> ClearTitlesRequest<'_> {
+        ClearTitlesRequest::new(Sink::Players(&self.players), Target::Player(player), false)
     }
 
-    pub fn reset(&self, player: Entity) -> ClearRequest<'_> {
-        ClearRequest::new(Sink::Players(&self.players), Target::Player(player), true)
+    pub fn reset(&self, player: Entity) -> ClearTitlesRequest<'_> {
+        ClearTitlesRequest::new(Sink::Players(&self.players), Target::Player(player), true)
     }
 }
 
@@ -67,12 +67,12 @@ impl<'w> WorldTitles<'w> {
         TitleRequest::new(Sink::World(&self.players), Target::Audience(Audience::All)).title(text)
     }
 
-    pub fn clear(&self, player: Entity) -> ClearRequest<'_> {
-        ClearRequest::new(Sink::World(&self.players), Target::Player(player), false)
+    pub fn clear(&self, player: Entity) -> ClearTitlesRequest<'_> {
+        ClearTitlesRequest::new(Sink::World(&self.players), Target::Player(player), false)
     }
 
-    pub fn reset(&self, player: Entity) -> ClearRequest<'_> {
-        ClearRequest::new(Sink::World(&self.players), Target::Player(player), true)
+    pub fn reset(&self, player: Entity) -> ClearTitlesRequest<'_> {
+        ClearTitlesRequest::new(Sink::World(&self.players), Target::Player(player), true)
     }
 }
 
@@ -111,27 +111,14 @@ impl<'a> Sink<'a> {
     }
 }
 
-enum Target {
-    Player(Entity),
-    Audience(Audience),
-}
-
-impl Target {
-    fn except(self, entity: Entity) -> Self {
-        let audience = match self {
-            Target::Audience(audience) => audience,
-            Target::Player(_) => Audience::All,
-        };
-        Target::Audience(audience.except(entity))
-    }
-}
-
 #[must_use = "a title request does nothing until `.send()`"]
 pub struct TitleRequest<'a> {
     sink: Sink<'a>,
     target: Target,
-    title: Option<(String, TextColor)>,
-    subtitle: Option<(String, TextColor)>,
+    title: Option<String>,
+    subtitle: Option<String>,
+    title_color: TextColor,
+    subtitle_color: TextColor,
     times: Option<SetTitlesAnimation>,
 }
 
@@ -142,36 +129,35 @@ impl<'a> TitleRequest<'a> {
             target,
             title: None,
             subtitle: None,
+            title_color: TextColor::White,
+            subtitle_color: TextColor::White,
             times: None,
         }
     }
 
     pub fn title(mut self, text: impl Into<String>) -> Self {
-        let color = self.title.map_or(TextColor::White, |(_, color)| color);
-        self.title = Some((text.into(), color));
+        self.title = Some(text.into());
         self
     }
 
     /// The client only shows a subtitle while a title is on screen; a request
-    /// without a title only updates the stored subtitle.
+    /// without a title only updates the stored subtitle. The client keeps the
+    /// last subtitle it received until `ClearTitles` or a new subtitle, so a
+    /// request without one leaves the previous subtitle on screen under the
+    /// new title; send `.subtitle("")` (or `clear`) to drop it.
     pub fn subtitle(mut self, text: impl Into<String>) -> Self {
-        let color = self.subtitle.map_or(TextColor::White, |(_, color)| color);
-        self.subtitle = Some((text.into(), color));
+        self.subtitle = Some(text.into());
         self
     }
 
     /// Colours the title; use [`subtitle_color`](Self::subtitle_color) for the subtitle.
     pub fn color(mut self, color: TextColor) -> Self {
-        if let Some((_, current)) = &mut self.title {
-            *current = color;
-        }
+        self.title_color = color;
         self
     }
 
     pub fn subtitle_color(mut self, color: TextColor) -> Self {
-        if let Some((_, current)) = &mut self.subtitle {
-            *current = color;
-        }
+        self.subtitle_color = color;
         self
     }
 
@@ -211,18 +197,18 @@ impl<'a> TitleRequest<'a> {
         if let Some(times) = self.times {
             packets.push(times.into());
         }
-        if let Some((text, color)) = &self.subtitle {
+        if let Some(text) = &self.subtitle {
             packets.push(
                 SetSubtitleText {
-                    text: text_component(text, *color),
+                    text: text_component(text, self.subtitle_color),
                 }
                 .into(),
             );
         }
-        if let Some((text, color)) = &self.title {
+        if let Some(text) = &self.title {
             packets.push(
                 SetTitleText {
-                    text: text_component(text, *color),
+                    text: text_component(text, self.title_color),
                 }
                 .into(),
             );
@@ -235,14 +221,14 @@ impl<'a> TitleRequest<'a> {
     }
 }
 
-#[must_use = "a clear request does nothing until `.send()`"]
-pub struct ClearRequest<'a> {
+#[must_use = "a clear titles request does nothing until `.send()`"]
+pub struct ClearTitlesRequest<'a> {
     sink: Sink<'a>,
     target: Target,
     reset_times: bool,
 }
 
-impl<'a> ClearRequest<'a> {
+impl<'a> ClearTitlesRequest<'a> {
     fn new(sink: Sink<'a>, target: Target, reset_times: bool) -> Self {
         Self {
             sink,
@@ -426,8 +412,9 @@ mod tests {
     }
 
     #[test]
-    fn colour_before_text_is_kept_and_without_text_is_ignored() {
+    fn colours_apply_regardless_of_call_order() {
         let (app, _rx) = test_app();
+        let alice = Entity::PLACEHOLDER;
         let titles = WorldTitles::new(app.world());
         let request = titles
             .broadcast("x")
@@ -436,6 +423,23 @@ mod tests {
             .title("y");
         let packets: Vec<Sent> = request.packets().into_iter().map(classify).collect();
         assert_eq!(packets, vec![Sent::Title("y".into(), "aqua".into())]);
+
+        let request = titles.subtitle(alice, "x").subtitle_color(TextColor::Gold);
+        let packets: Vec<Sent> = request.packets().into_iter().map(classify).collect();
+        assert_eq!(packets, vec![Sent::Subtitle("x".into(), "gold".into())]);
+
+        let request = titles
+            .subtitle(alice, "x")
+            .color(TextColor::Gold)
+            .title("t");
+        let packets: Vec<Sent> = request.packets().into_iter().map(classify).collect();
+        assert_eq!(
+            packets,
+            vec![
+                Sent::Subtitle("x".into(), "white".into()),
+                Sent::Title("t".into(), "gold".into()),
+            ]
+        );
     }
 
     #[test]

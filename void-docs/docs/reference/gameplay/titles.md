@@ -58,15 +58,15 @@ sends nothing.
 | Method | Default | Meaning |
 |---|---|---|
 | `title(text)` / `subtitle(text)` | none | Sets (or replaces) that line. |
-| `color(TextColor)` | `TextColor::White` | Colour of the title, see [messages](messages.md#colours). Ignored while no title is set. |
-| `subtitle_color(TextColor)` | `TextColor::White` | Colour of the subtitle. Ignored while no subtitle is set. |
+| `color(TextColor)` | `TextColor::White` | Colour of the title, see [messages](messages.md#colours). |
+| `subtitle_color(TextColor)` | `TextColor::White` | Colour of the subtitle. |
 | `times(fade_in, stay, fade_out)` | not sent | Animation in ticks. Without it the client keeps the times it last received (10 / 70 / 20 after `reset`). |
 | `audience(Audience)` / `viewers(entities)` | see above | **Replaces** the target: delivery becomes ready-only, exactly as for `broadcast`. |
 | `except(entity)` | — | Narrows the current audience (`Audience::All` for a single-player request) so `entity` is skipped. |
 | `send()` | — | Consumes the request and sends it. |
 
 `packets()` returns the packets `send()` would send, in wire order, for tests.
-`ClearRequest` has the same `audience` / `viewers` / `except` / `send`, and
+`ClearTitlesRequest` has the same `audience` / `viewers` / `except` / `send`, and
 `packet()` returns its `ClearTitles`.
 
 ## Packet order
@@ -77,6 +77,17 @@ sends nothing.
 starts the animation when the title arrives. A subtitle-only request is valid
 and only updates the stored subtitle: the client shows a subtitle only while a
 title is on screen, so send the title afterwards (or in the same request).
+
+The reverse also holds: **a request without `subtitle` leaves the previous
+subtitle on screen.** The client keeps the last `SetSubtitleText` it received
+until `ClearTitles` or a new subtitle arrives, so `title(p, "Round 2")
+.subtitle("Get ready").send()` followed later by `title(p, "GO!").send()` shows
+"GO!" over "Get ready". Send `.subtitle("")` with the new title (or `clear`
+first) to drop it:
+
+```rust
+titles.title(player, "GO!").subtitle("").send();
+```
 
 `clear` hides the current title and subtitle but keeps the animation times;
 `reset` also restores the default times (10 / 70 / 20).
