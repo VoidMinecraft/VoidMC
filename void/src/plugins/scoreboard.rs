@@ -3,8 +3,9 @@
 //! `PostUpdate` system diffs the component against what its viewers last
 //! received and sends only the changed scores, parameters or members.
 
-use std::collections::hash_map::Entry;
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
 
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::lifecycle::Remove;
@@ -287,7 +288,7 @@ pub struct Team {
     pub see_invisible_friends: bool,
     pub name_tags: NameTagVisibility,
     pub collision: CollisionRule,
-    pub players: HashSet<Entity>,
+    pub members: HashSet<Entity>,
     pub entries: BTreeSet<String>,
     pub audience: Audience,
 }
@@ -305,7 +306,7 @@ impl Team {
             see_invisible_friends: true,
             name_tags: NameTagVisibility::Always,
             collision: CollisionRule::Always,
-            players: HashSet::new(),
+            members: HashSet::new(),
             entries: BTreeSet::new(),
             audience: Audience::All,
         }
@@ -351,8 +352,8 @@ impl Team {
         self
     }
 
-    pub fn members(mut self, players: impl IntoIterator<Item = Entity>) -> Self {
-        self.players.extend(players);
+    pub fn members(mut self, members: impl IntoIterator<Item = Entity>) -> Self {
+        self.members.extend(members);
         self
     }
 
@@ -371,15 +372,15 @@ impl Team {
     }
 
     pub fn add(&mut self, player: Entity) -> bool {
-        self.players.insert(player)
+        self.members.insert(player)
     }
 
     pub fn remove(&mut self, player: Entity) -> bool {
-        self.players.remove(&player)
+        self.members.remove(&player)
     }
 
     pub fn contains(&self, player: Entity) -> bool {
-        self.players.contains(&player)
+        self.members.contains(&player)
     }
 
     /// Raw scoreboard entries: entity UUIDs or names of players not on this server.
@@ -393,12 +394,18 @@ impl Team {
 
     fn resolved_members(&self, names: &Query<&PlayerName>) -> BTreeSet<String> {
         let mut members = self.entries.clone();
-        members.extend(
-            self.players
-                .iter()
-                .filter_map(|player| names.get(*player).ok())
-                .map(|name| name.0.clone()),
-        );
+        for member in &self.members {
+            match names.get(*member) {
+                Ok(name) => {
+                    members.insert(name.0.clone());
+                }
+                Err(_) => warn!(
+                    team = %self.name,
+                    entity = ?member,
+                    "team member has no PlayerName; not sent"
+                ),
+            }
+        }
         members
     }
 
@@ -448,36 +455,6 @@ impl Team {
             || self.name_tags != sent.name_tags
             || self.collision != sent.collision
     }
-
-    fn full_state(&self, members: &BTreeSet<String>) -> Vec<ClientboundPacket> {
-        vec![
-            self.packet(TeamAction::Create {
-                parameters: self.parameters(),
-                entities: members.iter().cloned().collect(),
-            })
-            .into(),
-        ]
-    }
-
-    fn updates_since(
-        &self,
-        sent: &TeamSnapshot,
-        members: &BTreeSet<String>,
-    ) -> Vec<ClientboundPacket> {
-        let mut packets = Vec::new();
-        if self.parameters_changed(sent) {
-            packets.push(self.packet(TeamAction::Update(self.parameters())).into());
-        }
-        let joined: Vec<String> = members.difference(&sent.members).cloned().collect();
-        if !joined.is_empty() {
-            packets.push(self.packet(TeamAction::AddEntities(joined)).into());
-        }
-        let left: Vec<String> = sent.members.difference(members).cloned().collect();
-        if !left.is_empty() {
-            packets.push(self.packet(TeamAction::RemoveEntities(left)).into());
-        }
-        packets
-    }
 }
 
 impl From<TextColor> for TeamColor {
@@ -523,6 +500,8 @@ struct TeamSnapshot {
 #[derive(Component, Debug, Default)]
 pub struct TeamState {
     sync: SyncState<TeamSnapshot>,
+    update: bool,
+    joined: Vec<String>,
 }
 
 impl TeamState {
@@ -536,6 +515,8 @@ struct SyncState<S> {
     name: String,
     sent: Option<S>,
     viewers: HashSet<Entity>,
+    refused: HashSet<Entity>,
+    refused_at: u64,
     pending: Option<HashSet<Entity>>,
     conflict_logged: bool,
 }
@@ -546,6 +527,8 @@ impl<S> Default for SyncState<S> {
             name: String::new(),
             sent: None,
             viewers: HashSet::new(),
+            refused: HashSet::new(),
+            refused_at: 0,
             pending: None,
             conflict_logged: false,
         }
@@ -557,8 +540,9 @@ impl<S> SyncState<S> {
         let mut count = 0;
         let same = ready.iter().filter(|r| audience.includes(r)).all(|r| {
             count += 1;
-            self.viewers.contains(&r.entity())
-        }) && count == self.viewers.len();
+            let viewer = r.entity();
+            self.viewers.contains(&viewer) || self.refused.contains(&viewer)
+        }) && count == self.viewers.len() + self.refused.len();
         (!same).then(|| {
             ready
                 .iter()
@@ -576,42 +560,92 @@ impl<S> SyncState<S> {
     }
 }
 
-/// Which entity owns each `(viewer, name)` pair, so two objectives (or teams)
-/// with the same name never reach one client. Names are per-client on the
-/// wire, so disjoint audiences may share one.
-#[derive(Resource, Default)]
-struct Claims {
-    objectives: HashMap<(Entity, String), Entity>,
-    teams: HashMap<(Entity, String), Entity>,
+/// Which entity owns each `(viewer, key)` pair on the wire. Names and display
+/// slots are per client, so disjoint audiences may share one. `released`
+/// counts releases: a refused claimant retries only once it has moved.
+#[derive(Debug)]
+struct ClaimMap<K> {
+    owners: HashMap<Entity, HashMap<K, Entity>>,
+    released: u64,
 }
 
-fn release(
-    claims: &mut HashMap<(Entity, String), Entity>,
-    viewer: Entity,
-    name: &str,
-    owner: Entity,
-) {
-    if let Entry::Occupied(entry) = claims.entry((viewer, name.to_string()))
-        && *entry.get() == owner
-    {
-        entry.remove();
-    }
-}
-
-fn claim(
-    claims: &mut HashMap<(Entity, String), Entity>,
-    viewer: Entity,
-    name: &str,
-    owner: Entity,
-) -> Result<(), Entity> {
-    match claims.entry((viewer, name.to_string())) {
-        Entry::Occupied(entry) if *entry.get() != owner => Err(*entry.get()),
-        Entry::Occupied(_) => Ok(()),
-        Entry::Vacant(entry) => {
-            entry.insert(owner);
-            Ok(())
+impl<K> Default for ClaimMap<K> {
+    fn default() -> Self {
+        Self {
+            owners: HashMap::new(),
+            released: 0,
         }
     }
+}
+
+impl<K: Eq + Hash> ClaimMap<K> {
+    fn owner<Q>(&self, viewer: Entity, key: &Q) -> Option<Entity>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.owners.get(&viewer)?.get(key).copied()
+    }
+
+    fn claim<Q>(&mut self, viewer: Entity, key: &Q, owner: Entity) -> Result<(), Entity>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ToOwned<Owned = K> + ?Sized,
+    {
+        let owners = self.owners.entry(viewer).or_default();
+        match owners.get(key) {
+            Some(other) if *other != owner => Err(*other),
+            Some(_) => Ok(()),
+            None => {
+                owners.insert(key.to_owned(), owner);
+                Ok(())
+            }
+        }
+    }
+
+    fn release<Q>(&mut self, viewer: Entity, key: &Q, owner: Entity) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        let Some(owners) = self.owners.get_mut(&viewer) else {
+            return false;
+        };
+        if owners.get(key) != Some(&owner) {
+            return false;
+        }
+        owners.remove(key);
+        self.released += 1;
+        if owners.is_empty() {
+            self.owners.remove(&viewer);
+        }
+        true
+    }
+
+    fn forget(&mut self, viewer: Entity, owner: Entity) {
+        let Some(owners) = self.owners.get_mut(&viewer) else {
+            return;
+        };
+        let before = owners.len();
+        owners.retain(|_, held| *held != owner);
+        self.released += (before - owners.len()) as u64;
+        if owners.is_empty() {
+            self.owners.remove(&viewer);
+        }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty()
+    }
+}
+
+#[derive(Resource, Default)]
+struct Claims {
+    objectives: ClaimMap<String>,
+    slots: ClaimMap<DisplaySlot>,
+    teams: ClaimMap<String>,
+    members: ClaimMap<String>,
 }
 
 pub struct ScoreboardPlugin;
@@ -631,73 +665,103 @@ impl Plugin for ScoreboardPlugin {
     }
 }
 
+fn warn_conflict(
+    logged: &mut bool,
+    kind: &str,
+    name: &str,
+    owner: Entity,
+    other: Entity,
+    viewer: Entity,
+) {
+    if *logged {
+        return;
+    }
+    *logged = true;
+    warn!(
+        %name,
+        entity = ?owner,
+        conflicts_with = ?other,
+        ?viewer,
+        "{kind} name or display slot already used for this player by another entity; not sent"
+    );
+}
+
 fn begin_sync<S>(
     players: &Players,
     ready: &Recipients,
-    claims: &mut HashMap<(Entity, String), Entity>,
-    owner: Entity,
+    generation: u64,
     name: &str,
     audience: &Audience,
     state: &mut SyncState<S>,
     remove: impl Fn(&str) -> ClientboundPacket,
+    mut release: impl FnMut(Entity, &str, Option<&S>),
 ) {
     if state.sent.is_some() && state.name != name {
         players.send_to(state.viewers.iter().copied(), remove(&state.name));
         for viewer in state.viewers.drain() {
-            release(claims, viewer, &state.name, owner);
+            release(viewer, &state.name, state.sent.as_ref());
         }
         state.sent = None;
+        state.refused.clear();
     }
-    state.name = name.to_string();
+    if state.name != name {
+        state.name.clear();
+        state.name.push_str(name);
+    }
+    if state.refused_at != generation && !state.refused.is_empty() {
+        state.refused.clear();
+    }
     state.pending = state.desired(ready, audience);
     if let Some(pending) = &state.pending {
         for gone in state.viewers.difference(pending) {
             players.send(*gone, remove(name));
-            release(claims, *gone, name, owner);
+            release(*gone, name, state.sent.as_ref());
         }
     }
 }
 
 fn finish_sync<S>(
-    players: &Players,
-    claims: &mut HashMap<(Entity, String), Entity>,
-    owner: Entity,
+    generation: u64,
     kind: &str,
+    owner: Entity,
     state: &mut SyncState<S>,
-    full_state: impl Fn() -> Vec<ClientboundPacket>,
+    mut claim: impl FnMut(Entity) -> Result<(), Entity>,
+    mut show: impl FnMut(Entity),
 ) {
     let Some(pending) = state.pending.take() else {
         return;
     };
     let mut viewers = HashSet::with_capacity(pending.len());
-    let mut packets = None;
+    let mut refused = HashSet::new();
     for viewer in pending {
         if state.viewers.contains(&viewer) {
             viewers.insert(viewer);
-            continue;
-        }
-        match claim(claims, viewer, &state.name, owner) {
-            Ok(()) => {
-                for packet in packets.get_or_insert_with(&full_state) {
-                    players.send(viewer, packet.clone());
+        } else if state.refused.contains(&viewer) {
+            refused.insert(viewer);
+        } else {
+            match claim(viewer) {
+                Ok(()) => {
+                    show(viewer);
+                    viewers.insert(viewer);
                 }
-                viewers.insert(viewer);
-            }
-            Err(other) => {
-                if !state.conflict_logged {
-                    state.conflict_logged = true;
-                    warn!(
-                        name = %state.name,
-                        entity = ?owner,
-                        conflicts_with = ?other,
-                        ?viewer,
-                        "{kind} name already shown to this player by another entity; not sent"
+                Err(other) => {
+                    refused.insert(viewer);
+                    warn_conflict(
+                        &mut state.conflict_logged,
+                        kind,
+                        &state.name,
+                        owner,
+                        other,
+                        viewer,
                     );
                 }
             }
         }
     }
     state.viewers = viewers;
+    state.conflict_logged &= !refused.is_empty();
+    state.refused = refused;
+    state.refused_at = generation;
 }
 
 fn sync_objectives(
@@ -706,12 +770,13 @@ fn sync_objectives(
     mut objectives: Query<(Entity, Ref<Objective>, &mut ObjectiveState)>,
 ) {
     let ready = players.ready();
+    let claims = &mut *claims;
+    let generation = claims.objectives.released + claims.slots.released;
     for (entity, objective, mut state) in objectives.iter_mut() {
         begin_sync(
             &players,
             &ready,
-            &mut claims.objectives,
-            entity,
+            generation,
             &objective.name,
             &objective.audience,
             &mut state.sync,
@@ -722,6 +787,12 @@ fn sync_objectives(
                 }
                 .into()
             },
+            |viewer, name, sent: Option<&ObjectiveSnapshot>| {
+                claims.objectives.release(viewer, name, entity);
+                if let Some(sent) = sent {
+                    claims.slots.release(viewer, &sent.slot, entity);
+                }
+            },
         );
     }
     for (entity, objective, mut state) in objectives.iter_mut() {
@@ -730,7 +801,31 @@ fn sync_objectives(
             Some(sent) if objective.is_changed() => {
                 let packets = objective.updates_since(sent);
                 if !packets.is_empty() {
-                    let kept: Vec<Entity> = state.kept().collect();
+                    let mut kept: Vec<Entity> = state.kept().collect();
+                    if objective.slot != sent.slot {
+                        kept.retain(|&viewer| {
+                            claims.slots.release(viewer, &sent.slot, entity);
+                            match claims.slots.claim(viewer, &objective.slot, entity) {
+                                Ok(()) => true,
+                                Err(other) => {
+                                    claims.objectives.release(viewer, &objective.name, entity);
+                                    players
+                                        .send(viewer, objective.objective(ObjectiveAction::Remove));
+                                    state.viewers.remove(&viewer);
+                                    state.refused.insert(viewer);
+                                    warn_conflict(
+                                        &mut state.conflict_logged,
+                                        "objective",
+                                        &state.name,
+                                        entity,
+                                        other,
+                                        viewer,
+                                    );
+                                    false
+                                }
+                            }
+                        });
+                    }
                     for packet in packets {
                         players.send_to(kept.iter().copied(), packet);
                     }
@@ -740,17 +835,65 @@ fn sync_objectives(
             Some(_) => {}
             None => state.sent = Some(objective.snapshot()),
         }
+        let mut packets = None;
         finish_sync(
-            &players,
-            &mut claims.objectives,
-            entity,
+            generation,
             "objective",
+            entity,
             state,
-            || objective.full_state(),
+            |viewer| {
+                if let Some(other) = claims.slots.owner(viewer, &objective.slot)
+                    && other != entity
+                {
+                    return Err(other);
+                }
+                claims
+                    .objectives
+                    .claim(viewer, objective.name.as_str(), entity)?;
+                claims.slots.claim(viewer, &objective.slot, entity)
+            },
+            |viewer| {
+                for packet in packets.get_or_insert_with(|| objective.full_state()) {
+                    players.send(viewer, packet.clone());
+                }
+            },
         );
     }
 }
 
+fn claim_members<'a>(
+    claims: &mut ClaimMap<String>,
+    viewer: Entity,
+    team: Entity,
+    members: impl IntoIterator<Item = &'a String>,
+    refused: &mut BTreeSet<String>,
+) -> Vec<String> {
+    members
+        .into_iter()
+        .filter(|member| match claims.claim(viewer, member.as_str(), team) {
+            Ok(()) => true,
+            Err(_) => {
+                refused.insert((*member).clone());
+                false
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+fn warn_refused_members(team: &Team, entity: Entity, refused: &BTreeSet<String>) {
+    if !refused.is_empty() {
+        warn!(
+            team = %team.name,
+            ?entity,
+            members = ?refused,
+            "members already on another team for some viewers; not added"
+        );
+    }
+}
+
+/// Every team's leaves go out before any team's joins: a player moved between
+/// two teams in one tick must leave the old one first or the client throws.
 fn sync_teams(
     players: Players,
     mut claims: ResMut<Claims>,
@@ -758,12 +901,13 @@ fn sync_teams(
     mut teams: Query<(Entity, Ref<Team>, &mut TeamState)>,
 ) {
     let ready = players.ready();
+    let claims = &mut *claims;
+    let generation = claims.teams.released;
     for (entity, team, mut state) in teams.iter_mut() {
         begin_sync(
             &players,
             &ready,
-            &mut claims.teams,
-            entity,
+            generation,
             &team.name,
             &team.audience,
             &mut state.sync,
@@ -774,42 +918,102 @@ fn sync_teams(
                 }
                 .into()
             },
+            |viewer, name, _| {
+                claims.teams.release(viewer, name, entity);
+                claims.members.forget(viewer, entity);
+            },
         );
     }
     for (entity, team, mut state) in teams.iter_mut() {
-        let state = &mut state.sync;
-        let mut members = None;
+        let TeamState {
+            sync: state,
+            update,
+            joined,
+        } = &mut *state;
         match &state.sent {
             Some(sent) if team.is_changed() => {
-                let resolved = members.insert(team.resolved_members(&names));
-                let packets = team.updates_since(sent, resolved);
-                if !packets.is_empty() {
-                    let kept: Vec<Entity> = state.kept().collect();
-                    for packet in packets {
-                        players.send_to(kept.iter().copied(), packet);
+                let members = team.resolved_members(&names);
+                let left: Vec<String> = sent.members.difference(&members).cloned().collect();
+                joined.extend(members.difference(&sent.members).cloned());
+                *update = team.parameters_changed(sent);
+                if !left.is_empty() {
+                    for viewer in state.kept() {
+                        let left: Vec<String> = left
+                            .iter()
+                            .filter(|member| {
+                                claims.members.release(viewer, member.as_str(), entity)
+                            })
+                            .cloned()
+                            .collect();
+                        if !left.is_empty() {
+                            players.send(viewer, team.packet(TeamAction::RemoveEntities(left)));
+                        }
                     }
-                    state.sent = Some(team.snapshot(resolved.clone()));
+                }
+                if *update || !left.is_empty() || !joined.is_empty() {
+                    state.sent = Some(team.snapshot(members));
                 }
             }
             Some(_) => {}
-            None => {
-                let resolved = members.insert(team.resolved_members(&names));
-                state.sent = Some(team.snapshot(resolved.clone()));
+            None => state.sent = Some(team.snapshot(team.resolved_members(&names))),
+        }
+    }
+    for (entity, team, mut state) in teams.iter_mut() {
+        let TeamState {
+            sync: state,
+            update,
+            joined,
+        } = &mut *state;
+        if std::mem::take(update) {
+            players.send_to(
+                state.kept(),
+                team.packet(TeamAction::Update(team.parameters())),
+            );
+        }
+        let mut refused = BTreeSet::new();
+        if !joined.is_empty() {
+            for viewer in state.kept() {
+                let mine =
+                    claim_members(&mut claims.members, viewer, entity, &*joined, &mut refused);
+                if !mine.is_empty() {
+                    players.send(viewer, team.packet(TeamAction::AddEntities(mine)));
+                }
             }
+            joined.clear();
         }
-        if state.pending.is_none() {
-            continue;
+        if state.pending.is_some() {
+            let sent = state.sent.take();
+            let members = sent.as_ref().map(|sent| &sent.members);
+            finish_sync(
+                generation,
+                "team",
+                entity,
+                state,
+                |viewer| claims.teams.claim(viewer, team.name.as_str(), entity),
+                |viewer| {
+                    let entities = members
+                        .map(|members| {
+                            claim_members(
+                                &mut claims.members,
+                                viewer,
+                                entity,
+                                members,
+                                &mut refused,
+                            )
+                        })
+                        .unwrap_or_default();
+                    players.send(
+                        viewer,
+                        team.packet(TeamAction::Create {
+                            parameters: team.parameters(),
+                            entities,
+                        }),
+                    );
+                },
+            );
+            state.sent = sent;
         }
-        let members = members.unwrap_or_else(|| {
-            state
-                .sent
-                .as_ref()
-                .map(|sent| sent.members.clone())
-                .unwrap_or_default()
-        });
-        finish_sync(&players, &mut claims.teams, entity, "team", state, || {
-            team.full_state(&members)
-        });
+        warn_refused_members(&team, entity, &refused);
     }
 }
 
@@ -831,8 +1035,12 @@ fn remove_objective_from_viewers(
                 action: ObjectiveAction::Remove,
             },
         );
-        release(&mut claims.objectives, viewer, &state.name, event.entity);
+        claims.objectives.release(viewer, &state.name, event.entity);
+        if let Some(sent) = &state.sent {
+            claims.slots.release(viewer, &sent.slot, event.entity);
+        }
     }
+    state.refused.clear();
     state.sent = None;
 }
 
@@ -854,8 +1062,10 @@ fn remove_team_from_viewers(
                 action: TeamAction::Remove,
             },
         );
-        release(&mut claims.teams, viewer, &state.name, event.entity);
+        claims.teams.release(viewer, &state.name, event.entity);
+        claims.members.forget(viewer, event.entity);
     }
+    state.refused.clear();
     state.sent = None;
 }
 
@@ -863,10 +1073,10 @@ fn forget_player_in_teams(event: On<Remove, PlayerName>, mut teams: Query<&mut T
     for mut team in teams.iter_mut() {
         if team
             .bypass_change_detection()
-            .players
+            .members
             .contains(&event.entity)
         {
-            team.players.remove(&event.entity);
+            team.members.remove(&event.entity);
         }
     }
 }
@@ -1271,7 +1481,12 @@ mod tests {
         app.update();
         assert!(drain(&rx).is_empty());
         let claims = app.world().resource::<Claims>();
-        assert!(claims.objectives.is_empty() && claims.teams.is_empty());
+        assert!(
+            claims.objectives.is_empty()
+                && claims.slots.is_empty()
+                && claims.teams.is_empty()
+                && claims.members.is_empty()
+        );
     }
 
     #[test]
@@ -1508,5 +1723,210 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    fn team_leave(id: u32, team: &str, member: &str) -> Sent {
+        Sent::TeamLeave(id, team.into(), vec![member.into()])
+    }
+
+    fn team_add(id: u32, team: &str, member: &str) -> Sent {
+        Sent::TeamAdd(id, team.into(), vec![member.into()])
+    }
+
+    fn move_between_teams(new_first: bool) -> Vec<Sent> {
+        let (mut app, rx) = test_app();
+        let leo = player(&mut app, 1, "Leo");
+        let spawn = |app: &mut App, team: Team| app.world_mut().spawn(team).id();
+        let (red, blue) = if new_first {
+            let red = spawn(&mut app, Team::new("red"));
+            (red, spawn(&mut app, Team::new("blue").members([leo])))
+        } else {
+            let blue = spawn(&mut app, Team::new("blue").members([leo]));
+            (spawn(&mut app, Team::new("red")), blue)
+        };
+        app.update();
+        drain(&rx);
+
+        app.world_mut().get_mut::<Team>(blue).unwrap().remove(leo);
+        app.world_mut().get_mut::<Team>(red).unwrap().add(leo);
+        app.update();
+        drain(&rx)
+    }
+
+    #[test]
+    fn moving_a_player_between_teams_in_one_tick_leaves_before_joining() {
+        for new_first in [true, false] {
+            assert_eq!(
+                move_between_teams(new_first),
+                vec![team_leave(1, "blue", "Leo"), team_add(1, "red", "Leo")],
+                "new team spawned first: {new_first}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_player_on_two_teams_reaches_the_wire_on_one_team_only() {
+        let (mut app, rx) = test_app();
+        let leo = player(&mut app, 1, "Leo");
+        let red = app.world_mut().spawn(Team::new("red").members([leo])).id();
+        let blue = app.world_mut().spawn(Team::new("blue").members([leo])).id();
+        app.update();
+        assert_eq!(
+            sorted(&rx),
+            vec![
+                Sent::TeamCreate(1, "blue".into(), vec![]),
+                Sent::TeamCreate(1, "red".into(), vec!["Leo".into()]),
+            ]
+        );
+
+        let adam = player(&mut app, 2, "Adam");
+        app.update();
+        assert_eq!(
+            sorted(&rx),
+            vec![
+                Sent::TeamCreate(2, "blue".into(), vec![]),
+                Sent::TeamCreate(2, "red".into(), vec!["Leo".into()]),
+            ]
+        );
+
+        app.world_mut().get_mut::<Team>(blue).unwrap().add(adam);
+        app.world_mut().get_mut::<Team>(red).unwrap().add(adam);
+        app.update();
+        assert_eq!(
+            sorted(&rx),
+            vec![team_add(1, "red", "Adam"), team_add(2, "red", "Adam")]
+        );
+
+        app.world_mut().get_mut::<Team>(red).unwrap().remove(leo);
+        app.update();
+        assert_eq!(
+            sorted(&rx),
+            vec![team_leave(1, "red", "Leo"), team_leave(2, "red", "Leo")]
+        );
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut().get_mut::<Team>(blue).unwrap().remove(leo);
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn removing_a_team_frees_its_members_for_other_teams() {
+        let (mut app, rx) = test_app();
+        let leo = player(&mut app, 1, "Leo");
+        let red = app.world_mut().spawn(Team::new("red").members([leo])).id();
+        let blue = app.world_mut().spawn(Team::new("blue")).id();
+        app.update();
+        drain(&rx);
+
+        app.world_mut().despawn(red);
+        app.world_mut().get_mut::<Team>(blue).unwrap().add(leo);
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::TeamRemove(1, "red".into()),
+                team_add(1, "blue", "Leo")
+            ]
+        );
+
+        app.world_mut().get_mut::<Team>(blue).unwrap().audience = Audience::explicit([]);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::TeamRemove(1, "blue".into())]);
+        assert!(app.world().resource::<Claims>().members.is_empty());
+    }
+
+    #[test]
+    fn objectives_sharing_a_display_slot_for_one_viewer_show_one() {
+        let (mut app, rx) = test_app();
+        let leo = player(&mut app, 1, "Leo");
+        let first = app.world_mut().spawn(Objective::sidebar("a")).id();
+        let second = app.world_mut().spawn(Objective::sidebar("b")).id();
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Create(1, "a".into()),
+                Sent::Display(1, DisplaySlot::Sidebar, "a".into())
+            ]
+        );
+        let state = &app.world().get::<ObjectiveState>(second).unwrap().sync;
+        assert!(state.refused.contains(&leo) && state.conflict_logged);
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut().despawn(first);
+        drain(&rx);
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Create(1, "b".into()),
+                Sent::Display(1, DisplaySlot::Sidebar, "b".into())
+            ]
+        );
+        let state = &app.world().get::<ObjectiveState>(second).unwrap().sync;
+        assert!(state.refused.is_empty() && !state.conflict_logged);
+    }
+
+    #[test]
+    fn moving_an_objective_onto_a_taken_slot_removes_it_from_that_viewer() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1, "Leo");
+        let sidebar = app.world_mut().spawn(Objective::sidebar("a")).id();
+        let list = app.world_mut().spawn(Objective::list("b")).id();
+        app.update();
+        drain(&rx);
+
+        app.world_mut().get_mut::<Objective>(list).unwrap().slot = DisplaySlot::Sidebar;
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::RemoveObjective(1, "b".into())]);
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut().get_mut::<Objective>(sidebar).unwrap().slot = DisplaySlot::List;
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Display(1, DisplaySlot::Sidebar, "".into()),
+                Sent::Display(1, DisplaySlot::List, "a".into()),
+            ]
+        );
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Create(1, "b".into()),
+                Sent::Display(1, DisplaySlot::Sidebar, "b".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn refused_viewers_are_not_retried_until_a_claim_is_released() {
+        let (mut app, rx) = test_app();
+        let leo = player(&mut app, 1, "Leo");
+        app.world_mut().spawn(Team::new("red"));
+        let duplicate = app.world_mut().spawn(Team::new("red")).id();
+        app.update();
+        drain(&rx);
+        let generation = app.world().resource::<Claims>().teams.released;
+        let state = &app.world().get::<TeamState>(duplicate).unwrap().sync;
+        assert_eq!(state.refused_at, generation);
+        assert!(state.refused.contains(&leo));
+
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(drain(&rx).is_empty());
+        assert_eq!(app.world().resource::<Claims>().teams.released, generation);
+
+        app.world_mut().entity_mut(leo).remove::<PlayerReady>();
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::TeamRemove(1, "red".into())]);
+        let state = &app.world().get::<TeamState>(duplicate).unwrap().sync;
+        assert!(state.refused.is_empty() && !state.conflict_logged);
     }
 }

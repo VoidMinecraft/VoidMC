@@ -83,9 +83,12 @@ fn make_teams(mut commands: Commands, red_players: Vec<Entity>) {
 
 fn join(mut teams: Query<&mut Team>, player: Entity) {
     for mut team in &mut teams {
-        team.remove(player);
         if team.name == "red" {
-            team.add(player);
+            if !team.contains(player) {
+                team.add(player);
+            }
+        } else if team.contains(player) {
+            team.remove(player);
         }
     }
 }
@@ -101,7 +104,7 @@ fn join(mut teams: Query<&mut Team>, player: Entity) {
 | `see_invisible_friends` | `bool` | `true` |
 | `name_tags` | `NameTagVisibility` (`Always`, `Never`, `HideForOtherTeams`, `HideForOwnTeam`) | `Always` |
 | `collision` | `CollisionRule` (`Always`, `Never`, `PushOtherTeams`, `PushOwnTeam`) | `Always` |
-| `players` | `HashSet<Entity>` | empty |
+| `members` | `HashSet<Entity>` | empty |
 | `entries` | `BTreeSet<String>` | empty |
 | `audience` | [`Audience`](../server/sending-packets.md#audiences) | `Audience::All` |
 
@@ -109,11 +112,22 @@ fn join(mut teams: Query<&mut Team>, player: Entity) {
 team equivalent and falls back to `Reset` with a warning. The team colour
 applies to the whole name line (prefix, name and suffix).
 
-Members come in two forms. `add(entity)` / `remove(entity)` take player
-entities and resolve their `PlayerName` when syncing; a player that disconnects
-is dropped from every team automatically. `add_entry(text)` /
+Members come in two forms. `add(entity)` / `remove(entity)` / `contains(entity)`
+take player entities and resolve their `PlayerName` when syncing; a player that
+disconnects is dropped from every team automatically. `add_entry(text)` /
 `remove_entry(text)` take raw scoreboard entries (entity UUIDs, or names of
-players who are not online) and are sent verbatim.
+players who are not online) and are sent verbatim. Mutating a team through
+`Mut<Team>` marks it changed even when nothing was removed, so check `contains`
+first as in `join` above.
+
+A player is on at most one team per client. Moving a player is a plain
+`remove` from the old team and `add` to the new one, in the same tick or not:
+the sync flushes every team's leaves before any team's joins, so the client
+never sees the player on two teams. Adding a player to a second team without
+removing it from the first is refused for every viewer who already sees it on
+the other team (the member is left out of that team's add or create packet
+and a warning names it); it is not retried, remove it from the first team and
+add it again.
 
 ## Audience and uniqueness
 
@@ -124,9 +138,13 @@ narrowed or widened `Audience` diffs the viewer set on the next tick.
 
 Objective and team names are per client, so two objectives may share a name as
 long as no player sees both (one personal sidebar per player, all named
-`"sidebar"`, is fine). When a second entity would show an already-used name to
-a player, that player is skipped for the newcomer and a warning is logged once
-for the entity; it takes over the name when the first entity is removed.
+`"sidebar"`, is fine). The same goes for display slots: one objective per slot
+per client. When a second entity would show an already-used name or slot to a
+player, that player is skipped for the newcomer and a warning is logged once
+per conflict; the newcomer takes over when the first entity is removed, moves
+away or drops the player from its audience. An objective moved onto a slot
+another objective already holds for a viewer is removed from that viewer the
+same way.
 
 ## Removing
 

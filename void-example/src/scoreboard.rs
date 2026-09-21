@@ -85,10 +85,11 @@ fn handle_team(ctx: &mut CommandContext) {
                 .id()
         });
         let mut team = world.get_mut::<Team>(team).unwrap();
-        if team.add(player) {
-            format!("You joined team {name}.")
-        } else {
+        if team.contains(player) {
             format!("You are already in team {name}.")
+        } else {
+            team.add(player);
+            format!("You joined team {name}.")
         }
     });
     ctx.reply(&outcome);
