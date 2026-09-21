@@ -217,13 +217,15 @@ fn main() {
         let block_entity_hosts = load_block_entity_hosts(&crate_dir, version);
         emit_blocks_module(
             &mut blocks_code,
-            version,
-            &blocks_json,
-            shapes_value.as_ref(),
-            &items,
-            &packets,
-            &entity_types,
-            &block_entity_hosts,
+            BlocksModuleInput {
+                version,
+                blocks_json: &blocks_json,
+                shapes_json: shapes_value.as_ref(),
+                items: &items,
+                packets: &packets,
+                entity_types: &entity_types,
+                block_entity_hosts: &block_entity_hosts,
+            },
         );
     }
     fs::write(out_dir.join("blocks.rs"), blocks_code).unwrap();
@@ -312,17 +314,26 @@ fn load_registry_entries(crate_dir: &Path, version: &str, registry: &str) -> Vec
     out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_blocks_module(
-    out: &mut String,
-    version: &str,
-    blocks_json: &Value,
-    shapes_json: Option<&Value>,
-    items: &[(String, i32)],
-    packets: &PacketTable,
-    entity_types: &[(String, i32)],
-    block_entity_hosts: &BTreeMap<String, Vec<String>>,
-) {
+struct BlocksModuleInput<'a> {
+    version: &'a str,
+    blocks_json: &'a Value,
+    shapes_json: Option<&'a Value>,
+    items: &'a [(String, i32)],
+    packets: &'a PacketTable,
+    entity_types: &'a [(String, i32)],
+    block_entity_hosts: &'a BTreeMap<String, Vec<String>>,
+}
+
+fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
+    let BlocksModuleInput {
+        version,
+        blocks_json,
+        shapes_json,
+        items,
+        packets,
+        entity_types,
+        block_entity_hosts,
+    } = input;
     let blocks_obj = blocks_json
         .as_object()
         .expect("blocks.json root must be object");
