@@ -21,6 +21,11 @@
   },
   {
     "type": "file",
+    "name": "sending-packets",
+    "label": "Sending Packets & System Sets"
+  },
+  {
+    "type": "file",
     "name": "world-serialization",
     "label": "World Serialization"
   }

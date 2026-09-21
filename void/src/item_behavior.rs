@@ -138,7 +138,7 @@ impl ItemUseContext<'_> {
 
     /// Sends a chat message to the acting player.
     pub fn reply(&self, message: &str) {
-        crate::commands::send_system_chat(self.world, self.client_id, message, "white");
+        crate::commands::send_system_chat(self.world, self.player, message, "white");
     }
 
     /// Read-only world access for advanced behaviours.
@@ -201,7 +201,7 @@ impl BlockBreakContext<'_> {
 
     /// Sends a chat message to the breaking player.
     pub fn reply(&self, message: &str) {
-        crate::commands::send_system_chat(self.world, self.client_id, message, "white");
+        crate::commands::send_system_chat(self.world, self.player, message, "white");
     }
 
     /// Read-only world access.

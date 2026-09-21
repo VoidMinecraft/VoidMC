@@ -13,9 +13,10 @@ use voidmc_protocol::{
 use crate::{
     CommandRegistry,
     commands::{CommandEnqueueSequence, CommandQueue, enqueue_command},
-    components::{ClientId, PlayerName, PlayerReady},
+    components::{PlayerName, PlayerReady},
     events::{ChatCommandEvent, ChatMessageEvent},
-    network::{NetworkChannels, OutgoingPacket, PacketEvent},
+    network::PacketEvent,
+    players::Players,
 };
 
 pub struct ChatPlugin;
@@ -99,9 +100,8 @@ fn handle_chat_message(
     mut commands: Commands,
     queue: ResMut<CommandQueue>,
     sequence: ResMut<CommandEnqueueSequence>,
-    channels: Res<NetworkChannels>,
+    players: Players,
     player_names: Query<&PlayerName>,
-    ready_clients: Query<&ClientId, With<PlayerReady>>,
 ) {
     // If the client doesn't recognise a command in its tree, it sends
     // "/command args" as a ChatMessage instead of ChatCommand.  Intercept that.
@@ -131,20 +131,12 @@ fn handle_chat_message(
 
     let formatted = format!("<{}> {}", player_name, event.packet.message);
     let nbt = crate::commands::text_to_nbt(&formatted, "white");
-    let packet = clientbound::ClientboundPacket::Play(clientbound::PlayPacket::SystemChat(
-        clientbound::SystemChat {
-            content: nbt,
-            overlay: false,
-        },
-    ));
 
     // Broadcast the chat message to all ready players
-    for client in ready_clients.iter() {
-        let _ = channels.outgoing.send(OutgoingPacket {
-            client_id: client.0,
-            packet: packet.clone(),
-        });
-    }
+    players.broadcast(clientbound::SystemChat {
+        content: nbt,
+        overlay: false,
+    });
 
     commands.trigger(ChatMessageEvent {
         entity: event.entity,
@@ -157,7 +149,7 @@ fn handle_command_suggestions(
     event: On<PacketEvent<CommandSuggestionsRequest>>,
     command_registry: Res<CommandRegistry>,
     ready_players: Query<&PlayerName, With<PlayerReady>>,
-    channels: Res<NetworkChannels>,
+    players: Players,
 ) {
     // text is e.g. "/kick dan" — split into command + partial arg
     let without_slash = event
@@ -218,10 +210,5 @@ fn handle_command_suggestions(
         matches: names,
     };
 
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: event.client_id,
-        packet: voidmc_protocol::clientbound::ClientboundPacket::ManualPlay(
-            voidmc_protocol::clientbound::ManualPlayPacket::CommandSuggestionsResponse(response),
-        ),
-    });
+    players.send(event.entity, response);
 }

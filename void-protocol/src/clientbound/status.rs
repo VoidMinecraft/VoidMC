@@ -6,7 +6,7 @@ pub use status_response::*;
 use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
-#[codec(tagged)]
+#[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Status)]
 pub enum StatusPacket {
     #[codec(packet_id = 0x00)]
     StatusResponse(StatusResponse),

@@ -11,8 +11,8 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::commands::{CommandNode, Commands, Parser, StringType};
 
-use crate::components::{ClientId, PlayerName, PlayerReady, Position};
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::components::{PlayerName, Position};
+use crate::players::WorldPlayers;
 
 pub use error::ParseError;
 pub use flags::{FlagDefinition, FlagSet};
@@ -263,41 +263,21 @@ impl<'a> CommandContext<'a> {
 
     /// Send a system message to the command sender.
     pub fn reply(&self, message: &str) {
-        send_system_chat(self.world, self.client_id, message, "white");
+        send_system_chat(self.world, self.entity, message, "white");
     }
 
     /// Send an error message (red) to the command sender.
     pub fn reply_error(&self, message: &str) {
-        send_system_chat(self.world, self.client_id, message, "red");
+        send_system_chat(self.world, self.entity, message, "red");
     }
 
     /// Broadcast a system message to all ready players.
     pub fn broadcast(&mut self, message: &str) {
-        let channels = self.world.resource::<NetworkChannels>();
-        let sender = channels.outgoing.clone();
-        let ready_clients: Vec<u32> = self
-            .world
-            .query_filtered::<&ClientId, With<PlayerReady>>()
-            .iter(self.world)
-            .map(|c| c.0)
-            .collect();
+        WorldPlayers::new(self.world).broadcast(system_chat(message, "white"));
+    }
 
-        let nbt = text_to_nbt(message, "white");
-        let packet = voidmc_protocol::clientbound::ClientboundPacket::Play(
-            voidmc_protocol::clientbound::PlayPacket::SystemChat(
-                voidmc_protocol::clientbound::SystemChat {
-                    content: nbt,
-                    overlay: false,
-                },
-            ),
-        );
-
-        for cid in ready_clients {
-            let _ = sender.send(OutgoingPacket {
-                client_id: cid,
-                packet: packet.clone(),
-            });
-        }
+    pub fn players(&self) -> WorldPlayers<'_> {
+        WorldPlayers::new(self.world)
     }
 
     /// Get the sender's player name.
@@ -315,20 +295,15 @@ impl<'a> CommandContext<'a> {
     }
 }
 
-pub(crate) fn send_system_chat(world: &World, client_id: u32, message: &str, color: &str) {
-    let channels = world.resource::<NetworkChannels>();
-    let nbt = text_to_nbt(message, color);
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id,
-        packet: voidmc_protocol::clientbound::ClientboundPacket::Play(
-            voidmc_protocol::clientbound::PlayPacket::SystemChat(
-                voidmc_protocol::clientbound::SystemChat {
-                    content: nbt,
-                    overlay: false,
-                },
-            ),
-        ),
-    });
+pub fn system_chat(message: &str, color: &str) -> voidmc_protocol::clientbound::SystemChat {
+    voidmc_protocol::clientbound::SystemChat {
+        content: text_to_nbt(message, color),
+        overlay: false,
+    }
+}
+
+pub(crate) fn send_system_chat(world: &World, player: Entity, message: &str, color: &str) {
+    WorldPlayers::new(world).send(player, system_chat(message, color));
 }
 
 pub fn text_to_nbt(text: &str, color: &str) -> ussr_nbt::owned::Nbt {
@@ -894,9 +869,9 @@ pub fn dispatch_command(
 
             if !flag_errors.is_empty() {
                 for err in &flag_errors {
-                    send_system_chat(world, client_id, &err.to_player_message(), "red");
+                    send_system_chat(world, entity, &err.to_player_message(), "red");
                 }
-                send_system_chat(world, client_id, &format!("Usage: {}", res.usage), "gray");
+                send_system_chat(world, entity, &format!("Usage: {}", res.usage), "gray");
                 return;
             }
 
@@ -963,14 +938,14 @@ pub fn dispatch_command(
                 }
                 Err(errors) => {
                     for err in &errors {
-                        send_system_chat(world, client_id, &err.to_player_message(), "red");
+                        send_system_chat(world, entity, &err.to_player_message(), "red");
                     }
-                    send_system_chat(world, client_id, &format!("Usage: {}", res.usage), "gray");
+                    send_system_chat(world, entity, &format!("Usage: {}", res.usage), "gray");
                 }
             }
         }
         Resolved::NotFound(err) => {
-            send_system_chat(world, client_id, &err, "red");
+            send_system_chat(world, entity, &err, "red");
         }
     }
 }

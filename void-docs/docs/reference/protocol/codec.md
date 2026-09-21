@@ -131,6 +131,11 @@ pub enum PlayPacket {
 
 Encoding writes the `packet_id` as a VarI32, then the variant's payload. Decoding reads the VarI32 tag and dispatches to the matching variant.
 
+The `Encode` derive also emits `From<Inner> for Enum` for every variant. With
+`#[codec(tagged, wrap = ClientboundPacket::Play)]` it additionally emits
+`From<Inner>` and `From<Enum>` for the wrapping enum, which is how every
+clientbound packet struct converts straight into `ClientboundPacket`.
+
 ### Repr Enums
 
 For simple enums with integer discriminants. The enum is encoded as its underlying integer type:

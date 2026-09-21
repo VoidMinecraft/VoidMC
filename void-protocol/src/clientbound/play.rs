@@ -58,7 +58,7 @@ pub use update_entity_rotation::*;
 use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
-#[codec(tagged)]
+#[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Play)]
 pub enum PlayPacket {
     #[codec(packet_id = 0x01)]
     SpawnEntity(SpawnEntity),

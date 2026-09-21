@@ -10,9 +10,9 @@ use voidmc_protocol::{
     types::{BlockFace, BlockPosition},
 };
 
-use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerName, PlayerReady};
+use crate::components::{ClientId, PlayerName};
 use crate::events::{BlockBreakEvent, BlockChangeEvent, BlockPlaceEvent};
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::players::WorldPlayers;
 use crate::world::{ChunkData, ChunkDirty, ChunkIndex, ChunkPos, DimensionId};
 
 /// Whether a mutation breaks or places a block (selects the semantic event).
@@ -62,26 +62,14 @@ pub fn mutate_block(
     world.entity_mut(chunk_entity).insert(ChunkDirty);
 
     // Broadcast the change to every ready player observing the chunk.
-    let sender = world.resource::<NetworkChannels>().outgoing.clone();
-    let update_packet = clientbound::ClientboundPacket::Play(clientbound::PlayPacket::BlockUpdate(
+    WorldPlayers::new(world).broadcast_chunk(
+        dimension,
+        chunk_pos,
         clientbound::BlockUpdate {
             position,
             block_state_id: new_state,
         },
-    ));
-    let mut observers =
-        world.query_filtered::<(&ClientId, &PlayerDimension, &LoadedChunks), With<PlayerReady>>();
-    let targets: Vec<u32> = observers
-        .iter(world)
-        .filter(|(_, dim, loaded)| dim.0 == dimension && loaded.0.contains(&chunk_pos))
-        .map(|(client_id, _, _)| client_id.0)
-        .collect();
-    for client_id in targets {
-        let _ = sender.send(OutgoingPacket {
-            client_id,
-            packet: update_packet.clone(),
-        });
-    }
+    );
 
     world.trigger(BlockChangeEvent {
         dimension,
@@ -128,16 +116,7 @@ pub fn mutate_block(
 
 /// Sends a `BlockChangedAck` for the given prediction sequence to `actor`.
 pub fn send_ack(world: &World, actor: Entity, sequence: i32) {
-    let Some(client_id) = world.get::<ClientId>(actor) else {
-        return;
-    };
-    let channels = world.resource::<NetworkChannels>();
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: client_id.0,
-        packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::BlockChangedAck(
-            clientbound::BlockChangedAck { sequence },
-        )),
-    });
+    WorldPlayers::new(world).send(actor, clientbound::BlockChangedAck { sequence });
 }
 
 /// The block position adjacent to `pos` across `face` (where a placed block lands).

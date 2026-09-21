@@ -12,16 +12,16 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    ClientId, EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded,
-    ItemEntity, MinecraftEntityId, MovementConfig, PickupDelay, PlayerDimension, PlayerReady,
-    Position, PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, Velocity,
-    VerticalVelocity,
+    EntityCollider, EntityDimension, EntityIdCounter, EntityType, EntityUuid, Grounded, ItemEntity,
+    MinecraftEntityId, MovementConfig, PickupDelay, PlayerDimension, PlayerReady, Position,
+    PreviousPosition, RecentlySpawned, Rotation, SpawnedEntity, Velocity, VerticalVelocity,
 };
 use crate::events::{EntityDespawnEvent, ItemDropEvent, PlayerDropItemEvent, PlayerReadyEvent};
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::players::Players;
 use crate::plugins::inventory::InventoryDirty;
+use crate::schedule::VoidSystems;
 use crate::systems::entities::broadcast_entity_spawns;
 use crate::world::DimensionId;
 
@@ -41,9 +41,14 @@ impl Plugin for ItemDropsPlugin {
             .add_observer(send_item_data_on_join)
             .add_systems(
                 PostUpdate,
-                broadcast_item_data.after(broadcast_entity_spawns),
+                broadcast_item_data
+                    .after(broadcast_entity_spawns)
+                    .in_set(VoidSystems::EntityBroadcast),
             )
-            .add_systems(Update, (tick_pickup_delay, pickup_items));
+            .add_systems(
+                Update,
+                (tick_pickup_delay, pickup_items).in_set(VoidSystems::ItemPickup),
+            );
     }
 }
 
@@ -180,26 +185,22 @@ fn on_player_drop_item(
 #[instrument(
     name = "item_metadata_broadcast",
     level = "info",
-    skip(channels, new_items, ready_players)
+    skip(players, new_items)
 )]
 fn broadcast_item_data(
-    channels: Res<NetworkChannels>,
+    players: Players,
     new_items: Query<
         (&MinecraftEntityId, &ItemEntity, Option<&EntityDimension>),
         Added<SpawnedEntity>,
     >,
-    ready_players: Query<(&ClientId, Option<&PlayerDimension>), With<PlayerReady>>,
 ) {
+    let ready = players.ready();
     for (entity_id, item, dim) in new_items.iter() {
-        let packet = item_data_packet(entity_id.0, &item.stack);
-        for (client_id, player_dim) in ready_players.iter() {
-            if entity_visible(dim, player_dim) {
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: client_id.0,
-                    packet: packet.clone(),
-                });
-            }
-        }
+        let dimension = dim.map(|d| d.0);
+        ready.send_where(
+            |r| r.visible_from(dimension),
+            item_data_packet(entity_id.0, &item.stack),
+        );
     }
 }
 
@@ -208,23 +209,20 @@ fn broadcast_item_data(
 #[instrument(
     name = "item_metadata_join_sync",
     level = "info",
-    skip(event, channels, joiner, items)
+    skip(event, players, joiner, items)
 )]
 fn send_item_data_on_join(
     event: On<PlayerReadyEvent>,
-    channels: Res<NetworkChannels>,
-    joiner: Query<(&ClientId, Option<&PlayerDimension>)>,
+    players: Players,
+    joiner: Query<Option<&PlayerDimension>>,
     items: Query<(&MinecraftEntityId, &ItemEntity, Option<&EntityDimension>), With<SpawnedEntity>>,
 ) {
-    let Ok((client_id, player_dim)) = joiner.get(event.entity) else {
+    let Ok(player_dim) = joiner.get(event.entity) else {
         return;
     };
     for (entity_id, item, dim) in items.iter() {
         if entity_visible(dim, player_dim) {
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: client_id.0,
-                packet: item_data_packet(entity_id.0, &item.stack),
-            });
+            players.send(event.entity, item_data_packet(entity_id.0, &item.stack));
         }
     }
 }

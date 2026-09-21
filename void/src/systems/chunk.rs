@@ -3,24 +3,26 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    ClientId, ClientSettings, CurrentChunkPos, EffectiveViewDistance, LoadedChunks,
-    PlayerDimension, PlayerReady, Position,
+    ClientSettings, CurrentChunkPos, EffectiveViewDistance, LoadedChunks, PlayerDimension,
+    PlayerReady, Position,
 };
 use crate::config::ServerConfigResource;
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::players::Players;
 use crate::world::{
     ChunkData, ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition,
     generation::WorldGen, load_or_generate,
 };
 
 /// Streams chunks to players as they move through the world.
+///
+/// `LoadedChunks` is both mutated here and read by `Players`, hence the
+/// `ParamSet` and the outbox.
 #[instrument(
     level = "info",
     skip(
-        channels,
+        viewers_and_players,
         chunk_index,
         chunk_query,
-        players,
         commands,
         world_gen,
         loader,
@@ -28,21 +30,23 @@ use crate::world::{
     )
 )]
 pub fn stream_chunks(
-    channels: Res<NetworkChannels>,
+    mut viewers_and_players: ParamSet<(
+        Query<
+            (
+                Entity,
+                &Position,
+                &mut CurrentChunkPos,
+                &mut EffectiveViewDistance,
+                &mut LoadedChunks,
+                &PlayerDimension,
+                Option<&ClientSettings>,
+            ),
+            With<PlayerReady>,
+        >,
+        Players,
+    )>,
     mut chunk_index: ResMut<ChunkIndex>,
     chunk_query: Query<(&ChunkPosition, &ChunkData)>,
-    mut players: Query<
-        (
-            &ClientId,
-            &Position,
-            &mut CurrentChunkPos,
-            &mut EffectiveViewDistance,
-            &mut LoadedChunks,
-            &PlayerDimension,
-            Option<&ClientSettings>,
-        ),
-        With<PlayerReady>,
-    >,
     mut commands: Commands,
     world_gen: Res<WorldGen>,
     loader: Option<Res<ChunkLoaderResource>>,
@@ -51,16 +55,18 @@ pub fn stream_chunks(
     let max_chunk_generations = config.max_chunk_generations_per_tick;
     let mut generated_this_tick = 0usize;
     let mut throttled = false;
+    let mut outbox: Vec<(Entity, clientbound::ClientboundPacket)> = Vec::new();
 
+    let mut viewers = viewers_and_players.p0();
     for (
-        client_id,
+        player,
         position,
         mut current_chunk,
         mut effective_vd,
         mut loaded_chunks,
         dimension,
         settings,
-    ) in players.iter_mut()
+    ) in viewers.iter_mut()
     {
         let new_chunk = ChunkPos::from_block(position.x, position.z);
 
@@ -82,15 +88,14 @@ pub fn stream_chunks(
 
         // Send SetCenterChunk when the chunk position changed
         if chunk_changed {
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: client_id.0,
-                packet: clientbound::ClientboundPacket::Play(
-                    clientbound::PlayPacket::SetCenterChunk(clientbound::SetCenterChunk {
-                        chunk_x: new_chunk.x,
-                        chunk_z: new_chunk.z,
-                    }),
-                ),
-            });
+            outbox.push((
+                player,
+                clientbound::SetCenterChunk {
+                    chunk_x: new_chunk.x,
+                    chunk_z: new_chunk.z,
+                }
+                .into(),
+            ));
         }
 
         let desired_sorted = new_chunk.chunks_in_radius(view_distance);
@@ -106,15 +111,14 @@ pub fn stream_chunks(
             .collect();
 
         for pos in &to_unload {
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: client_id.0,
-                packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::UnloadChunk(
-                    clientbound::UnloadChunk {
-                        chunk_x: pos.x,
-                        chunk_z: pos.z,
-                    },
-                )),
-            });
+            outbox.push((
+                player,
+                clientbound::UnloadChunk {
+                    chunk_x: pos.x,
+                    chunk_z: pos.z,
+                }
+                .into(),
+            ));
             loaded_chunks.0.remove(pos);
         }
 
@@ -142,12 +146,7 @@ pub fn stream_chunks(
                 chunk_index.0.insert(key, entity);
                 generated_this_tick += 1;
 
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: client_id.0,
-                    packet: clientbound::ClientboundPacket::ManualPlay(
-                        clientbound::ManualPlayPacket::ChunkDataAndLight(packet),
-                    ),
-                });
+                outbox.push((player, packet.into()));
                 loaded_chunks.0.insert(*pos);
                 continue;
             }
@@ -156,16 +155,16 @@ pub fn stream_chunks(
             if let Some(&chunk_entity) = chunk_index.0.get(&key) {
                 if let Ok((chunk_pos, chunk_data)) = chunk_query.get(chunk_entity) {
                     let packet = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
-                    let _ = channels.outgoing.send(OutgoingPacket {
-                        client_id: client_id.0,
-                        packet: clientbound::ClientboundPacket::ManualPlay(
-                            clientbound::ManualPlayPacket::ChunkDataAndLight(packet),
-                        ),
-                    });
+                    outbox.push((player, packet.into()));
                     loaded_chunks.0.insert(*pos);
                 }
             }
         }
+    }
+
+    let players = viewers_and_players.p1();
+    for (player, packet) in outbox {
+        players.send(player, packet);
     }
 
     if throttled {

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use flume::{Receiver, Sender};
 use tracing::instrument;
 use voidmc_net::socket::Packet;
@@ -11,6 +12,7 @@ use voidmc_protocol::serverbound;
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
 use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
+use crate::schedule::VoidSystems;
 
 pub struct IncomingPacket {
     pub client_id: u32,
@@ -54,7 +56,10 @@ impl Plugin for NetworkPlugin {
             kick: self.kick_tx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
-        .add_systems(PreUpdate, ingest_network_packets);
+        .add_systems(
+            PreUpdate,
+            ingest_network_packets.in_set(VoidSystems::NetworkIngest),
+        );
     }
 }
 

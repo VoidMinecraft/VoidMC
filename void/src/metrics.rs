@@ -5,8 +5,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use crate::config::ServerConfigResource;
+use crate::schedule::VoidSystems;
 
 const DEFAULT_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -23,7 +25,7 @@ impl MetricsPlugin {
 impl Plugin for MetricsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(TpsMetrics::new(self.tps_output.clone()))
-            .add_systems(PostUpdate, track_tps);
+            .add_systems(PostUpdate, track_tps.in_set(VoidSystems::Metrics));
     }
 }
 

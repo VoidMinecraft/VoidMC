@@ -4,23 +4,23 @@ use voidmc_protocol::clientbound;
 use voidmc_protocol::types::LpVec3;
 
 use crate::components::{
-    ClientId, EntityDimension, EntityType, EntityUuid, Grounded, MinecraftEntityId,
-    PlayerDimension, PlayerReady, Position, PreviousPosition, Rotation, SpawnedEntity, Velocity,
+    EntityDimension, EntityType, EntityUuid, Grounded, MinecraftEntityId, PlayerDimension,
+    Position, PreviousPosition, Rotation, SpawnedEntity, Velocity,
 };
 use crate::events::{EntityDespawnEvent, PlayerReadyEvent};
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::players::Players;
 
 const RELATIVE_MOVE_SCALE: f64 = 4096.0;
 
 #[instrument(
     name = "entity_join_sync",
     level = "info",
-    skip(event, channels, new_player, spawned_entities)
+    skip(event, players, new_player, spawned_entities)
 )]
 pub fn on_player_ready_spawn_entities(
     event: On<PlayerReadyEvent>,
-    channels: Res<NetworkChannels>,
-    new_player: Query<(&ClientId, Option<&PlayerDimension>)>,
+    players: Players,
+    new_player: Query<Option<&PlayerDimension>>,
     spawned_entities: Query<
         (
             &MinecraftEntityId,
@@ -34,7 +34,7 @@ pub fn on_player_ready_spawn_entities(
         With<SpawnedEntity>,
     >,
 ) {
-    let Ok((client_id, player_dimension)) = new_player.get(event.entity) else {
+    let Ok(player_dimension) = new_player.get(event.entity) else {
         return;
     };
 
@@ -45,9 +45,8 @@ pub fn on_player_ready_spawn_entities(
             continue;
         }
 
-        send_packet(
-            &channels,
-            client_id.0,
+        players.send(
+            event.entity,
             spawn_entity_packet(
                 entity_id.0,
                 entity_uuid.0,
@@ -63,10 +62,10 @@ pub fn on_player_ready_spawn_entities(
 #[instrument(
     name = "entity_spawn_broadcast",
     level = "info",
-    skip(channels, spawned_entities, ready_players)
+    skip(players, spawned_entities)
 )]
 pub fn broadcast_entity_spawns(
-    channels: Res<NetworkChannels>,
+    players: Players,
     spawned_entities: Query<
         (
             &MinecraftEntityId,
@@ -79,8 +78,8 @@ pub fn broadcast_entity_spawns(
         ),
         Added<SpawnedEntity>,
     >,
-    ready_players: Query<(&ClientId, Option<&PlayerDimension>), With<PlayerReady>>,
 ) {
+    let ready = players.ready();
     for (entity_id, entity_uuid, position, rotation, velocity, entity_type, entity_dimension) in
         spawned_entities.iter()
     {
@@ -93,21 +92,18 @@ pub fn broadcast_entity_spawns(
             velocity,
         );
 
-        for (client_id, player_dimension) in ready_players.iter() {
-            if is_visible_to(entity_dimension, player_dimension) {
-                send_packet(&channels, client_id.0, packet.clone());
-            }
-        }
+        let dimension = entity_dimension.map(|d| d.0);
+        ready.send_where(|r| r.visible_from(dimension), packet);
     }
 }
 
 #[instrument(
     name = "entity_movement_broadcast",
     level = "info",
-    skip(channels, moved_entities, ready_players)
+    skip(players, moved_entities)
 )]
 pub fn broadcast_entity_movement(
-    channels: Res<NetworkChannels>,
+    players: Players,
     moved_entities: Query<
         (
             &MinecraftEntityId,
@@ -123,8 +119,8 @@ pub fn broadcast_entity_movement(
             Or<(Changed<Position>, Changed<Rotation>)>,
         ),
     >,
-    ready_players: Query<(&ClientId, Option<&PlayerDimension>), With<PlayerReady>>,
 ) {
+    let ready = players.ready();
     for (entity_id, position, previous_position, rotation, velocity, grounded, entity_dimension) in
         moved_entities.iter()
     {
@@ -157,15 +153,10 @@ pub fn broadcast_entity_movement(
             ))
         });
 
-        for (client_id, player_dimension) in ready_players.iter() {
-            if !is_visible_to(entity_dimension, player_dimension) {
-                continue;
-            }
-
-            send_packet(&channels, client_id.0, movement_packet.clone());
-            if let Some(packet) = &head_rotation_packet {
-                send_packet(&channels, client_id.0, packet.clone());
-            }
+        let dimension = entity_dimension.map(|d| d.0);
+        ready.send_where(|r| r.visible_from(dimension), movement_packet);
+        if let Some(packet) = head_rotation_packet {
+            ready.send_where(|r| r.visible_from(dimension), packet);
         }
     }
 }
@@ -173,33 +164,28 @@ pub fn broadcast_entity_movement(
 #[instrument(
     name = "entity_motion_broadcast",
     level = "info",
-    skip(channels, moved_entities, ready_players)
+    skip(players, moved_entities)
 )]
 pub fn broadcast_entity_motion(
-    channels: Res<NetworkChannels>,
+    players: Players,
     moved_entities: Query<
         (&MinecraftEntityId, Ref<Velocity>, Option<&EntityDimension>),
         (With<SpawnedEntity>, Changed<Velocity>),
     >,
-    ready_players: Query<(&ClientId, Option<&PlayerDimension>), With<PlayerReady>>,
 ) {
+    let ready = players.ready();
     for (entity_id, velocity, entity_dimension) in moved_entities.iter() {
         if velocity.is_added() {
             continue;
         }
 
-        let packet = clientbound::ClientboundPacket::Play(
-            clientbound::PlayPacket::SetEntityMotion(clientbound::SetEntityMotion {
-                entity_id: entity_id.0,
-                velocity: velocity_to_lp_vec3(&velocity),
-            }),
-        );
+        let packet = clientbound::SetEntityMotion {
+            entity_id: entity_id.0,
+            velocity: velocity_to_lp_vec3(&velocity),
+        };
 
-        for (client_id, player_dimension) in ready_players.iter() {
-            if is_visible_to(entity_dimension, player_dimension) {
-                send_packet(&channels, client_id.0, packet.clone());
-            }
-        }
+        let dimension = entity_dimension.map(|d| d.0);
+        ready.send_where(|r| r.visible_from(dimension), packet);
     }
 }
 
@@ -215,26 +201,20 @@ pub fn update_previous_entity_positions(
 
 pub fn on_entity_despawn(
     event: On<EntityDespawnEvent>,
-    channels: Res<NetworkChannels>,
+    players: Players,
     mut commands: Commands,
     entities: Query<(&MinecraftEntityId, Option<&EntityDimension>), With<SpawnedEntity>>,
-    ready_players: Query<(&ClientId, Option<&PlayerDimension>), With<PlayerReady>>,
 ) {
     let Ok((entity_id, entity_dimension)) = entities.get(event.entity) else {
         return;
     };
 
-    let packet = clientbound::ClientboundPacket::ManualPlay(
-        clientbound::ManualPlayPacket::RemoveEntities(clientbound::RemoveEntities {
+    players
+        .ready()
+        .visible_from(entity_dimension.map(|d| d.0))
+        .send(clientbound::RemoveEntities {
             entity_ids: vec![entity_id.0],
-        }),
-    );
-
-    for (client_id, player_dimension) in ready_players.iter() {
-        if is_visible_to(entity_dimension, player_dimension) {
-            send_packet(&channels, client_id.0, packet.clone());
-        }
-    }
+        });
 
     commands.entity(event.entity).despawn();
 }
@@ -371,10 +351,6 @@ fn is_visible_to(
             .unwrap_or(false),
         None => true,
     }
-}
-
-fn send_packet(channels: &NetworkChannels, client_id: u32, packet: clientbound::ClientboundPacket) {
-    let _ = channels.outgoing.send(OutgoingPacket { client_id, packet });
 }
 
 #[cfg(test)]

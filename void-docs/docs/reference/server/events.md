@@ -1,171 +1,124 @@
 # Events
 
-Void uses two kinds of events:
-
-1. **Semantic events** — High-level game events triggered via `world.trigger()`, handled by Bevy observers.
-2. **Packet message events** — Raw packet events dispatched via `world.write_message()`, consumed with `MessageReader<T>`.
-
-## Semantic Events
-
-These are the primary extension points for plugins. They are triggered after the server has processed the corresponding packet and updated ECS state.
-
-### PlayerJoinEvent
+Void has one event mechanism: Bevy **observers**. Every event is a plain
+struct with `#[derive(Event)]`, fired with `world.trigger(..)` (or
+`commands.trigger(..)` from a system/observer) and consumed with an
+`On<T>` observer registered through `app.add_observer(..)`.
 
 ```rust
-pub struct PlayerJoinEvent {
-    pub client_id: u32,
-    pub entity: Entity,
-}
-```
-
-Triggered when a client finishes configuration and transitions to the Play state. At this point all player components are inserted but `PlayerReady` is **not yet set** (the client hasn't sent `PlayerLoaded`).
-
-### PlayerReadyEvent
-
-```rust
-pub struct PlayerReadyEvent {
-    pub client_id: u32,
-    pub entity: Entity,
-}
-```
-
-Triggered when the client sends `PlayerLoaded`, indicating they have received initial chunks and are ready to play. The `PlayerReady` marker component is inserted just before this event fires. Other players are notified of the new player via this event's observer.
-
-### PlayerQuitEvent
-
-```rust
-pub struct PlayerQuitEvent {
-    pub client_id: u32,
-    pub entity: Entity,
-}
-```
-
-Triggered when a ready player disconnects. Observers broadcast entity removal and tab-list updates to remaining players. The entity is despawned after the event is fully processed.
-
-### EntityDespawnEvent
-
-```rust
-pub struct EntityDespawnEvent {
-    pub entity: Entity,
-}
-```
-
-Triggered by gameplay code that wants to remove a non-player `SpawnedEntity`.
-The built-in observer sends `Remove Entities` to ready players that can see the
-entity, then despawns the ECS entity.
-
-### PlayerMoveEvent
-
-```rust
-pub struct PlayerMoveEvent {
-    pub entity: Entity,
-    pub old_x: f64,
-    pub old_y: f64,
-    pub old_z: f64,
-    pub new_x: f64,
-    pub new_y: f64,
-    pub new_z: f64,
-}
-```
-
-Triggered when a player's position changes (from `SetPlayerPos` or `SetPlayerPosAndRot` packets). The `Position` component is already updated when this event fires.
-
-### PlayerRotateEvent
-
-```rust
-pub struct PlayerRotateEvent {
-    pub entity: Entity,
-    pub yaw: f32,
-    pub pitch: f32,
-}
-```
-
-Triggered when a player's look direction changes.
-
-### ChatCommandEvent
-
-```rust
-pub struct ChatCommandEvent {
-    pub entity: Entity,
-    pub client_id: u32,
-    pub command: String,
-    pub args: Vec<String>,
-}
-```
-
-Triggered after a chat command is dispatched (regardless of whether the command was found). Allows plugins to observe all command usage.
-
-### ChatMessageEvent
-
-```rust
-pub struct ChatMessageEvent {
-    pub entity: Entity,
-    pub client_id: u32,
-    pub message: String,
-}
-```
-
-Triggered when a player sends a chat message (not a command). The message has already been broadcast to all ready players when this event fires.
-
-## Packet Message Events
-
-Every incoming packet is also dispatched as a message event, giving plugins raw access to protocol data:
-
-| Event | Packet Type |
-|---|---|
-| `HandshakePacketEvent` | `serverbound::HandshakePacket` |
-| `StatusPacketEvent` | `serverbound::StatusPacket` |
-| `LoginPacketEvent` | `serverbound::LoginPacket` |
-| `ConfigurationPacketEvent` | `serverbound::ConfigurationPacket` |
-| `PlayPacketEvent` | `serverbound::PlayPacket` |
-
-Each contains `client_id: u32`, `entity: Entity`, and `packet: <PacketType>`.
-
-These are dispatched via `world.write_message()` and can be consumed in systems using `MessageReader<T>`.
-
-## Observing Events in Plugins
-
-### Semantic Events (Observers)
-
-Register an observer function in your plugin:
-
-```rust
-use bevy_ecs::prelude::*;
-use voidmc::events::PlayerJoinEvent;
+use voidmc::{On, events::PlayerJoinEvent};
 
 fn on_join(event: On<PlayerJoinEvent>) {
-    println!("Player joined! client_id={}", event.client_id);
+    println!("Player joined: client_id={}", event.client_id);
 }
 
-// In your plugin:
-VoidServer::new(config)
-    .add_plugin(|app| {
-        app.add_observer(on_join);
-    })
+VoidServer::new(config).add_plugin(|app| {
+    app.add_observer(on_join);
+});
 ```
 
-### Packet Events (Message Reader)
+Observers run synchronously at the trigger site. The framework calls
+`world.flush()` after each dispatched packet and after each drained command,
+so observer side effects (spawns, inserts, nested triggers) are applied before
+the next packet or command is processed.
 
-Read raw packet messages in a system:
+## Raw packet events
+
+Every decoded serverbound packet is also delivered as
+`PacketEvent<T>` where `T` is the packet struct from `voidmc_protocol::serverbound`:
 
 ```rust
-use bevy_ecs::prelude::*;
-use voidmc::events::PlayPacketEvent;
-
-fn my_packet_system(mut reader: MessageReader<PlayPacketEvent>) {
-    for event in reader.read() {
-        // Access event.packet, event.client_id, event.entity
-    }
+pub struct PacketEvent<T> {
+    pub client_id: u32,
+    pub entity: Entity,
+    pub packet: T,
 }
 ```
 
-## Event Dispatch Mechanism
-
-Semantic events use Bevy's trigger system:
-
 ```rust
-world.trigger(PlayerJoinEvent { client_id, entity });
-world.flush();
+use voidmc::{On, network::PacketEvent};
+use voidmc_protocol::serverbound::ChatMessage;
+
+fn on_chat_packet(event: On<PacketEvent<ChatMessage>>) {
+    println!("{}: {}", event.client_id, event.packet.message);
+}
 ```
 
-The `world.flush()` call ensures all observer side-effects (entity spawns, component insertions, etc.) are applied immediately within the same tick, before subsequent systems run.
+Dispatch happens in `PreUpdate`, inside the
+[`VoidSystems::NetworkIngest`](./sending-packets.md#system-sets) set. `event.entity`
+is the client entity, which exists from the first packet onward (handshake
+included), so it can be passed straight to [`Players::send`](./sending-packets.md).
+
+There is no `write_message` / `MessageReader` path; the types
+`HandshakePacketEvent`, `PlayPacketEvent`, etc. do not exist.
+
+## Semantic events
+
+All events live in `voidmc::events`. Unless stated otherwise they are fired by
+the framework after the ECS state has been updated, and `entity` is the acting
+player. None of them derive `Clone` or `Debug`.
+
+### Connection lifecycle
+
+| Event | Fields | When |
+|---|---|---|
+| `PlayerJoinEvent` | `client_id`, `entity` | Configuration finished; player components inserted, initial chunks and teleport sent. `PlayerReady` is **not** set yet. |
+| `PlayerReadyEvent` | `client_id`, `entity` | Client sent `PlayerLoaded`. `PlayerReady` was inserted just before. Built-in observers spawn the player for others, replay entities, sync inventory. |
+| `PlayerQuitEvent` | `client_id`, `entity` | A ready player disconnected. Observers broadcast `RemoveEntities`/`PlayerInfoRemove`. The entity is despawned after the event. |
+
+### Movement and input
+
+| Event | Fields | When |
+|---|---|---|
+| `PlayerMoveEvent` | `entity`, `old_x/y/z`, `new_x/y/z` | Position packet received; `Position` already updated. |
+| `PlayerRotateEvent` | `entity`, `yaw`, `pitch` | Rotation packet received; `Rotation` already updated. |
+| `PlayerInputEvent` | `entity`, `forward`, `backward`, `left`, `right`, `jump`, `sneak`, `sprint` | Movement-key state changed; each field is whether the key is held. |
+| `PlayerSneakEvent` | `entity`, `sneaking` | Sneak started/stopped. |
+| `PlayerSprintEvent` | `entity`, `sprinting` | Sprint started/stopped. |
+| `PlayerToggleFlyEvent` | `entity`, `flying` | Client toggled flight. |
+
+### Chat and commands
+
+| Event | Fields | When |
+|---|---|---|
+| `ChatMessageEvent` | `entity`, `client_id`, `message` | A non-command chat line, after it was broadcast. |
+| `ChatCommandEvent` | `entity`, `client_id`, `command`, `args` | A command was enqueued (found or not). Execution happens later in `VoidSystems::CommandDrain`. |
+
+### Interaction
+
+| Event | Fields | When |
+|---|---|---|
+| `PlayerSwingArmEvent` | `entity`, `hand` | Arm swing animation. |
+| `PlayerInteractEntityEvent` | `entity`, `target_id`, `attack`, `hand`, `target_pos`, `sneaking` | Click on an entity. `attack` is true for a left click. Not consumed by the framework. |
+| `PlayerStartDiggingEvent` / `PlayerCancelDiggingEvent` / `PlayerFinishDiggingEvent` | `entity`, `position`, `face`, `sequence` | Block digging state machine. Finish is what leads to a break. |
+| `PlayerUseItemEvent` | `entity`, `hand`, `sequence` | Right click in the air. |
+| `PlayerUseItemOnBlockEvent` | `entity`, `hand`, `position`, `face`, `cursor_x/y/z`, `inside_block`, `sequence` | Right click on a block. |
+| `PlayerChangeSlotEvent` | `entity`, `slot` | Hotbar selection changed. |
+| `PlayerSwapHandsEvent` | `entity` | Swap main/off hand. |
+| `PlayerDropItemEvent` | `entity`, `drop_stack` | Drop key pressed (`drop_stack` = whole stack). |
+| `PlayerCloseContainerEvent` | `entity`, `window_id` | Client closed a container window. |
+
+### Items and entities
+
+| Event | Fields | When |
+|---|---|---|
+| `ItemDropEvent` | `dropper`, `stack` | Request to spawn a dropped item. **Developer code may fire this.** |
+| `EntityDespawnEvent` | `entity` | Request to remove a non-player `SpawnedEntity`. **The only supported despawn path** — the observer sends `RemoveEntities` to players that can see it, then despawns. Developer code fires this. |
+
+### Blocks
+
+| Event | Fields | When |
+|---|---|---|
+| `BlockChangeEvent` | `dimension`, `position`, `old_state`, `new_state`, `source: Option<Entity>` | Any committed block mutation, after `BlockUpdate` was broadcast. |
+| `BlockBreakEvent` | `entity`, `dimension`, `position`, `broken_state` | A player broke a block (also fires `BlockChangeEvent`). |
+| `BlockPlaceEvent` | `entity`, `dimension`, `position`, `face`, `placed_state` | A player placed a block (also fires `BlockChangeEvent`). |
+
+## Firing events from your code
+
+```rust
+world.trigger(EntityDespawnEvent { entity });
+world.trigger(ItemDropEvent { dropper, stack });
+```
+
+From a system or observer use `commands.trigger(..)`; it is applied at the next
+flush. Defining your own event is the same `#[derive(Event)]` + `add_observer`.

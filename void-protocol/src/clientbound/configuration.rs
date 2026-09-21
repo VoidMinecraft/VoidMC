@@ -10,7 +10,7 @@ pub use update_tags::*;
 use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
-#[codec(tagged)]
+#[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Configuration)]
 pub enum ConfigurationPacket {
     #[codec(packet_id = 0x03)]
     FinishConfiguration(FinishConfiguration),

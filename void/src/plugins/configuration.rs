@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use bevy_app::{App, Plugin};
 use bevy_ecs::{
+    entity::Entity,
     observer::On,
     system::{Commands, Query, Res, ResMut},
 };
@@ -18,7 +19,8 @@ use crate::{
         PreviousPosition, Rotation, TeleportState,
     },
     events::PlayerJoinEvent,
-    network::{NetworkChannels, OutgoingPacket, PacketEvent},
+    network::PacketEvent,
+    players::Players,
     world::{ChunkData, ChunkIndex, ChunkPos, ChunkPosition, DimensionId},
 };
 
@@ -45,33 +47,15 @@ fn handle_plugin_message(_event: On<PacketEvent<PluginMessage>>) {}
 
 fn handle_known_packs(
     event: On<PacketEvent<KnownPacks>>,
-    channels: Res<NetworkChannels>,
+    players: Players,
     registries: Res<RegistryDataStore>,
 ) {
     for registry in &registries.registries {
-        let _ = channels.outgoing.send(crate::network::OutgoingPacket {
-            client_id: event.client_id,
-            packet: clientbound::ClientboundPacket::Configuration(
-                clientbound::ConfigurationPacket::RegistryData(registry.clone()),
-            ),
-        });
+        players.send(event.entity, registry.clone());
     }
 
-    let _ = channels.outgoing.send(crate::network::OutgoingPacket {
-        client_id: event.client_id,
-        packet: clientbound::ClientboundPacket::ManualConfiguration(
-            clientbound::ManualConfigurationPacket::UpdateTags(build_update_tags(&registries)),
-        ),
-    });
-
-    let _ = channels.outgoing.send(crate::network::OutgoingPacket {
-        client_id: event.client_id,
-        packet: clientbound::ClientboundPacket::Configuration(
-            clientbound::ConfigurationPacket::FinishConfiguration(
-                clientbound::FinishConfiguration {},
-            ),
-        ),
-    });
+    players.send(event.entity, build_update_tags(&registries));
+    players.send(event.entity, clientbound::FinishConfiguration {});
 }
 
 /// Translates `voidmc_data::tagged_registries()` into the wire format. Tag
@@ -120,7 +104,7 @@ fn handle_finish_configuration(
     command_registry: Res<CommandRegistry>,
     config: Res<ServerConfigResource>,
     world_gen: Res<WorldGen>,
-    channels: Res<NetworkChannels>,
+    players: Players,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
 ) {
@@ -176,68 +160,56 @@ fn handle_finish_configuration(
     ));
 
     // Send login success packet
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: event.client_id,
-        packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::Login(
-            clientbound::Login {
-                entity_id: minecraft_entity_id,
-                is_hardcore: config.hardcore,
-                dimension_names: vec![
-                    "minecraft:overworld".to_string(),
-                    "minecraft:the_nether".to_string(),
-                    "minecraft:the_end".to_string(),
-                ],
-                max_players: config.max_players,
-                view_distance: config.view_distance,
-                simulation_distance: config.simulation_distance,
-                reduced_debug_info: false,
-                enable_respawn_screen: true,
-                do_limited_crafting: false,
-                dimension_type: 0,
-                dimension_name: "minecraft:overworld".to_string(),
-                hashed_seed: 0,
-                game_mode: config.game_mode,
-                previous_game_mode: -1,
-                is_debug: false,
-                is_flat: false,
-                last_death_location: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-                enforces_secure_chat: false,
-            },
-        )),
-    });
+    players.send(
+        event.entity,
+        clientbound::Login {
+            entity_id: minecraft_entity_id,
+            is_hardcore: config.hardcore,
+            dimension_names: vec![
+                "minecraft:overworld".to_string(),
+                "minecraft:the_nether".to_string(),
+                "minecraft:the_end".to_string(),
+            ],
+            max_players: config.max_players,
+            view_distance: config.view_distance,
+            simulation_distance: config.simulation_distance,
+            reduced_debug_info: false,
+            enable_respawn_screen: true,
+            do_limited_crafting: false,
+            dimension_type: 0,
+            dimension_name: "minecraft:overworld".to_string(),
+            hashed_seed: 0,
+            game_mode: config.game_mode,
+            previous_game_mode: -1,
+            is_debug: false,
+            is_flat: false,
+            last_death_location: None,
+            portal_cooldown: 0,
+            sea_level: 63,
+            enforces_secure_chat: false,
+        },
+    );
 
     // Send Commands packet (command tree for tab completion)
-    let command_tree = command_registry.build_command_tree();
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: event.client_id,
-        packet: clientbound::ClientboundPacket::ManualPlay(
-            clientbound::ManualPlayPacket::Commands(command_tree),
-        ),
-    });
+    players.send(event.entity, command_registry.build_command_tree());
 
     // Send GameEvent (Start waiting for level chunks)
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: event.client_id,
-        packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::GameEvent(
-            clientbound::GameEvent {
-                event: clientbound::GameEventType::StartWaitingForLevelChunks,
-                value: 0.0,
-            },
-        )),
-    });
+    players.send(
+        event.entity,
+        clientbound::GameEvent {
+            event: clientbound::GameEventType::StartWaitingForLevelChunks,
+            value: 0.0,
+        },
+    );
 
     // Send SetCenterChunk
-    let _ = channels.outgoing.send(OutgoingPacket {
-        client_id: event.client_id,
-        packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::SetCenterChunk(
-            clientbound::SetCenterChunk {
-                chunk_x: spawn_chunk.x,
-                chunk_z: spawn_chunk.z,
-            },
-        )),
-    });
+    players.send(
+        event.entity,
+        clientbound::SetCenterChunk {
+            chunk_x: spawn_chunk.x,
+            chunk_z: spawn_chunk.z,
+        },
+    );
 
     // Send initial chunks around spawn
     let early_teleport_threshold = 9;
@@ -251,12 +223,7 @@ fn handle_finish_configuration(
         if let Some(chunk_entity) = chunk_entity {
             if let Ok((chunk_pos, chunk_data)) = chunks.get(chunk_entity) {
                 let pkt = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
-                let _ = channels.outgoing.send(OutgoingPacket {
-                    client_id: event.client_id,
-                    packet: clientbound::ClientboundPacket::ManualPlay(
-                        clientbound::ManualPlayPacket::ChunkDataAndLight(pkt),
-                    ),
-                });
+                players.send(event.entity, pkt);
                 loaded.insert(pos);
             }
         }
@@ -264,8 +231,8 @@ fn handle_finish_configuration(
         // After the first 9 chunks (center 3×3), send the teleport
         if !teleport_sent && loaded.len() >= early_teleport_threshold {
             send_teleport(
-                &channels.outgoing,
-                event.client_id,
+                &players,
+                event.entity,
                 config.spawn_x,
                 spawn_y,
                 config.spawn_z,
@@ -276,8 +243,8 @@ fn handle_finish_configuration(
 
     if !teleport_sent {
         send_teleport(
-            &channels.outgoing,
-            event.client_id,
+            &players,
+            event.entity,
             config.spawn_x,
             spawn_y,
             config.spawn_z,
@@ -292,24 +259,20 @@ fn handle_finish_configuration(
     });
 }
 
-fn send_teleport(sender: &flume::Sender<OutgoingPacket>, client_id: u32, x: f64, y: f64, z: f64) {
-    let _ = sender.send(OutgoingPacket {
-        client_id,
-        packet: clientbound::ClientboundPacket::Play(
-            clientbound::PlayPacket::SynchronizePlayerPosition(
-                clientbound::SynchronizePlayerPosition {
-                    teleport_id: 0,
-                    x,
-                    y,
-                    z,
-                    vx: 0.0,
-                    vy: 0.0,
-                    vz: 0.0,
-                    yaw: 0.0,
-                    pitch: 0.0,
-                    flags: clientbound::TeleportFlags::empty(),
-                },
-            ),
-        ),
-    });
+fn send_teleport(players: &Players, player: Entity, x: f64, y: f64, z: f64) {
+    players.send(
+        player,
+        clientbound::SynchronizePlayerPosition {
+            teleport_id: 0,
+            x,
+            y,
+            z,
+            vx: 0.0,
+            vy: 0.0,
+            vz: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            flags: clientbound::TeleportFlags::empty(),
+        },
+    );
 }

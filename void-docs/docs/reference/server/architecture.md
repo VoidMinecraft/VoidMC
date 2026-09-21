@@ -105,23 +105,29 @@ ingest_network_packets()        -- Game thread (PreUpdate)
   +- Decode packet based on state
   |
   v
-handle_{state}_packet()         -- Direct function call
-  |
-  +- Update ECS components
-  +- Send response via outgoing channel
-  +- Trigger semantic events (world.trigger + world.flush)
+world.trigger(PacketEvent<T>) + world.flush()
   |
   v
-Observers                       -- Triggered by events
+On<PacketEvent<T>> observers    -- Plugins (handshake, login, play, ...)
+  |
+  +- Update ECS components
+  +- Reply through `Players::send(entity, packet)`
+  +- Trigger semantic events (commands.trigger)
+  |
+  v
+Semantic observers              -- Triggered by events
   |
   +- on_player_ready: broadcast spawn to other players
   +- on_player_quit: broadcast removal
   |
   v
-PostUpdate systems              -- Same tick
+PostUpdate systems              -- Same tick (see VoidSystems sets)
   |
   +- broadcast_position: delta-encoded movement
   +- stream_chunks: load/unload chunks by view distance
+  |
+  v
+Players / WorldPlayers          -- voidmc::players (Entity -> ClientId)
   |
   v
 OutgoingPacket { client_id, packet }

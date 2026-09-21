@@ -2,18 +2,16 @@ use bevy_ecs::prelude::*;
 use tracing::instrument;
 use voidmc_protocol::clientbound;
 
-use crate::components::{
-    ClientId, MinecraftEntityId, PlayerReady, Position, PreviousPosition, Rotation,
-};
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::components::{MinecraftEntityId, PlayerReady, Position, PreviousPosition, Rotation};
+use crate::players::Players;
 use crate::systems::entities::relative_delta;
 
-#[instrument(level = "info", skip(channels, moved_query, all_players))]
+#[instrument(level = "info", skip(players, moved_query))]
 pub fn broadcast_position(
-    channels: Res<NetworkChannels>,
+    players: Players,
     moved_query: Query<
         (
-            &ClientId,
+            Entity,
             &MinecraftEntityId,
             &Position,
             &PreviousPosition,
@@ -24,9 +22,9 @@ pub fn broadcast_position(
             Or<(Changed<Position>, Changed<Rotation>)>,
         ),
     >,
-    all_players: Query<&ClientId, With<PlayerReady>>,
 ) {
-    for (sender_client_id, mc_entity_id, pos, prev_pos, rotation) in moved_query.iter() {
+    let ready = players.ready();
+    for (mover, mc_entity_id, pos, prev_pos, rotation) in moved_query.iter() {
         let yaw = (rotation.yaw.rem_euclid(360.0) / 360.0 * 256.0) as u8;
         let pitch = (rotation.pitch.rem_euclid(360.0) / 360.0 * 256.0) as u8;
 
@@ -63,28 +61,17 @@ pub fn broadcast_position(
             })
         };
 
-        for receiver_client_id in all_players.iter() {
-            if receiver_client_id.0 == sender_client_id.0 {
-                continue;
-            }
+        // Send position + rotation update
+        ready.send_except(mover, packet);
 
-            // Send position + rotation update
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: receiver_client_id.0,
-                packet: clientbound::ClientboundPacket::Play(packet.clone()),
-            });
-
-            // Send head rotation
-            let _ = channels.outgoing.send(OutgoingPacket {
-                client_id: receiver_client_id.0,
-                packet: clientbound::ClientboundPacket::Play(
-                    clientbound::PlayPacket::SetHeadRotation(clientbound::SetHeadRotation {
-                        entity_id: mc_entity_id.0,
-                        head_yaw: yaw,
-                    }),
-                ),
-            });
-        }
+        // Send head rotation
+        ready.send_except(
+            mover,
+            clientbound::SetHeadRotation {
+                entity_id: mc_entity_id.0,
+                head_yaw: yaw,
+            },
+        );
     }
 }
 
@@ -110,7 +97,8 @@ mod tests {
     use bevy_app::{App, PostUpdate};
 
     use super::*;
-    use crate::network::{IncomingPacket, NetworkChannels};
+    use crate::components::ClientId;
+    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
 
     #[test]
     fn broadcast_position_wraps_negative_rotation() {
