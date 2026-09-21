@@ -8,12 +8,14 @@ use std::fmt;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use tracing::warn;
+#[cfg(test)]
+use ussr_nbt::owned::{Compound, List};
 use ussr_nbt::owned::{Nbt, Tag};
 use voidmc_protocol::clientbound::SystemChat;
 
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 
-const MAX_TEXT_BYTES: usize = u16::MAX as usize;
+pub(crate) const MAX_TEXT_BYTES: usize = u16::MAX as usize;
 
 /// Only these names and `#rrggbb` decode on the client; anything else
 /// disconnects the recipient with a `DecoderException`.
@@ -263,14 +265,21 @@ impl<'a> MessageRequest<'a> {
 }
 
 pub fn text_component(text: &str, color: TextColor) -> Nbt {
-    let text = truncate_text(text);
+    component(text, Some(color))
+}
+
+pub fn plain_text_component(text: &str) -> Nbt {
+    component(text, None)
+}
+
+fn component(text: &str, color: Option<TextColor>) -> Nbt {
+    let mut compound = vec![("text".into(), Tag::String(truncate_text(text).into()))];
+    if let Some(color) = color {
+        compound.push(("color".into(), Tag::String(color.to_string().into())));
+    }
     Nbt {
         name: "".into(),
-        compound: vec![
-            ("text".into(), Tag::String(text.into())),
-            ("color".into(), Tag::String(color.to_string().into())),
-        ]
-        .into(),
+        compound: compound.into(),
     }
 }
 
@@ -282,7 +291,7 @@ fn modified_utf8_width(c: char) -> usize {
     }
 }
 
-fn truncate_text(text: &str) -> &str {
+pub(crate) fn truncate_text(text: &str) -> &str {
     let mut encoded = 0;
     let mut end = text.len();
     for (index, c) in text.char_indices() {
@@ -298,9 +307,78 @@ fn truncate_text(text: &str) -> &str {
     warn!(
         bytes = text.len(),
         kept = end,
-        "message text exceeds the NBT string limit, truncating"
+        "text exceeds the NBT string limit, truncating"
     );
     &text[..end]
+}
+
+#[cfg(test)]
+fn decode_wire(bytes: &[u8]) -> (Nbt, usize) {
+    let opts = ussr_nbt::ReadOpts {
+        name: false,
+        ..ussr_nbt::ReadOpts::new()
+    };
+    let mut reader = bytes;
+    let decoded = Nbt::read_with_opts(&mut reader, opts).expect("wire NBT decodes");
+    (decoded, reader.len())
+}
+
+#[cfg(test)]
+fn collect_strings(compound: &Compound, out: &mut Vec<String>) {
+    fn walk_list(list: &List, out: &mut Vec<String>) {
+        match list {
+            List::String(values) => out.extend(values.iter().map(ToString::to_string)),
+            List::List(lists) => lists.iter().for_each(|list| walk_list(list, out)),
+            List::Compound(compounds) => compounds
+                .iter()
+                .for_each(|compound| collect_strings(compound, out)),
+            _ => {}
+        }
+    }
+    for (_, tag) in &compound.tags {
+        match tag {
+            Tag::String(value) => out.push(value.to_string()),
+            Tag::List(list) => walk_list(list, out),
+            Tag::Compound(inner) => collect_strings(inner, out),
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn assert_guarded(nbt: &Nbt, text: &str) {
+    use voidmc_codec::Encode;
+
+    let mut bytes = Vec::new();
+    nbt.encode(&mut bytes);
+    let (decoded, trailing) = decode_wire(&bytes);
+    assert_eq!(trailing, 0);
+    let mut strings = Vec::new();
+    collect_strings(&decoded.compound, &mut strings);
+    let sent = strings
+        .into_iter()
+        .max_by_key(String::len)
+        .expect("a string field");
+    assert!(sent.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
+    assert!(sent.len() < text.len());
+    assert!(text.starts_with(&sent));
+}
+
+#[cfg(test)]
+fn decode_wire_text(bytes: &[u8]) -> (usize, String) {
+    let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
+    let (decoded, _) = decode_wire(bytes);
+    let text = decoded
+        .compound
+        .tags
+        .iter()
+        .find(|(name, _)| name.to_string() == "text")
+        .map(|(_, tag)| match tag {
+            Tag::String(value) => value.to_string(),
+            other => panic!("unexpected tag {other:?}"),
+        })
+        .expect("text field");
+    (len, text)
 }
 
 #[cfg(test)]
@@ -537,23 +615,7 @@ mod tests {
     fn wire_text_round_trips(packet: &SystemChat) -> (usize, String) {
         let mut bytes = Vec::new();
         packet.encode(&mut bytes);
-        let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
-        let opts = ussr_nbt::ReadOpts {
-            name: false,
-            ..ussr_nbt::ReadOpts::new()
-        };
-        let decoded = Nbt::read_with_opts(&mut &bytes[..], opts).expect("wire NBT decodes");
-        let text = decoded
-            .compound
-            .tags
-            .iter()
-            .find(|(name, _)| name.to_string() == "text")
-            .map(|(_, tag)| match tag {
-                Tag::String(value) => value.to_string(),
-                other => panic!("unexpected tag {other:?}"),
-            })
-            .expect("text field");
-        (len, text)
+        decode_wire_text(&bytes)
     }
 
     #[test]
@@ -597,6 +659,28 @@ mod tests {
         let (len, decoded) = wire_text_round_trips(&system_chat_packet(&emoji, TextColor::White));
         assert_eq!(len, MAX_TEXT_BYTES / 6 * 6);
         assert_eq!(decoded, emoji);
+    }
+
+    #[test]
+    fn plain_component_has_no_color_and_is_truncated() {
+        let nbt = plain_text_component("hi");
+        assert_eq!(nbt.compound.tags.len(), 1);
+        let mut bytes = Vec::new();
+        nbt.encode(&mut bytes);
+        assert_eq!(
+            bytes,
+            [
+                &[0x0A, 0x08, 0x00, 0x04][..],
+                b"text",
+                &[0x00, 0x02],
+                b"hi",
+                &[0x00]
+            ]
+            .concat()
+        );
+
+        let text = "😀".repeat(11000);
+        assert_guarded(&plain_text_component(&text), &text);
     }
 
     #[test]

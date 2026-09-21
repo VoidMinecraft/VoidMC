@@ -146,7 +146,9 @@ display.transform = DisplayTransform::default()
 
 `ItemDisplay::new(stack).context(ItemDisplayContext::Ground)` and
 `TextDisplay::new("Hi").shadow().alignment(TextAlignment::Left).background_color(argb)`
-cover the item and text variants.
+cover the item and text variants. `CustomName` and `TextDisplay` text is cut
+to the NBT string limit the same way as [messages](messages.md#text-length)
+before it reaches the wire.
 
 ## Passengers
 
