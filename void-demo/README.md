@@ -4,11 +4,12 @@ Mini-jeu de course arcade en minecart, **solo ou jusqu'à huit joueurs**, pour
 **Minecraft Java 26.1.2**, sans mod ni resource pack. Le véhicule se pilote librement
 sur une chaussée : ses déplacements sont simulés par le serveur.
 
-> **État du portage.** Cette version est le socle (D0) du portage de la démo sur les
-> API actuelles du moteur : génération du monde, géométrie du circuit et simulation
-> pure des karts. Le reste — machine à états de la course, commandes, karts en tant
-> qu'entités, cristaux, bonus, affichages et téléportation — est **en cours de
-> portage** et arrive dans les unités suivantes.
+> **État du portage.** Cette version couvre le socle (D0) du portage de la démo sur les
+> API actuelles du moteur — génération du monde, géométrie du circuit et simulation
+> pure des karts — et la machine à états de la course (D1) : phases, commandes,
+> annonces et bossbars. Le reste — karts en tant qu'entités, cristaux, bonus,
+> affichages et téléportation — est **en cours de portage** et arrive dans les unités
+> suivantes.
 
 ## Lancer
 
@@ -36,11 +37,40 @@ entier non signé sur 64 bits ; sa valeur par défaut est `42`. Le serveur tourn
 
 ## Jouer
 
-*En cours de portage.* Les commandes `/race`, `/reset`, `/join`, `/leave` et
-`/scores`, le pilotage, les checkpoints, la bossbar de boost, le classement et les
-annonces reviennent avec les unités D1 et D2. Les règles de pilotage (accélération,
-freinage, marche arrière, boost rechargeable, rebonds sur les glissières, chocs entre
-minecarts) sont déjà implémentées et testées dans `src/kart.rs`.
+*Pilotage en cours de portage (D2).* Les règles de conduite (accélération, freinage,
+marche arrière, boost rechargeable, rebonds sur les glissières, chocs entre minecarts)
+sont implémentées et testées dans `src/kart.rs`, mais aucun minecart n'est encore
+monté : les pilotes restent en vol et la course se joue pour l'instant « à blanc ».
+
+La manche, elle, est complète (`src/race.rs`) :
+
+- `/race [tours]` accepte **1 à 20 tours** (3 par défaut). Le nombre choisi vaut pour
+  tous les pilotes de la manche ; une commande invalide ne lance pas de course, et une
+  manche en cours ne peut pas être relancée.
+- Chaque manche construit un **nouveau tracé** dans la vallée, un chunk tous les deux
+  ticks, avec une annonce à 25/50/75 %. La grille est placée dès que le circuit est
+  prêt ; le chargement des chunks chez chaque pilote et la barrière de téléportation
+  reviennent avec l'unité travel (D5), le compte à rebours de cinq secondes démarre
+  donc immédiatement.
+- Le nombre de tours choisi, avec huit checkpoints par tour, à franchir dans l'ordre.
+  Le chat annonce chaque nouveau tour au pilote concerné, les arrivées, puis le podium.
+  La limite de temps est de dix minutes jusqu'à trois tours, puis de 200 secondes par
+  tour ; le chat prévient à 60, 30 et 10 secondes de la fin.
+- La **barre d'action** des pilotes affiche la phase, puis tour, checkpoint, temps,
+  pénalités, vitesse et bonus pendant la course. La **bossbar bleue** de chaque pilote
+  affiche sa réserve de boost ; une bossbar partagée suit la construction, le compte
+  à rebours et le temps restant.
+- `/reset` ramène au dernier checkpoint avec trois secondes de pénalité.
+- `/scores` affiche les temps de la manche et les meilleurs temps du circuit actuel
+  pour le même nombre de tours. Les records sont en mémoire, par seed de circuit,
+  nombre de tours et nom de joueur, et disparaissent au redémarrage.
+- `/leave` passe en spectateur ; `/join` inscrit pour le prochain départ. Chaque joueur
+  qui arrive est inscrit automatiquement (huit pilotes au maximum). Une arrivée ou un
+  retour pendant une manche attend la suivante ; un pilote qui se déconnecte pendant
+  la course abandonne la manche.
+- Lorsque tous les participants ont terminé ou quitté, le circuit se démonte dans
+  l'ordre inverse et le terrain initial est restauré ; `/race` redevient disponible
+  à la fin du démontage.
 
 ### Power-ups et effets
 

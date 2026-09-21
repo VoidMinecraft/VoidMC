@@ -1941,10 +1941,12 @@ dependencies = [
 name = "voidmc-demo"
 version = "0.1.0"
 dependencies = [
+ "bevy_app",
  "bevy_ecs",
  "flume",
  "tracing",
  "tracing-subscriber",
+ "ussr-nbt",
  "voidmc",
  "voidmc-data",
  "voidmc-protocol",

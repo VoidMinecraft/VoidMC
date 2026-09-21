@@ -1,5 +1,5 @@
 use voidmc::{ServerConfigBuilder, SpawnPosition, VoidServer};
-use voidmc_demo::{arena, terrain};
+use voidmc_demo::{arena, race::RacePlugin, terrain};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
     VoidServer::new(config)
         .add_plugin(move |app| {
-            app.insert_resource(arena);
+            app.add_plugins(RacePlugin(arena));
         })
         .run();
     Ok(())
