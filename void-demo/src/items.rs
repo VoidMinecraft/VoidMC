@@ -206,7 +206,7 @@ pub fn crystals(race: Res<Race>, mut items: ResMut<Items>, mut commands: Command
 }
 
 #[derive(Clone, Copy)]
-struct Racer {
+struct Contender {
     kart: Entity,
     player: Entity,
     id: i32,
@@ -249,12 +249,12 @@ pub struct Field<'w, 's> {
 }
 
 impl Field<'_, '_> {
-    fn racers(&self) -> Vec<Racer> {
-        let mut racers: Vec<Racer> = self
+    fn racers(&self) -> Vec<Contender> {
+        let mut racers: Vec<Contender> = self
             .karts
             .iter()
             .filter(|(_, _, _, kart)| kart.racing())
-            .map(|(kart, pilot, id, k)| Racer {
+            .map(|(kart, pilot, id, k)| Contender {
                 kart,
                 player: pilot.0,
                 id: id.0,
@@ -267,7 +267,7 @@ impl Field<'_, '_> {
         racers
     }
 
-    fn activate(&mut self, item: PowerUp, racer: &Racer, racers: &[Racer], tick: u64) {
+    fn activate(&mut self, item: PowerUp, racer: &Contender, racers: &[Contender], tick: u64) {
         self.chat.tell(
             racer.player,
             format!("{} active ! {}", item.name(), describe(item)),
@@ -372,7 +372,7 @@ impl Field<'_, '_> {
         }
     }
 
-    fn collect(&mut self, racer: &Racer, tick: u64) {
+    fn collect(&mut self, racer: &Contender, tick: u64) {
         let Some((index, pickup)) = self.items.pickups.iter_mut().enumerate().find(|(_, p)| {
             tick >= p.ready_at && (racer.x - p.x).hypot(racer.z - p.z) < PICKUP_RADIUS
         }) else {
@@ -397,7 +397,7 @@ impl Field<'_, '_> {
         );
     }
 
-    fn traps(&mut self, racer: &Racer, tick: u64) {
+    fn traps(&mut self, racer: &Contender, tick: u64) {
         let mut traps = std::mem::take(&mut self.items.traps);
         traps.retain(|trap| {
             if !trap.hits(racer.kart, racer.x, racer.z, tick) {
@@ -425,7 +425,7 @@ impl Field<'_, '_> {
         self.items.traps = traps;
     }
 
-    fn missiles(&mut self, racers: &[Racer]) {
+    fn missiles(&mut self, racers: &[Contender]) {
         let map = &self.map;
         let mut missiles = std::mem::take(&mut self.items.missiles);
         missiles.retain_mut(|missile| {
@@ -535,18 +535,16 @@ pub fn effects(
     let point =
         |particle: Particle, at: [f64; 3]| particles.spawn(particle).at(at).long_distance(true);
     let ring = |particle: Particle, center: [f64; 3], radius: f64| {
+        let mut dot = point(particle, center).audience(Audience::All);
+        let everyone = dot.recipients();
         for i in 0..RING_POINTS {
             let angle = f64::from(i) * TAU / f64::from(RING_POINTS);
-            point(
-                particle.clone(),
-                [
-                    center[0] + angle.cos() * radius,
-                    center[1],
-                    center[2] + angle.sin() * radius,
-                ],
-            )
-            .audience(Audience::All)
-            .send();
+            dot = dot.at([
+                center[0] + angle.cos() * radius,
+                center[1],
+                center[2] + angle.sin() * radius,
+            ]);
+            everyone.send(dot.packet());
         }
     };
     if tick.is_multiple_of(GROUND_PERIOD) {
@@ -557,18 +555,17 @@ pub fn effects(
             if seen.is_empty() {
                 continue;
             }
+            let mut dot =
+                point(Particle::EndRod, [pickup.x, pickup.y, pickup.z]).viewers(seen.iter());
+            let watchers = dot.recipients();
             for i in 0..4 {
                 let angle = tick as f64 * 0.06 + f64::from(i) * TAU / 4.0;
-                point(
-                    Particle::EndRod,
-                    [
-                        pickup.x + angle.cos() * 1.15,
-                        pickup.y + 0.5 + (angle * 2.0).sin() * 0.15,
-                        pickup.z + angle.sin() * 1.15,
-                    ],
-                )
-                .viewers(seen.iter())
-                .send();
+                dot = dot.at([
+                    pickup.x + angle.cos() * 1.15,
+                    pickup.y + 0.5 + (angle * 2.0).sin() * 0.15,
+                    pickup.z + angle.sin() * 1.15,
+                ]);
+                watchers.send(dot.packet());
             }
         }
     }
@@ -591,8 +588,10 @@ pub fn effects(
     if tick.is_multiple_of(MISSILE_PERIOD) {
         for missile in &items.missiles {
             let at = [missile.x, missile.y, missile.z];
-            cloud(Particle::Flame, at, 2).audience(Audience::All).send();
-            cloud(Particle::Smoke, at, 1).audience(Audience::All).send();
+            let flame = cloud(Particle::Flame, at, 2).audience(Audience::All);
+            let everyone = flame.recipients();
+            everyone.send(flame.packet());
+            everyone.send(cloud(Particle::Smoke, at, 1).packet());
         }
     }
     if tick.is_multiple_of(BURST_PERIOD) {
@@ -726,6 +725,32 @@ mod tests {
                     ..
                 } if *c == client => Some(text.clone()),
                 _ => None,
+            })
+            .collect()
+    }
+
+    fn as_seen_by(out: &[Out], client: u32) -> Vec<Out> {
+        out.iter()
+            .cloned()
+            .map(|o| match o {
+                Out::Particles {
+                    particle,
+                    at,
+                    count,
+                    offset,
+                    speed,
+                    long_distance,
+                    ..
+                } => Out::Particles {
+                    client,
+                    particle,
+                    at,
+                    count,
+                    offset,
+                    speed,
+                    long_distance,
+                },
+                other => other,
             })
             .collect()
     }
@@ -879,6 +904,155 @@ mod tests {
         assert_eq!(removed.len(), GATES * 3 - 1);
         h.ticks(3);
         assert!(crystals(&mut h).is_empty());
+    }
+
+    #[test]
+    fn two_karts_on_the_same_pickup_in_one_tick_yield_a_single_bonus_and_removal() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        let target = items(&h).pickups[5].clone();
+        let crystal = target.crystal.unwrap();
+        let id = network_id(&h, crystal);
+        park(&mut h, a, target.x + 1.0, target.z);
+        park(&mut h, b, target.x - 1.0, target.z);
+        h.kart_mut(a).contact_cooldown = 100;
+        h.kart_mut(b).contact_cooldown = 100;
+        h.tick();
+        let tick = h.race().tick;
+        let collected = [h.kart(a).item, h.kart(b).item];
+        assert_eq!(collected.iter().flatten().count(), 1, "{collected:?}");
+        assert!(
+            collected[0].is_some(),
+            "the lower network id collects first"
+        );
+        let pickup = &items(&h).pickups[5];
+        assert_eq!(
+            (pickup.ready_at, pickup.crystal),
+            (tick + PICKUP_RESPAWN, None)
+        );
+        assert!(h.app.world().get_entity(crystal).is_err());
+        let out = h.drain();
+        for client in [1, 2] {
+            assert_eq!(
+                out.iter()
+                    .filter(
+                        |o| matches!(o, Out::Remove(c, ids) if *c == client && ids.contains(&id))
+                    )
+                    .count(),
+                1,
+                "{client}"
+            );
+        }
+        assert_eq!(chats(&out, 1).len(), 1);
+        assert!(chats(&out, 2).is_empty());
+        h.tick();
+        assert_eq!(h.kart(b).item, None);
+    }
+
+    #[test]
+    fn a_missile_outlives_its_owner_and_still_hits() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        let c = h.connect(3);
+        h.shortcut_to_racing(a, &[]);
+        place(&mut h, a, 0.1, 0.0);
+        place(&mut h, b, 0.3, 0.0);
+        place(&mut h, c, 0.6, 0.0);
+        let kb = h.kart_entity(b);
+        use_item(&mut h, a, PowerUp::Missile);
+        let launched = items(&h).missiles[0];
+        assert_eq!(launched.target, Some(kb));
+        h.ticks(3);
+        h.disconnect(a);
+        assert_eq!(h.race().phase, Phase::Racing);
+        assert_eq!(h.race().roster, vec![b, c]);
+        let orphan = items(&h).missiles[0];
+        assert_eq!(orphan.id, launched.id);
+        assert!(h.app.world().get_entity(orphan.owner).is_err());
+        h.drain();
+        let mut hit_at = None;
+        for tick in 0..MISSILE_LIFE {
+            h.tick();
+            let Some(m) = items(&h).missiles.first().copied() else {
+                hit_at = Some(tick);
+                break;
+            };
+            assert_eq!(
+                (m.id, m.owner, m.target),
+                (launched.id, launched.owner, Some(kb))
+            );
+            assert_eq!(items(&h).bursts.len(), 0);
+        }
+        assert!(
+            hit_at.is_some(),
+            "orphaned missile never reached its target"
+        );
+        assert_eq!(h.kart(b).slow, 29);
+        assert_eq!(h.kart(c).slow, 0);
+        assert_eq!(items(&h).bursts[0].kind, BurstKind::Impact);
+        assert!(
+            h.chats(2)
+                .contains(&"[Alpine Rush] Missile ! Ralentissement pendant 1,5 s.".to_string())
+        );
+    }
+
+    #[test]
+    fn a_kart_parked_on_a_pickup_collects_it_the_tick_it_respawns_without_a_flash() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        let target = items(&h).pickups[5].clone();
+        let first = target.crystal.unwrap();
+        park(&mut h, a, target.x, target.z);
+        h.tick();
+        let first_item = h.kart(a).item.expect("collected");
+        let ready_at = items(&h).pickups[5].ready_at;
+        assert_eq!(ready_at, h.race().tick + PICKUP_RESPAWN);
+        assert!(h.app.world().get_entity(first).is_err());
+        h.drain();
+        h.ticks((PICKUP_RESPAWN - 2) as usize);
+        assert_eq!(h.kart(a).item, Some(first_item));
+        h.kart_mut(a).item = None;
+        h.tick();
+        assert_eq!(h.race().tick, ready_at - 1);
+        assert_eq!(h.kart(a).item, None);
+        assert_eq!(items(&h).pickups[5].crystal, None);
+        assert!(crystal_spawns(&h.drain(), 1).is_empty());
+        let alive: Vec<i32> = crystals(&mut h)
+            .into_iter()
+            .map(|c| network_id(&h, c))
+            .collect();
+        assert_eq!(alive.len(), GATES * 3 - 1);
+        h.tick();
+        assert_eq!(h.race().tick, ready_at);
+        assert!(h.kart(a).item.is_some());
+        let pickup = &items(&h).pickups[5];
+        assert_eq!(
+            (pickup.ready_at, pickup.crystal),
+            (ready_at + PICKUP_RESPAWN, None)
+        );
+        assert_eq!(crystals(&mut h).len(), GATES * 3 - 1);
+        let out = h.drain();
+        assert!(crystal_spawns(&out, 1).is_empty() && crystal_spawns(&out, 2).is_empty());
+        assert!(
+            !out.iter().any(
+                |o| matches!(o, Out::Remove(_, ids) if ids.iter().any(|id| alive.contains(id)))
+            )
+        );
+        assert_eq!(chats(&out, 1).len(), 1);
+        park(&mut h, b, target.x, target.z);
+        h.ticks((PICKUP_RESPAWN - 1) as usize);
+        assert_eq!(h.kart(b).item, None);
+        h.drain();
+        h.tick();
+        assert!(h.kart(b).item.is_some());
+        assert_eq!(crystals(&mut h).len(), GATES * 3 - 1);
+        let out = h.drain();
+        assert!(crystal_spawns(&out, 1).is_empty() && crystal_spawns(&out, 2).is_empty());
     }
 
     #[test]
@@ -1198,7 +1372,7 @@ mod tests {
             let tick = h.race().tick;
             assert!(tick.is_multiple_of(10));
             assert_eq!(orbit.len(), pickups.len() * 4);
-            assert_eq!(particles(&out, 2, Particle::EndRod).len(), orbit.len());
+            assert_eq!(as_seen_by(&particles(&out, 2, Particle::EndRod), 1), orbit);
             let pickup = &pickups[0];
             for (i, dot) in orbit[..4].iter().enumerate() {
                 let angle = tick as f64 * 0.06 + i as f64 * TAU / 4.0;
@@ -1355,7 +1529,12 @@ mod tests {
                             }
                         );
                     }
-                    assert_eq!(particles(&out, 3, Particle::Firework).len(), sparks.len());
+                    for other in [2, 3] {
+                        assert_eq!(
+                            as_seen_by(&particles(&out, other, Particle::Firework), 1),
+                            sparks
+                        );
+                    }
                 } else {
                     assert!(sparks.is_empty());
                 }
@@ -1404,10 +1583,13 @@ mod tests {
                     long_distance: true,
                 }
             );
-            assert_eq!(
-                particles(&out, 3, Particle::EndRod).len(),
-                RING_POINTS as usize
-            );
+            for other in [2, 3] {
+                let theirs: Vec<Out> = particles(&out, other, Particle::EndRod)
+                    .into_iter()
+                    .filter(|o| matches!(o, Out::Particles { at, .. } if at.1 == trap.y + 0.15))
+                    .collect();
+                assert_eq!(as_seen_by(&theirs, 1), ring);
+            }
         }
         assert_eq!(rings, 1);
     }
