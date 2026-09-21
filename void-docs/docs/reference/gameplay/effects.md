@@ -89,9 +89,9 @@ The routing follows vanilla:
   Players have no `EntityMetadata`, so a player's effects are not shown to
   other players.
 - The particle list and ambience flag are `LivingEntity` metadata: they are
-  only projected for kinds with `EntityKind::is_living()`; a `StatusEffects`
-  on a boat, item or display entity logs a warning and only the glowing /
-  invisible flags apply.
+  only projected for players and kinds with `EntityKind::is_living()`; a
+  `StatusEffects` on a boat, item or display entity logs a warning and only
+  the glowing / invisible flags apply.
 - The `blend` flag (smooth fog / darkness transition) is set on the entity's
   own client when an effect is first added, never on passengers or updates,
   as vanilla does.
@@ -132,10 +132,13 @@ this is the base every reset must send back.
   (`Attributes::for_player()`).
 - `Attributes::for_kind(kind)` seeds from that kind; only needed to read
   `value()` before the component is inserted, because inserting any
-  `Attributes` on an entity spawned with `EntityBuilder` re-seeds it to the
-  entity's kind: bases you set explicitly are kept, bases that were still the
-  default move to the kind's default. `kind()` and `default_base(attribute)`
-  read them back.
+  `Attributes` on an entity spawned with `EntityBuilder` — the first time or
+  as a replacement of the current component — re-seeds it to the entity's
+  kind: bases you set explicitly are kept, bases that were still the default
+  move to the kind's default. `kind()` and `default_base(attribute)` read
+  them back.
+- Replacing the component also resets, on every client that had them, the
+  attributes the previous component synced and the new one does not carry.
 
 ```rust
 let mut speed = Attributes::new();

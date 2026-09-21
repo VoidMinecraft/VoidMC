@@ -10,7 +10,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use bevy_app::{App, PostUpdate};
-use bevy_ecs::lifecycle::{Add, Remove};
+use bevy_ecs::lifecycle::{Insert, Remove};
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::{AttributeModifier, AttributeSnapshot, UpdateAttributes};
 
@@ -139,8 +139,8 @@ fn default_snapshot(kind: EntityKind, attribute: EntityAttribute) -> AttributeSn
 /// never touched keeps the entity kind's vanilla default on the client;
 /// resetting one sends that default back. [`Attributes::new`] assumes a
 /// player; an entity spawned with `EntityBuilder` re-seeds the component to
-/// its own kind when it is inserted, so `for_kind` only matters for reading
-/// `value()` before insertion.
+/// its own kind whenever it is inserted or replaced, so `for_kind` only
+/// matters for reading `value()` before insertion.
 #[derive(Component, Debug, Clone)]
 #[require(AttributesState)]
 pub struct Attributes {
@@ -414,14 +414,30 @@ fn sync_attributes(
 }
 
 fn adopt_entity_kind(
-    event: On<Add, Attributes>,
-    mut entities: Query<(&EntityType, &mut Attributes)>,
+    event: On<Insert, Attributes>,
+    mut entities: Query<(Option<&EntityType>, &mut Attributes, &AttributesState)>,
 ) {
-    let Ok((entity_type, mut attributes)) = entities.get_mut(event.entity) else {
+    let Ok((entity_type, mut attributes, state)) = entities.get_mut(event.entity) else {
         return;
     };
-    if let Some(kind) = EntityKind::from_id(entity_type.0) {
-        attributes.rebase(kind);
+    if let Some(entity_type) = entity_type {
+        match EntityKind::from_id(entity_type.0) {
+            Some(kind) => attributes.rebase(kind),
+            None => tracing::warn!(
+                entity = ?event.entity,
+                entity_type = entity_type.0,
+                "unknown entity type id: attributes keep their player seed"
+            ),
+        }
+    }
+    let dropped: Vec<EntityAttribute> = state
+        .sent
+        .iter()
+        .copied()
+        .filter(|attribute| !attributes.has(*attribute))
+        .collect();
+    if !dropped.is_empty() {
+        attributes.dirty.extend(dropped);
     }
 }
 
@@ -806,6 +822,111 @@ mod tests {
         app.update();
         assert!(drain(&rx).is_empty());
         let _ = late;
+    }
+
+    #[test]
+    fn replacing_the_component_rebases_again_and_resets_dropped_attributes() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .insert(
+                Attributes::new()
+                    .base(EntityAttribute::MaxHealth, 40.0)
+                    .base(EntityAttribute::Scale, 2.0),
+            )
+            .id();
+        let zombie_id = app.world().get::<MinecraftEntityId>(zombie).unwrap().0;
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![(
+                1,
+                zombie_id,
+                vec![
+                    plain(EntityAttribute::MaxHealth, 40.0),
+                    plain(EntityAttribute::Scale, 2.0),
+                ]
+            )]
+        );
+
+        app.world_mut().entity_mut(zombie).insert(
+            Attributes::new()
+                .modifier(
+                    EntityAttribute::MovementSpeed,
+                    Modifier::multiply_total("voidmc:boost", 1.0),
+                )
+                .base(EntityAttribute::Scale, 2.0),
+        );
+        let attributes = app.world().get::<Attributes>(zombie).unwrap();
+        assert_eq!(attributes.kind(), EntityKind::Zombie);
+        assert_eq!(
+            attributes
+                .get(EntityAttribute::MovementSpeed)
+                .unwrap()
+                .base(),
+            ZOMBIE_SPEED
+        );
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![(
+                1,
+                zombie_id,
+                vec![
+                    plain(EntityAttribute::MaxHealth, 20.0),
+                    (
+                        EntityAttribute::MovementSpeed.id(),
+                        ZOMBIE_SPEED,
+                        vec![("voidmc:boost".to_string(), 1.0, 2)]
+                    ),
+                    plain(EntityAttribute::Scale, 2.0),
+                ]
+            )]
+        );
+
+        app.world_mut().entity_mut(zombie).remove::<Attributes>();
+        assert_eq!(
+            drain(&rx),
+            vec![(
+                1,
+                zombie_id,
+                vec![
+                    plain(EntityAttribute::MovementSpeed, ZOMBIE_SPEED),
+                    plain(EntityAttribute::Scale, 1.0),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn replacing_a_player_component_resets_dropped_attributes() {
+        let (mut app, rx) = test_app();
+        let me = player(&mut app, 1);
+        app.world_mut()
+            .entity_mut(me)
+            .insert(Attributes::new().base(EntityAttribute::MovementSpeed, 0.2));
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![(1, 101, vec![plain(EntityAttribute::MovementSpeed, 0.2)])]
+        );
+
+        app.world_mut()
+            .entity_mut(me)
+            .insert(Attributes::new().base(EntityAttribute::Scale, 3.0));
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![(
+                1,
+                101,
+                vec![
+                    plain(EntityAttribute::MovementSpeed, PLAYER_SPEED),
+                    plain(EntityAttribute::Scale, 3.0),
+                ]
+            )]
+        );
     }
 
     #[test]

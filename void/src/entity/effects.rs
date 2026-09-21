@@ -336,10 +336,23 @@ pub(super) fn register(app: &mut App) {
     );
 }
 
-fn is_living(entity_type: Option<&EntityType>) -> bool {
-    entity_type
-        .and_then(|t| EntityKind::from_id(t.0))
-        .is_some_and(EntityKind::is_living)
+fn is_living(entity_type: Option<&EntityType>, is_player: bool) -> bool {
+    if is_player {
+        return true;
+    }
+    let Some(entity_type) = entity_type else {
+        return false;
+    };
+    match EntityKind::from_id(entity_type.0) {
+        Some(kind) => kind.is_living(),
+        None => {
+            tracing::warn!(
+                entity_type = entity_type.0,
+                "unknown entity type id: treated as non-living"
+            );
+            false
+        }
+    }
 }
 
 fn update_packet(
@@ -446,12 +459,13 @@ fn project_effects_metadata(
             &StatusEffects,
             &mut EntityMetadata,
             Option<&EntityType>,
+            Has<ClientId>,
         ),
         Changed<StatusEffects>,
     >,
 ) {
-    for (entity, effects, mut meta, entity_type) in entities.iter_mut() {
-        if is_living(entity_type) {
+    for (entity, effects, mut meta, entity_type, is_player) in entities.iter_mut() {
+        if is_living(entity_type, is_player) {
             effects.write_metadata(&mut meta);
         } else {
             tracing::warn!(
@@ -470,9 +484,10 @@ fn remove_from_recipients(
         &mut StatusEffectsState,
         Option<&mut EntityMetadata>,
         Option<&EntityType>,
+        Has<ClientId>,
     )>,
 ) {
-    let Ok((id, mut state, meta, entity_type)) = entities.get_mut(event.entity) else {
+    let Ok((id, mut state, meta, entity_type, is_player)) = entities.get_mut(event.entity) else {
         return;
     };
     for effect in &state.sent {
@@ -484,7 +499,7 @@ fn remove_from_recipients(
     state.sent.clear();
     state.recipients.clear();
     if let Some(mut meta) = meta
-        && is_living(entity_type)
+        && is_living(entity_type, is_player)
     {
         StatusEffects::clear_metadata(&mut meta);
     }
@@ -979,6 +994,33 @@ mod tests {
         app.update();
         let meta = metadata_of(&drain(&rx), boat_id);
         assert_eq!(meta, vec![(entity_index::FLAGS, Value::Byte(0))]);
+    }
+
+    #[test]
+    fn players_without_an_entity_type_count_as_living() {
+        let (mut app, _rx) = test_app();
+        let me = player(&mut app, 1);
+        app.world_mut().entity_mut(me).insert((
+            EntityMetadata::default(),
+            StatusEffects::new().with(Effect::Speed, 0, EffectDuration::Infinite),
+        ));
+        app.update();
+        let stored = app.world().get::<EntityMetadata>(me).unwrap();
+        assert!(matches!(
+            stored.get(living_entity_index::EFFECT_PARTICLES),
+            Some(Value::Particles(particles)) if particles.len() == 1
+        ));
+        assert_eq!(
+            stored.get(living_entity_index::EFFECT_AMBIENCE),
+            Some(&Value::Boolean(false))
+        );
+
+        app.world_mut().entity_mut(me).remove::<StatusEffects>();
+        let stored = app.world().get::<EntityMetadata>(me).unwrap();
+        assert!(matches!(
+            stored.get(living_entity_index::EFFECT_PARTICLES),
+            Some(Value::Particles(particles)) if particles.is_empty()
+        ));
     }
 
     fn metadata_of(sent: &[Sent], entity_id: i32) -> Vec<(u8, Value)> {
