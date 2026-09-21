@@ -19,7 +19,7 @@ pub const BOLT_SEGMENTS: usize = 5;
 pub const BOLT_HEIGHT: f64 = 6.75;
 pub const BOLT_FLASH: u8 = 4;
 const BOLT_WIDTH: f64 = 0.2;
-const BOLT_SWAY: f64 = 0.25;
+const BOLT_SWAY: f64 = 0.5;
 const BRIGHTNESS: (u8, u8) = (15, 15);
 const VIEW_RANGE: f32 = 2.0;
 pub const RAINBOW: [i32; 11] = [
@@ -373,7 +373,7 @@ pub fn sync(
                     b::YELLOW_CONCRETE
                 },
                 std::array::from_fn(|k| (from[k] + to[k]) * 0.5),
-                [BOLT_WIDTH * fade, len * fade, BOLT_WIDTH * fade],
+                [BOLT_WIDTH * fade, len, BOLT_WIDTH * fade],
                 d[2].atan2(-d[0]),
                 reach.atan2(d[1]),
             );

@@ -4,18 +4,20 @@ Mini-jeu de course arcade en minecart, **solo ou jusqu'à huit joueurs**, pour
 **Minecraft Java 26.1.2**, sans mod ni resource pack. Le véhicule se pilote librement
 sur une chaussée : ses déplacements sont simulés par le serveur.
 
-> **État du portage.** Cette version couvre le socle (D0) du portage de la démo sur les
-> API actuelles du moteur — génération du monde, géométrie du circuit et simulation
-> pure des karts —, la machine à états de la course (D1) : phases, commandes,
-> annonces et bossbars, les karts en tant qu'entités du moteur (D2) : minecart
-> monté, pilotage au clavier et déplacement piloté par le serveur, l'arsenal
+> **État du portage.** Le portage de la démo sur les API publiques du moteur est
+> **terminé**. Il s'est fait par unités : le socle (D0) — génération du monde, géométrie
+> du circuit et simulation pure des karts —, la machine à états de la course (D1) :
+> phases, commandes, annonces et bossbars, les karts en tant qu'entités du moteur (D2) :
+> minecart monté, pilotage au clavier et déplacement piloté par le serveur, l'arsenal
 > arcade (D3) : cristaux de bonus, pièges, missiles, ondes et particules, les
 > affichages animés (D4) : bonus tenu, réacteurs, bouclier, recharge, débuffs, pièges,
-> missiles et ondes en entités *display* persistantes, et les déplacements (D5) :
+> missiles et ondes en entités *display* persistantes, les déplacements (D5) :
 > vol libre des spectateurs, barrière de téléportation et embarquement dans le kart
-> une fois les chunks de la grille reçus par le client, puis la passe d'interface (D6) :
+> une fois les chunks de la grille reçus par le client, la passe d'interface (D6, D7) :
 > chat hiérarchisé et coloré, barre d'action pour l'éphémère, sons, seed aléatoire et
-> particules d'impact.
+> particules d'impact, le panneau latéral et la liste des joueurs (D8) : rang, tours,
+> meilleur tour et chrono, et les derniers bonus (D9) : turbo arc-en-ciel, tempête
+> d'éclairs et boule de feu. Aucun paquet brut, aucun fichier du moteur modifié.
 
 ## Lancer
 

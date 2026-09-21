@@ -2208,7 +2208,8 @@ mod tests {
                 .unwrap()
                 .transform
                 .scale;
-            assert_eq!(scale, [0.0; 3]);
+            assert_eq!((scale[0], scale[2]), (0.0, 0.0));
+            assert!(scale[1] > 0.0);
         }
         assert!(segments.iter().all(|id| !removals(&all, 2).contains(id)));
         while items(&h).bolts.iter().any(|b| b.id == bolt.id) {
