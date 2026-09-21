@@ -183,8 +183,9 @@ seul joueur concerné ; les sons de jeu sont émis **depuis l'entité kart**
 | Arrivée / record | `entity.player.levelup` / `ui.toast.challenge_complete` | pilote / tous |
 | Bonus ramassé | `entity.item.pickup` (1.2) | pilote |
 | Turbo / Bouclier / Banane / Glace | `firework_rocket.launch` / `beacon.activate` / `slime_block.place` / `glass.place` | au kart |
-| Missile / Onde / Éclair / Super-recharge | `wither.shoot` / `generic.explode` / `lightning_bolt.thunder` / `respawn_anchor.charge` | au kart |
-| Touché : missile / éclair / onde / banane / glace | `generic.explode` / `lightning_bolt.impact` / `player.hurt` / `slime.squish` / `glass.break` | au kart |
+| Missile / Onde / Éclair / Super-recharge / Boule de feu | `wither.shoot` / `generic.explode` / `lightning_bolt.thunder` / `respawn_anchor.charge` / `blaze.ambient` | au kart |
+| Éclair qui tombe / boule de feu tirée | `lightning_bolt.thunder` (0.8) / `ghast.shoot` | au kart |
+| Touché : missile / éclair / onde / banane / glace / boule de feu | `generic.explode` / `lightning_bolt.impact` / `player.hurt` / `slime.squish` / `glass.break` / `generic.explode` | au kart |
 | Bouclier qui absorbe | `item.shield.block` | au kart |
 | Choc (kart ou glissière) | `block.anvil.land` (0.5, 1.6) | au kart |
 | Retour au point d'attente, délai dépassé | `block.portal.trigger` (0.6), placé au point d'attente | joueur |
@@ -256,8 +257,8 @@ Dès que le circuit est prêt, **24 End Crystals** flottent au-dessus de la pist
 du checkpoint suivant. Chaque cristal est une entité du moteur (`EntityBuilder` +
 `EndCrystal::floating()`, sans socle ni rayon) que le serveur fait apparaître chez les
 joueurs qui ont chargé son chunk. Un pilote qui passe à moins de 1,6 bloc d'un
-cristal, sans bonus en main, ramasse un des huit bonus (tirage déterministe à partir de
-la seed du circuit, du tick, de l'emplacement et du kart) ; le cristal disparaît et
+cristal, sans bonus en main, ramasse un des neuf bonus (tirage pondéré et déterministe
+à partir de la seed du circuit, du tick, de l'emplacement et du kart) ; le cristal disparaît et
 réapparaît **huit secondes** plus tard. Un kart stationné sur l'emplacement ramasse le
 bonus au tick même de la réapparition, sans que le cristal ne réapparaisse ; deux karts
 sur le même cristal au même tick ne donnent qu'un bonus, au plus petit identifiant
@@ -278,7 +279,32 @@ les dix ticks, pour ses seuls spectateurs.
   cible (0,3 bloc/tick, ±5,5 blocs) ; il touche à 2,5 blocs, s'éteint après 8 s ou si
   la cible quitte la course. Sans cible, il file le long de la piste.
 - **Onde de choc** : repousse et fait tourner tous les pilotes à moins de 9 blocs.
-  **Éclair** : ralentit tous les adversaires en course 2,5 s, où qu'ils soient.
+- **Éclair** : un orage sur tous les adversaires en course, où qu'ils soient. Chaque
+  kart visé reçoit un composant `Lightning { delay, seed, remaining }` : son premier
+  éclair tombe après son propre délai (distinct par victime, moins de 0,9 s), puis
+  toutes les 0,3 s (6 ticks) la seed change et une entité `lightning_bolt` du moteur
+  apparaît sur le kart (le client joue l'animation ; le serveur la retire après 10
+  ticks), trois éclairs en tout. Le ralentissement de 2,5 s s'applique au premier
+  éclair (absorbé par le bouclier) ; chaque éclair joue le tonnerre depuis le kart et
+  émet une onde. Le composant disparaît après le troisième éclair : un kart sans
+  `Lightning` ne coûte rien.
+- **Boule de feu** : trois bâtons de blaze orbitent autour du pilote pendant 2 s, puis
+  une entité `fireball` du moteur part tout droit dans le cap du kart à 1,2 bloc/tick,
+  à ras de la piste, pendant 3 s au plus ou jusqu'à quitter la route ; elle touche le
+  premier kart adverse à moins de 2 blocs (jamais son tireur) : tête-à-queue, vitesse
+  divisée par trois, ralenti 1 s, explosion et onde comme un missile.
+
+| Bonus | Poids | Effet |
+|---|---|---|
+| Turbo | 14 | accélération 3 s, kart arc-en-ciel |
+| Bouclier | 10 | protège 6 s |
+| Banane | 14 | piège déposé 12 s |
+| Missile guidé | 12 | vise le pilote devant |
+| Onde de choc | 8 | rivaux à moins de 9 blocs repoussés |
+| Nappe de glace | 10 | nappe déposée 10 s |
+| Éclair | 6 | orage sur tous les adversaires |
+| Super-recharge | 8 | boost gratuit 5 s, kart arc-en-ciel |
+| Boule de feu | 12 | tir tout droit après 2 s |
 
 Chaque impact, onde ou éclair produit une **onde** (`Burst`) qui vieillit 12 ticks et
 dont le rayon grandit en `ease_out` ; elle est dessinée tous les quatre ticks par un
@@ -286,16 +312,19 @@ anneau de six particules (`electric_spark`, `firework` ou `happy_villager`). Les
 destinataires d'un anneau, d'une orbite ou d'une traînée de missile sont résolus une
 seule fois (`ParticleRequest::recipients`), puis chaque point est envoyé en `packet()`.
 Un missile survit au départ de son tireur et peut encore toucher sa cible. Les
-missiles laissent `flame` et `smoke` tous les deux ticks ; les pièges se signalent
+missiles laissent `flame` et `smoke` tous les deux ticks, les boules de feu `flame` et
+`large_smoke` ; les pièges se signalent
 tous les dix ticks (`item_slime` pour la banane, anneau `end_rod` de 2,5 blocs pour la
 glace). Les karts en course émettent leur traînée tous les trois ticks, pour leurs
 seuls spectateurs, selon leur état : `crit` (choc), `electric_spark` (bouclier),
-`end_rod` (glace ou ralenti), `happy_villager` (super-recharge), `flame` (turbo ou
-boost), `cloud` (vitesse > 0,25). Un kart immobile sans effet n'émet rien.
+`end_rod` (glace ou ralenti), `happy_villager` (super-recharge), `flame` (turbo,
+boost ou boule de feu en charge), `cloud` (vitesse > 0,25). Un kart immobile sans
+effet n'émet rien.
 
-L'état complet — pièges, missiles, ondes (positions, âges, rayons, identifiant unique)
-et emplacements de cristaux — est exposé par la ressource `Items`. Tout est retiré à la
-fin de la manche, cristaux compris.
+L'état complet — pièges, missiles, boules de feu, ondes (positions, âges, rayons,
+identifiant unique) et emplacements de cristaux — est exposé par la ressource `Items` ;
+les orages vivent sur les karts (`Lightning`) et les éclairs sont des entités `Bolt`.
+Tout est retiré à la fin de la manche, cristaux, éclairs et boules de feu compris.
 
 ### Visuels et animation
 
@@ -308,11 +337,16 @@ moteur se charge du reste : apparition chez les joueurs qui chargent le chunk,
 retrait quand ils s'éloignent, métadonnées complètes pour un spectateur qui arrive
 en cours d'animation.
 
-Les huit genres reprennent les modèles de la référence, tous issus de `voidmc_data` :
+Les dix genres reprennent les modèles de la référence, tous issus de `voidmc_data` :
 
 - **Bonus tenu** : l'objet du bonus (`fire_charge`, `shield`, `yellow_dye`,
-  `firework_rocket`, `ender_pearl`, `blue_ice`, `lightning_rod`, `nether_star`) flotte
-  2,5 blocs au-dessus du kart, oscille et tourne lentement.
+  `firework_rocket`, `ender_pearl`, `blue_ice`, `lightning_rod`, `nether_star`,
+  `blaze_rod`) flotte 2,5 blocs au-dessus du kart, oscille et tourne lentement.
+- **Arc-en-ciel** (turbo ou super-recharge) : une coque de verre teinté autour du
+  kart dont la couleur change à chaque image (onze verres, du rouge au rose) — une
+  seule entité, une seule entrée de métadonnées par changement de couleur.
+- **Blaze** (boule de feu en charge) : trois `blaze_rod` en orbite autour du pilote
+  jusqu'au tir.
 - **Réacteurs** (turbo ou boost) : deux flammes de verre orange et sea lantern à
   l'arrière du kart, dont la longueur pulse.
 - **Bouclier** : huit facettes de verre cyan (blocs, pas des panneaux) en orbite

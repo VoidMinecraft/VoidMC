@@ -4,7 +4,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
     Audience, EndCrystal, EntityBuilder, EntityKind, Particle, Particles,
-    components::{EntityViewers, MinecraftEntityId},
+    components::{EntityViewers, MinecraftEntityId, Position},
 };
 use voidmc_data::v26_1_2::items as i;
 use voidmc_protocol::clientbound::ItemStackTemplate;
@@ -14,7 +14,7 @@ use crate::chat::{Chat, Tone};
 use crate::kart::{Kart, PowerUp, Strike};
 use crate::race::{Phase, Race};
 use crate::terrain::mix;
-use crate::track::{GATES, Track};
+use crate::track::{GATES, HALF_WIDTH, Track};
 use crate::vehicle::Pilot;
 
 pub const PICKUP_RESPAWN: u64 = 160;
@@ -24,6 +24,14 @@ pub const MISSILE_LIFE: u16 = 160;
 pub const MISSILE_RADIUS: f64 = 2.5;
 pub const BURST_LIFE: u8 = 12;
 pub const SHOCKWAVE_RADIUS: f64 = 9.0;
+pub const LIGHTNING_STRIKES: u16 = 3;
+pub const LIGHTNING_PERIOD: u16 = 6;
+pub const LIGHTNING_SPREAD: u16 = 18;
+pub const BOLT_LIFE: u64 = 10;
+pub const FIREBALL_SPEED: f64 = 1.2;
+pub const FIREBALL_LIFE: u16 = 60;
+pub const FIREBALL_RADIUS: f64 = 2.0;
+pub const FIREBALL_HEIGHT: f64 = 0.3;
 const ROLL_STRIDE: u64 = 0x9e3779b97f4a7c15;
 const TRAIL_PERIOD: u64 = 3;
 const MISSILE_PERIOD: u64 = 2;
@@ -85,6 +93,41 @@ pub struct Missile {
     pub z: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fireball {
+    pub id: u64,
+    pub owner: Entity,
+    pub entity: Entity,
+    pub age: u16,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub vx: f64,
+    pub vz: f64,
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Projectile;
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lightning {
+    pub delay: u16,
+    pub seed: u64,
+    pub remaining: u16,
+}
+
+impl Lightning {
+    pub fn jitter(&self) -> (f64, f64) {
+        let spread = |bits: u64| (bits % 1000) as f64 / 1000.0 * 0.8 - 0.4;
+        (spread(self.seed >> 8), spread(self.seed >> 40))
+    }
+}
+
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bolt {
+    pub expires: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BurstKind {
     Shockwave,
@@ -144,6 +187,7 @@ pub enum SparkKind {
     Ice,
     Boost,
     Shield,
+    Launch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -180,6 +224,7 @@ pub struct Items {
     pub pickups: Vec<Pickup>,
     pub traps: Vec<Trap>,
     pub missiles: Vec<Missile>,
+    pub fireballs: Vec<Fireball>,
     pub bursts: Vec<Burst>,
     pub sparks: Vec<Spark>,
     serial: u64,
@@ -216,6 +261,9 @@ impl Items {
         }
         self.traps.clear();
         self.missiles.clear();
+        for fireball in self.fireballs.drain(..) {
+            despawn(commands, fireball.entity);
+        }
         self.bursts.clear();
         self.sparks.clear();
     }
@@ -224,6 +272,7 @@ impl Items {
         self.pickups.is_empty()
             && self.traps.is_empty()
             && self.missiles.is_empty()
+            && self.fireballs.is_empty()
             && self.bursts.is_empty()
             && self.sparks.is_empty()
     }
@@ -282,8 +331,9 @@ pub fn describe(item: PowerUp) -> &'static str {
         PowerUp::Missile => "vise le pilote devant toi",
         PowerUp::Shockwave => "rivaux a moins de 9 blocs repousses",
         PowerUp::Ice => "nappe deposee 10 s",
-        PowerUp::Lightning => "adversaires ralentis 2,5 s",
+        PowerUp::Lightning => "orage sur tous les adversaires 2,5 s",
         PowerUp::Recharge => "boost gratuit 5 s : Saut + Avancer",
+        PowerUp::Fireball => "tir tout droit apres 2 s",
     }
 }
 
@@ -292,6 +342,8 @@ pub struct Field<'w, 's> {
     map: Res<'w, Track>,
     items: ResMut<'w, Items>,
     karts: KartQuery<'w, 's>,
+    storms: Query<'w, 's, (Entity, &'static mut Lightning)>,
+    bolts: Query<'w, 's, (Entity, &'static Bolt)>,
     chat: Chat<'w, 's>,
     audio: Audio<'w, 's>,
     commands: Commands<'w, 's>,
@@ -328,7 +380,9 @@ impl Field<'_, '_> {
             SparkKind::Shield
         } else {
             match strike {
-                Strike::Missile | Strike::Shockwave { .. } => SparkKind::Explosion,
+                Strike::Missile | Strike::Fireball | Strike::Shockwave { .. } => {
+                    SparkKind::Explosion
+                }
                 Strike::Lightning => SparkKind::Lightning,
                 Strike::Banana => SparkKind::Slide,
                 Strike::Ice => SparkKind::Ice,
@@ -359,7 +413,7 @@ impl Field<'_, '_> {
         let mut kart = self.karts.get_mut(racer.kart).unwrap().3;
         kart.activate(item);
         match item {
-            PowerUp::Shield => {}
+            PowerUp::Shield | PowerUp::Fireball => {}
             PowerUp::Turbo => {
                 let spark = Spark::at(&kart, SparkKind::Boost);
                 self.items.sparks.push(spark);
@@ -406,51 +460,44 @@ impl Field<'_, '_> {
                     );
                 }
             }
-            PowerUp::Shockwave | PowerUp::Lightning => {
-                let shockwave = item == PowerUp::Shockwave;
+            PowerUp::Lightning => {
+                let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Lightning);
+                self.items.bursts.push(burst);
+                let roll = mix(self.map.seed ^ tick.wrapping_mul(ROLL_STRIDE) ^ racer.id as u64);
+                for (index, other) in racers.iter().filter(|r| r.kart != racer.kart).enumerate() {
+                    let delay = (roll as u16).wrapping_add(2 * index as u16) % LIGHTNING_SPREAD;
+                    self.commands.entity(other.kart).insert(Lightning {
+                        delay,
+                        seed: mix(roll ^ other.id as u64),
+                        remaining: LIGHTNING_STRIKES,
+                    });
+                }
+            }
+            PowerUp::Shockwave => {
                 let burst = Burst::at(
                     self.items.serial(),
                     &kart,
-                    if shockwave { SHOCKWAVE_RADIUS } else { 3.0 },
-                    if shockwave {
-                        BurstKind::Shockwave
-                    } else {
-                        BurstKind::Lightning
-                    },
+                    SHOCKWAVE_RADIUS,
+                    BurstKind::Shockwave,
                 );
                 self.items.bursts.push(burst);
-                if shockwave {
-                    let spark = Spark::at(&kart, SparkKind::Explosion);
-                    self.items.sparks.push(spark);
-                }
+                let spark = Spark::at(&kart, SparkKind::Explosion);
+                self.items.sparks.push(spark);
                 for other in racers.iter().filter(|r| r.kart != racer.kart) {
                     let (dx, dz) = (other.x - racer.x, other.z - racer.z);
                     let distance = dx.hypot(dz);
-                    if shockwave && distance > SHOCKWAVE_RADIUS {
+                    if distance > SHOCKWAVE_RADIUS {
                         continue;
                     }
-                    let strike = if shockwave {
-                        let (nx, nz) = if distance < 0.001 {
-                            (1.0, 0.0)
-                        } else {
-                            (dx / distance, dz / distance)
-                        };
-                        Strike::Shockwave { nx, nz }
+                    let (nx, nz) = if distance < 0.001 {
+                        (1.0, 0.0)
                     } else {
-                        Strike::Lightning
+                        (dx / distance, dz / distance)
                     };
+                    let strike = Strike::Shockwave { nx, nz };
                     let mut kart = self.karts.get_mut(other.kart).unwrap().3;
                     let shielded = kart.strike(strike);
-                    let burst = Burst::at(
-                        self.items.serial(),
-                        &kart,
-                        2.5,
-                        if shockwave {
-                            BurstKind::Impact
-                        } else {
-                            BurstKind::Lightning
-                        },
-                    );
+                    let burst = Burst::at(self.items.serial(), &kart, 2.5, BurstKind::Impact);
                     self.items.bursts.push(burst);
                     self.struck(
                         other,
@@ -464,6 +511,164 @@ impl Field<'_, '_> {
         }
     }
 
+    fn storms(&mut self, racers: &[Contender], tick: u64) {
+        let mut strikes: Vec<(Contender, bool)> = Vec::new();
+        let mut done = Vec::new();
+        for (entity, mut storm) in &mut self.storms {
+            let Some(target) = racers.iter().find(|r| r.kart == entity) else {
+                done.push(entity);
+                continue;
+            };
+            if storm.delay > 0 {
+                storm.delay -= 1;
+                continue;
+            }
+            storm.seed = mix(storm.seed);
+            let first = storm.remaining == LIGHTNING_STRIKES;
+            storm.remaining -= 1;
+            storm.delay = LIGHTNING_PERIOD - 1;
+            let (jx, jz) = storm.jitter();
+            let kart = self.karts.get(entity).unwrap().3;
+            EntityBuilder::new(EntityKind::LightningBolt)
+                .at(kart.x + jx, kart.y, kart.z + jz)
+                .gravity(false)
+                .with(Bolt {
+                    expires: tick + BOLT_LIFE,
+                })
+                .spawn(&mut self.commands);
+            strikes.push((*target, first));
+            if storm.remaining == 0 {
+                done.push(entity);
+            }
+        }
+        for (target, first) in strikes {
+            self.audio.at(target.kart, Cue::Thunder);
+            let mut kart = self.karts.get_mut(target.kart).unwrap().3;
+            let burst = Burst::at(self.items.serial(), &kart, 2.5, BurstKind::Lightning);
+            self.items.bursts.push(burst);
+            if first {
+                let shielded = kart.strike(Strike::Lightning);
+                self.struck(
+                    &target,
+                    Strike::Lightning,
+                    shielded,
+                    PowerUp::Lightning.name(),
+                    "Foudroye ! Ralenti 2,5 s",
+                );
+            }
+        }
+        for entity in done {
+            self.commands.entity(entity).remove::<Lightning>();
+        }
+        self.expire_bolts(tick);
+    }
+
+    fn expire_bolts(&mut self, tick: u64) {
+        for (entity, bolt) in &self.bolts {
+            if tick >= bolt.expires {
+                despawn(&mut self.commands, entity);
+            }
+        }
+    }
+
+    fn calm(&mut self) {
+        for (entity, _) in &self.storms {
+            self.commands.entity(entity).remove::<Lightning>();
+        }
+        for (entity, _) in &self.bolts {
+            despawn(&mut self.commands, entity);
+        }
+    }
+
+    fn charge(&mut self, racer: &Contender) {
+        let (x, y, z, vx, vz, yaw, spark) = {
+            let mut kart = self.karts.get_mut(racer.kart).unwrap().3;
+            if kart.blaze == 0 {
+                return;
+            }
+            kart.blaze -= 1;
+            if kart.blaze > 0 {
+                return;
+            }
+            (
+                kart.x,
+                kart.y + FIREBALL_HEIGHT,
+                kart.z,
+                -kart.yaw.sin() * FIREBALL_SPEED,
+                kart.yaw.cos() * FIREBALL_SPEED,
+                kart.model_yaw(),
+                Spark::at(&kart, SparkKind::Launch),
+            )
+        };
+        let entity = EntityBuilder::new(EntityKind::Fireball)
+            .at(x, y, z)
+            .rotation(yaw, 0.0)
+            .gravity(false)
+            .with(Projectile)
+            .spawn(&mut self.commands)
+            .id();
+        let id = self.items.serial();
+        self.items.fireballs.push(Fireball {
+            id,
+            owner: racer.kart,
+            entity,
+            age: 0,
+            x,
+            y,
+            z,
+            vx,
+            vz,
+        });
+        self.items.sparks.push(spark);
+        self.audio.at(racer.kart, Cue::Launch);
+    }
+
+    fn fireballs(&mut self, racers: &[Contender]) {
+        let map = &self.map;
+        let mut hits: Vec<Contender> = Vec::new();
+        let mut spent = Vec::new();
+        let mut fireballs = std::mem::take(&mut self.items.fireballs);
+        fireballs.retain_mut(|fireball| {
+            fireball.age += 1;
+            fireball.x += fireball.vx;
+            fireball.z += fireball.vz;
+            let projected = map.project(fireball.x, fireball.z);
+            if fireball.age >= FIREBALL_LIFE || projected.distance > HALF_WIDTH {
+                spent.push(fireball.entity);
+                return false;
+            }
+            fireball.y = projected.y + FIREBALL_HEIGHT;
+            let hit = racers
+                .iter()
+                .filter(|r| r.kart != fireball.owner)
+                .map(|r| (r, (r.x - fireball.x).hypot(r.z - fireball.z)))
+                .filter(|(_, distance)| *distance < FIREBALL_RADIUS)
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((racer, _)) = hit {
+                hits.push(*racer);
+                spent.push(fireball.entity);
+            }
+            hit.is_none()
+        });
+        self.items.fireballs = fireballs;
+        for entity in spent {
+            despawn(&mut self.commands, entity);
+        }
+        for racer in &hits {
+            let mut kart = self.karts.get_mut(racer.kart).unwrap().3;
+            let shielded = kart.strike(Strike::Fireball);
+            let burst = Burst::at(self.items.serial(), &kart, 3.0, BurstKind::Impact);
+            self.items.bursts.push(burst);
+            self.struck(
+                racer,
+                Strike::Fireball,
+                shielded,
+                "Boule de feu",
+                "Boule de feu ! Ralenti 1 s",
+            );
+        }
+    }
+
     fn collect(&mut self, racer: &Contender, tick: u64) {
         let Some((index, pickup)) = self.items.pickups.iter_mut().enumerate().find(|(_, p)| {
             tick >= p.ready_at && (racer.x - p.x).hypot(racer.z - p.z) < PICKUP_RADIUS
@@ -474,7 +679,7 @@ impl Field<'_, '_> {
             ^ tick.wrapping_mul(ROLL_STRIDE)
             ^ ((index as u64) << 32)
             ^ racer.id as u64);
-        let item = PowerUp::ALL[roll as usize % PowerUp::ALL.len()];
+        let item = PowerUp::roll(roll);
         pickup.ready_at = tick + PICKUP_RESPAWN;
         if let Some(crystal) = pickup.crystal.take() {
             despawn(&mut self.commands, crystal);
@@ -579,6 +784,7 @@ pub fn update(race: Res<Race>, mut field: Field) {
                 } = &mut field;
                 items.clear(commands);
             }
+            field.calm();
             return;
         }
     }
@@ -609,8 +815,27 @@ pub fn update(race: Res<Race>, mut field: Field) {
             field.collect(racer, tick);
         }
         field.traps(racer, tick);
+        field.charge(racer);
     }
     field.missiles(&racers);
+    field.fireballs(&racers);
+    field.storms(&racers, tick);
+}
+
+pub fn fly(items: Res<Items>, mut projectiles: Query<&mut Position, With<Projectile>>) {
+    for fireball in &items.fireballs {
+        let Ok(mut position) = projectiles.get_mut(fireball.entity) else {
+            continue;
+        };
+        let next = Position {
+            x: fireball.x,
+            y: fireball.y,
+            z: fireball.z,
+        };
+        if *position != next {
+            *position = next;
+        }
+    }
 }
 
 pub fn effects(
@@ -696,6 +921,13 @@ pub fn effects(
             everyone.send(flame.packet());
             everyone.send(cloud(Particle::Smoke, at, 1).packet());
         }
+        for fireball in &items.fireballs {
+            let at = [fireball.x, fireball.y + 0.5, fireball.z];
+            let flame = cloud(Particle::Flame, at, 3).audience(Audience::All);
+            let everyone = flame.recipients();
+            everyone.send(flame.packet());
+            everyone.send(cloud(Particle::LargeSmoke, at, 1).packet());
+        }
     }
     if tick.is_multiple_of(BURST_PERIOD) {
         for burst in &items.bursts {
@@ -780,6 +1012,10 @@ fn emit(particles: &Particles, spark: &Spark) {
         SparkKind::Shield => {
             everyone.send(cloud(Particle::ElectricSpark, 30, (0.8, 0.8, 0.8), 0.05));
         }
+        SparkKind::Launch => {
+            everyone.send(cloud(Particle::Flame, 16, (0.4, 0.4, 0.4), 0.08));
+            everyone.send(cloud(Particle::Lava, 4, (0.3, 0.3, 0.3), 0.0));
+        }
     }
 }
 
@@ -792,7 +1028,10 @@ pub fn trail(kart: &Kart) -> Option<Particle> {
         Some(Particle::EndRod)
     } else if kart.charge > 0 {
         Some(Particle::HappyVillager)
-    } else if kart.turbo > 0 || (kart.input.boost && kart.input.forward && kart.fuel >= 1.5) {
+    } else if kart.blaze > 0
+        || kart.turbo > 0
+        || (kart.input.boost && kart.input.forward && kart.fuel >= 1.5)
+    {
         Some(Particle::Flame)
     } else if kart.speed.abs() > 0.25 {
         Some(Particle::Cloud)
@@ -803,18 +1042,54 @@ pub fn trail(kart: &Kart) -> Option<Particle> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
     use std::f64::consts::TAU;
 
     use voidmc::components::{LoadedChunks, MinecraftEntityId, Position};
     use voidmc::{EntityKind, EntityMetadata};
+    use voidmc_codec::{Encode, VarI32};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
     use crate::audio::Hit;
     use crate::chat::HUD_COLOR;
+    use crate::kart::FIREBALL_CHARGE;
     use crate::race::tests::{Harness, Out, sounds};
 
     fn items(h: &Harness) -> &Items {
         h.app.world().resource::<Items>()
+    }
+
+    fn storm(h: &Harness, player: Entity) -> Option<Lightning> {
+        h.app
+            .world()
+            .get::<Lightning>(h.kart_entity(player))
+            .copied()
+    }
+
+    fn bolts(h: &mut Harness) -> Vec<(Entity, Bolt)> {
+        h.world()
+            .query::<(Entity, &Bolt)>()
+            .iter(h.app.world())
+            .map(|(e, b)| (e, *b))
+            .collect()
+    }
+
+    fn spawns_of(out: &[Out], client: u32, kind: EntityKind) -> Vec<(i32, (f64, f64, f64))> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Spawn {
+                    client: c,
+                    id,
+                    kind: k,
+                    x,
+                    y,
+                    z,
+                    ..
+                } if *c == client && *k == kind.id() => Some((*id, (*x, *y, *z))),
+                _ => None,
+            })
+            .collect()
     }
 
     fn crystals(h: &mut Harness) -> Vec<Entity> {
@@ -1420,6 +1695,12 @@ mod tests {
                 .iter()
                 .all(|o| matches!(o, Out::Particles { count: 3, .. }))
         );
+        {
+            let mut kart = h.kart_mut(a);
+            kart.turbo = 0;
+            kart.speed = 0.0;
+        }
+        place(&mut h, a, 0.1, 0.0);
 
         use_item(&mut h, a, PowerUp::Shockwave);
         let out = h.drain();
@@ -1439,6 +1720,8 @@ mod tests {
         place(&mut h, a, 0.1, 0.0);
         place(&mut h, b, 0.13, 1.0);
         use_item(&mut h, a, PowerUp::Lightning);
+        h.drain();
+        h.ticks(storm(&h, b).unwrap().delay as usize + 1);
         let out = h.drain();
         let shell: Vec<Out> = particles(&out, 3, Particle::ElectricSpark)
             .into_iter()
@@ -1455,7 +1738,11 @@ mod tests {
         ));
         assert!(particles(&out, 3, Particle::Explosion).is_empty());
         h.kart_mut(b).shield = 0;
+        h.ticks(LIGHTNING_PERIOD as usize * 2);
+        h.drain();
         use_item(&mut h, a, PowerUp::Lightning);
+        h.drain();
+        h.ticks(storm(&h, b).unwrap().delay as usize + 1);
         let out = h.drain();
         assert_eq!(particles(&out, 3, Particle::Explosion).len(), 1);
         assert!(
@@ -1463,6 +1750,9 @@ mod tests {
                 .iter()
                 .any(|o| matches!(o, Out::Particles { count: 24, .. }))
         );
+        h.ticks(usize::from(LIGHTNING_PERIOD * LIGHTNING_STRIKES));
+        assert!(storm(&h, b).is_none());
+        h.drain();
 
         h.kart_mut(b).ice = 0;
         use_item(&mut h, a, PowerUp::Ice);
@@ -1572,26 +1862,554 @@ mod tests {
             h.kart_mut(e).impact = 0;
         }
         use_item(&mut h, a, PowerUp::Lightning);
-        for e in [b, far] {
-            assert_eq!(h.kart(e).slow, 49);
-        }
-        for e in [a, shielded, spectator, finished] {
+        for e in [a, b, shielded, far, spectator, finished] {
             assert_eq!(h.kart(e).slow, 0);
         }
+        for e in [b, shielded, far] {
+            assert!(storm(&h, e).is_some(), "{e:?}");
+        }
+        for e in [a, spectator, finished] {
+            assert!(storm(&h, e).is_none(), "{e:?}");
+        }
         let bursts = items(&h).bursts.clone();
-        assert_eq!(bursts.len(), 4);
+        assert_eq!(bursts.len(), 1);
         assert_eq!(
             (bursts[0].kind, bursts[0].radius),
             (BurstKind::Lightning, 3.0)
         );
+        h.ticks(LIGHTNING_SPREAD as usize + 1);
+        for e in [b, far] {
+            assert!(h.kart(e).slow > 0, "{e:?}");
+        }
+        for e in [a, shielded, spectator, finished] {
+            assert_eq!(h.kart(e).slow, 0);
+        }
         assert!(
-            bursts[1..]
+            items(&h)
+                .bursts
                 .iter()
-                .all(|b| b.kind == BurstKind::Lightning && b.radius == 2.5)
+                .all(|b| b.kind == BurstKind::Lightning)
         );
         assert_eq!(bursts[0].current_radius(), 0.0);
         assert!((ease_out(1.0) - 1.0).abs() < 1e-12);
         assert!((ease_out(0.5) - 0.875).abs() < 1e-12);
+    }
+
+    fn ahead(h: &mut Harness, from: Entity, to: Entity, blocks: f64) {
+        let (x, z, yaw) = {
+            let kart = h.kart(from);
+            (kart.x, kart.z, kart.yaw)
+        };
+        let mut kart = h.kart_mut(to);
+        kart.x = x - yaw.sin() * blocks;
+        kart.z = z + yaw.cos() * blocks;
+        kart.yaw = yaw;
+        kart.speed = 0.0;
+    }
+
+    fn removals(out: &[Out], client: u32) -> Vec<i32> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Remove(c, ids) if *c == client => Some(ids.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn a_storm_strikes_every_rival_but_the_caster_three_times_six_ticks_apart() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        let c = h.connect(3);
+        let d = h.connect(4);
+        let watcher = h.connect(5);
+        h.shortcut_to_racing(a, &[]);
+        h.kart_mut(watcher).participant = false;
+        place(&mut h, a, 0.1, 0.0);
+        place(&mut h, b, 0.3, -3.0);
+        place(&mut h, c, 0.5, 3.0);
+        place(&mut h, d, 0.7, 0.0);
+        h.kart_mut(c).shield = 200;
+        for e in [b, c, d] {
+            h.kart_mut(e).contact_cooldown = 200;
+        }
+        h.tick();
+        h.drain();
+        use_item(&mut h, a, PowerUp::Lightning);
+        let cast = h.race().tick;
+        for e in [a, watcher] {
+            assert!(storm(&h, e).is_none());
+        }
+        let storms: Vec<Lightning> = [b, c, d].map(|e| storm(&h, e).unwrap()).to_vec();
+        let delays: HashSet<u16> = storms.iter().map(|s| s.delay).collect();
+        assert_eq!(delays.len(), 3, "{storms:?}");
+        assert!(storms.iter().all(|s| s.delay < LIGHTNING_SPREAD));
+        assert!(storms.iter().all(|s| s.remaining == LIGHTNING_STRIKES));
+        let seeds: HashSet<u64> = storms.iter().map(|s| s.seed).collect();
+        assert_eq!(seeds.len(), 3);
+        assert!(bolts(&mut h).is_empty());
+        let out = h.drain();
+        assert!(spawns_of(&out, 1, EntityKind::LightningBolt).is_empty());
+        assert_eq!(flashes(&out, 2).len(), 0);
+        assert_eq!(items(&h).bursts.len(), 1);
+        for e in [b, c, d] {
+            assert_eq!(h.kart(e).slow, 0);
+        }
+
+        let victims: Vec<(Entity, u16, u64)> = [b, c, d]
+            .iter()
+            .map(|e| {
+                let s = storm(&h, *e).unwrap();
+                (*e, s.delay, s.seed)
+            })
+            .collect();
+        let mut struck: HashMap<Entity, Vec<u64>> = HashMap::new();
+        let mut seen: HashSet<Entity> = HashSet::new();
+        for _ in 0..(LIGHTNING_SPREAD + LIGHTNING_PERIOD * LIGHTNING_STRIKES + BOLT_LIFE as u16 + 2)
+        {
+            h.tick();
+            let tick = h.race().tick;
+            let fresh: Vec<(Entity, Bolt)> = bolts(&mut h)
+                .into_iter()
+                .filter(|(e, _)| seen.insert(*e))
+                .collect();
+            let out = h.drain();
+            let spawned = spawns_of(&out, 1, EntityKind::LightningBolt);
+            assert_eq!(spawned.len(), fresh.len());
+            for (entity, bolt) in &fresh {
+                assert_eq!(bolt.expires, tick + BOLT_LIFE);
+                let at = h.app.world().get::<Position>(*entity).unwrap();
+                assert!(
+                    spawned
+                        .iter()
+                        .any(|(id, p)| *id == network_id(&h, *entity) && *p == (at.x, at.y, at.z))
+                );
+                let victim = victims
+                    .iter()
+                    .map(|(e, _, _)| *e)
+                    .find(|e| {
+                        let k = h.kart(*e);
+                        (k.x - at.x).abs() <= 0.4 + 1e-9
+                            && (k.z - at.z).abs() <= 0.4 + 1e-9
+                            && k.y == at.y
+                    })
+                    .expect("a bolt lands on a rival");
+                struck.entry(victim).or_default().push(tick);
+                let id = network_id(&h, h.kart_entity(victim));
+                assert_eq!(
+                    sounds(&out, 1, Cue::Thunder)
+                        .iter()
+                        .filter(|o| matches!(o, Out::Sound { emitter: Some(e), .. } if *e == id))
+                        .count(),
+                    1
+                );
+            }
+            assert_eq!(sounds(&out, 1, Cue::Thunder).len(), fresh.len());
+            for (entity, bolt) in bolts(&mut h) {
+                assert!(tick < bolt.expires, "{entity:?}");
+            }
+            let dead: Vec<i32> = removals(&out, 1);
+            for (entity, _) in &fresh {
+                assert!(!dead.contains(&network_id(&h, *entity)));
+            }
+        }
+        for (victim, delay, seed) in &victims {
+            let ticks = &struck[victim];
+            let first = cast + 1 + u64::from(*delay);
+            assert_eq!(
+                *ticks,
+                vec![
+                    first,
+                    first + u64::from(LIGHTNING_PERIOD),
+                    first + 2 * u64::from(LIGHTNING_PERIOD)
+                ],
+                "{victim:?}"
+            );
+            assert!(storm(&h, *victim).is_none());
+            assert_ne!(*seed, mix(*seed));
+        }
+        assert_eq!(seen.len(), 9);
+        assert!(bolts(&mut h).is_empty());
+        assert!(h.kart(b).slow > 0 && h.kart(d).slow > 0);
+        assert_eq!(h.kart(c).slow, 0);
+        assert_eq!(h.kart(a).slow, 0);
+        assert_eq!(h.kart(watcher).slow, 0);
+        assert_eq!(h.kart(b).slow, 49 - (h.race().tick - struck[&b][0]) as u16);
+        h.drain();
+        h.ticks(20);
+        let out = h.drain();
+        assert!(spawns_of(&out, 1, EntityKind::LightningBolt).is_empty());
+        assert!(sounds(&out, 1, Cue::Thunder).is_empty());
+        assert!(bolts(&mut h).is_empty());
+        assert!(items(&h).bursts.is_empty());
+    }
+
+    #[test]
+    fn the_first_strike_carries_the_hit_and_shields_absorb_it_bolts_expire_on_the_wire() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        let c = h.connect(3);
+        h.shortcut_to_racing(a, &[]);
+        place(&mut h, a, 0.1, 0.0);
+        place(&mut h, b, 0.3, 0.0);
+        place(&mut h, c, 0.5, 0.0);
+        h.kart_mut(c).shield = 200;
+        h.tick();
+        h.drain();
+        use_item(&mut h, a, PowerUp::Lightning);
+        let out = h.drain();
+        assert!(flashes(&out, 1).contains(&flash(
+            Tone::Good,
+            &format!("ECLAIR : {}", describe(PowerUp::Lightning))
+        )));
+        assert_eq!(sounds(&out, 1, Cue::Activate(PowerUp::Lightning)).len(), 1);
+        let (db, dc) = (storm(&h, b).unwrap().delay, storm(&h, c).unwrap().delay);
+        let mut all = Vec::new();
+        h.ticks(db as usize + 1);
+        let out = h.drain();
+        all.extend(out.clone());
+        assert_eq!(h.kart(b).slow, 49);
+        assert_eq!(h.kart(b).impact, 9);
+        assert!(flashes(&out, 2).contains(&flash(Tone::Warn, "Foudroye ! Ralenti 2,5 s")));
+        assert_eq!(sounds(&out, 2, Cue::Hit(Hit::Lightning)).len(), 1);
+        let kb = network_id(&h, h.kart_entity(b));
+        assert_eq!(
+            sounds(&out, 2, Cue::Thunder)
+                .iter()
+                .filter(|o| matches!(o, Out::Sound { emitter: Some(e), .. } if *e == kb))
+                .count(),
+            1
+        );
+        assert!(
+            particles(&out, 2, Particle::ElectricSpark)
+                .iter()
+                .any(|o| matches!(o, Out::Particles { count: 24, .. }))
+        );
+        let bolt = spawns_of(&out, 2, EntityKind::LightningBolt);
+        assert_eq!(bolt.len(), 1);
+        let bolt_id = bolt[0].0;
+        let raw: Vec<ClientboundPacket> = h
+            .packets()
+            .into_iter()
+            .filter_map(|(client, packet)| (client == 2).then_some(packet))
+            .collect();
+        assert!(raw.is_empty());
+        h.ticks(BOLT_LIFE as usize - 1);
+        let out = h.drain();
+        assert!(!removals(&out, 2).contains(&bolt_id));
+        all.extend(out);
+        h.tick();
+        let out = h.drain();
+        assert!(removals(&out, 2).contains(&bolt_id));
+        all.extend(out);
+        h.ticks(usize::from(
+            LIGHTNING_SPREAD + LIGHTNING_PERIOD * LIGHTNING_STRIKES,
+        ));
+        all.extend(h.drain());
+        assert_eq!(h.kart(c).slow, 0);
+        assert!(dc < LIGHTNING_SPREAD);
+        assert!(flashes(&all, 3).contains(&flash(Tone::Good, "Bouclier ! ECLAIR sans effet")));
+        assert_eq!(sounds(&all, 3, Cue::Shielded).len(), 1);
+        let kc = network_id(&h, h.kart_entity(c));
+        assert!(
+            sounds(&all, 3, Cue::Hit(Hit::Lightning))
+                .iter()
+                .all(|o| !matches!(o, Out::Sound { emitter: Some(e), .. } if *e == kc))
+        );
+        assert_eq!(sounds(&all, 3, Cue::Thunder).len(), 6);
+        assert_eq!(spawns_of(&all, 3, EntityKind::LightningBolt).len(), 6);
+        assert!(storm(&h, c).is_none());
+        assert!(storm(&h, b).is_none());
+    }
+
+    #[test]
+    fn lightning_bolt_spawn_matches_paper_add_entity_layout() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        place(&mut h, a, 0.1, 0.0);
+        place(&mut h, b, 0.3, 0.0);
+        h.tick();
+        h.drain();
+        use_item(&mut h, a, PowerUp::Lightning);
+        h.drain();
+        h.ticks(storm(&h, b).unwrap().delay as usize + 1);
+        let bolt = bolts(&mut h)[0].0;
+        let (spawn, sent) = h
+            .packets()
+            .into_iter()
+            .find_map(|(client, packet)| match packet {
+                ClientboundPacket::Play(PlayPacket::SpawnEntity(p))
+                    if client == 2 && p.entity_type == EntityKind::LightningBolt.id() =>
+                {
+                    Some((p.clone(), PlayPacket::SpawnEntity(p)))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let at = *h.app.world().get::<Position>(bolt).unwrap();
+        assert_eq!(spawn.entity_id, network_id(&h, bolt));
+        assert_eq!((spawn.x, spawn.y, spawn.z), (at.x, at.y, at.z));
+        let mut bytes = Vec::new();
+        sent.encode(&mut bytes);
+        let mut expected = vec![voidmc_data::v26_1_2::packets::play::clientbound::ADD_ENTITY as u8];
+        VarI32(spawn.entity_id).encode(&mut expected);
+        expected.extend_from_slice(spawn.entity_uuid.as_bytes());
+        VarI32(EntityKind::LightningBolt.id()).encode(&mut expected);
+        for value in [at.x, at.y, at.z] {
+            expected.extend_from_slice(&value.to_be_bytes());
+        }
+        expected.extend_from_slice(&[0, 0, 0, 0, 0]);
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn a_fireball_charges_two_seconds_then_flies_straight_into_the_first_rival_ahead() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        let c = h.connect(3);
+        h.shortcut_to_racing(a, &[]);
+        place(&mut h, a, 0.1, 0.0);
+        ahead(&mut h, a, b, 6.0);
+        ahead(&mut h, a, c, 9.0);
+        for e in [a, b, c] {
+            h.kart_mut(e).contact_cooldown = 200;
+        }
+        h.tick();
+        h.drain();
+        let map = h.app.world().resource::<Track>().clone();
+        use_item(&mut h, a, PowerUp::Fireball);
+        let out = h.drain();
+        assert!(flashes(&out, 1).contains(&flash(
+            Tone::Good,
+            &format!("BOULE DE FEU : {}", describe(PowerUp::Fireball))
+        )));
+        assert_eq!(sounds(&out, 1, Cue::Activate(PowerUp::Fireball)).len(), 1);
+        assert_eq!(h.kart(a).blaze, FIREBALL_CHARGE - 1);
+        assert!(items(&h).fireballs.is_empty());
+        assert_eq!(trail(h.kart(a)), Some(Particle::Flame));
+        h.ticks(usize::from(FIREBALL_CHARGE) - 2);
+        assert_eq!(h.kart(a).blaze, 1);
+        assert!(items(&h).fireballs.is_empty());
+        assert!(spawns_of(&h.drain(), 2, EntityKind::Fireball).is_empty());
+        let (ax, ay, az, yaw) = {
+            let k = h.kart(a);
+            (k.x, k.y, k.z, k.yaw)
+        };
+        h.tick();
+        let launched = h.race().tick;
+        assert_eq!(h.kart(a).blaze, 0);
+        let fireball = items(&h).fireballs[0];
+        let (vx, vz) = (-yaw.sin() * FIREBALL_SPEED, yaw.cos() * FIREBALL_SPEED);
+        assert_eq!(fireball.owner, h.kart_entity(a));
+        assert_eq!((fireball.vx, fireball.vz, fireball.age), (vx, vz, 1));
+        assert_eq!((fireball.x, fireball.z), (ax + vx, az + vz));
+        assert_eq!(
+            fireball.y,
+            map.project(fireball.x, fireball.z).y + FIREBALL_HEIGHT
+        );
+        assert!((fireball.y - ay - FIREBALL_HEIGHT).abs() < 1.0);
+        let entity = fireball.entity;
+        let id = network_id(&h, entity);
+        assert!(h.app.world().get::<Projectile>(entity).is_some());
+        assert_eq!(
+            *h.app.world().get::<Position>(entity).unwrap(),
+            Position {
+                x: fireball.x,
+                y: fireball.y,
+                z: fireball.z
+            }
+        );
+        let out = h.drain();
+        for client in [1, 2, 3] {
+            let spawns = spawns_of(&out, client, EntityKind::Fireball);
+            assert_eq!(
+                spawns,
+                vec![(id, (fireball.x, fireball.y, fireball.z))],
+                "{client}"
+            );
+        }
+        assert_eq!(sounds(&out, 1, Cue::Launch).len(), 1);
+        assert_eq!(sounds(&out, 2, Cue::Launch).len(), 1);
+        assert!(
+            particles(&out, 3, Particle::Flame)
+                .iter()
+                .any(|o| matches!(o, Out::Particles { count: 16, .. }))
+        );
+        assert_eq!(h.kart(a).slow, 0);
+        assert_eq!(h.kart(a).spin, 0.0);
+
+        let (x0, z0) = (ax, az);
+        let mut hit_at = None;
+        for age in 2..FIREBALL_LIFE {
+            h.tick();
+            let out = h.drain();
+            let Some(f) = items(&h).fireballs.first().copied() else {
+                hit_at = Some(age);
+                assert!(removals(&out, 1).contains(&id));
+                assert!(removals(&out, 3).contains(&id));
+                break;
+            };
+            assert_eq!(f.age, age);
+            assert!((f.x - (x0 + vx * f64::from(age))).abs() < 1e-9);
+            assert!((f.z - (z0 + vz * f64::from(age))).abs() < 1e-9);
+            assert_eq!(f.y, map.project(f.x, f.z).y + FIREBALL_HEIGHT);
+            assert_eq!(
+                *h.app.world().get::<Position>(entity).unwrap(),
+                Position {
+                    x: f.x,
+                    y: f.y,
+                    z: f.z
+                }
+            );
+            assert!(out.iter().any(|o| matches!(
+                o,
+                Out::Move { client: 2, id: i, .. } | Out::Teleport { client: 2, id: i, .. } if *i == id
+            )));
+            assert_eq!(h.kart(b).slow, 0);
+            assert_eq!(h.kart(c).slow, 0);
+        }
+        assert_eq!(hit_at, Some(4));
+        assert_eq!(h.race().tick, launched + 3);
+        assert!(h.app.world().get_entity(entity).is_err());
+        assert_eq!(h.kart(b).slow, 19);
+        assert_eq!(h.kart(b).impact, 11);
+        assert!(h.kart(b).spin > 0.0);
+        assert_eq!((h.kart(a).slow, h.kart(c).slow), (0, 0));
+        let burst = items(&h).bursts[0];
+        assert_eq!((burst.kind, burst.radius), (BurstKind::Impact, 3.0));
+        h.ticks(2);
+        let out = h.drain();
+        assert!(spawns_of(&out, 2, EntityKind::Fireball).is_empty());
+        assert!(items(&h).fireballs.is_empty());
+    }
+
+    #[test]
+    fn a_fireball_ignores_its_owner_absorbs_on_shields_and_expires_after_three_seconds() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        place(&mut h, a, 0.1, 0.0);
+        ahead(&mut h, a, b, 5.0);
+        h.kart_mut(b).shield = 200;
+        for e in [a, b] {
+            h.kart_mut(e).contact_cooldown = 200;
+        }
+        h.tick();
+        h.drain();
+        use_item(&mut h, a, PowerUp::Fireball);
+        h.ticks(usize::from(FIREBALL_CHARGE) - 1);
+        assert_eq!(items(&h).fireballs.len(), 1);
+        h.drain();
+        h.ticks(4);
+        assert!(items(&h).fireballs.is_empty());
+        assert_eq!(h.kart(b).slow, 0);
+        let out = h.drain();
+        assert!(
+            flashes(&out, 2).contains(&flash(Tone::Good, "Bouclier ! Boule de feu sans effet"))
+        );
+        assert_eq!(sounds(&out, 2, Cue::Shielded).len(), 1);
+        assert!(sounds(&out, 2, Cue::Hit(Hit::Fireball)).is_empty());
+        assert!(
+            flashes(&out, 2)
+                .iter()
+                .all(|(text, _)| !text.contains("Ralenti")),
+            "{:?}",
+            flashes(&out, 2)
+        );
+
+        h.kart_mut(b).shield = 0;
+        ahead(&mut h, a, b, -6.0);
+        h.tick();
+        h.drain();
+        use_item(&mut h, a, PowerUp::Fireball);
+        h.ticks(usize::from(FIREBALL_CHARGE) - 1);
+        let fireball = items(&h).fireballs[0];
+        let id = network_id(&h, fireball.entity);
+        h.drain();
+        let mut expired = None;
+        for age in 1..=FIREBALL_LIFE {
+            h.tick();
+            if items(&h).fireballs.is_empty() {
+                expired = Some(age);
+                break;
+            }
+            assert_eq!(h.kart(a).slow, 0);
+            assert_eq!(h.kart(b).slow, 0);
+        }
+        let expired = expired.expect("fireball expires");
+        assert!(expired <= FIREBALL_LIFE);
+        let last = items(&h).fireballs.is_empty();
+        assert!(last);
+        assert!(h.app.world().get_entity(fireball.entity).is_err());
+        let out = h.drain();
+        assert!(removals(&out, 1).contains(&id));
+        assert!(removals(&out, 2).contains(&id));
+        assert_eq!((h.kart(a).slow, h.kart(b).slow), (0, 0));
+        assert!(flashes(&out, 2).is_empty());
+        let world_bolt = h.app.world().get::<Projectile>(fireball.entity);
+        assert!(world_bolt.is_none());
+
+        use_item(&mut h, a, PowerUp::Fireball);
+        h.ticks(usize::from(FIREBALL_CHARGE) - 1);
+        let entity = items(&h).fireballs[0].entity;
+        let done = h.race().laps * GATES + 1;
+        h.kart_mut(a).next_gate = done;
+        h.kart_mut(b).next_gate = done;
+        h.tick();
+        assert_ne!(h.race().phase, Phase::Racing);
+        h.tick();
+        assert!(items(&h).is_empty());
+        assert!(h.app.world().get_entity(entity).is_err());
+    }
+
+    #[test]
+    fn fireball_spawn_matches_paper_add_entity_layout_with_zero_data() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        place(&mut h, a, 0.1, 0.0);
+        ahead(&mut h, a, b, -6.0);
+        h.tick();
+        h.drain();
+        use_item(&mut h, a, PowerUp::Fireball);
+        h.ticks(usize::from(FIREBALL_CHARGE) - 2);
+        h.drain();
+        h.tick();
+        let fireball = items(&h).fireballs[0];
+        let (spawn, sent) = h
+            .packets()
+            .into_iter()
+            .find_map(|(client, packet)| match packet {
+                ClientboundPacket::Play(PlayPacket::SpawnEntity(p))
+                    if client == 2 && p.entity_type == EntityKind::Fireball.id() =>
+                {
+                    Some((p.clone(), PlayPacket::SpawnEntity(p)))
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(spawn.entity_id, network_id(&h, fireball.entity));
+        assert_eq!(spawn.data, 0);
+        assert_eq!(spawn.yaw, spawn.head_yaw);
+        let mut bytes = Vec::new();
+        sent.encode(&mut bytes);
+        let mut expected = vec![voidmc_data::v26_1_2::packets::play::clientbound::ADD_ENTITY as u8];
+        VarI32(spawn.entity_id).encode(&mut expected);
+        expected.extend_from_slice(spawn.entity_uuid.as_bytes());
+        VarI32(EntityKind::Fireball.id()).encode(&mut expected);
+        for value in [fireball.x, fireball.y, fireball.z] {
+            expected.extend_from_slice(&value.to_be_bytes());
+        }
+        expected.extend_from_slice(&[0, 0, spawn.yaw, spawn.yaw, 0]);
+        assert_eq!(bytes, expected);
     }
 
     #[test]

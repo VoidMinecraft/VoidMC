@@ -10,6 +10,7 @@ pub const MAX_SPEED: f64 = 0.72;
 pub const BOOST_SPEED: f64 = 1.15;
 pub const RESET_PENALTY: u64 = 60;
 pub const BUMP_COOLDOWN: u8 = 10;
+pub const FIREBALL_CHARGE: u16 = 40;
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Input {
@@ -32,10 +33,11 @@ pub enum PowerUp {
     Ice,
     Lightning,
     Recharge,
+    Fireball,
 }
 
 impl PowerUp {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Turbo,
         Self::Shield,
         Self::Banana,
@@ -44,7 +46,33 @@ impl PowerUp {
         Self::Ice,
         Self::Lightning,
         Self::Recharge,
+        Self::Fireball,
     ];
+
+    pub fn weight(self) -> u64 {
+        match self {
+            Self::Turbo | Self::Banana => 14,
+            Self::Missile | Self::Fireball => 12,
+            Self::Shield | Self::Ice => 10,
+            Self::Shockwave | Self::Recharge => 8,
+            Self::Lightning => 6,
+        }
+    }
+
+    pub fn total_weight() -> u64 {
+        Self::ALL.iter().map(|item| item.weight()).sum()
+    }
+
+    pub fn roll(roll: u64) -> Self {
+        let mut remaining = roll % Self::total_weight();
+        for item in Self::ALL {
+            if remaining < item.weight() {
+                return item;
+            }
+            remaining -= item.weight();
+        }
+        unreachable!()
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -56,6 +84,7 @@ impl PowerUp {
             Self::Ice => "NAPPE DE GLACE",
             Self::Lightning => "ECLAIR",
             Self::Recharge => "SUPER-RECHARGE",
+            Self::Fireball => "BOULE DE FEU",
         }
     }
 }
@@ -67,6 +96,7 @@ pub enum Strike {
     Banana,
     Ice,
     Missile,
+    Fireball,
 }
 
 #[derive(Component, Default, Clone, Debug)]
@@ -95,6 +125,7 @@ pub struct Kart {
     pub slow: u16,
     pub ice: u16,
     pub charge: u16,
+    pub blaze: u16,
 }
 
 impl Kart {
@@ -124,6 +155,7 @@ impl Kart {
         self.slow = 0;
         self.ice = 0;
         self.charge = 0;
+        self.blaze = 0;
     }
 
     pub fn wait(&mut self, slot: usize) {
@@ -275,6 +307,7 @@ impl Kart {
                 self.fuel = 100.0;
                 self.charge = 100;
             }
+            PowerUp::Fireball => self.blaze = FIREBALL_CHARGE,
             PowerUp::Banana
             | PowerUp::Ice
             | PowerUp::Missile
@@ -322,11 +355,11 @@ impl Kart {
                     self.ice = 60;
                 }
             }
-            Strike::Missile => {
+            Strike::Missile | Strike::Fireball => {
                 if !shielded {
                     self.spin = 0.35;
                     self.speed *= 0.35;
-                    self.slow = 30;
+                    self.slow = if strike == Strike::Missile { 30 } else { 20 };
                 }
                 self.impact = 12;
             }
@@ -585,8 +618,27 @@ mod tests {
         k.drive(&map);
         assert_eq!(k.charge, 0);
         assert!(k.fuel < 100.0);
+        k.activate(PowerUp::Fireball);
+        assert_eq!(k.blaze, FIREBALL_CHARGE);
         k.reset(&map);
-        assert_eq!((k.slow, k.ice, k.charge), (0, 0, 0));
+        assert_eq!((k.slow, k.ice, k.charge, k.blaze), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn the_roll_table_is_weighted_and_covers_every_power_up() {
+        let total = PowerUp::total_weight();
+        assert_eq!(total, 94);
+        let mut counts = std::collections::HashMap::new();
+        for roll in 0..total {
+            *counts.entry(PowerUp::roll(roll)).or_insert(0) += 1;
+        }
+        for item in PowerUp::ALL {
+            assert_eq!(counts[&item], item.weight(), "{item:?}");
+        }
+        assert_eq!(PowerUp::roll(total + 3), PowerUp::Turbo);
+        assert_eq!(PowerUp::roll(u64::MAX), PowerUp::roll(u64::MAX % total));
+        assert!(PowerUp::ALL.contains(&PowerUp::Fireball));
+        assert_eq!(PowerUp::Fireball.weight(), PowerUp::Missile.weight());
     }
 
     #[test]
@@ -621,6 +673,9 @@ mod tests {
         k.speed = 1.0;
         assert!(!k.strike(Strike::Missile));
         assert_eq!((k.spin, k.speed, k.slow, k.impact), (0.35, 0.35, 30, 12));
+        k.speed = 1.0;
+        assert!(!k.strike(Strike::Fireball));
+        assert_eq!((k.spin, k.speed, k.slow, k.impact), (0.35, 0.35, 20, 12));
 
         k.clear_effects();
         k.activate(PowerUp::Shield);
@@ -631,6 +686,7 @@ mod tests {
             Strike::Banana,
             Strike::Ice,
             Strike::Missile,
+            Strike::Fireball,
         ] {
             assert!(k.strike(strike));
         }

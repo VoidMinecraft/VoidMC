@@ -11,6 +11,7 @@ pub enum Hit {
     Shockwave,
     Banana,
     Ice,
+    Fireball,
 }
 
 impl From<Strike> for Hit {
@@ -21,6 +22,7 @@ impl From<Strike> for Hit {
             Strike::Shockwave { .. } => Hit::Shockwave,
             Strike::Banana => Hit::Banana,
             Strike::Ice => Hit::Ice,
+            Strike::Fireball => Hit::Fireball,
         }
     }
 }
@@ -40,10 +42,12 @@ pub enum Cue {
     Shielded,
     Bump,
     Portal,
+    Thunder,
+    Launch,
 }
 
 impl Cue {
-    pub const ALL: [Cue; 24] = [
+    pub const ALL: [Cue; 28] = [
         Cue::Beep,
         Cue::Go,
         Cue::Start,
@@ -60,14 +64,18 @@ impl Cue {
         Cue::Activate(PowerUp::Ice),
         Cue::Activate(PowerUp::Lightning),
         Cue::Activate(PowerUp::Recharge),
+        Cue::Activate(PowerUp::Fireball),
         Cue::Hit(Hit::Missile),
         Cue::Hit(Hit::Lightning),
         Cue::Hit(Hit::Shockwave),
         Cue::Hit(Hit::Banana),
         Cue::Hit(Hit::Ice),
+        Cue::Hit(Hit::Fireball),
         Cue::Shielded,
         Cue::Bump,
         Cue::Portal,
+        Cue::Thunder,
+        Cue::Launch,
     ];
 
     pub fn name(self) -> &'static str {
@@ -87,7 +95,8 @@ impl Cue {
             Cue::Activate(PowerUp::Shockwave) => "entity.generic.explode",
             Cue::Activate(PowerUp::Lightning) => "entity.lightning_bolt.thunder",
             Cue::Activate(PowerUp::Recharge) => "block.respawn_anchor.charge",
-            Cue::Hit(Hit::Missile) => "entity.generic.explode",
+            Cue::Activate(PowerUp::Fireball) => "entity.blaze.ambient",
+            Cue::Hit(Hit::Missile) | Cue::Hit(Hit::Fireball) => "entity.generic.explode",
             Cue::Hit(Hit::Lightning) => "entity.lightning_bolt.impact",
             Cue::Hit(Hit::Shockwave) => "entity.player.hurt",
             Cue::Hit(Hit::Banana) => "entity.slime.squish",
@@ -95,6 +104,8 @@ impl Cue {
             Cue::Shielded => "item.shield.block",
             Cue::Bump => "block.anvil.land",
             Cue::Portal => "block.portal.trigger",
+            Cue::Thunder => "entity.lightning_bolt.thunder",
+            Cue::Launch => "entity.ghast.shoot",
         }
     }
 
@@ -103,7 +114,10 @@ impl Cue {
             Cue::Go | Cue::FinalLap => 1.2,
             Cue::Bump => 0.5,
             Cue::Portal => 0.6,
-            Cue::Activate(PowerUp::Lightning) | Cue::Hit(Hit::Missile) => 0.8,
+            Cue::Activate(PowerUp::Lightning)
+            | Cue::Hit(Hit::Missile)
+            | Cue::Hit(Hit::Fireball)
+            | Cue::Thunder => 0.8,
             _ => 1.0,
         }
     }

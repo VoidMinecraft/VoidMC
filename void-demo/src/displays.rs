@@ -9,7 +9,7 @@ use voidmc::{
 use voidmc_data::v26_1_2::{blocks as b, items as i};
 
 use crate::items::{BURST_LIFE, BurstKind, Items, MISSILE_LIFE};
-use crate::kart::{Kart, PowerUp};
+use crate::kart::{FIREBALL_CHARGE, Kart, PowerUp};
 use crate::race::{Phase, Race};
 use crate::track::Track;
 
@@ -17,6 +17,23 @@ pub const KEYFRAME_TICKS: u16 = 2;
 pub const JUMP: f64 = 6.0;
 const BRIGHTNESS: (u8, u8) = (15, 15);
 const VIEW_RANGE: f32 = 2.0;
+pub const RAINBOW: [i32; 11] = [
+    b::RED_STAINED_GLASS,
+    b::ORANGE_STAINED_GLASS,
+    b::YELLOW_STAINED_GLASS,
+    b::LIME_STAINED_GLASS,
+    b::GREEN_STAINED_GLASS,
+    b::CYAN_STAINED_GLASS,
+    b::LIGHT_BLUE_STAINED_GLASS,
+    b::BLUE_STAINED_GLASS,
+    b::PURPLE_STAINED_GLASS,
+    b::MAGENTA_STAINED_GLASS,
+    b::PINK_STAINED_GLASS,
+];
+
+pub fn rainbow(tick: u64) -> i32 {
+    RAINBOW[(tick / u64::from(KEYFRAME_TICKS)) as usize % RAINBOW.len()]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -28,6 +45,8 @@ pub enum Kind {
     Trap,
     Missile,
     Burst,
+    Rainbow,
+    Blaze,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -364,6 +383,7 @@ fn kart_frames(stage: &mut Stage, source: u64, k: &Kart, time: f64) {
             PowerUp::Ice => i::BLUE_ICE,
             PowerUp::Lightning => i::LIGHTNING_ROD,
             PowerUp::Recharge => i::NETHER_STAR,
+            PowerUp::Fireball => i::BLAZE_ROD,
         };
         Group::new(stage, source, Kind::Held, at).model(
             Model::Item(icon),
@@ -403,6 +423,31 @@ fn kart_frames(stage: &mut Stage, source: u64, k: &Kart, time: f64) {
                 [0.12 * fade, 0.12 * fade, 0.65 * fade],
                 -k.yaw,
                 PI / 4.0,
+            );
+        }
+    }
+    if k.turbo > 0 || k.charge > 0 {
+        Group::new(stage, source, Kind::Rainbow, at).block(
+            rainbow(time as u64),
+            [0.0, 0.45, 0.0],
+            [1.5, 0.9, 2.0],
+            -k.yaw,
+            0.0,
+        );
+    }
+    if k.blaze > 0 {
+        let mut g = Group::new(stage, source, Kind::Blaze, at);
+        let fade = envelope(
+            f64::from(FIREBALL_CHARGE - k.blaze),
+            f64::from(FIREBALL_CHARGE),
+        );
+        for i in 0..3 {
+            let a = time * 0.16 + f64::from(i) * TAU / 3.0;
+            g.model(
+                Model::Item(i::BLAZE_ROD),
+                [a.cos() * 0.9, 1.1 + 0.2 * (a * 2.0).sin(), a.sin() * 0.9],
+                [0.7 * fade; 3],
+                rotation(-a, PI / 4.0),
             );
         }
     }
@@ -588,6 +633,16 @@ mod tests {
 
     fn scene(h: &Harness) -> &Scene {
         h.app.world().resource::<Scene>()
+    }
+
+    fn removals(out: &[Out], client: u32) -> Vec<i32> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Remove(c, ids) if *c == client => Some(ids.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
     fn touching(out: &[Out], id: i32) -> Vec<Out> {
@@ -833,6 +888,122 @@ mod tests {
     }
 
     #[test]
+    fn a_boosting_kart_wears_a_rainbow_shell_that_changes_colour_once_per_keyframe() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let _b = h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        {
+            let mut kart = h.kart_mut(a);
+            kart.charge = 100;
+            kart.fuel = 100.0;
+            kart.speed = 0.0;
+        }
+        keyframe(&mut h);
+        let key = Key(h.kart_entity(a).to_bits(), Kind::Rainbow, 0);
+        let shell = scene(&h).entity(key).expect("rainbow shell");
+        assert!(scene(&h).entity(Key(key.0, Kind::Rainbow, 1)).is_none());
+        let id = network_id(&h, shell);
+        let frame = scene(&h).frame(key).unwrap();
+        assert_eq!(frame.model, Model::Block(rainbow(h.race().tick)));
+        assert_eq!(frame.transform.scale, [1.5, 0.9, 2.0]);
+        let out = h.drain();
+        assert!(
+            out.iter()
+                .any(|o| matches!(o, Out::Spawn { client: 2, id: i, kind, .. }
+                    if *i == id && *kind == EntityKind::BlockDisplay.id()))
+        );
+        let mut previous = frame.model;
+        let mut colours = HashSet::new();
+        for _ in 0..(RAINBOW.len() * 2 * KEYFRAME_TICKS as usize) {
+            h.tick();
+            let tick = h.race().tick;
+            let out = h.drain();
+            let touched: Vec<&Out> = out
+                .iter()
+                .filter(|o| match o {
+                    Out::Metadata(2, i, _)
+                    | Out::Move {
+                        client: 2, id: i, ..
+                    }
+                    | Out::Teleport {
+                        client: 2, id: i, ..
+                    }
+                    | Out::Spawn {
+                        client: 2, id: i, ..
+                    } => *i == id,
+                    Out::Remove(2, ids) => ids.contains(&id),
+                    _ => false,
+                })
+                .collect();
+            let model = scene(&h).frame(key).unwrap().model;
+            if tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+                assert_eq!(model, Model::Block(rainbow(tick)));
+                assert_ne!(model, previous, "{tick}");
+                assert_eq!(touched.len(), 1, "{tick}: {touched:?}");
+                assert!(matches!(touched[0], Out::Metadata(2, _, indices) if indices == &vec![23]));
+                previous = model;
+            } else {
+                assert_eq!(model, previous);
+                assert!(touched.is_empty(), "{tick}: {touched:?}");
+            }
+            if let Model::Block(state) = model {
+                colours.insert(state);
+            }
+        }
+        assert_eq!(colours.len(), RAINBOW.len());
+        assert_eq!(scene(&h).entity(key), Some(shell));
+        h.kart_mut(a).charge = 0;
+        keyframe(&mut h);
+        assert!(scene(&h).entity(key).is_none());
+        assert!(h.app.world().get_entity(shell).is_err());
+        assert!(removals(&h.drain(), 2).contains(&id));
+
+        h.kart_mut(a).turbo = 60;
+        keyframe(&mut h);
+        assert!(scene(&h).entity(key).is_some());
+        h.kart_mut(a).turbo = 0;
+        keyframe(&mut h);
+        assert!(scene(&h).entity(key).is_none());
+    }
+
+    #[test]
+    fn a_charging_fireball_orbits_three_blaze_rods_until_the_shot() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        h.shortcut_to_racing(a, &[]);
+        use_item(&mut h, a, PowerUp::Fireball);
+        keyframe(&mut h);
+        let source = h.kart_entity(a).to_bits();
+        let rods: Vec<Entity> = (0..3)
+            .map(|part| scene(&h).entity(Key(source, Kind::Blaze, part)).unwrap())
+            .collect();
+        assert!(scene(&h).entity(Key(source, Kind::Blaze, 3)).is_none());
+        for (part, rod) in rods.iter().enumerate() {
+            let frame = scene(&h)
+                .frame(Key(source, Kind::Blaze, part as u8))
+                .unwrap();
+            assert_eq!(frame.model, Model::Item(i::BLAZE_ROD));
+            assert_eq!(
+                h.app.world().get::<ItemDisplay>(*rod).unwrap().item,
+                ItemStack::new(ItemId(i::BLAZE_ROD), 1)
+            );
+            let t = frame.transform.translation;
+            assert!((f64::from(t[0]).hypot(f64::from(t[2])) - 0.9).abs() < 1e-5);
+        }
+        while h.kart(a).blaze > 0 {
+            h.tick();
+        }
+        keyframe(&mut h);
+        for part in 0..3 {
+            assert!(scene(&h).entity(Key(source, Kind::Blaze, part)).is_none());
+        }
+        for rod in rods {
+            assert!(h.app.world().get_entity(rod).is_err());
+        }
+    }
+
+    #[test]
     fn a_settled_banana_sends_nothing_and_late_joiners_are_served_by_the_engine() {
         let mut h = Harness::new(42);
         let a = h.connect(1);
@@ -920,6 +1091,8 @@ mod tests {
             Kind::Trap,
             Kind::Missile,
             Kind::Burst,
+            Kind::Rainbow,
+            Kind::Blaze,
         ] {
             assert!(kinds.contains(&kind), "{kind:?}");
         }

@@ -295,6 +295,7 @@ impl Plugin for RacePlugin {
                     load,
                     countdown,
                     items::update,
+                    items::fly,
                     items::crystals,
                     vehicle::drive,
                     vehicle::bumps,
