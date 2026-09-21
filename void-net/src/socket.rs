@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, Encode, VarI32};
@@ -146,8 +146,10 @@ impl ClientSocket {
                 limits: self.limits,
             },
             ClientWriter {
-                stream: writer,
+                stream: BufWriter::new(writer),
                 limits: self.limits,
+                body: Vec::new(),
+                frame: Vec::new(),
             },
         )
     }
@@ -230,29 +232,36 @@ impl ClientReader {
 }
 
 pub struct ClientWriter {
-    stream: OwnedWriteHalf,
+    stream: BufWriter<OwnedWriteHalf>,
     limits: FrameLimits,
+    body: Vec<u8>,
+    frame: Vec<u8>,
 }
 
 impl ClientWriter {
     pub async fn send<T: Encode>(&mut self, packet: &T) -> Result<(), SocketError> {
-        let mut packet_buf = Vec::new();
-        packet.encode(&mut packet_buf);
-        if packet_buf.len() > self.limits.max_outbound_frame_bytes {
+        self.body.clear();
+        packet.encode(&mut self.body);
+        if self.body.len() > self.limits.max_outbound_frame_bytes {
             return Err(FrameError::FrameTooLarge {
-                requested: packet_buf.len(),
+                requested: self.body.len(),
                 limit: self.limits.max_outbound_frame_bytes,
             }
             .into());
         }
         let len =
-            i32::try_from(packet_buf.len()).map_err(|_| FrameError::OutboundLengthOverflow {
-                requested: packet_buf.len(),
+            i32::try_from(self.body.len()).map_err(|_| FrameError::OutboundLengthOverflow {
+                requested: self.body.len(),
             })?;
-        let mut len_buf = Vec::with_capacity(5);
-        VarI32(len).encode(&mut len_buf);
-        self.stream.write_all(&len_buf).await?;
-        self.stream.write_all(&packet_buf).await?;
+        self.frame.clear();
+        VarI32(len).encode(&mut self.frame);
+        self.frame.extend_from_slice(&self.body);
+        self.stream.write_all(&self.frame).await?;
+        Ok(())
+    }
+
+    pub async fn flush(&mut self) -> Result<(), SocketError> {
+        self.stream.flush().await?;
         Ok(())
     }
 }
@@ -270,6 +279,7 @@ impl ServerSocket {
 
     pub async fn accept(&self) -> std::io::Result<ClientSocket> {
         let (stream, addr) = self.listener.accept().await?;
+        stream.set_nodelay(true)?;
         Ok(ClientSocket {
             stream,
             peer_addr: addr,
@@ -441,5 +451,35 @@ mod tests {
                 limit: 4
             }))
         ));
+    }
+
+    fn frame_bytes(payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        VarI32(payload.len() as i32).encode(&mut frame);
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[tokio::test]
+    async fn batched_sends_match_individual_frames_on_the_wire() {
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (_, mut writer) = socket.into_split();
+
+        let payloads: [Vec<u8>; 4] = [vec![1, 2, 3], vec![], vec![7; 200], vec![42]];
+
+        let mut expected = Vec::new();
+        for payload in &payloads {
+            expected.extend_from_slice(&frame_bytes(payload));
+        }
+
+        for payload in &payloads {
+            writer.send(&Bytes(payload.clone())).await.unwrap();
+        }
+        writer.flush().await.unwrap();
+        drop(writer);
+
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, expected);
     }
 }
