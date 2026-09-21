@@ -12,6 +12,8 @@ pub enum VoidSystems {
     CommandDrain,
     /// `Update`: `ItemBehavior` handlers run here.
     ItemUseDrain,
+    /// `Update`: `MenuClickEvent` and menu `on_click` handlers run here.
+    MenuClickDrain,
     /// `Update`, after `CommandDrain`.
     KeepAlive,
     /// `Update`, after `KeepAlive`: settle, wander, physics.
@@ -34,7 +36,7 @@ pub enum VoidSystems {
     BlockEntitySync,
     /// `PostUpdate`: chunk load/unload packets, updates `LoadedChunks`.
     ChunkStreaming,
-    /// `PostUpdate`: resync of `InventoryDirty` players.
+    /// `PostUpdate`: container packets for changed inventories and open menus.
     InventorySync,
     /// `PostUpdate`: boss bar add/update/remove packets.
     BossBarSync,

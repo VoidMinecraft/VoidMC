@@ -15,6 +15,7 @@ pub mod events;
 pub mod inventory;
 pub mod item;
 pub mod item_behavior;
+pub mod menu;
 mod metrics;
 pub mod network;
 pub mod particles;
@@ -26,6 +27,7 @@ mod server;
 mod server_status;
 pub mod sounds;
 pub mod systems;
+pub(crate) mod window;
 pub mod world;
 
 pub use app::VoidServer;
@@ -49,11 +51,15 @@ pub use entity::{
     Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
     Passengers, Silent, TextAlignment, TextDisplay,
 };
-pub use inventory::Inventory;
+pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
 pub use item_behavior::{
     BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
     UseResult,
+};
+pub use menu::{
+    ContainerIds, ContainerInput, Menu, MenuClickContext, MenuClickEvent, MenuCloseReason,
+    MenuClosedEvent, MenuSlot, MenuType, Menus, OpenMenu, WorldMenus,
 };
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};

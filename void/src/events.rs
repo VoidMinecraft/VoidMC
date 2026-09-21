@@ -182,7 +182,7 @@ pub struct PlayerToggleFlyEvent {
 #[derive(Event)]
 pub struct PlayerCloseContainerEvent {
     pub entity: Entity,
-    pub window_id: u8,
+    pub container_id: i32,
 }
 
 /// Fired after a block has been mutated in the world. Carries enough context

@@ -96,7 +96,7 @@ player. None of them derive `Clone` or `Debug`.
 | `PlayerChangeSlotEvent` | `entity`, `slot` | Hotbar selection changed. |
 | `PlayerSwapHandsEvent` | `entity` | Swap main/off hand. |
 | `PlayerDropItemEvent` | `entity`, `drop_stack` | Drop key pressed (`drop_stack` = whole stack). |
-| `PlayerCloseContainerEvent` | `entity`, `window_id` | Client closed a container window. |
+| `PlayerCloseContainerEvent` | `entity`, `container_id` | Client closed a container window (raw packet; prefer `MenuClosedEvent`). |
 
 ### Items and entities
 

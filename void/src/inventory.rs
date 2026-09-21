@@ -11,91 +11,108 @@
 //!  45       offhand
 //! ```
 //!
-//! The selected hotbar key `k` (0..=8) maps to slot `36 + k`.
+//! The selected hotbar key `k` (0..=8) maps to slot `36 + k`. Every setter
+//! records what it changed; the inventory plugin turns that into the smallest
+//! matching packets each tick, so nothing else has to remember to resync.
 
 use bevy_ecs::prelude::*;
-use voidmc_protocol::slot::{DataComponent, Slot};
+use voidmc_protocol::serverbound::ContainerInput;
+use voidmc_protocol::slot::Slot;
+
+use bevy_ecs::system::SystemParam;
+use voidmc_protocol::clientbound::SetCooldown;
 
 use crate::item::{ItemId, ItemStack};
+use crate::menu::ContainerIds;
+use crate::players::{Players, WorldPlayers};
+use crate::window::{DragState, Layout, Window, deposit};
 
-/// A player's 46-slot inventory plus the cursor (drag) item and the selected
-/// hotbar index.
 #[derive(Component, Clone)]
+#[require(ContainerIds)]
 pub struct Inventory {
     slots: [ItemStack; Self::SIZE],
     cursor: ItemStack,
     selected_hotbar: u8,
     drag: Option<DragState>,
+    state_id: i32,
+    dirty: Dirty,
 }
 
-/// In-progress quick-craft (drag) state, accumulated across click packets.
-#[derive(Clone)]
-struct DragState {
-    kind: DragKind,
-    slots: Vec<usize>,
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(crate) struct Dirty {
+    pub slots: u64,
+    pub full: bool,
+    pub cursor: bool,
+    pub held: bool,
 }
 
-#[derive(Clone, Copy)]
-enum DragKind {
-    /// Split the cursor evenly across the painted slots.
-    Left,
-    /// Place one on each painted slot.
-    Right,
-    /// Fill each painted slot to max (creative).
-    Middle,
+impl Dirty {
+    #[cfg(test)]
+    pub fn is_clean(&self) -> bool {
+        self.slots == 0 && !self.full && !self.cursor && !self.held
+    }
+
+    pub fn slot_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..64).filter(|i| self.slots & (1 << i) != 0)
+    }
+
+    pub fn slot_count(&self) -> u32 {
+        self.slots.count_ones()
+    }
 }
 
 impl Inventory {
     pub const CRAFTING_OUTPUT: usize = 0;
-    pub const CRAFTING_GRID_START: usize = 1; // 1..=4
+    pub const CRAFTING_GRID_START: usize = 1;
     pub const ARMOR_HEAD: usize = 5;
     pub const ARMOR_CHEST: usize = 6;
     pub const ARMOR_LEGS: usize = 7;
     pub const ARMOR_FEET: usize = 8;
-    pub const MAIN_START: usize = 9; // 9..=35
-    pub const HOTBAR_START: usize = 36; // 36..=44
+    pub const MAIN_START: usize = 9;
+    pub const HOTBAR_START: usize = 36;
     pub const OFFHAND: usize = 45;
     pub const SIZE: usize = 46;
 
-    /// Default stack cap until per-item `max_stack_size` is wired up (M6).
-    const DEFAULT_MAX_STACK: u8 = 64;
-
-    /// An empty inventory.
     pub fn new() -> Self {
         Inventory {
             slots: std::array::from_fn(|_| ItemStack::EMPTY),
             cursor: ItemStack::EMPTY,
             selected_hotbar: 0,
             drag: None,
+            state_id: 0,
+            dirty: Dirty::default(),
         }
     }
 
-    /// The window slot index for hotbar key `hotbar` (0..=8).
     pub fn hotbar_slot_index(hotbar: u8) -> usize {
         Self::HOTBAR_START + (hotbar.min(8) as usize)
     }
 
-    /// Reads a slot. Out-of-range indices read as empty.
+    /// Out-of-range indices read as empty.
     pub fn get(&self, index: usize) -> &ItemStack {
         static EMPTY: ItemStack = ItemStack::EMPTY;
         self.slots.get(index).unwrap_or(&EMPTY)
     }
 
-    /// Writes a slot. Out-of-range indices are ignored.
+    /// Out-of-range indices are ignored; an unchanged value sends nothing.
     pub fn set(&mut self, index: usize, stack: ItemStack) {
-        if let Some(slot) = self.slots.get_mut(index) {
+        if let Some(slot) = self.slots.get_mut(index)
+            && *slot != stack
+        {
             *slot = stack;
+            self.dirty.slots |= 1 << index;
         }
     }
 
-    /// The cursor (held-while-dragging) item.
     pub fn cursor(&self) -> &ItemStack {
         &self.cursor
     }
 
-    /// Sets the cursor item.
     pub fn set_cursor(&mut self, stack: ItemStack) {
-        self.cursor = stack;
+        if self.cursor != stack {
+            self.cursor = stack;
+            self.dirty.cursor = true;
+        }
     }
 
     /// The selected hotbar key (0..=8).
@@ -103,441 +120,128 @@ impl Inventory {
         self.selected_hotbar
     }
 
-    /// Sets the selected hotbar key (clamped to 0..=8).
+    /// Moves the player's selection (clamped to 0..=8); the client is told
+    /// with Set Held Slot.
     pub fn set_selected_hotbar(&mut self, hotbar: u8) {
+        let hotbar = hotbar.min(8);
+        if self.selected_hotbar != hotbar {
+            self.selected_hotbar = hotbar;
+            self.dirty.held = true;
+        }
+    }
+
+    pub(crate) fn accept_selected_hotbar(&mut self, hotbar: u8) {
         self.selected_hotbar = hotbar.min(8);
     }
 
-    /// The item in the currently selected hotbar slot.
     pub fn held(&self) -> &ItemStack {
         &self.slots[Self::hotbar_slot_index(self.selected_hotbar)]
     }
 
-    /// Empties every slot and the cursor.
     pub fn clear(&mut self) {
         self.slots.fill(ItemStack::EMPTY);
         self.cursor = ItemStack::EMPTY;
+        self.dirty.full = true;
+        self.dirty.cursor = true;
     }
 
-    /// Storage slot indices in fill order: hotbar first, then main inventory.
     fn storage_order() -> impl Iterator<Item = usize> {
         (Self::HOTBAR_START..Self::OFFHAND).chain(Self::MAIN_START..Self::HOTBAR_START)
     }
 
-    /// Inserts `stack`, stacking onto matching slots then filling empty ones
-    /// (hotbar before main). Returns whatever did not fit.
+    /// Stacks onto matching slots then fills empty ones (hotbar before main).
+    /// Returns whatever did not fit.
     pub fn give(&mut self, mut stack: ItemStack) -> ItemStack {
         if stack.is_empty() {
             return ItemStack::EMPTY;
         }
-        let max = Self::max_stack(&stack);
-
-        // Stack onto existing matching slots.
-        for i in Self::storage_order() {
-            if stack.count == 0 {
-                return ItemStack::EMPTY;
-            }
-            let slot = &mut self.slots[i];
-            if !slot.is_empty()
-                && slot.item == stack.item
-                && slot.components == stack.components
-                && slot.count < max
-            {
-                let moved = (max - slot.count).min(stack.count);
-                slot.count += moved;
-                stack.count -= moved;
-            }
-        }
-
-        // Fill empty slots.
-        for i in Self::storage_order() {
-            if stack.count == 0 {
-                return ItemStack::EMPTY;
-            }
-            if self.slots[i].is_empty() {
-                let moved = stack.count.min(max);
-                self.slots[i] = ItemStack {
-                    item: stack.item,
-                    count: moved,
-                    components: stack.components.clone(),
-                };
-                stack.count -= moved;
-            }
-        }
-
+        let before = self.slots.clone();
+        let order: Vec<usize> = Self::storage_order().collect();
+        deposit(&mut self.slots, &mut stack, &order);
+        self.mark_changed_since(&before);
         stack
     }
 
-    /// The full slot list in window order, as protocol [`Slot`]s, for
-    /// `SetContainerContent`.
     pub fn to_slots(&self) -> Vec<Slot> {
         self.slots.iter().map(ItemStack::to_slot).collect()
     }
 
-    // -- Click handling (window id 0) ---------------------------------------
-
-    /// Applies a `ClickContainer` action to this inventory and returns any items
-    /// the action dropped into the world (for the caller to spawn as entities).
-    ///
-    /// `mode` is the `ContainerInput`: 0 pickup, 1 quick-move, 2 swap, 3 clone,
-    /// 4 throw, 5 quick-craft (drag), 6 pickup-all.
-    pub fn apply_click(&mut self, slot: i16, button: i8, mode: i32) -> Vec<ItemStack> {
-        let valid = (slot >= 0 && (slot as usize) < Self::SIZE).then_some(slot as usize);
-        match mode {
-            0 => match valid {
-                Some(s) => self.click_pickup(s, button == 1),
-                None => self.drop_cursor(button == 1),
-            },
-            1 => {
-                if let Some(s) = valid {
-                    self.quick_move(s);
-                }
-                Vec::new()
-            }
-            2 => {
-                if let Some(s) = valid {
-                    self.click_swap(s, button);
-                }
-                Vec::new()
-            }
-            3 => {
-                if let Some(s) = valid {
-                    self.click_clone(s);
-                }
-                Vec::new()
-            }
-            4 => match valid {
-                Some(s) => self.click_throw(s, button),
-                None => Vec::new(),
-            },
-            5 => {
-                self.quick_craft(slot, button);
-                Vec::new()
-            }
-            6 => {
-                if valid.is_some() {
-                    self.pickup_all();
-                }
-                Vec::new()
-            }
-            _ => Vec::new(),
+    /// Applies a Container Click on window 0 and returns the stacks it threw
+    /// into the world. `creative` allows cloning and middle-button drags.
+    pub fn apply_click(
+        &mut self,
+        slot: i16,
+        button: i8,
+        input: ContainerInput,
+        creative: bool,
+    ) -> Vec<ItemStack> {
+        let before = self.slots.clone();
+        let cursor_before = self.cursor.clone();
+        let dropped = Window {
+            slots: &mut self.slots,
+            cursor: &mut self.cursor,
+            drag: &mut self.drag,
+            layout: &Layout::PLAYER,
+            creative,
         }
+        .apply_click(slot, button, input);
+        self.mark_changed_since(&before);
+        if self.cursor != cursor_before {
+            self.dirty.cursor = true;
+        }
+        dropped
     }
 
-    /// The maximum stack size for the given stack's item (64 by default).
-    fn max_stack(stack: &ItemStack) -> u8 {
-        if stack.is_empty() {
-            return Self::DEFAULT_MAX_STACK;
-        }
-        voidmc_data::item_max_stack(voidmc_data::Version::V26_1_2, stack.item.0)
-    }
-
-    fn same_item(a: &ItemStack, b: &ItemStack) -> bool {
-        !a.is_empty() && a.item == b.item && a.components == b.components
-    }
-
-    fn click_pickup(&mut self, slot: usize, right: bool) -> Vec<ItemStack> {
-        let max = Self::max_stack(if self.cursor.is_empty() {
-            &self.slots[slot]
-        } else {
-            &self.cursor
-        });
-        if self.cursor.is_empty() {
-            if self.slots[slot].is_empty() {
-                return Vec::new();
-            }
-            if right {
-                let total = self.slots[slot].count;
-                let take = total.div_ceil(2);
-                self.cursor = ItemStack {
-                    item: self.slots[slot].item,
-                    count: take,
-                    components: self.slots[slot].components.clone(),
-                };
-                let left = total - take;
-                self.slots[slot] = if left == 0 {
-                    ItemStack::EMPTY
-                } else {
-                    ItemStack {
-                        item: self.slots[slot].item,
-                        count: left,
-                        components: self.slots[slot].components.clone(),
-                    }
-                };
-            } else {
-                self.cursor = std::mem::replace(&mut self.slots[slot], ItemStack::EMPTY);
-            }
-        } else if self.slots[slot].is_empty() {
-            if right {
-                self.slots[slot] = ItemStack {
-                    item: self.cursor.item,
-                    count: 1,
-                    components: self.cursor.components.clone(),
-                };
-                self.shrink_cursor(1);
-            } else {
-                self.slots[slot] = std::mem::replace(&mut self.cursor, ItemStack::EMPTY);
-            }
-        } else if Self::same_item(&self.slots[slot], &self.cursor) {
-            let space = max.saturating_sub(self.slots[slot].count);
-            if space > 0 {
-                let moved = if right { 1 } else { self.cursor.count }.min(space);
-                self.slots[slot].count += moved;
-                self.shrink_cursor(moved);
-            }
-        } else {
-            std::mem::swap(&mut self.slots[slot], &mut self.cursor);
-        }
-        Vec::new()
-    }
-
-    fn shrink_cursor(&mut self, n: u8) {
-        self.cursor.count = self.cursor.count.saturating_sub(n);
-        if self.cursor.count == 0 {
-            self.cursor = ItemStack::EMPTY;
-        }
-    }
-
-    /// Merges/fills `stack` into the given slot indices (merge first, then empties).
-    fn deposit(&mut self, stack: &mut ItemStack, indices: &[usize]) {
-        let max = Self::max_stack(stack);
-        for &i in indices {
-            if stack.count == 0 {
-                return;
-            }
-            let slot = &mut self.slots[i];
-            if !slot.is_empty()
-                && slot.item == stack.item
-                && slot.components == stack.components
-                && slot.count < max
-            {
-                let moved = (max - slot.count).min(stack.count);
-                slot.count += moved;
-                stack.count -= moved;
-            }
-        }
-        for &i in indices {
-            if stack.count == 0 {
-                return;
-            }
-            if self.slots[i].is_empty() {
-                let moved = stack.count.min(max);
-                self.slots[i] = ItemStack {
-                    item: stack.item,
-                    count: moved,
-                    components: stack.components.clone(),
-                };
-                stack.count -= moved;
+    fn mark_changed_since(&mut self, before: &[ItemStack; Self::SIZE]) {
+        for (i, (old, new)) in before.iter().zip(&self.slots).enumerate() {
+            if old != new {
+                self.dirty.slots |= 1 << i;
             }
         }
     }
 
-    fn quick_move(&mut self, from: usize) {
-        let mut stack = std::mem::replace(&mut self.slots[from], ItemStack::EMPTY);
-        if stack.is_empty() {
-            return;
-        }
-        let targets: Vec<usize> = if (Self::HOTBAR_START..Self::OFFHAND).contains(&from) {
-            (Self::MAIN_START..Self::HOTBAR_START).collect()
-        } else if (Self::MAIN_START..Self::HOTBAR_START).contains(&from) {
-            (Self::HOTBAR_START..Self::OFFHAND).collect()
-        } else {
-            (Self::MAIN_START..Self::HOTBAR_START)
-                .chain(Self::HOTBAR_START..Self::OFFHAND)
-                .collect()
-        };
-        self.deposit(&mut stack, &targets);
-        self.slots[from] = stack;
+    pub(crate) fn slots(&self) -> &[ItemStack; Self::SIZE] {
+        &self.slots
     }
 
-    fn click_swap(&mut self, slot: usize, button: i8) {
-        let target = if button == 40 {
-            Self::OFFHAND
-        } else if (0..=8).contains(&button) {
-            Self::hotbar_slot_index(button as u8)
-        } else {
-            return;
-        };
-        if target != slot {
-            self.slots.swap(slot, target);
-        }
+    pub(crate) fn cursor_mut(&mut self) -> &mut ItemStack {
+        &mut self.cursor
     }
 
-    fn click_clone(&mut self, slot: usize) {
-        if self.cursor.is_empty() && !self.slots[slot].is_empty() {
-            self.cursor = ItemStack {
-                item: self.slots[slot].item,
-                count: Self::max_stack(&self.slots[slot]),
-                components: self.slots[slot].components.clone(),
-            };
-        }
+    pub(crate) fn mark_slot(&mut self, index: usize) {
+        self.dirty.slots |= 1 << index;
     }
 
-    fn click_throw(&mut self, slot: usize, button: i8) -> Vec<ItemStack> {
-        if self.slots[slot].is_empty() {
-            return Vec::new();
-        }
-        if button == 1 {
-            vec![std::mem::replace(&mut self.slots[slot], ItemStack::EMPTY)]
-        } else {
-            let dropped = ItemStack {
-                item: self.slots[slot].item,
-                count: 1,
-                components: self.slots[slot].components.clone(),
-            };
-            self.slots[slot].count -= 1;
-            if self.slots[slot].count == 0 {
-                self.slots[slot] = ItemStack::EMPTY;
-            }
-            vec![dropped]
-        }
+    pub(crate) fn mark_cursor(&mut self) {
+        self.dirty.cursor = true;
     }
 
-    fn drop_cursor(&mut self, single: bool) -> Vec<ItemStack> {
-        if self.cursor.is_empty() {
-            return Vec::new();
-        }
-        if single {
-            let dropped = ItemStack {
-                item: self.cursor.item,
-                count: 1,
-                components: self.cursor.components.clone(),
-            };
-            self.shrink_cursor(1);
-            vec![dropped]
-        } else {
-            vec![std::mem::replace(&mut self.cursor, ItemStack::EMPTY)]
-        }
+    pub(crate) fn mark_full(&mut self) {
+        self.dirty.full = true;
     }
 
-    fn pickup_all(&mut self) {
-        if self.cursor.is_empty() {
-            return;
-        }
-        let max = Self::max_stack(&self.cursor);
-        let item = self.cursor.item;
-        let components = self.cursor.components.clone();
-        for i in 0..Self::SIZE {
-            if self.cursor.count >= max {
-                break;
-            }
-            if i == Self::CRAFTING_OUTPUT {
-                continue;
-            }
-            let slot = &mut self.slots[i];
-            if !slot.is_empty() && slot.item == item && slot.components == components {
-                let moved = (max - self.cursor.count).min(slot.count);
-                self.cursor.count += moved;
-                slot.count -= moved;
-                if slot.count == 0 {
-                    *slot = ItemStack::EMPTY;
-                }
-            }
-        }
+    pub(crate) fn state_id(&self) -> i32 {
+        self.state_id
     }
 
-    fn quick_craft(&mut self, slot: i16, button: i8) {
-        match button {
-            0 | 4 | 8 => {
-                let kind = match button {
-                    0 => DragKind::Left,
-                    4 => DragKind::Right,
-                    _ => DragKind::Middle,
-                };
-                self.drag = Some(DragState {
-                    kind,
-                    slots: Vec::new(),
-                });
-            }
-            1 | 5 | 9 => {
-                if slot >= 0
-                    && (slot as usize) < Self::SIZE
-                    && let Some(drag) = &mut self.drag
-                {
-                    let idx = slot as usize;
-                    if !drag.slots.contains(&idx) {
-                        drag.slots.push(idx);
-                    }
-                }
-            }
-            2 | 6 | 10 => {
-                if let Some(drag) = self.drag.take() {
-                    self.apply_drag(drag);
-                }
-            }
-            _ => self.drag = None,
-        }
+    pub(crate) fn next_state_id(&mut self) -> i32 {
+        self.state_id = (self.state_id + 1) & 32767;
+        self.state_id
     }
 
-    fn apply_drag(&mut self, drag: DragState) {
-        if self.cursor.is_empty() || drag.slots.is_empty() {
-            return;
-        }
-        let max = Self::max_stack(&self.cursor);
-        let item = self.cursor.item;
-        let components = self.cursor.components.clone();
-        let eligible: Vec<usize> = drag
-            .slots
-            .into_iter()
-            .filter(|&i| {
-                let s = &self.slots[i];
-                s.is_empty() || (s.item == item && s.components == components && s.count < max)
-            })
-            .collect();
-        if eligible.is_empty() {
-            return;
-        }
-
-        match drag.kind {
-            DragKind::Left => {
-                let each = self.cursor.count / eligible.len() as u8;
-                for i in eligible {
-                    if self.cursor.count == 0 || each == 0 {
-                        break;
-                    }
-                    let base = self.slots[i].count;
-                    let moved = each.min(max - base).min(self.cursor.count);
-                    if moved == 0 {
-                        continue;
-                    }
-                    self.add_to_slot(i, &item, &components, moved);
-                    self.cursor.count -= moved;
-                }
-            }
-            DragKind::Right => {
-                for i in eligible {
-                    if self.cursor.count == 0 {
-                        break;
-                    }
-                    self.add_to_slot(i, &item, &components, 1);
-                    self.cursor.count -= 1;
-                }
-            }
-            DragKind::Middle => {
-                for i in eligible {
-                    self.slots[i] = ItemStack {
-                        item,
-                        count: max,
-                        components: components.clone(),
-                    };
-                }
-            }
-        }
-        if self.cursor.count == 0 {
-            self.cursor = ItemStack::EMPTY;
-        }
+    pub(crate) fn take_dirty(&mut self) -> Dirty {
+        std::mem::take(&mut self.dirty)
     }
 
-    fn add_to_slot(&mut self, i: usize, item: &ItemId, components: &[DataComponent], n: u8) {
-        if self.slots[i].is_empty() {
-            self.slots[i] = ItemStack {
-                item: *item,
-                count: n,
-                components: components.to_vec(),
-            };
-        } else {
-            self.slots[i].count += n;
-        }
+    /// Puts back changes a menu window could not show, for the resync that
+    /// follows its close.
+    pub(crate) fn retain_dirty(&mut self, slots: u64) {
+        self.dirty.slots |= slots;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dirty(&self) -> Dirty {
+        self.dirty
     }
 }
 
@@ -547,15 +251,124 @@ impl Default for Inventory {
     }
 }
 
+/// A Set Cooldown request: the client greys the item out for `ticks`.
+/// Items share a cooldown group named after the item unless their
+/// `use_cooldown` component says otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cooldown {
+    group: Option<String>,
+    ticks: i32,
+}
+
+impl Cooldown {
+    pub fn item(item: ItemId) -> Self {
+        Cooldown {
+            group: item.name().map(str::to_owned),
+            ticks: 0,
+        }
+    }
+
+    pub fn group(name: impl Into<String>) -> Self {
+        let name = name.into();
+        let group = if name.contains(':') {
+            name
+        } else {
+            format!("minecraft:{name}")
+        };
+        Cooldown {
+            group: Some(group),
+            ticks: 0,
+        }
+    }
+
+    pub fn ticks(mut self, ticks: u32) -> Self {
+        self.ticks = ticks.min(i32::MAX as u32) as i32;
+        self
+    }
+
+    fn packet(&self) -> Option<SetCooldown> {
+        let Some(group) = &self.group else {
+            debug_assert!(false, "cooldown for an unknown item");
+            tracing::warn!("Cooldown for an unknown item; not sent");
+            return None;
+        };
+        Some(SetCooldown {
+            cooldown_group: group.clone(),
+            duration: self.ticks,
+        })
+    }
+}
+
+#[derive(SystemParam)]
+pub struct Inventories<'w, 's> {
+    players: Players<'w, 's>,
+    inventories: Query<'w, 's, &'static mut Inventory>,
+}
+
+impl Inventories<'_, '_> {
+    /// Selects hotbar key `hotbar` (0..=8) for `player`; the client is told
+    /// with Set Held Slot at the end of the tick.
+    pub fn set_held_slot(&mut self, player: Entity, hotbar: u8) -> bool {
+        match self.inventories.get_mut(player) {
+            Ok(mut inv) => {
+                inv.set_selected_hotbar(hotbar);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    pub fn cooldown(&self, player: Entity, cooldown: Cooldown) -> bool {
+        match cooldown.packet() {
+            Some(packet) => {
+                self.players.send(player, packet);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+pub struct WorldInventories<'w> {
+    world: &'w mut World,
+}
+
+impl<'w> WorldInventories<'w> {
+    pub fn new(world: &'w mut World) -> Self {
+        Self { world }
+    }
+
+    pub fn set_held_slot(&mut self, player: Entity, hotbar: u8) -> bool {
+        match self.world.get_mut::<Inventory>(player) {
+            Some(mut inv) => {
+                inv.set_selected_hotbar(hotbar);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn cooldown(&self, player: Entity, cooldown: Cooldown) -> bool {
+        match cooldown.packet() {
+            Some(packet) => {
+                WorldPlayers::new(self.world).send(player, packet);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::item::ItemId;
 
     #[test]
     fn hotbar_index_mapping() {
         assert_eq!(Inventory::hotbar_slot_index(0), 36);
         assert_eq!(Inventory::hotbar_slot_index(8), 44);
-        assert_eq!(Inventory::hotbar_slot_index(20), 44); // clamped
+        assert_eq!(Inventory::hotbar_slot_index(20), 44);
     }
 
     #[test]
@@ -568,23 +381,18 @@ mod tests {
     #[test]
     fn give_stacks_then_fills_and_returns_leftover() {
         let mut inv = Inventory::new();
-        // First give lands in the first hotbar slot.
         let left = inv.give(ItemStack::of("minecraft:stone", 10).unwrap());
         assert!(left.is_empty());
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 10);
-
-        // Second give stacks onto it up to 64.
         let left = inv.give(ItemStack::of("minecraft:stone", 60).unwrap());
         assert!(left.is_empty());
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 64);
-        // Overflow (6) spills into the next slot.
         assert_eq!(inv.get(Inventory::HOTBAR_START + 1).count, 6);
     }
 
     #[test]
     fn give_overflows_when_full() {
         let mut inv = Inventory::new();
-        // Fill every storage slot (hotbar 9 + main 27 = 36 slots) with full stacks.
         for _ in 0..36 {
             inv.give(ItemStack::of("minecraft:dirt", 64).unwrap());
         }
@@ -602,7 +410,7 @@ mod tests {
         inv.set_selected_hotbar(3);
         assert_eq!(
             inv.held().item,
-            crate::item::ItemId::from_name("minecraft:stone").unwrap()
+            ItemId::from_name("minecraft:stone").unwrap()
         );
     }
 
@@ -617,12 +425,10 @@ mod tests {
     fn left_click_picks_up_then_places() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(10));
-        // Left-click the slot: whole stack goes to the cursor.
-        inv.apply_click(H0, 0, 0);
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
         assert!(inv.get(Inventory::HOTBAR_START).is_empty());
         assert_eq!(inv.cursor().count, 10);
-        // Left-click an empty slot: cursor drops into it.
-        inv.apply_click(M0, 0, 0);
+        inv.apply_click(M0, 0, ContainerInput::Pickup, false);
         assert_eq!(inv.get(Inventory::MAIN_START).count, 10);
         assert!(inv.cursor().is_empty());
     }
@@ -632,20 +438,20 @@ mod tests {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(60));
         inv.set(Inventory::MAIN_START, stone(20));
-        inv.apply_click(M0, 0, 0); // pick up 20
-        inv.apply_click(H0, 0, 0); // deposit onto the 60 (caps at 64)
+        inv.apply_click(M0, 0, ContainerInput::Pickup, false);
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 64);
-        assert_eq!(inv.cursor().count, 16); // 20 - 4 fit
+        assert_eq!(inv.cursor().count, 16);
     }
 
     #[test]
     fn right_click_splits_and_places_one() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(9));
-        inv.apply_click(H0, 1, 0); // right-click: take ceil(9/2) = 5
+        inv.apply_click(H0, 1, ContainerInput::Pickup, false);
         assert_eq!(inv.cursor().count, 5);
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 4);
-        inv.apply_click(M0, 1, 0); // right-click empty slot: place one
+        inv.apply_click(M0, 1, ContainerInput::Pickup, false);
         assert_eq!(inv.get(Inventory::MAIN_START).count, 1);
         assert_eq!(inv.cursor().count, 4);
     }
@@ -654,7 +460,7 @@ mod tests {
     fn number_key_swaps_with_hotbar() {
         let mut inv = Inventory::new();
         inv.set(Inventory::MAIN_START, stone(5));
-        inv.apply_click(M0, 0, 2); // swap mode, button 0 -> hotbar slot 0
+        inv.apply_click(M0, 0, ContainerInput::Swap, false);
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 5);
         assert!(inv.get(Inventory::MAIN_START).is_empty());
     }
@@ -663,7 +469,7 @@ mod tests {
     fn shift_click_moves_main_to_hotbar() {
         let mut inv = Inventory::new();
         inv.set(Inventory::MAIN_START, stone(32));
-        inv.apply_click(M0, 0, 1); // quick-move
+        inv.apply_click(M0, 0, ContainerInput::QuickMove, false);
         assert!(inv.get(Inventory::MAIN_START).is_empty());
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 32);
     }
@@ -672,7 +478,7 @@ mod tests {
     fn throw_drops_items() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(5));
-        let dropped = inv.apply_click(H0, 1, 4); // throw whole stack
+        let dropped = inv.apply_click(H0, 1, ContainerInput::Throw, false);
         assert_eq!(dropped.len(), 1);
         assert_eq!(dropped[0].count, 5);
         assert!(inv.get(Inventory::HOTBAR_START).is_empty());
@@ -684,15 +490,15 @@ mod tests {
         inv.set(Inventory::MAIN_START, stone(10));
         inv.set(Inventory::MAIN_START + 1, stone(20));
         inv.set(Inventory::MAIN_START + 2, stone(5));
-        inv.apply_click((Inventory::MAIN_START + 2) as i16, 0, 0); // cursor = 5
-        inv.apply_click((Inventory::MAIN_START + 2) as i16, 0, 6); // pickup-all
+        let slot = (Inventory::MAIN_START + 2) as i16;
+        inv.apply_click(slot, 0, ContainerInput::Pickup, false);
+        inv.apply_click(slot, 0, ContainerInput::PickupAll, false);
         assert_eq!(inv.cursor().count, 35);
     }
 
     #[test]
     fn give_respects_per_item_max_stack() {
         let mut inv = Inventory::new();
-        // Ender pearls cap at 16, not 64.
         let left = inv.give(ItemStack::of("minecraft:ender_pearl", 20).unwrap());
         assert!(left.is_empty());
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 16);
@@ -703,13 +509,77 @@ mod tests {
     fn left_drag_distributes_evenly() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(4));
-        inv.apply_click(H0, 0, 0); // cursor = 4
-        inv.apply_click(-999, 0, 5); // start left drag
-        inv.apply_click(M0, 1, 5); // paint slot 9
-        inv.apply_click(M0 + 1, 1, 5); // paint slot 10
-        inv.apply_click(-999, 2, 5); // end
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
+        inv.apply_click(-999, 0, ContainerInput::QuickCraft, false);
+        inv.apply_click(M0, 1, ContainerInput::QuickCraft, false);
+        inv.apply_click(M0 + 1, 1, ContainerInput::QuickCraft, false);
+        inv.apply_click(-999, 2, ContainerInput::QuickCraft, false);
         assert_eq!(inv.get(Inventory::MAIN_START).count, 2);
         assert_eq!(inv.get(Inventory::MAIN_START + 1).count, 2);
         assert!(inv.cursor().is_empty());
+    }
+
+    #[test]
+    fn setters_mark_only_what_changed() {
+        let mut inv = Inventory::new();
+        assert!(inv.dirty().is_clean());
+        inv.set(Inventory::MAIN_START, stone(1));
+        inv.set(Inventory::MAIN_START, stone(1));
+        inv.set(Inventory::SIZE + 3, stone(1));
+        let dirty = inv.dirty();
+        assert_eq!(dirty.slot_indices().collect::<Vec<_>>(), vec![9]);
+        assert!(!dirty.cursor && !dirty.held && !dirty.full);
+
+        inv.set_cursor(stone(2));
+        inv.set_selected_hotbar(4);
+        inv.set_selected_hotbar(4);
+        let dirty = inv.take_dirty();
+        assert!(dirty.cursor && dirty.held);
+        assert!(inv.dirty().is_clean());
+
+        inv.accept_selected_hotbar(2);
+        assert_eq!(inv.selected_hotbar(), 2);
+        assert!(inv.dirty().is_clean());
+    }
+
+    #[test]
+    fn give_and_clicks_mark_touched_slots() {
+        let mut inv = Inventory::new();
+        inv.give(stone(70));
+        assert_eq!(inv.dirty().slot_indices().collect::<Vec<_>>(), vec![36, 37]);
+        inv.take_dirty();
+
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
+        let dirty = inv.take_dirty();
+        assert_eq!(dirty.slot_indices().collect::<Vec<_>>(), vec![36]);
+        assert!(dirty.cursor);
+
+        inv.apply_click(-999, 5, ContainerInput::QuickCraft, false);
+        assert!(inv.take_dirty().is_clean());
+
+        inv.clear();
+        assert!(inv.dirty().full);
+    }
+
+    #[test]
+    fn state_id_wraps_like_vanilla() {
+        let mut inv = Inventory::new();
+        assert_eq!(inv.next_state_id(), 1);
+        for _ in 0..32766 {
+            inv.next_state_id();
+        }
+        assert_eq!(inv.state_id(), 32767);
+        assert_eq!(inv.next_state_id(), 0);
+    }
+
+    #[test]
+    fn cooldown_builds_the_group_from_the_item_name() {
+        let pearl = ItemId::from_name("minecraft:ender_pearl").unwrap();
+        let packet = Cooldown::item(pearl).ticks(20).packet().unwrap();
+        assert_eq!(packet.cooldown_group, "minecraft:ender_pearl");
+        assert_eq!(packet.duration, 20);
+        let packet = Cooldown::group("chorus_fruit").packet().unwrap();
+        assert_eq!(packet.cooldown_group, "minecraft:chorus_fruit");
+        assert_eq!(packet.duration, 0);
     }
 }

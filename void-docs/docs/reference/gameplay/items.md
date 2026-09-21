@@ -47,13 +47,45 @@ fn give_kit(mut q: Query<&mut Inventory>, player: Entity) {
 ```
 
 Per-item stack caps are respected (`give` of 20 ender pearls leaves a 16 + 4
-split). After mutating an inventory outside the built-in handlers, insert the
-`voidmc::plugins::inventory::InventoryDirty` marker to re-sync the client.
+split).
+
+### Syncing
+
+There is nothing to flag. Every setter (`set`, `set_cursor`, `give`, `clear`,
+`set_selected_hotbar`, the click handlers) records what it changed, and the
+`InventorySync` phase in `PostUpdate` sends the smallest matching packets once
+per tick: one `SetContainerSlot` per changed slot, `SetCursorItem` for the
+cursor, `SetHeldSlot` for the selection, and a full `SetContainerContent` only
+when more than half the window changed or `clear` was called. Setting a slot to
+the value it already holds sends nothing. While a [menu](menus.md) is open,
+main-inventory and hotbar changes go through the menu window instead; the rest
+is resent when the menu closes.
 
 The full vanilla click set is implemented server-authoritatively
 (`ClickContainer`): pickup (left/right split & merge), shift quick-move, number-
 key/offhand swap, creative clone, throw, multi-slot drag, and double-click
-pickup-all.
+pickup-all. A click carrying a stale state id is answered with a full resync,
+as in vanilla.
+
+### Held slot and cooldowns
+
+`Inventory::selected_hotbar()` is the one source of truth for the selected
+hotbar key; the client's own changes land there through
+`PlayerChangeSlotEvent`. To move the selection from the server use the
+`Inventories` system param (or `WorldInventories` from `&mut World`):
+
+```rust
+use voidmc::{Cooldown, Inventories, ItemId};
+
+fn on_use(mut inventories: Inventories, player: Entity) {
+    inventories.set_held_slot(player, 3);
+    let pearl = ItemId::from_name("minecraft:ender_pearl").unwrap();
+    inventories.cooldown(player, Cooldown::item(pearl).ticks(20));
+}
+```
+
+`Cooldown::item` uses the item's own cooldown group; `Cooldown::group("name")`
+targets a shared group (`use_cooldown` component). `ticks(0)` clears it.
 
 ## Overriding item behaviour
 
@@ -128,4 +160,5 @@ Observe these to react to inventory/item activity:
 
 - `BlockPlaceEvent` / `BlockBreakEvent` — committed world changes.
 - `ItemDropEvent` — an item being dropped into the world.
-- `PlayerChangeSlotEvent` — the selected hotbar slot changed.
+- `PlayerChangeSlotEvent` — the client changed its selected hotbar slot.
+- `MenuClickEvent` / `MenuClosedEvent` — see [Menus](menus.md).
