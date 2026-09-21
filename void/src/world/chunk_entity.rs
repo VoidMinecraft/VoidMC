@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use bevy_ecs::prelude::*;
 use tracing::instrument;
 use voidmc_protocol::clientbound::chunk::{
-    Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData,
-    PaletteData, blocks,
+    Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData, blocks,
 };
 
 use super::chunk_pos::ChunkPos;
@@ -95,7 +94,7 @@ impl ChunkData {
     }
 }
 
-fn world_y_to_section(world_y: i32) -> Option<(usize, u8)> {
+pub(crate) fn world_y_to_section(world_y: i32) -> Option<(usize, u8)> {
     if !(CHUNK_MIN_Y..=CHUNK_MAX_Y).contains(&world_y) {
         return None;
     }
@@ -128,35 +127,7 @@ fn block_state_in_section(
     local_y: usize,
     local_z: usize,
 ) -> i32 {
-    match &section.block_state {
-        PaletteData::SingleValue(id) => *id,
-        PaletteData::Indirect {
-            bits_per_entry,
-            palette,
-            data,
-        } => {
-            let bits = *bits_per_entry as usize;
-            let block_index = local_y * 256 + local_z * 16 + local_x;
-            let bit_index = block_index * bits;
-            let long_idx = bit_index / 64;
-            let bit_offset = bit_index % 64;
-            let mask = if bits == 64 {
-                u64::MAX
-            } else {
-                (1u64 << bits) - 1
-            };
-
-            let raw = if bit_offset + bits <= 64 {
-                (data.get(long_idx).copied().unwrap_or(0) >> bit_offset) & mask
-            } else {
-                let low = data.get(long_idx).copied().unwrap_or(0) >> bit_offset;
-                let high = data.get(long_idx + 1).copied().unwrap_or(0) << (64 - bit_offset);
-                (low | high) & mask
-            };
-
-            palette.get(raw as usize).copied().unwrap_or(blocks::AIR)
-        }
-    }
+    section.get_block_state(local_x as u8, local_y as u8, local_z as u8)
 }
 
 /// Returns the block state at the given world coordinate, if the chunk is loaded.

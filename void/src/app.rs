@@ -11,6 +11,7 @@ use crate::config::{ServerConfig, ServerConfigResource};
 use crate::metrics::MetricsPlugin;
 use crate::network::{IncomingPacket, NetworkPlugin, OutgoingPacket};
 use crate::plugins::DefaultPlugins;
+use crate::registry::RegistryDataStore;
 use crate::server_status::ServerStatusSnapshot;
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
@@ -140,6 +141,7 @@ fn init_world(
     mut chunk_index: ResMut<ChunkIndex>,
     world_gen: Res<WorldGen>,
     loader: Option<Res<ChunkLoaderResource>>,
+    registries: Res<RegistryDataStore>,
     config: Res<ServerConfigResource>,
 ) {
     let spawn_chunk = ChunkPos::from_block(config.spawn_x, config.spawn_z);
@@ -147,8 +149,9 @@ fn init_world(
 
     let mut count = 0;
     for pos in spawn_chunk.chunks_in_radius(radius) {
-        let chunk_data =
+        let mut chunk_data =
             load_or_generate(loader.as_deref(), &world_gen, DimensionId::Overworld, &pos);
+        chunk_data.normalize_biomes(registries.biome_count());
         let entity = commands
             .spawn((
                 ChunkPosition(pos),

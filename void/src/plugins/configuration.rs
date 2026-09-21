@@ -50,6 +50,7 @@ fn handle_known_packs(
     players: Players,
     registries: Res<RegistryDataStore>,
 ) {
+    registries.mark_sent();
     for registry in &registries.registries {
         players.send(event.entity, registry.clone());
     }

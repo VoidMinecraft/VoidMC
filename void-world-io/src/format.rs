@@ -173,16 +173,34 @@ fn palette_to_nbt(palette: &PaletteData) -> Compound {
                 ),
             ],
         },
+        PaletteData::Direct {
+            bits_per_entry,
+            data,
+        } => Compound {
+            tags: vec![
+                ("bits".into(), Tag::Byte(*bits_per_entry)),
+                (
+                    "data".into(),
+                    Tag::LongArray(RawVec::from_vec(data.iter().map(|&v| v as i64).collect())),
+                ),
+            ],
+        },
     }
 }
 
 fn palette_from_nbt(c: &Compound) -> Result<PaletteData> {
     if let Some(bits) = get_byte_opt(c, "bits") {
-        let palette = get_int_array(c, "palette")?;
         let data = get_long_array(c, "data")?
             .into_iter()
             .map(|v| v as u64)
             .collect();
+        if field(c, "palette").is_none() {
+            return Ok(PaletteData::Direct {
+                bits_per_entry: bits,
+                data,
+            });
+        }
+        let palette = get_int_array(c, "palette")?;
         Ok(PaletteData::Indirect {
             bits_per_entry: bits,
             palette,

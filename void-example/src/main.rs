@@ -16,6 +16,7 @@ use voidmc::{
 };
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
+mod biome;
 mod boss_bar;
 mod circle;
 mod sound;
@@ -68,7 +69,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .spawn_chunk_radius(4)
         .initial_chunk_radius(4)
         .motd("Void Example Server")
-        .max_players(100);
+        .max_players(100)
+        .configure_registries(biome::register_crimson_sky);
 
     if metrics_env.enabled() {
         config_builder = config_builder.metrics_debug(true);
@@ -92,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(circle::circle_command());
             registry.register(boss_bar::bossbar_command());
             registry.register(sound::sound_command());
+            registry.register(biome::biome_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);

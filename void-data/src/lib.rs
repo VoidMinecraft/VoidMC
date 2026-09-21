@@ -9,6 +9,9 @@
 
 use std::sync::OnceLock;
 
+mod biome_attributes;
+pub use biome_attributes::*;
+
 use ussr_nbt::owned::Nbt;
 
 include!(concat!(env!("OUT_DIR"), "/registries.rs"));

@@ -8,6 +8,7 @@ use crate::components::{
 };
 use crate::config::ServerConfigResource;
 use crate::players::Players;
+use crate::registry::RegistryDataStore;
 use crate::world::{
     ChunkData, ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition,
     generation::WorldGen, load_or_generate,
@@ -26,6 +27,7 @@ use crate::world::{
         commands,
         world_gen,
         loader,
+        registries,
         config
     )
 )]
@@ -50,6 +52,7 @@ pub fn stream_chunks(
     mut commands: Commands,
     world_gen: Res<WorldGen>,
     loader: Option<Res<ChunkLoaderResource>>,
+    registries: Option<Res<RegistryDataStore>>,
     config: Res<ServerConfigResource>,
 ) {
     let max_chunk_generations = config.max_chunk_generations_per_tick;
@@ -138,7 +141,10 @@ pub fn stream_chunks(
                     continue;
                 }
 
-                let chunk_data = load_or_generate(loader.as_deref(), &world_gen, dim_id, pos);
+                let mut chunk_data = load_or_generate(loader.as_deref(), &world_gen, dim_id, pos);
+                if let Some(registries) = &registries {
+                    chunk_data.normalize_biomes(registries.biome_count());
+                }
                 let packet = chunk_data.to_packet(pos.x, pos.z);
                 let entity = commands
                     .spawn((ChunkPosition(*pos), chunk_data, ChunkDimension(dim_id)))

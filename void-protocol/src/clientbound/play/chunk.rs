@@ -19,6 +19,13 @@ pub mod biomes {
         voidmc_data::registry_index(voidmc_data::Version::V26_1_2, REGISTRY, name)
     }
 
+    /// Entry count of the shipped biome registry (before any custom biome).
+    pub fn vanilla_count() -> usize {
+        voidmc_data::registry(voidmc_data::Version::V26_1_2, REGISTRY)
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
     fn resolve(cell: &OnceLock<i32>, name: &str) -> i32 {
         *cell.get_or_init(|| {
             id(name).unwrap_or_else(|| panic!("biome {name} is not in the synced registry"))
@@ -116,7 +123,7 @@ pub struct ChunkSection {
 }
 
 /// Palette data for blocks or biomes
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PaletteData {
     /// Single value palette (bits per entry = 0)
     SingleValue(i32),
@@ -126,6 +133,134 @@ pub enum PaletteData {
         palette: Vec<i32>,
         data: Vec<u64>,
     },
+    /// Global ids packed at `ceil(log2(registry size))` bits, no palette
+    Direct { bits_per_entry: u8, data: Vec<u64> },
+}
+
+impl PaletteData {
+    pub fn bits_per_entry(&self) -> u8 {
+        match self {
+            PaletteData::SingleValue(_) => 0,
+            PaletteData::Indirect { bits_per_entry, .. }
+            | PaletteData::Direct { bits_per_entry, .. } => *bits_per_entry,
+        }
+    }
+
+    fn entry(&self, index: usize) -> i32 {
+        match self {
+            PaletteData::SingleValue(id) => *id,
+            PaletteData::Indirect {
+                bits_per_entry,
+                palette,
+                data,
+            } => palette
+                .get(packed_get(data, *bits_per_entry, index) as usize)
+                .copied()
+                .unwrap_or(0),
+            PaletteData::Direct {
+                bits_per_entry,
+                data,
+            } => packed_get(data, *bits_per_entry, index) as i32,
+        }
+    }
+
+    fn write(&self, buf: &mut Vec<u8>) {
+        buf.push(self.bits_per_entry());
+        match self {
+            PaletteData::SingleValue(id) => write_varint(buf, *id),
+            PaletteData::Indirect { palette, data, .. } => {
+                write_varint(buf, palette.len() as i32);
+                for &id in palette {
+                    write_varint(buf, id);
+                }
+                for &long in data {
+                    buf.extend_from_slice(&long.to_be_bytes());
+                }
+            }
+            PaletteData::Direct { data, .. } => {
+                for &long in data {
+                    buf.extend_from_slice(&long.to_be_bytes());
+                }
+            }
+        }
+    }
+}
+
+pub const BIOME_CELLS_PER_SECTION: usize = 64;
+const BIOME_MAX_INDIRECT_BITS: u8 = 3;
+
+/// Bits per entry of a direct biome palette: `ceil(log2(registry size))`.
+pub fn biome_direct_bits(registry_size: usize) -> u8 {
+    ceil_log2(registry_size).max(1)
+}
+
+fn ceil_log2(count: usize) -> u8 {
+    if count <= 1 {
+        0
+    } else {
+        (usize::BITS - (count - 1).leading_zeros()) as u8
+    }
+}
+
+fn packed_len(bits: u8, entries: usize) -> usize {
+    entries.div_ceil(64 / bits as usize)
+}
+
+fn packed_get(data: &[u64], bits: u8, index: usize) -> u64 {
+    let per_long = 64 / bits as usize;
+    let mask = (1u64 << bits) - 1;
+    let long = data.get(index / per_long).copied().unwrap_or(0);
+    (long >> ((index % per_long) * bits as usize)) & mask
+}
+
+fn packed_set(data: &mut [u64], bits: u8, index: usize, value: u64) {
+    let per_long = 64 / bits as usize;
+    let mask = (1u64 << bits) - 1;
+    let shift = (index % per_long) * bits as usize;
+    let long = &mut data[index / per_long];
+    *long = (*long & !(mask << shift)) | ((value & mask) << shift);
+}
+
+/// Biome container for 64 cells: single value, indirect at 1..=3 bits, or
+/// direct at `biome_direct_bits(registry_size)` — the only widths the client accepts.
+pub fn biome_palette(cells: &[i32; BIOME_CELLS_PER_SECTION], registry_size: usize) -> PaletteData {
+    let mut palette: Vec<i32> = Vec::new();
+    for &id in cells {
+        if !palette.contains(&id) {
+            palette.push(id);
+        }
+    }
+    if palette.len() == 1 {
+        return PaletteData::SingleValue(palette[0]);
+    }
+    let bits = ceil_log2(palette.len()).max(1);
+    if bits <= BIOME_MAX_INDIRECT_BITS {
+        let mut data = vec![0u64; packed_len(bits, BIOME_CELLS_PER_SECTION)];
+        for (index, id) in cells.iter().enumerate() {
+            let value = palette.iter().position(|p| p == id).unwrap() as u64;
+            packed_set(&mut data, bits, index, value);
+        }
+        PaletteData::Indirect {
+            bits_per_entry: bits,
+            palette,
+            data,
+        }
+    } else {
+        let bits = biome_direct_bits(registry_size);
+        let mut data = vec![0u64; packed_len(bits, BIOME_CELLS_PER_SECTION)];
+        for (index, &id) in cells.iter().enumerate() {
+            packed_set(&mut data, bits, index, id as u64);
+        }
+        PaletteData::Direct {
+            bits_per_entry: bits,
+            data,
+        }
+    }
+}
+
+fn biome_cell_index(x: u8, y: u8, z: u8) -> usize {
+    debug_assert!(x < 4 && y < 4 && z < 4);
+    (y as usize) * 16 + (z as usize) * 4 + (x as usize)
 }
 
 impl ChunkSection {
@@ -252,22 +387,7 @@ impl ChunkSection {
     pub fn get_block_state(&self, x: u8, y: u8, z: u8) -> i32 {
         debug_assert!(x < 16 && y < 16 && z < 16);
         let idx = (y as usize) * 256 + (z as usize) * 16 + (x as usize);
-        match &self.block_state {
-            PaletteData::SingleValue(id) => *id,
-            PaletteData::Indirect {
-                bits_per_entry,
-                palette,
-                data,
-            } => {
-                let bits = *bits_per_entry as usize;
-                let entries_per_long = 64 / bits;
-                let long_idx = idx / entries_per_long;
-                let bit_offset = (idx % entries_per_long) * bits;
-                let mask = (1u64 << bits) - 1;
-                let palette_idx = ((data[long_idx] >> bit_offset) & mask) as usize;
-                palette.get(palette_idx).copied().unwrap_or(blocks::AIR)
-            }
-        }
+        self.block_state.entry(idx)
     }
 
     /// Writes a block-state id at the given local section coordinates and returns
@@ -354,6 +474,10 @@ impl ChunkSection {
                 data[long_idx] &= !(mask << bit_offset);
                 data[long_idx] |= (palette_idx as u64 & mask) << bit_offset;
             }
+            PaletteData::Direct {
+                bits_per_entry,
+                data,
+            } => packed_set(data, *bits_per_entry, idx, new_id as u64),
         }
 
         if old_id == blocks::AIR && new_id != blocks::AIR {
@@ -363,6 +487,44 @@ impl ChunkSection {
         }
 
         old_id
+    }
+
+    /// Biome of a 4×4×4 cell, addressed by cell coordinates (0..4) inside the section.
+    pub fn get_biome(&self, cell_x: u8, cell_y: u8, cell_z: u8) -> i32 {
+        self.biome.entry(biome_cell_index(cell_x, cell_y, cell_z))
+    }
+
+    /// Sets a biome cell and returns the previous id. `registry_size` is the
+    /// number of entries in the synced biome registry, which fixes the width of
+    /// a direct palette.
+    pub fn set_biome(
+        &mut self,
+        cell_x: u8,
+        cell_y: u8,
+        cell_z: u8,
+        biome_id: i32,
+        registry_size: usize,
+    ) -> i32 {
+        let index = biome_cell_index(cell_x, cell_y, cell_z);
+        let old = self.biome.entry(index);
+        if old == biome_id {
+            return old;
+        }
+        let mut cells = self.biome_cells();
+        cells[index] = biome_id;
+        self.biome = biome_palette(&cells, registry_size);
+        old
+    }
+
+    pub fn biome_cells(&self) -> [i32; BIOME_CELLS_PER_SECTION] {
+        std::array::from_fn(|index| self.biome.entry(index))
+    }
+
+    /// The biome container alone, as carried by `ChunksBiomes`.
+    pub fn encode_biomes_to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        self.biome.write(&mut data);
+        data
     }
 
     /// Encodes this section to bytes.
@@ -377,49 +539,8 @@ impl ChunkSection {
         // (`block_count`) and fluid count. We don't track fluids, so it stays 0.
         data.extend_from_slice(&self.block_count.to_be_bytes());
         data.extend_from_slice(&0_i16.to_be_bytes());
-
-        match &self.block_state {
-            PaletteData::SingleValue(id) => {
-                data.push(0);
-                write_varint(&mut data, *id);
-            }
-            PaletteData::Indirect {
-                bits_per_entry,
-                palette,
-                data: block_data,
-            } => {
-                data.push(*bits_per_entry);
-                write_varint(&mut data, palette.len() as i32);
-                for &id in palette {
-                    write_varint(&mut data, id);
-                }
-                for &long in block_data {
-                    data.extend_from_slice(&long.to_be_bytes());
-                }
-            }
-        }
-
-        match &self.biome {
-            PaletteData::SingleValue(id) => {
-                data.push(0);
-                write_varint(&mut data, *id);
-            }
-            PaletteData::Indirect {
-                bits_per_entry,
-                palette,
-                data: biome_data,
-            } => {
-                data.push(*bits_per_entry);
-                write_varint(&mut data, palette.len() as i32);
-                for &id in palette {
-                    write_varint(&mut data, id);
-                }
-                for &long in biome_data {
-                    data.extend_from_slice(&long.to_be_bytes());
-                }
-            }
-        }
-
+        self.block_state.write(&mut data);
+        self.biome.write(&mut data);
         data
     }
 }
@@ -638,6 +759,67 @@ impl Decode for ChunkDataAndLight {
 }
 
 // ============================================================================
+// ChunksBiomes Packet (0x0D)
+// ============================================================================
+
+/// Biome containers of one loaded chunk, bottom section first. The chunk
+/// position travels as one long, so `z` precedes `x` on the wire.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChunkBiomeData {
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+    pub data: Vec<u8>,
+}
+
+impl ChunkBiomeData {
+    pub fn from_sections(chunk_x: i32, chunk_z: i32, sections: &[ChunkSection]) -> Self {
+        Self {
+            chunk_x,
+            chunk_z,
+            data: sections
+                .iter()
+                .flat_map(ChunkSection::encode_biomes_to_bytes)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChunksBiomes {
+    pub chunks: Vec<ChunkBiomeData>,
+}
+
+impl Encode for ChunksBiomes {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        write_varint(buf, self.chunks.len() as i32);
+        for chunk in &self.chunks {
+            buf.extend_from_slice(&chunk.chunk_z.to_be_bytes());
+            buf.extend_from_slice(&chunk.chunk_x.to_be_bytes());
+            write_varint(buf, chunk.data.len() as i32);
+            buf.extend_from_slice(&chunk.data);
+        }
+    }
+}
+
+impl Decode for ChunksBiomes {
+    fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, DecodeError> {
+        let count = decoder.decode::<voidmc_codec::VarI32>()?.0;
+        let mut chunks = Vec::new();
+        for _ in 0..count {
+            let chunk_z = decoder.decode::<i32>()?;
+            let chunk_x = decoder.decode::<i32>()?;
+            let data = decoder.decode::<Vec<u8>>()?;
+            chunks.push(ChunkBiomeData {
+                chunk_x,
+                chunk_z,
+                data,
+            });
+        }
+        Ok(ChunksBiomes { chunks })
+    }
+}
+
+// ============================================================================
 // ChunkBuilder
 // ============================================================================
 
@@ -646,7 +828,8 @@ pub struct ChunkBuilder {
     x: i32,
     z: i32,
     blocks: Vec<Vec<Vec<i32>>>,
-    biome_id: i32,
+    biomes: Vec<i32>,
+    biome_registry_size: usize,
 }
 
 impl ChunkBuilder {
@@ -656,13 +839,41 @@ impl ChunkBuilder {
             x,
             z,
             blocks: vec![vec![vec![blocks::AIR; 16]; 16]; 384],
-            biome_id: biomes::plains(),
+            biomes: vec![biomes::plains(); 24 * BIOME_CELLS_PER_SECTION],
+            biome_registry_size: biomes::vanilla_count(),
         }
     }
 
     /// Sets the biome for the entire chunk.
     pub fn biome(mut self, biome_id: i32) -> Self {
-        self.biome_id = biome_id;
+        self.biomes.fill(biome_id);
+        self
+    }
+
+    /// Number of entries in the synced biome registry; only needed when custom
+    /// biomes were added, since it fixes the width of direct biome palettes.
+    pub fn biome_registry_size(mut self, size: usize) -> Self {
+        self.biome_registry_size = size;
+        self
+    }
+
+    /// Sets every 4×4×4 biome cell from the world block coordinates of its
+    /// lowest corner.
+    pub fn biomes_from(mut self, mut biome_at: impl FnMut(i32, i32, i32) -> i32) -> Self {
+        for (index, cell) in self.biomes.iter_mut().enumerate() {
+            let section = (index / BIOME_CELLS_PER_SECTION) as i32;
+            let local = index % BIOME_CELLS_PER_SECTION;
+            let (cx, cy, cz) = (
+                (local % 4) as i32,
+                (local / 16) as i32,
+                ((local / 4) % 4) as i32,
+            );
+            *cell = biome_at(
+                self.x * 16 + cx * 4,
+                -64 + section * 16 + cy * 4,
+                self.z * 16 + cz * 4,
+            );
+        }
         self
     }
 
@@ -1005,11 +1216,14 @@ impl ChunkBuilder {
                 }
             }
 
-            sections.push(ChunkSection::from_block_array(
-                &block_array,
-                self.biome_id,
-                block_count,
-            ));
+            let mut section = ChunkSection::from_block_array(&block_array, 0, block_count);
+            let cells: [i32; BIOME_CELLS_PER_SECTION] = self.biomes[section_idx
+                * BIOME_CELLS_PER_SECTION
+                ..(section_idx + 1) * BIOME_CELLS_PER_SECTION]
+                .try_into()
+                .unwrap();
+            section.biome = biome_palette(&cells, self.biome_registry_size);
+            sections.push(section);
         }
 
         Chunk {
@@ -1031,4 +1245,177 @@ fn simple_hash(x: i32, y: i32, z: i32) -> f64 {
     let n = n ^ (n >> 13);
     let n = n.wrapping_mul(1103515245);
     (n as u32 as f64) / (u32::MAX as f64)
+}
+
+#[cfg(test)]
+mod biome_tests {
+    use super::*;
+    use crate::clientbound::PlayPacket;
+
+    fn cells(f: impl Fn(usize) -> i32) -> [i32; BIOME_CELLS_PER_SECTION] {
+        std::array::from_fn(f)
+    }
+
+    #[test]
+    fn direct_bits_follow_registry_size() {
+        assert_eq!(biome_direct_bits(1), 1);
+        assert_eq!(biome_direct_bits(2), 1);
+        assert_eq!(biome_direct_bits(3), 2);
+        assert_eq!(biome_direct_bits(64), 6);
+        assert_eq!(biome_direct_bits(65), 7);
+        assert_eq!(biome_direct_bits(128), 7);
+        assert_eq!(biome_direct_bits(129), 8);
+        assert_eq!(biome_direct_bits(biomes::vanilla_count()), 7);
+    }
+
+    #[test]
+    fn palette_widths_are_only_zero_one_to_three_or_direct() {
+        for registry_size in [65usize, 128, 129, 300] {
+            let direct = biome_direct_bits(registry_size);
+            for distinct in 1..=12usize {
+                let palette = biome_palette(&cells(|i| (i % distinct) as i32), registry_size);
+                let bits = palette.bits_per_entry();
+                match distinct {
+                    1 => assert_eq!(bits, 0),
+                    2 => assert_eq!(bits, 1),
+                    3..=4 => assert_eq!(bits, 2),
+                    5..=8 => assert_eq!(bits, 3),
+                    _ => {
+                        assert_eq!(bits, direct);
+                        assert!(matches!(palette, PaletteData::Direct { .. }));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cells_survive_every_palette_shape() {
+        for distinct in [1usize, 2, 5, 9, 64] {
+            let expected = cells(|i| ((i * 7) % distinct) as i32 + 10);
+            let mut section = ChunkSection::empty();
+            section.biome = biome_palette(&expected, 65);
+            assert_eq!(section.biome_cells(), expected);
+            assert_eq!(section.get_biome(3, 2, 1), expected[2 * 16 + 4 + 3]);
+        }
+    }
+
+    #[test]
+    fn set_biome_promotes_and_demotes_palettes() {
+        let mut section = ChunkSection::filled(1, 3);
+        assert_eq!(section.set_biome(0, 0, 0, 3, 65), 3);
+        assert_eq!(section.biome, PaletteData::SingleValue(3));
+
+        assert_eq!(section.set_biome(1, 2, 3, 40, 65), 3);
+        assert_eq!(section.biome.bits_per_entry(), 1);
+        assert_eq!(section.get_biome(1, 2, 3), 40);
+        assert_eq!(section.get_biome(0, 0, 0), 3);
+
+        for (i, id) in (50..58).enumerate() {
+            section.set_biome(i as u8 % 4, 3, 2 + i as u8 / 4, id, 65);
+        }
+        assert_eq!(section.biome.bits_per_entry(), 7);
+        assert!(matches!(section.biome, PaletteData::Direct { .. }));
+        assert_eq!(section.get_biome(1, 2, 3), 40);
+        assert_eq!(section.get_biome(3, 3, 3), 57);
+
+        for x in 0..4 {
+            for y in 0..4 {
+                for z in 0..4 {
+                    section.set_biome(x, y, z, 3, 65);
+                }
+            }
+        }
+        assert_eq!(section.biome, PaletteData::SingleValue(3));
+    }
+
+    #[test]
+    fn block_section_golden_bytes() {
+        let mut section = ChunkSection::filled(1, 5);
+        section.set_block_state(1, 0, 0, 9);
+        let bytes = section.encode_to_bytes();
+        let mut expected = vec![0x10, 0x00, 0x00, 0x00, 4, 2, 1, 9];
+        expected.extend((1u64 << 4).to_be_bytes());
+        expected.extend([0u8; 8 * 255]);
+        expected.extend([0, 5]);
+        assert_eq!(bytes, expected);
+
+        let mut truncated = ChunkSection::filled(1, 5);
+        truncated.block_state = PaletteData::Indirect {
+            bits_per_entry: 4,
+            palette: vec![1],
+            data: vec![0x20],
+        };
+        assert_eq!(truncated.get_block_state(0, 0, 0), 1);
+        assert_eq!(truncated.get_block_state(1, 0, 0), 0);
+        assert_eq!(truncated.get_block_state(0, 15, 15), 1);
+    }
+
+    #[test]
+    fn biome_bytes_match_paletted_container_layout() {
+        let single = ChunkSection::filled(1, 5).encode_biomes_to_bytes();
+        assert_eq!(single, [0, 5]);
+
+        let mut section = ChunkSection::empty();
+        section.biome = biome_palette(&cells(|i| if i == 1 { 9 } else { 4 }), 65);
+        assert_eq!(
+            section.encode_biomes_to_bytes(),
+            [vec![1, 2, 4, 9], 2u64.to_be_bytes().to_vec()].concat()
+        );
+
+        section.biome = biome_palette(&cells(|i| i as i32), 65);
+        let bytes = section.encode_biomes_to_bytes();
+        assert_eq!(bytes[0], 7);
+        assert_eq!(bytes.len(), 1 + 8 * 8);
+        let first = u64::from_be_bytes(bytes[1..9].try_into().unwrap());
+        assert_eq!(first & 0x7F, 0);
+        assert_eq!((first >> 7) & 0x7F, 1);
+        assert_eq!((first >> 56) & 0x7F, 8);
+    }
+
+    #[test]
+    fn chunks_biomes_writes_z_before_x_and_only_biome_containers() {
+        let mut sections: Vec<ChunkSection> = (0..2).map(|_| ChunkSection::filled(1, 5)).collect();
+        sections[1].set_biome(0, 0, 0, 6, 65);
+        let packet = ChunksBiomes {
+            chunks: vec![ChunkBiomeData::from_sections(3, -2, &sections)],
+        };
+        let mut bytes = Vec::new();
+        PlayPacket::ChunksBiomes(packet.clone()).encode(&mut bytes);
+
+        let mut expected = vec![0x0D, 1];
+        expected.extend((-2i32).to_be_bytes());
+        expected.extend(3i32.to_be_bytes());
+        let mut blob = vec![0, 5];
+        blob.extend([1, 2, 6, 5]);
+        blob.extend((!1u64).to_be_bytes());
+        expected.push(blob.len() as u8);
+        expected.extend(&blob);
+        assert_eq!(bytes, expected);
+
+        let mut slice = &bytes[1..];
+        assert_eq!(ChunksBiomes::decode(&mut slice).unwrap(), packet);
+        assert!(slice.is_empty());
+    }
+
+    #[test]
+    fn builder_biomes_per_cell_keep_uniform_chunks_single_valued() {
+        let uniform = ChunkBuilder::new(0, 0).biome(7).build();
+        assert!(
+            uniform
+                .sections
+                .iter()
+                .all(|s| s.biome == PaletteData::SingleValue(7))
+        );
+
+        let varied = ChunkBuilder::new(2, -1)
+            .biomes_from(|x, y, z| if y >= 64 && x >= 40 && z < -8 { 1 } else { 0 })
+            .build();
+        assert_eq!(varied.sections[7].biome, PaletteData::SingleValue(0));
+        let top = &varied.sections[8];
+        assert_eq!(top.get_biome(0, 0, 0), 0);
+        assert_eq!(top.get_biome(2, 0, 0), 1);
+        assert_eq!(top.get_biome(2, 0, 2), 0);
+        assert_eq!(top.biome.bits_per_entry(), 1);
+    }
 }
