@@ -87,6 +87,7 @@ pub struct Kart {
     pub impact: u8,
     pub contact_cooldown: u8,
     pub bump: u8,
+    pub knocked: bool,
     pub item: Option<PowerUp>,
     pub use_item: bool,
     pub turbo: u16,
@@ -115,6 +116,7 @@ impl Kart {
         self.impact = 0;
         self.contact_cooldown = 0;
         self.bump = 0;
+        self.knocked = false;
         self.item = None;
         self.use_item = false;
         self.turbo = 0;
@@ -145,11 +147,8 @@ impl Kart {
     pub fn knock(&mut self) {
         if self.bump == 0 {
             self.bump = BUMP_COOLDOWN;
+            self.knocked = true;
         }
-    }
-
-    pub fn knocked(&self) -> bool {
-        self.bump == BUMP_COOLDOWN
     }
 
     pub fn reset(&mut self, map: &Track) {

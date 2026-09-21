@@ -78,9 +78,14 @@ par les autres joueurs suivent le kart pendant toute la course.
 
 La manche est complète (`src/race.rs`) :
 
-- `/race [tours]` accepte **1 à 20 tours** (3 par défaut). Le nombre choisi vaut pour
-  tous les pilotes de la manche ; une commande invalide ne lance pas de course, et une
-  manche en cours ne peut pas être relancée.
+- `/race [tours] [seed]` accepte **1 à 20 tours** (3 par défaut) et, en option, la
+  **seed d'un circuit** (entier non signé sur 64 bits) pour le **rejouer** à
+  l'identique. Sans seed, chaque manche tire un nouveau circuit de la séquence
+  déterminée par `VOID_DEMO_SEED`. La seed du circuit est écrite dans le log au
+  lancement et affichée dans le chat au lancement (« Circuit #… ») comme à la fin
+  de la manche, avec la commande exacte pour le rejouer. Le nombre de tours choisi
+  vaut pour tous les pilotes de la manche ; une commande invalide ne lance pas de
+  course, et une manche en cours ne peut pas être relancée.
 - `/race` renvoie d'abord **tout le monde en vol au-dessus du point d'attente**
   (`Teleport` du moteur vers `travel::LOBBY`, orientation 180°/15°) et décroche les
   pilotes de leur kart. Chaque manche construit ensuite un **nouveau tracé** dans la
@@ -116,7 +121,9 @@ La manche est complète (`src/race.rs`) :
   pour le même nombre de tours. Les records sont en mémoire, par seed de circuit,
   nombre de tours et nom de joueur, et disparaissent au redémarrage. Un pilote qui
   bat le meilleur temps connu du circuit (tous pilotes confondus) déclenche une
-  annonce **Record du circuit** dans le chat.
+  annonce **Record du circuit** dans le chat : elle n'a de sens que sur un circuit
+  rejoué (`/race [tours] <seed>`), puisqu'un circuit tiré au hasard n'est jamais
+  couru deux fois.
 - `/leave` passe en spectateur : le kart disparaît et le joueur repart **en vol** vers
   le point d'attente par la même barrière ; `/join` inscrit pour le prochain départ
   sans renvoyer d'abilities déjà en place. Chaque joueur qui arrive est inscrit
@@ -155,6 +162,9 @@ catégorie, définie une seule fois dans `src/chat.rs` (`Tone`) :
 Un flash occupe la barre d'action pendant **huit rafraîchissements du HUD** (2 s,
 `chat::FLASH_PERIODS`) : le HUD, émis toutes les cinq ticks en or, ne réécrit la barre
 qu'une fois le flash expiré (`Chat::hud_free`, composant `Flash` sur le pilote).
+**Un flash par tick, le dernier gagne** : deux flashs adressés au même joueur au même
+tick (bonus ramassé et missile reçu, par exemple) ne sont pas mis en file, seul le
+dernier paquet reste à l'écran.
 
 Les **sons** passent par l'API `Sounds` du moteur (`src/audio.rs`, `Cue`) ; chaque
 identifiant est résolu dans le registre `sound_event` de `voidmc_data`, et un test
@@ -174,11 +184,13 @@ seul joueur concerné ; les sons de jeu sont émis **depuis l'entité kart**
 | Touché : missile / éclair / onde / banane / glace | `generic.explode` / `lightning_bolt.impact` / `player.hurt` / `slime.squish` / `glass.break` | au kart |
 | Bouclier qui absorbe | `item.shield.block` | au kart |
 | Choc (kart ou glissière) | `block.anvil.land` (0.5, 1.6) | au kart |
-| Retour au point d'attente, délai dépassé | `block.portal.trigger` (0.6) | joueur |
+| Retour au point d'attente, délai dépassé | `block.portal.trigger` (0.6), placé au point d'attente | joueur |
 
 Les chocs sont limités à **un son par kart toutes les dix ticks** (`Kart::knock`,
-`kart::BUMP_COOLDOWN`), quels que soient les rebonds ou contacts intermédiaires ; un
-kart protégé qui reste sur une nappe de glace ne produit ni son ni flash.
+`kart::BUMP_COOLDOWN`), quels que soient les rebonds ou contacts intermédiaires ; le
+choc à sonner est un drapeau `Kart::knocked` consommé par `vehicle::bumps`, si bien
+qu'un choc sur la ligne d'arrivée ne sonne qu'une fois ; un kart protégé qui reste sur
+une nappe de glace ne produit ni son ni flash.
 
 Les **impacts** ajoutent une rafale de particules **une seule fois, au tick de
 l'événement** (`Items::sparks`, vidé par `effects`), destinataires résolus une fois par
@@ -301,7 +313,8 @@ checkpoints sont espacés selon la **distance parcourue sur la courbe**, commune
 pilotage et à la génération.
 
 `VOID_DEMO_SEED` fixe le décor et la séquence des seeds de manches ; redémarrer avec
-la même valeur reproduit cette séquence. Tous les bits de la seed participent à la
+la même valeur reproduit cette séquence, et `/race [tours] <seed>` rejoue un circuit
+précis quel que soit le décor. Tous les bits de la seed participent à la
 génération. Le décor reste identique entre les manches.
 
 Pour une présentation, une distance d'affichage client de 12 chunks permet de
@@ -352,9 +365,10 @@ est recommandé.
   `say_all`, `say_others`, `podium`, `hud`, `flash`, `hud_free`) et le composant
   `Flash`.
 - `src/audio.rs` : les sons — `Cue` (nom d'événement, volume, hauteur, catégorie) et
-  `Audio` (`ui`, `everyone`, `at`) au-dessus de `voidmc::Sounds`.
-- `src/race.rs` : phases, commandes, annonces, bossbars et HUD ; `Racer` relie le
-  joueur à son kart.
+  `Audio` (`ui`, `ui_at`, `everyone`, `at`) au-dessus de `voidmc::Sounds`.
+- `src/race.rs` : phases, commandes (`SeedArg` pour la seed de circuit), annonces,
+  bossbars et HUD ; `Racer` relie le joueur à son kart ; `circuit_seed` dérive la seed
+  d'une manche tirée au hasard.
 - `src/lib.rs` : `seed` (variable d'environnement ou tirage aléatoire non nul).
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
 
@@ -408,7 +422,9 @@ les octets d'une image de métadonnées est comparé à la disposition Paper 26.
 (index, sérialiseurs `Int`/`Vector3`/`Quaternion`, terminateur). Pour l'interface :
 chaque message part avec la couleur de sa catégorie et sur la bonne surface (chat ou
 barre d'action), un flash tient huit périodes de HUD avant que le HUD ne reprenne, le
-record n'est annoncé qu'en battant le meilleur temps du circuit, le compte à rebours
+record n'est annoncé qu'en battant le meilleur temps d'un circuit rejoué sur la même
+seed (jamais à temps égal ni plus lent), un choc sur la ligne d'arrivée ne sonne qu'une
+fois, le son de portail est placé au point d'attente, le compte à rebours
 produit quatre bips (trois graves, un aigu) et un départ, le tour bouclé un seul son,
 un choc un son par kart toutes les dix ticks exactement, chaque `Cue` résout un
 `sound_event` du registre, et les octets d'un bip (`SoundEffect` : holder, catégorie,

@@ -83,7 +83,7 @@ impl Travel<'_, '_> {
                 Transfer::Lobby,
                 Teleport::to(LOBBY.0, LOBBY.1, LOBBY.2).facing(LOBBY_YAW, LOBBY_PITCH),
             ));
-            self.audio.ui(player, Cue::Portal);
+            self.audio.ui_at(player, Cue::Portal, LOBBY);
         }
     }
 

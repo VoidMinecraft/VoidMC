@@ -225,6 +225,7 @@ impl Items {
             && self.traps.is_empty()
             && self.missiles.is_empty()
             && self.bursts.is_empty()
+            && self.sparks.is_empty()
     }
 }
 

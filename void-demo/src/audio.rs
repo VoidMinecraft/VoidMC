@@ -1,6 +1,6 @@
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
-use voidmc::{Sound, SoundSource, Sounds, components::PlayerReady};
+use voidmc::{Sound, SoundSource, Sounds, components::PlayerReady, world::DimensionId};
 
 use crate::kart::{PowerUp, Strike};
 
@@ -157,6 +157,11 @@ pub struct Audio<'w, 's> {
 impl Audio<'_, '_> {
     pub fn ui(&self, player: Entity, cue: Cue) {
         self.sounds.play_to(player, cue.sound());
+    }
+
+    pub fn ui_at(&self, player: Entity, cue: Cue, position: (f64, f64, f64)) {
+        self.sounds
+            .play_to(player, cue.sound().at(DimensionId::Overworld, position));
     }
 
     pub fn everyone(&self, cue: Cue) {

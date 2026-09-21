@@ -90,12 +90,13 @@ pub fn drive(race: Res<Race>, map: Res<Track>, mut karts: Query<&mut Kart>) {
     }
 }
 
-pub fn bumps(race: Res<Race>, karts: Query<(Entity, &Kart), Changed<Kart>>, audio: Audio) {
+pub fn bumps(race: Res<Race>, mut karts: Query<(Entity, &mut Kart), Changed<Kart>>, audio: Audio) {
     if race.phase != Phase::Racing {
         return;
     }
-    for (entity, kart) in &karts {
-        if kart.knocked() {
+    for (entity, mut kart) in &mut karts {
+        if kart.knocked {
+            kart.knocked = false;
             audio.at(entity, Cue::Bump);
         }
     }
@@ -148,6 +149,7 @@ mod tests {
     use crate::arena::WAIT_Y;
     use crate::kart::BUMP_COOLDOWN;
     use crate::race::tests::{Harness, Out, sounds};
+    use crate::track::GATES;
 
     fn press(h: &mut Harness, player: Entity, keys: &[&str]) {
         let key = |k: &str| keys.contains(&k);
@@ -590,6 +592,31 @@ mod tests {
         assert!(rings.iter().all(|(_, count)| *count == 2));
         assert_eq!(rings[1].0 - rings[0].0, u64::from(BUMP_COOLDOWN));
         assert_eq!(rings[2].0 - rings[1].0, u64::from(BUMP_COOLDOWN));
+    }
+
+    #[test]
+    fn a_bump_on_the_finish_line_rings_once() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.shortcut_to_racing(a, &["1"]);
+        let (x, z) = (h.kart(a).x, h.kart(a).z);
+        for player in [a, b] {
+            let mut kart = h.kart_mut(player);
+            kart.x = x;
+            kart.z = z;
+            kart.speed = 0.0;
+        }
+        h.kart_mut(a).next_gate = GATES + 1;
+        h.tick();
+        let out = h.drain();
+        assert!(h.kart(a).finished.is_some());
+        assert_eq!(sounds(&out, 1, Cue::Bump).len(), 2);
+        assert!(!h.kart(a).knocked);
+        for _ in 0..3 {
+            h.tick();
+            assert!(sounds(&h.drain(), 1, Cue::Bump).is_empty());
+        }
     }
 
     #[test]

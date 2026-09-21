@@ -1,14 +1,17 @@
+use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
-    Audience, BossBar, BossBarColor, ChunkPos, Command, CommandBuilder, CommandRegistry,
+    ArgParser, Audience, BossBar, BossBarColor, ChunkPos, Command, CommandBuilder, CommandRegistry,
     CommandSystems, IntegerArg, VoidSystems,
     events::{PlayerQuitEvent, PlayerReadyEvent},
     plugins::boss_bar::BossBarState,
 };
+use voidmc_protocol::clientbound::commands::{Parser, StringType};
 
 use crate::arena::Arena;
 use crate::audio::{Audio, Cue};
@@ -157,6 +160,7 @@ pub struct Rescue(pub Entity);
 pub struct Launch {
     pub player: Entity,
     pub laps: usize,
+    pub seed: Option<u64>,
 }
 
 #[derive(Event)]
@@ -298,12 +302,14 @@ impl Plugin for RacePlugin {
 pub fn race_commands() -> Vec<Command> {
     vec![
         CommandBuilder::new("race")
-            .description("Start a race: /race [tours], 1–20 laps (default 3)")
+            .description("Start a race: /race [tours] [seed], 1–20 laps (default 3)")
             .arg_optional("tours", IntegerArg::new(1, MAX_LAPS as i32))
+            .arg_optional("seed", Arc::new(SeedArg))
             .handler(|ctx| {
                 let player = ctx.entity;
                 let laps = ctx.get::<i32>("tours").copied().unwrap_or(LAPS as i32) as usize;
-                ctx.with_world_mut(|world| world.trigger(Launch { player, laps }));
+                let seed = ctx.get::<u64>("seed").copied();
+                ctx.with_world_mut(|world| world.trigger(Launch { player, laps, seed }));
             })
             .build(),
         request("join", "Join Alpine Rush / mount your minecart", Join),
@@ -315,6 +321,25 @@ pub fn race_commands() -> Vec<Command> {
         ),
         request("scores", "Show race results and session records", Scores),
     ]
+}
+
+struct SeedArg;
+
+impl ArgParser for SeedArg {
+    fn type_name(&self) -> &str {
+        "seed"
+    }
+
+    fn parse(&self, input: &str) -> Result<Box<dyn Any + Send + Sync>, String> {
+        input
+            .parse::<u64>()
+            .map(|seed| Box::new(seed) as Box<dyn Any + Send + Sync>)
+            .map_err(|_| format!("'{input}' is not a circuit seed (unsigned 64-bit integer)"))
+    }
+
+    fn protocol_parser(&self) -> Option<Parser> {
+        Some(Parser::String(StringType::SingleWord))
+    }
 }
 
 fn request<E: Event<Trigger<'static>: Default>>(
@@ -342,7 +367,7 @@ fn ready(event: On<PlayerReadyEvent>, mut grid: Grid, mut travel: Travel) {
     grid.chat.say(
         player,
         Tone::Info,
-        "/race [tours] : depart (1–20, defaut 3) | /leave : spectateur | /join : revenir | /reset : secours (+3 s)",
+        "/race [tours] [seed] : depart (1–20, defaut 3 ; seed pour rejouer un circuit) | /leave : spectateur | /join : revenir | /reset : secours (+3 s)",
     );
     grid.chat.say(
         player,
@@ -420,7 +445,7 @@ fn launch(
         chat.say(
             player,
             Tone::Warn,
-            "Utilisation : /race [tours], de 1 a 20 (defaut 3).",
+            "Utilisation : /race [tours] [seed], de 1 a 20 tours (defaut 3).",
         );
         return;
     }
@@ -439,10 +464,11 @@ fn launch(
         }
     }
     travel.everyone_to_lobby();
-    let map = Track::new(mix(arena
-        .map
-        .seed
-        .wrapping_add(race.round.wrapping_mul(ROUND_STRIDE))));
+    let map = Track::new(
+        event
+            .seed
+            .unwrap_or_else(|| circuit_seed(arena.map.seed, race.round)),
+    );
     let (seed, length) = (map.seed, map.length);
     arena.prepare(map.clone());
     commands.insert_resource(map);
@@ -451,12 +477,17 @@ fn launch(
     race.results.clear();
     race.schedule(Phase::Generating, arena.chunks());
     let (name, round) = (chat.name(player), race.round);
+    tracing::info!(round, laps, seed, replay = event.seed.is_some(), "circuit");
     chat.say_all(
         Tone::Event,
         format!(
-            "{name} lance la manche {round} : {laps} tour(s), {length:.0} m par tour (seed {seed})."
+            "{name} lance la manche {round} : {laps} tour(s), {length:.0} m par tour (Circuit #{seed})."
         ),
     );
+}
+
+pub fn circuit_seed(world_seed: u64, round: u64) -> u64 {
+    mix(world_seed.wrapping_add(round.wrapping_mul(ROUND_STRIDE)))
 }
 
 fn scores(event: On<Scores>, race: Res<Race>, map: Res<Track>, chat: Chat) {
@@ -479,7 +510,10 @@ fn scores(event: On<Scores>, race: Res<Race>, map: Res<Track>, chat: Chat) {
     chat.say(
         player,
         Tone::Record,
-        format!("Records du circuit (seed {seed}, {} tour(s)) :", race.laps),
+        format!(
+            "Records du circuit (Circuit #{seed}, {} tour(s)) :",
+            race.laps
+        ),
     );
     let mut best: Vec<_> = race
         .best
@@ -699,7 +733,10 @@ fn racing(
     }
     chat.say_all(
         Tone::Info,
-        "Retour en vol, demontage de la piste. /scores : classement complet.",
+        format!(
+            "Circuit #{} : /race {laps} {} pour le rejouer. Retour en vol, demontage de la piste. /scores : classement complet.",
+            map.seed, map.seed
+        ),
     );
     for (slot, pilot) in race.roster.iter().enumerate() {
         let Ok(racer) = racers.get(*pilot) else {
@@ -831,6 +868,7 @@ pub(crate) mod tests {
     use crate::chat::{FLASH_PERIODS, HUD_COLOR, podium};
     use crate::kart::RESET_PENALTY;
     use crate::terrain::Alpine;
+    use crate::travel::LOBBY;
 
     pub(crate) const VIEW_RADIUS: i32 = 20;
 
@@ -1461,7 +1499,7 @@ pub(crate) mod tests {
                     aqua
                 ),
                 (
-                    "/race [tours] : depart (1–20, defaut 3) | /leave : spectateur | /join : revenir | /reset : secours (+3 s)".to_string(),
+                    "/race [tours] [seed] : depart (1–20, defaut 3 ; seed pour rejouer un circuit) | /leave : spectateur | /join : revenir | /reset : secours (+3 s)".to_string(),
                     gray.clone()
                 ),
                 (
@@ -1534,7 +1572,10 @@ pub(crate) mod tests {
         let h = Harness::new(42);
         let registry = h.app.world().resource::<CommandRegistry>();
         for (name, description) in [
-            ("race", "Start a race: /race [tours], 1–20 laps (default 3)"),
+            (
+                "race",
+                "Start a race: /race [tours] [seed], 1–20 laps (default 3)",
+            ),
             ("join", "Join Alpine Rush / mount your minecart"),
             ("leave", "Leave your minecart and watch the race"),
             ("reset", "Return to your last checkpoint (+3 seconds)"),
@@ -1564,7 +1605,13 @@ pub(crate) mod tests {
             (vec!["-1"], None),
             (vec!["21"], None),
             (vec!["abc"], None),
-            (vec!["2", "3"], None),
+            (vec!["2", "3"], Some(2)),
+            (vec!["2", "0"], Some(2)),
+            (vec!["2", "18446744073709551615"], Some(2)),
+            (vec!["2", "18446744073709551616"], None),
+            (vec!["2", "-1"], None),
+            (vec!["2", "x"], None),
+            (vec!["2", "3", "4"], None),
         ] {
             let mut h = Harness::new(42);
             let a = h.connect(1);
@@ -1578,20 +1625,40 @@ pub(crate) mod tests {
             };
             assert_eq!(h.race().phase, Phase::Generating);
             assert_eq!((h.race().laps, h.race().round), (laps, 1));
-            assert!(h.kart(a).participant);
             let seed = h.app.world().resource::<Track>().seed;
+            assert!(h.kart(a).participant);
+            match args.get(1) {
+                Some(explicit) => assert_eq!(seed.to_string(), *explicit),
+                None => assert_eq!(
+                    seed,
+                    circuit_seed(h.app.world().resource::<Arena>().map.seed, 0)
+                ),
+            }
             let out = h.drain();
             assert_eq!(
                 colored(&out, 1),
                 vec![(
                     format!(
-                        "Pilot1 lance la manche 1 : {laps} tour(s), {:.0} m par tour (seed {seed}).",
+                        "Pilot1 lance la manche 1 : {laps} tour(s), {:.0} m par tour (Circuit #{seed}).",
                         h.app.world().resource::<Track>().length
                     ),
                     Tone::Event.color().to_string()
                 )]
             );
-            assert_eq!(sounds(&out, 1, Cue::Portal).len(), 1);
+            assert_eq!(
+                sounds(&out, 1, Cue::Portal)
+                    .iter()
+                    .map(|s| match s {
+                        Out::Sound { at, .. } => *at,
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                vec![Some((
+                    (LOBBY.0 * 8.0) as i32,
+                    (LOBBY.1 * 8.0) as i32,
+                    (LOBBY.2 * 8.0) as i32
+                ))]
+            );
             h.command(a, "race", &["2"]);
             assert_eq!(h.race().laps, laps);
             assert_eq!(
@@ -1611,10 +1678,16 @@ pub(crate) mod tests {
         let a = h.spawn(1);
         h.command(a, "race", &[]);
         assert_eq!(h.chats(1), vec![chat("Utilise /join avant /race.")]);
-        h.world().trigger(Launch { player: a, laps: 0 });
+        h.world().trigger(Launch {
+            player: a,
+            laps: 0,
+            seed: None,
+        });
         assert_eq!(
             h.chats(1),
-            vec![chat("Utilisation : /race [tours], de 1 a 20 (defaut 3).")]
+            vec![chat(
+                "Utilisation : /race [tours] [seed], de 1 a 20 tours (defaut 3)."
+            )]
         );
         assert_eq!(h.race().phase, Phase::Lobby);
     }
@@ -1746,8 +1819,9 @@ pub(crate) mod tests {
                 ),
                 (format!("#1 Pilot1 — {stamp}s"), podium(1).to_string()),
                 (
-                    "Retour en vol, demontage de la piste. /scores : classement complet."
-                        .to_string(),
+                    format!(
+                        "Circuit #{first_seed} : /race 3 {first_seed} pour le rejouer. Retour en vol, demontage de la piste. /scores : classement complet."
+                    ),
                     Tone::Info.color().to_string()
                 ),
             ]
@@ -1783,7 +1857,7 @@ pub(crate) mod tests {
                     Tone::Info.color().to_string()
                 ),
                 (
-                    format!("Records du circuit (seed {first_seed}, 3 tour(s)) :"),
+                    format!("Records du circuit (Circuit #{first_seed}, 3 tour(s)) :"),
                     Tone::Record.color().to_string()
                 ),
                 (format!("Pilot1 : {stamp}s"), Tone::Info.color().to_string()),
@@ -1797,6 +1871,7 @@ pub(crate) mod tests {
         assert_ne!(h.app.world().resource::<Track>().seed, first_seed);
         h.command(a, "scores", &[]);
         assert_eq!(h.chats(1).len(), 1);
+        assert_eq!(h.race().best.len(), 1);
     }
 
     #[test]
@@ -1841,8 +1916,10 @@ pub(crate) mod tests {
                     Tone::Info.color().to_string()
                 ),
                 (
-                    "Retour en vol, demontage de la piste. /scores : classement complet."
-                        .to_string(),
+                    format!(
+                        "Circuit #{seed} : /race 5 {seed} pour le rejouer. Retour en vol, demontage de la piste. /scores : classement complet.",
+                        seed = h.app.world().resource::<Track>().seed
+                    ),
                     Tone::Info.color().to_string()
                 ),
             ]
@@ -2098,36 +2175,46 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_record_is_announced_only_when_the_circuit_best_is_beaten() {
+    fn a_record_is_announced_only_when_a_replayed_circuit_is_beaten() {
         let mut h = Harness::new(42);
         let a = h.connect(1);
         let b = h.connect(2);
-        h.shortcut_to_racing(a, &[]);
-        {
-            let mut kart = h.kart_mut(a);
-            kart.next_gate = LAPS * GATES + 1;
-            kart.penalty = 600;
+        let seed = "7";
+        let mut rounds = Vec::new();
+        for (player, client, delay) in [(a, 1, 10), (b, 2, 3), (a, 1, 3), (b, 2, 5)] {
+            h.shortcut_to_racing(a, &["1", seed]);
+            assert_eq!(h.app.world().resource::<Track>().seed, 7);
+            h.ticks(delay);
+            h.drain();
+            h.kart_mut(player).next_gate = GATES + 1;
+            h.tick();
+            let out = h.drain();
+            let time = h.kart(player).finished.unwrap();
+            let record = colored(&out, client).contains(&(
+                format!("Record du circuit : Pilot{client} en {}s !", seconds(time)),
+                Tone::Record.color().to_string(),
+            ));
+            assert_eq!(sounds(&out, 1, Cue::Record).len(), usize::from(record));
+            assert_eq!(sounds(&out, 2, Cue::Record).len(), usize::from(record));
+            assert_eq!(sounds(&out, client, Cue::Finish).len(), 1);
+            rounds.push((time, record));
+            let other = if player == a { b } else { a };
+            h.kart_mut(other).next_gate = GATES + 1;
+            while h.race().phase != Phase::Results {
+                h.tick();
+            }
+            h.drain();
         }
-        h.tick();
-        let out = h.drain();
-        assert!(sounds(&out, 1, Cue::Record).is_empty());
-        assert!(
-            colored(&out, 2)
-                .iter()
-                .all(|(_, color)| *color != Tone::Record.color().to_string())
+        assert!(rounds[0].0 > rounds[1].0);
+        assert_eq!(rounds[1].0, rounds[2].0);
+        assert!(rounds[3].0 > rounds[2].0);
+        assert_eq!(
+            rounds.iter().map(|(_, record)| *record).collect::<Vec<_>>(),
+            vec![false, true, false, false]
         );
-        h.kart_mut(b).next_gate = LAPS * GATES + 1;
-        h.tick();
-        let out = h.drain();
-        let time = h.kart(b).finished.unwrap();
-        assert!(time < h.kart(a).finished.unwrap());
-        assert!(colored(&out, 1).contains(&(
-            format!("Record du circuit : Pilot2 en {}s !", seconds(time)),
-            Tone::Record.color().to_string()
-        )));
-        assert_eq!(sounds(&out, 1, Cue::Record).len(), 1);
-        assert_eq!(sounds(&out, 2, Cue::Record).len(), 1);
-        assert_eq!(sounds(&out, 2, Cue::Finish).len(), 1);
+        assert_eq!(h.race().best.len(), 2);
+        assert_eq!(h.race().best[&(7, 1, "Pilot1".into())], rounds[2].0);
+        assert_eq!(h.race().best[&(7, 1, "Pilot2".into())], rounds[1].0);
     }
 
     #[test]
