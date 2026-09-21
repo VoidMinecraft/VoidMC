@@ -149,7 +149,8 @@ impl ClientSocket {
                 stream: BufWriter::new(writer),
                 limits: self.limits,
                 frame: Vec::new(),
-                header: Vec::with_capacity(FRAME_HEADER_BYTES),
+                retained_bytes: self.limits.max_outbound_frame_bytes
+                    / FRAME_BUFFER_RETAINED_DIVISOR,
             },
         )
     }
@@ -232,13 +233,13 @@ impl ClientReader {
 }
 
 const FRAME_HEADER_BYTES: usize = 5;
-const FRAME_BUFFER_RETAINED_BYTES: usize = 64 * 1024;
+const FRAME_BUFFER_RETAINED_DIVISOR: usize = 8;
 
 pub struct ClientWriter {
     stream: BufWriter<OwnedWriteHalf>,
     limits: FrameLimits,
     frame: Vec<u8>,
-    header: Vec<u8>,
+    retained_bytes: usize,
 }
 
 impl ClientWriter {
@@ -248,9 +249,9 @@ impl ClientWriter {
         packet.encode(&mut self.frame);
         let body_len = self.frame.len() - FRAME_HEADER_BYTES;
         let result = self.write_frame(body_len).await;
-        if self.frame.capacity() > FRAME_BUFFER_RETAINED_BYTES {
+        if self.frame.capacity() > self.retained_bytes {
             self.frame.clear();
-            self.frame.shrink_to(FRAME_BUFFER_RETAINED_BYTES);
+            self.frame.shrink_to(self.retained_bytes);
         }
         result
     }
@@ -266,10 +267,23 @@ impl ClientWriter {
         let len = i32::try_from(body_len).map_err(|_| FrameError::OutboundLengthOverflow {
             requested: body_len,
         })?;
-        self.header.clear();
-        VarI32(len).encode(&mut self.header);
-        let start = FRAME_HEADER_BYTES - self.header.len();
-        self.frame[start..FRAME_HEADER_BYTES].copy_from_slice(&self.header);
+        let mut header = [0u8; FRAME_HEADER_BYTES];
+        let mut value = len as u32;
+        let mut written = 0;
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            header[written] = byte;
+            written += 1;
+            if value == 0 {
+                break;
+            }
+        }
+        let start = FRAME_HEADER_BYTES - written;
+        self.frame[start..FRAME_HEADER_BYTES].copy_from_slice(&header[..written]);
         self.stream.write_all(&self.frame[start..]).await?;
         Ok(())
     }
@@ -508,13 +522,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frame_buffer_is_released_after_an_oversized_frame() {
+    async fn retained_capacity_is_derived_from_the_outbound_limit() {
+        let (socket, _peer) = connected(FrameLimits::default()).await;
+        let (_, writer) = socket.into_split();
+        assert_eq!(writer.retained_bytes, 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn chunk_sized_frames_do_not_reallocate_after_warm_up() {
         let (socket, mut peer) = connected(FrameLimits::default()).await;
         let (_, mut writer) = socket.into_split();
 
-        let large = vec![1; 4 * FRAME_BUFFER_RETAINED_BYTES];
+        let chunk = vec![7; 80_409];
+        writer.send(&Bytes(chunk.clone())).await.unwrap();
+        let warm = writer.frame.capacity();
+        assert!(warm > chunk.len());
+        assert!(warm <= writer.retained_bytes);
+
+        for _ in 0..2 {
+            writer.send(&Bytes(chunk.clone())).await.unwrap();
+            assert_eq!(writer.frame.capacity(), warm);
+        }
+        writer.flush().await.unwrap();
+        drop(writer);
+
+        let mut expected = Vec::new();
+        for _ in 0..3 {
+            expected.extend_from_slice(&frame_bytes(&chunk));
+        }
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn frame_buffer_is_released_after_an_oversized_frame() {
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (_, mut writer) = socket.into_split();
+        let receiving = tokio::spawn(async move {
+            let mut received = Vec::new();
+            peer.read_to_end(&mut received).await.unwrap();
+            received
+        });
+
+        let large = vec![1; 4 * writer.retained_bytes];
         writer.send(&Bytes(large.clone())).await.unwrap();
-        assert!(writer.frame.capacity() <= FRAME_BUFFER_RETAINED_BYTES);
+        assert!(writer.frame.capacity() <= writer.retained_bytes);
 
         writer.send(&Bytes(vec![2, 3])).await.unwrap();
         writer.flush().await.unwrap();
@@ -522,9 +575,7 @@ mod tests {
 
         let mut expected = frame_bytes(&large);
         expected.extend_from_slice(&frame_bytes(&[2, 3]));
-        let mut received = Vec::new();
-        peer.read_to_end(&mut received).await.unwrap();
-        assert_eq!(received, expected);
+        assert_eq!(receiving.await.unwrap(), expected);
     }
 
     #[tokio::test]
