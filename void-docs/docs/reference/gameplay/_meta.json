@@ -41,6 +41,11 @@
   },
   {
     "type": "file",
+    "name": "messages",
+    "label": "Messages"
+  },
+  {
+    "type": "file",
     "name": "block-entities",
     "label": "Block Entities"
   },
