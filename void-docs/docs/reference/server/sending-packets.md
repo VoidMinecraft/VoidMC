@@ -105,7 +105,7 @@ top of it with the same `Audience` / `viewers` vocabulary:
 | Particles | [`Particles` / `WorldParticles`](../gameplay/particles.md) |
 | Sounds | [`Sounds` / `WorldSounds`](../gameplay/sounds.md) |
 | Boss bars | [`BossBar` component](../gameplay/boss-bars.md) |
-| Scoreboards | [`Objective` / `Team` components](../gameplay/scoreboard.md) |
+| Scoreboards | [`Objective` / `Team` components](../gameplay/scoreboard.md), [`Sidebar` widgets](../gameplay/sidebar.md) |
 
 ### Failure handling
 
@@ -156,6 +156,7 @@ inside one schedule.
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
+| `SidebarSync` | `PostUpdate`, before `ScoreboardSync` | Renders changed sidebars into their objective (see [Sidebar](../gameplay/sidebar.md)). |
 | `ScoreboardSync` | `PostUpdate` | Objective, score and team packets for changed scoreboards (see [Scoreboard](../gameplay/scoreboard.md)). |
 | `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
 | `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |

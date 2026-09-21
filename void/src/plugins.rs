@@ -13,6 +13,7 @@ pub mod login;
 pub mod movement;
 pub mod play;
 pub mod scoreboard;
+pub mod sidebar;
 pub mod status;
 
 pub struct DefaultPlugins;
@@ -32,7 +33,7 @@ impl Plugin for DefaultPlugins {
             inventory::InventoryPlugin,
             item_drops::ItemDropsPlugin,
             boss_bar::BossBarPlugin,
-            scoreboard::ScoreboardPlugin,
+            (scoreboard::ScoreboardPlugin, sidebar::SidebarPlugin),
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,
         ));

@@ -78,6 +78,8 @@ recipient** with a `DecoderException`. The variants are `Black`, `DarkBlue`,
 `#rrggbb`. `TextColor::parse` accepts the 16 vanilla names and `#rrggbb`
 (`parse("dark_red")` / `parse("#ff8800")`), returning `None` when the client
 would reject the input, and `Display` gives the wire name back.
+`legacy_code()` gives the `§` formatting digit of a named colour (`None` for
+RGB), for the few places that still take legacy text such as sidebar lines.
 
 ## Text length
 

@@ -20,6 +20,7 @@ mod entities;
 mod menu;
 mod particle;
 mod scoreboard;
+mod sidebar;
 mod sign;
 mod sound;
 
@@ -107,13 +108,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Observe block-breaking events
             app.add_observer(on_player_dig);
             app.add_observer(boss_bar::despawn_bossbar_on_quit);
-            app.world_mut().spawn(scoreboard::altitude_board());
+            app.world_mut().spawn(sidebar::altitude_board());
             app.add_systems(
                 Update,
                 (
                     circle::circle_system,
                     entities::shield_system,
-                    scoreboard::altitude_system,
+                    sidebar::altitude_system,
                 ),
             );
         })
