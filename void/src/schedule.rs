@@ -44,6 +44,10 @@ pub enum VoidSystems {
     AbilitiesSync,
     /// `Update`, after `CommandDrain`: advances in-flight [`crate::Teleport`]s.
     TeleportBarrier,
+    /// `PostUpdate`, before `ScoreboardSync`: renders changed sidebars into their objective.
+    SidebarSync,
+    /// `PostUpdate`: objective, score and team packets for changed scoreboards.
+    ScoreboardSync,
     /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
     StatusSnapshot,
     /// `PostUpdate`: TPS tracking (only with `metrics_debug`).

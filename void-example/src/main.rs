@@ -19,6 +19,8 @@ mod circle;
 mod entities;
 mod menu;
 mod particle;
+mod scoreboard;
+mod sidebar;
 mod sign;
 mod sound;
 
@@ -101,11 +103,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
+            registry.register(scoreboard::team_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);
             app.add_observer(boss_bar::despawn_bossbar_on_quit);
-            app.add_systems(Update, (circle::circle_system, entities::shield_system));
+            app.world_mut().spawn(sidebar::altitude_board());
+            app.add_systems(
+                Update,
+                (
+                    circle::circle_system,
+                    entities::shield_system,
+                    sidebar::altitude_system,
+                ),
+            );
         })
         .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",

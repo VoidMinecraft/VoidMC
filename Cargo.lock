@@ -1898,6 +1898,7 @@ dependencies = [
  "bevy_ecs",
  "criterion",
  "flume",
+ "log",
  "rand 0.8.6",
  "tokio",
  "tracing",

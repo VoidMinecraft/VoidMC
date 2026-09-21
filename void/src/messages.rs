@@ -87,6 +87,11 @@ impl TextColor {
         })
     }
 
+    pub fn legacy_code(self) -> Option<char> {
+        let index = TextColor::NAMED.iter().position(|named| *named == self)?;
+        char::from_digit(index as u32, 16)
+    }
+
     pub fn parse(color: &str) -> Option<Self> {
         if let Some(hex) = color.strip_prefix('#') {
             if hex.is_empty() || hex.len() > 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -446,6 +451,15 @@ mod tests {
             Some((_, Tag::String(value))) => value.to_string(),
             other => panic!("expected string {key}, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn legacy_codes_follow_the_vanilla_order() {
+        assert_eq!(TextColor::Black.legacy_code(), Some('0'));
+        assert_eq!(TextColor::Gold.legacy_code(), Some('6'));
+        assert_eq!(TextColor::Green.legacy_code(), Some('a'));
+        assert_eq!(TextColor::White.legacy_code(), Some('f'));
+        assert_eq!(TextColor::rgb(0x123456).legacy_code(), None);
     }
 
     #[test]

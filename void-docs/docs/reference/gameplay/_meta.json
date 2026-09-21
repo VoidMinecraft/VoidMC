@@ -26,6 +26,16 @@
   },
   {
     "type": "file",
+    "name": "scoreboard",
+    "label": "Scoreboard"
+  },
+  {
+    "type": "file",
+    "name": "sidebar",
+    "label": "Sidebar"
+  },
+  {
+    "type": "file",
     "name": "sounds",
     "label": "Sounds"
   },
