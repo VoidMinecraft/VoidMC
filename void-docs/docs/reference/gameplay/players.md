@@ -98,13 +98,18 @@ The `broadcast_position` system runs in `PostUpdate` and sends movement updates 
 
 ### Delta Encoding
 
-Position changes are encoded as fixed-point deltas:
+Position changes are encoded as fixed-point deltas (1/4096 of a block) using the
+shared `relative_delta` helper from `systems/entities.rs`:
 
 ```rust
-let delta_x = ((pos.x * 32.0 - prev_pos.x * 32.0) * 128.0) as i16;
-let delta_y = ((pos.y * 32.0 - prev_pos.y * 32.0) * 128.0) as i16;
-let delta_z = ((pos.z * 32.0 - prev_pos.z * 32.0) * 128.0) as i16;
+let delta_x = relative_delta(pos.x, prev_pos.x); // Option<i16>
+let delta_y = relative_delta(pos.y, prev_pos.y);
+let delta_z = relative_delta(pos.z, prev_pos.z);
 ```
+
+An `i16` delta only covers about ±8 blocks. If any axis moved further than that
+in a single tick, `relative_delta` returns `None` and the update is sent as an
+absolute `TeleportEntity` instead of a saturated delta.
 
 ### Rotation Encoding
 
@@ -118,7 +123,9 @@ let pitch = (rotation.pitch / 360.0 * 256.0) as u8;
 ### Packets Sent
 
 For each player with changed `Position` or `Rotation`:
-1. `UpdateEntityPositionAndRotation` — Combined position delta + rotation
+1. `UpdateEntityPositionAndRotation` — Combined position delta + rotation, or
+   `TeleportEntity` (absolute position, zero velocity) when the move exceeds the
+   ~8 block delta range
 2. `SetHeadRotation` — Head yaw (for smooth head turning)
 
 The `update_previous_positions` system runs after broadcasting to sync `PreviousPosition` with current `Position`.

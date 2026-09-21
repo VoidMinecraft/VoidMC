@@ -348,7 +348,7 @@ fn velocity_to_lp_vec3(velocity: &Velocity) -> LpVec3 {
     }
 }
 
-fn relative_delta(current: f64, previous: f64) -> Option<i16> {
+pub(crate) fn relative_delta(current: f64, previous: f64) -> Option<i16> {
     let delta = ((current - previous) * RELATIVE_MOVE_SCALE).round();
     if delta < i16::MIN as f64 || delta > i16::MAX as f64 {
         None
