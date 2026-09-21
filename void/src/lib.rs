@@ -68,6 +68,10 @@ pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
 pub use plugins::teleport::{Teleport, TeleportOutcome};
+pub use plugins::scoreboard::{
+    CollisionRule, DisplaySlot, NameTagVisibility, Objective, ObjectiveState, RenderType, Score,
+    ScoreFormat, Team, TeamColor, TeamState,
+};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
