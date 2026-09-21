@@ -312,6 +312,7 @@ fn load_registry_entries(crate_dir: &Path, version: &str, registry: &str) -> Vec
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_blocks_module(
     out: &mut String,
     version: &str,
