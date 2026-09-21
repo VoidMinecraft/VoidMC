@@ -17,6 +17,7 @@ use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 mod biome;
 mod boss_bar;
 mod circle;
+mod effects;
 mod entities;
 mod menu;
 mod particle;
@@ -102,6 +103,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
+            registry.register(effects::effect_command());
+            registry.register(effects::speed_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);

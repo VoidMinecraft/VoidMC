@@ -1641,14 +1641,11 @@ fn emit_mob_effects(out: &mut String, effects: &[MobEffectDef]) {
     );
     let _ = writeln!(out, "            match self {{");
     for ((variant, _, _), def) in variants.iter().zip(effects) {
-        match &def.particle {
-            Some(particle) => {
-                let _ = writeln!(
-                    out,
-                    "                Effect::{variant} => Some({particle:?}),"
-                );
-            }
-            None => {}
+        if let Some(particle) = &def.particle {
+            let _ = writeln!(
+                out,
+                "                Effect::{variant} => Some({particle:?}),"
+            );
         }
     }
     let _ = writeln!(out, "                _ => None,");
