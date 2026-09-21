@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
-    EntityBuilder, EntityKind, Passengers,
+    EntityBuilder, EntityKind, Hidden, Passengers,
     components::{Position, Rotation},
     events::PlayerInputEvent,
 };
@@ -19,6 +19,7 @@ pub fn spawn(commands: &mut Commands, player: Entity, kart: Kart) -> Entity {
         .rotation(kart.model_yaw(), 0.0)
         .with(Pilot(player))
         .with(Passengers::default())
+        .with(Hidden)
         .with(kart)
         .spawn(commands)
         .id()
@@ -238,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn join_spawns_one_parked_minecart_without_passenger() {
+    fn join_parks_one_hidden_minecart_without_passenger() {
         let mut h = Harness::new(42);
         let a = h.connect(1);
         let listed = karts(&mut h);
@@ -247,6 +248,7 @@ mod tests {
         assert_eq!(pilot, Pilot(a));
         assert_eq!(seats, Passengers::default());
         assert_eq!(h.kart_entity(a), kart);
+        assert!(h.app.world().get::<Hidden>(kart).is_some());
         assert_eq!(
             h.app.world().get::<EntityType>(kart).unwrap().0,
             EntityKind::Minecart.id()
@@ -263,31 +265,10 @@ mod tests {
         );
         assert_eq!(h.app.world().get::<Rotation>(kart).unwrap().yaw, 270.0);
         h.drain();
-        h.tick();
+        h.ticks(21);
         let out = h.drain();
         let kart_id = network_id(&h, kart);
-        let spawned = spawns(&out, 1);
-        assert_eq!(spawned.len(), 1);
-        assert_eq!(
-            (
-                spawned[0].id,
-                spawned[0].kind,
-                spawned[0].at,
-                spawned[0].yaw
-            ),
-            (
-                kart_id,
-                EntityKind::Minecart.id(),
-                (sim.x, sim.y, sim.z),
-                192
-            )
-        );
-        assert!(passengers(&out, 1).is_empty());
-        assert!(movement(&out, 1, kart_id).is_empty());
-
-        h.ticks(20);
-        let out = h.drain();
-        assert!(spawns(&out, 1).is_empty());
+        assert!(spawns(&out, 1).is_empty(), "{out:?}");
         assert!(passengers(&out, 1).is_empty());
         assert!(movement(&out, 1, kart_id).is_empty());
 
@@ -295,7 +276,15 @@ mod tests {
         h.tick();
         let out = h.drain();
         assert_eq!(karts(&mut h).len(), 2);
-        assert_eq!(spawns(&out, 1).len() + spawns(&out, 2).len(), 3, "{out:?}");
+        assert!(
+            karts(&mut h)
+                .iter()
+                .all(|(kart, ..)| h.app.world().get::<Hidden>(*kart).is_some())
+        );
+        assert!(
+            spawns(&out, 1).is_empty() && spawns(&out, 2).is_empty(),
+            "{out:?}"
+        );
         assert!(passengers(&out, 1).is_empty() && passengers(&out, 2).is_empty());
     }
 
@@ -370,18 +359,16 @@ mod tests {
         let (ida, idb) = (network_id(&h, ka), network_id(&h, kb));
         let grid = h.kart(a).clone();
         assert!(grid.y < WAIT_Y);
-        assert_eq!(
-            movement(&out, 1, ida),
-            vec![Out::Teleport {
-                client: 1,
-                id: ida,
-                x: grid.x,
-                y: grid.y,
-                z: grid.z,
-                yaw: grid.model_yaw(),
-            }]
-        );
-        assert_eq!(movement(&out, 2, idb).len(), 1);
+        assert!(movement(&out, 1, ida).is_empty());
+        assert!(movement(&out, 2, idb).is_empty());
+        let spawned: Vec<Spawned> = spawns(&out, 1)
+            .into_iter()
+            .filter(|s| s.kind == EntityKind::Minecart.id())
+            .collect();
+        assert_eq!(spawned.len(), 2);
+        let kart = spawned.iter().find(|s| s.id == ida).unwrap();
+        assert_eq!(kart.at, (grid.x, grid.y, grid.z));
+        assert_eq!(kart.yaw, (grid.model_yaw() * 256.0 / 360.0) as u8);
         assert_eq!(
             position(&h, ka),
             Position {
@@ -517,7 +504,7 @@ mod tests {
         let mut h = Harness::new(42);
         let a = h.connect(1);
         let b = h.connect(2);
-        h.tick();
+        h.shortcut_to_countdown(a, &[]);
         h.drain();
         let (ka, kb) = (h.kart_entity(a), h.kart_entity(b));
         let (ida, idb) = (network_id(&h, ka), network_id(&h, kb));
@@ -536,7 +523,8 @@ mod tests {
         let out = h.drain();
         let rejoined = h.kart_entity(a);
         assert_ne!(rejoined, ka);
-        assert_eq!(spawns(&out, 2).len(), 1);
+        assert!(h.app.world().get::<Hidden>(rejoined).is_some());
+        assert!(spawns(&out, 1).is_empty() && spawns(&out, 2).is_empty());
         assert!(passengers(&out, 2).is_empty());
 
         h.disconnect(b);

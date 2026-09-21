@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
-    Passengers, PlayerAbilities, Teleport, TeleportOutcome,
+    Hidden, Passengers, PlayerAbilities, Teleport, TeleportOutcome,
     components::{PlayerReady, ServerControlledPosition},
     events::{PlayerTeleportEvent, PlayerToggleFlyEvent},
 };
@@ -44,23 +44,26 @@ pub fn grounded() -> PlayerAbilities {
 pub struct Travel<'w, 's> {
     commands: Commands<'w, 's>,
     abilities: Query<'w, 's, &'static PlayerAbilities>,
-    seats: Query<'w, 's, (&'static Pilot, &'static mut Passengers)>,
+    seats: Query<'w, 's, (Entity, &'static Pilot, &'static mut Passengers)>,
     ready: Query<'w, 's, Entity, With<PlayerReady>>,
 }
 
 impl Travel<'_, '_> {
-    fn seat_of(&mut self, player: Entity) -> Option<Mut<'_, Passengers>> {
+    fn seat_of(&mut self, player: Entity) -> Option<(Entity, Mut<'_, Passengers>)> {
         self.seats
             .iter_mut()
-            .find(|(pilot, _)| pilot.0 == player)
-            .map(|(_, seats)| seats)
+            .find(|(_, pilot, _)| pilot.0 == player)
+            .map(|(kart, _, seats)| (kart, seats))
     }
 
     pub fn fly(&mut self, player: Entity) {
-        if let Some(mut seats) = self.seat_of(player)
-            && seats.0.contains(&player)
-        {
-            seats.remove(player);
+        if let Some((kart, mut seats)) = self.seat_of(player) {
+            if seats.0.contains(&player) {
+                seats.remove(player);
+            }
+            if let Ok(mut kart) = self.commands.get_entity(kart) {
+                kart.try_insert(Hidden);
+            }
         }
         let Ok(mut entity) = self.commands.get_entity(player) else {
             return;
@@ -88,7 +91,10 @@ impl Travel<'_, '_> {
         }
     }
 
-    pub fn board(&mut self, player: Entity, kart: &Kart) {
+    pub fn board(&mut self, player: Entity, seat: Entity, kart: &Kart) {
+        if let Ok(mut seat) = self.commands.get_entity(seat) {
+            seat.remove::<Hidden>();
+        }
         if let Ok(mut entity) = self.commands.get_entity(player) {
             entity.insert((
                 Transfer::Boarding,
@@ -114,7 +120,7 @@ pub fn arrived(
     travel.commands.entity(player).remove::<Transfer>();
     match (transfer, event.outcome) {
         (Transfer::Boarding, TeleportOutcome::Confirmed) => {
-            let Some(mut seats) = travel.seat_of(player) else {
+            let Some((_, mut seats)) = travel.seat_of(player) else {
                 return;
             };
             seats.push(player);
@@ -135,7 +141,21 @@ pub fn arrived(
             chat.tell(player, TIMEOUT_MESSAGE);
             travel.to_lobby(player);
         }
-        (Transfer::Lobby, _) | (Transfer::Boarding, TeleportOutcome::Cancelled) => {
+        (Transfer::Boarding, TeleportOutcome::Cancelled) => {
+            if let Some(mut kart) = karts
+                .iter_mut()
+                .find(|(pilot, _)| pilot.0 == player)
+                .map(|(_, kart)| kart)
+            {
+                kart.participant = false;
+            }
+            travel.fly(player);
+            travel
+                .commands
+                .entity(player)
+                .try_remove::<ServerControlledPosition>();
+        }
+        (Transfer::Lobby, _) => {
             travel
                 .commands
                 .entity(player)
@@ -160,14 +180,15 @@ pub fn keep_flying(
 
 #[cfg(test)]
 mod tests {
-    use voidmc::ChunkPos;
     use voidmc::components::{LoadedChunks, MinecraftEntityId, Position, Rotation};
     use voidmc::network::PacketEvent;
+    use voidmc::{ChunkPos, EntityKind};
     use voidmc_protocol::serverbound;
 
     use super::*;
     use crate::race::tests::{Harness, Out};
     use crate::race::{Phase, Racer};
+    use crate::track::GATES;
 
     fn abilities(out: &[Out], client: u32) -> Vec<(u8, f32, f32)> {
         out.iter()
@@ -241,6 +262,32 @@ mod tests {
     fn seats(h: &Harness, player: Entity) -> Passengers {
         let kart = h.app.world().get::<Racer>(player).unwrap().kart;
         h.app.world().get::<Passengers>(kart).unwrap().clone()
+    }
+
+    fn hidden(h: &Harness, player: Entity) -> bool {
+        h.app.world().get::<Hidden>(h.kart_entity(player)).is_some()
+    }
+
+    fn kart_id(h: &Harness, player: Entity) -> i32 {
+        h.app
+            .world()
+            .get::<MinecraftEntityId>(h.kart_entity(player))
+            .unwrap()
+            .0
+    }
+
+    fn kart_spawns(out: &[Out], client: u32) -> Vec<i32> {
+        out.iter()
+            .filter_map(|o| match o {
+                Out::Spawn {
+                    client: c,
+                    id,
+                    kind,
+                    ..
+                } if *c == client && *kind == EntityKind::Minecart.id() => Some(*id),
+                _ => None,
+            })
+            .collect()
     }
 
     fn lobby_chunks() -> Vec<ChunkPos> {
@@ -449,12 +496,16 @@ mod tests {
         assert_eq!(transfer(&h, a), Some(Transfer::Lobby));
         assert!(!h.kart(a).participant);
         assert!(h.kart(b).participant);
+        assert!(hidden(&h, a) && !hidden(&h, b));
         assert!(airborne(&h, a) && controlled(&h, a));
         assert_eq!(seats(&h, a), Passengers::default());
         assert_eq!(h.race().phase, Phase::Countdown);
         let out = h.drain();
         assert_eq!(syncs(&out, 1).len(), 1);
         assert!(abilities(&out, 1).is_empty());
+        let slow_kart = kart_id(&h, a);
+        assert!(out.contains(&Out::Remove(2, vec![slow_kart])));
+        assert!(out.contains(&Out::Remove(1, vec![slow_kart])));
         let texts: Vec<String> = out
             .iter()
             .filter_map(|o| match o {
@@ -498,15 +549,102 @@ mod tests {
         assert_eq!(h.race().roster, vec![b, c]);
         h.ticks(2);
         assert_eq!(h.race().phase, Phase::Loading);
+        assert!(h.kart(c).participant && !hidden(&h, c));
         h.world().entity_mut(c).remove::<Teleport>();
         h.tick();
         assert!(transfer(&h, c).is_none());
         assert!(!controlled(&h, c) && airborne(&h, c));
         assert_eq!(seats(&h, c), Passengers::default());
+        assert!(!h.kart(c).participant && !h.kart(c).racing());
+        assert!(hidden(&h, c));
         assert_eq!(h.race().phase, Phase::Loading);
         h.settle_transfers();
         assert_eq!(h.race().phase, Phase::Countdown);
         assert_eq!(seats(&h, b), Passengers::new([b]));
+        assert!(h.kart(b).participant && !h.kart(c).participant);
+        let tick = h.race().tick;
+        h.race_mut().start = tick;
+        h.tick();
+        assert_eq!(h.race().phase, Phase::Racing);
+        assert!(!h.kart(c).racing());
+    }
+
+    #[test]
+    fn parked_karts_stay_hidden_until_boarding_and_spawn_before_the_mount() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        assert!(hidden(&h, a) && hidden(&h, b));
+        h.ticks(3);
+        let out = h.drain();
+        assert!(kart_spawns(&out, 1).is_empty() && kart_spawns(&out, 2).is_empty());
+        let (ka, kb) = (kart_id(&h, a), kart_id(&h, b));
+
+        h.command(a, "race", &[]);
+        h.settle_transfers();
+        h.ticks(2);
+        let out = h.drain();
+        assert!(hidden(&h, a) && hidden(&h, b));
+        assert!(kart_spawns(&out, 1).is_empty() && kart_spawns(&out, 2).is_empty());
+
+        h.race_mut().pending.clear();
+        h.tick();
+        assert_eq!(h.race().phase, Phase::Loading);
+        assert!(!hidden(&h, a) && !hidden(&h, b));
+        let mut stream = h.drain();
+        stream.extend(h.settle_transfers());
+        assert_eq!(h.race().phase, Phase::Countdown);
+        for (client, player, kart) in [(1, a, ka), (2, b, kb)] {
+            let spawns: Vec<usize> = stream
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| matches!(o, Out::Spawn { client: c, id, .. } if *c == client && *id == kart))
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(spawns.len(), 1, "{client}");
+            let player_id = h.app.world().get::<MinecraftEntityId>(player).unwrap().0;
+            let mount = stream
+                .iter()
+                .position(|o| *o == Out::Passengers(client, kart, vec![player_id]))
+                .unwrap();
+            assert!(spawns[0] < mount);
+            let other = if kart == ka { kb } else { ka };
+            assert_eq!(
+                stream
+                    .iter()
+                    .filter(|o| matches!(o, Out::Spawn { client: c, id, .. } if *c == client && *id == other))
+                    .count(),
+                1
+            );
+        }
+
+        let tick = h.race().tick;
+        h.race_mut().start = tick;
+        h.tick();
+        assert_eq!(h.race().phase, Phase::Racing);
+        h.drain();
+        h.command(b, "leave", &[]);
+        assert!(h.app.world().get_entity(h.kart_entity(a)).is_ok());
+        let out = h.drain();
+        assert!(out.contains(&Out::Remove(1, vec![kb])));
+        assert!(out.contains(&Out::Remove(2, vec![kb])));
+        h.kart_mut(a).next_gate = crate::race::LAPS * GATES + 1;
+        h.tick();
+        assert_eq!(h.race().phase, Phase::Destroying);
+        assert!(hidden(&h, a));
+        assert_eq!(h.kart(a).y, WAIT_Y);
+        let out = h.drain();
+        assert!(out.contains(&Out::Remove(1, vec![ka])));
+        assert!(out.contains(&Out::Remove(2, vec![ka])));
+        h.settle_transfers();
+        h.race_mut().pending.clear();
+        h.tick();
+        assert_eq!(h.race().phase, Phase::Results);
+        h.command(b, "join", &[]);
+        h.ticks(5);
+        assert!(hidden(&h, a) && hidden(&h, b));
+        let out = h.drain();
+        assert!(kart_spawns(&out, 1).is_empty() && kart_spawns(&out, 2).is_empty());
     }
 
     #[test]

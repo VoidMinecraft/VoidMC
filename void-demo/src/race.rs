@@ -571,7 +571,7 @@ fn construct(
             }
             kart.grid(&track, slot);
             racer.gate = kart.next_gate;
-            placement.travel.board(*pilot, &kart);
+            placement.travel.board(*pilot, racer.kart, &kart);
             slot += 1;
         }
         items.place(&track);
