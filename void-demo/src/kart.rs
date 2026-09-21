@@ -59,12 +59,10 @@ impl PowerUp {
         }
     }
 
-    pub fn total_weight() -> u64 {
-        Self::ALL.iter().map(|item| item.weight()).sum()
-    }
+    pub const TOTAL_WEIGHT: u64 = 94;
 
     pub fn roll(roll: u64) -> Self {
-        let mut remaining = roll % Self::total_weight();
+        let mut remaining = roll % Self::TOTAL_WEIGHT;
         for item in Self::ALL {
             if remaining < item.weight() {
                 return item;
@@ -626,8 +624,11 @@ mod tests {
 
     #[test]
     fn the_roll_table_is_weighted_and_covers_every_power_up() {
-        let total = PowerUp::total_weight();
-        assert_eq!(total, 94);
+        let total = PowerUp::TOTAL_WEIGHT;
+        assert_eq!(
+            total,
+            PowerUp::ALL.iter().map(|item| item.weight()).sum::<u64>()
+        );
         let mut counts = std::collections::HashMap::new();
         for roll in 0..total {
             *counts.entry(PowerUp::roll(roll)).or_insert(0) += 1;

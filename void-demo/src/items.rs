@@ -24,7 +24,7 @@ pub const MISSILE_LIFE: u16 = 160;
 pub const MISSILE_RADIUS: f64 = 2.5;
 pub const BURST_LIFE: u8 = 12;
 pub const SHOCKWAVE_RADIUS: f64 = 9.0;
-pub const LIGHTNING_STRIKES: u16 = 3;
+pub const LIGHTNING_STRIKES: u16 = 2;
 pub const LIGHTNING_PERIOD: u16 = 6;
 pub const LIGHTNING_SPREAD: u16 = 18;
 pub const BOLT_LIFE: u64 = 10;
@@ -542,7 +542,6 @@ impl Field<'_, '_> {
             }
         }
         for (target, first) in strikes {
-            self.audio.at(target.kart, Cue::Thunder);
             let mut kart = self.karts.get_mut(target.kart).unwrap().3;
             let burst = Burst::at(self.items.serial(), &kart, 2.5, BurstKind::Lightning);
             self.items.bursts.push(burst);
@@ -923,10 +922,7 @@ pub fn effects(
         }
         for fireball in &items.fireballs {
             let at = [fireball.x, fireball.y + 0.5, fireball.z];
-            let flame = cloud(Particle::Flame, at, 3).audience(Audience::All);
-            let everyone = flame.recipients();
-            everyone.send(flame.packet());
-            everyone.send(cloud(Particle::LargeSmoke, at, 1).packet());
+            cloud(Particle::Flame, at, 3).audience(Audience::All).send();
         }
     }
     if tick.is_multiple_of(BURST_PERIOD) {
@@ -1058,6 +1054,17 @@ mod tests {
 
     fn items(h: &Harness) -> &Items {
         h.app.world().resource::<Items>()
+    }
+
+    fn bolt_sounds(out: &[Out]) -> usize {
+        let client_side = [
+            "entity.lightning_bolt.thunder",
+            "entity.lightning_bolt.impact",
+        ]
+        .map(|name| voidmc::sounds::resolve(name).unwrap());
+        out.iter()
+            .filter(|o| matches!(o, Out::Sound { sound, .. } if client_side.contains(sound)))
+            .count()
     }
 
     fn storm(h: &Harness, player: Entity) -> Option<Lightning> {
@@ -1997,16 +2004,9 @@ mod tests {
                     })
                     .expect("a bolt lands on a rival");
                 struck.entry(victim).or_default().push(tick);
-                let id = network_id(&h, h.kart_entity(victim));
-                assert_eq!(
-                    sounds(&out, 1, Cue::Thunder)
-                        .iter()
-                        .filter(|o| matches!(o, Out::Sound { emitter: Some(e), .. } if *e == id))
-                        .count(),
-                    1
-                );
             }
-            assert_eq!(sounds(&out, 1, Cue::Thunder).len(), fresh.len());
+            assert!(sounds(&out, 1, Cue::Hit(Hit::Lightning)).len() <= fresh.len());
+            assert_eq!(bolt_sounds(&out), 0);
             for (entity, bolt) in bolts(&mut h) {
                 assert!(tick < bolt.expires, "{entity:?}");
             }
@@ -2018,19 +2018,14 @@ mod tests {
         for (victim, delay, seed) in &victims {
             let ticks = &struck[victim];
             let first = cast + 1 + u64::from(*delay);
-            assert_eq!(
-                *ticks,
-                vec![
-                    first,
-                    first + u64::from(LIGHTNING_PERIOD),
-                    first + 2 * u64::from(LIGHTNING_PERIOD)
-                ],
-                "{victim:?}"
-            );
+            let expected: Vec<u64> = (0..u64::from(LIGHTNING_STRIKES))
+                .map(|n| first + n * u64::from(LIGHTNING_PERIOD))
+                .collect();
+            assert_eq!(*ticks, expected, "{victim:?}");
             assert!(storm(&h, *victim).is_none());
             assert_ne!(*seed, mix(*seed));
         }
-        assert_eq!(seen.len(), 9);
+        assert_eq!(seen.len(), 3 * usize::from(LIGHTNING_STRIKES));
         assert!(bolts(&mut h).is_empty());
         assert!(h.kart(b).slow > 0 && h.kart(d).slow > 0);
         assert_eq!(h.kart(c).slow, 0);
@@ -2041,7 +2036,7 @@ mod tests {
         h.ticks(20);
         let out = h.drain();
         assert!(spawns_of(&out, 1, EntityKind::LightningBolt).is_empty());
-        assert!(sounds(&out, 1, Cue::Thunder).is_empty());
+        assert!(sounds(&out, 1, Cue::Hit(Hit::Lightning)).is_empty());
         assert!(bolts(&mut h).is_empty());
         assert!(items(&h).bursts.is_empty());
     }
@@ -2074,21 +2069,21 @@ mod tests {
         assert_eq!(h.kart(b).slow, 49);
         assert_eq!(h.kart(b).impact, 9);
         assert!(flashes(&out, 2).contains(&flash(Tone::Warn, "Foudroye ! Ralenti 2,5 s")));
-        assert_eq!(sounds(&out, 2, Cue::Hit(Hit::Lightning)).len(), 1);
         let kb = network_id(&h, h.kart_entity(b));
-        assert_eq!(
-            sounds(&out, 2, Cue::Thunder)
-                .iter()
-                .filter(|o| matches!(o, Out::Sound { emitter: Some(e), .. } if *e == kb))
-                .count(),
-            1
-        );
+        let hurt = sounds(&out, 2, Cue::Hit(Hit::Lightning));
+        assert_eq!(hurt.len(), 1);
+        assert!(matches!(hurt[0], Out::Sound { emitter: Some(e), .. } if e == kb));
+        assert_eq!(bolt_sounds(&out), 0);
         assert!(
             particles(&out, 2, Particle::ElectricSpark)
                 .iter()
                 .any(|o| matches!(o, Out::Particles { count: 24, .. }))
         );
-        let bolt = spawns_of(&out, 2, EntityKind::LightningBolt);
+        let (bx, bz) = (h.kart(b).x, h.kart(b).z);
+        let bolt: Vec<(i32, (f64, f64, f64))> = spawns_of(&out, 2, EntityKind::LightningBolt)
+            .into_iter()
+            .filter(|(_, p)| (p.0 - bx).abs() <= 0.4 + 1e-9 && (p.2 - bz).abs() <= 0.4 + 1e-9)
+            .collect();
         assert_eq!(bolt.len(), 1);
         let bolt_id = bolt[0].0;
         let raw: Vec<ClientboundPacket> = h
@@ -2119,8 +2114,11 @@ mod tests {
                 .iter()
                 .all(|o| !matches!(o, Out::Sound { emitter: Some(e), .. } if *e == kc))
         );
-        assert_eq!(sounds(&all, 3, Cue::Thunder).len(), 6);
-        assert_eq!(spawns_of(&all, 3, EntityKind::LightningBolt).len(), 6);
+        assert_eq!(sounds(&all, 3, Cue::Hit(Hit::Lightning)).len(), 1);
+        assert_eq!(
+            spawns_of(&all, 3, EntityKind::LightningBolt).len(),
+            2 * usize::from(LIGHTNING_STRIKES)
+        );
         assert!(storm(&h, c).is_none());
         assert!(storm(&h, b).is_none());
     }
@@ -2271,6 +2269,13 @@ mod tests {
                 o,
                 Out::Move { client: 2, id: i, .. } | Out::Teleport { client: 2, id: i, .. } if *i == id
             )));
+            assert!(particles(&out, 2, Particle::LargeSmoke).is_empty());
+            if h.race().tick.is_multiple_of(MISSILE_PERIOD) {
+                assert!(particles(&out, 2, Particle::Flame).iter().any(|o| matches!(
+                    o,
+                    Out::Particles { count: 3, at, .. } if *at == (f.x, f.y + 0.5, f.z)
+                )));
+            }
             assert_eq!(h.kart(b).slow, 0);
             assert_eq!(h.kart(c).slow, 0);
         }

@@ -184,8 +184,8 @@ seul joueur concerné ; les sons de jeu sont émis **depuis l'entité kart**
 | Bonus ramassé | `entity.item.pickup` (1.2) | pilote |
 | Turbo / Bouclier / Banane / Glace | `firework_rocket.launch` / `beacon.activate` / `slime_block.place` / `glass.place` | au kart |
 | Missile / Onde / Éclair / Super-recharge / Boule de feu | `wither.shoot` / `generic.explode` / `lightning_bolt.thunder` / `respawn_anchor.charge` / `blaze.ambient` | au kart |
-| Éclair qui tombe / boule de feu tirée | `lightning_bolt.thunder` (0.8) / `ghast.shoot` | au kart |
-| Touché : missile / éclair / onde / banane / glace / boule de feu | `generic.explode` / `lightning_bolt.impact` / `player.hurt` / `slime.squish` / `glass.break` / `generic.explode` | au kart |
+| Boule de feu tirée | `ghast.shoot` | au kart |
+| Touché : missile / éclair / onde / banane / glace / boule de feu | `generic.explode` / `player.hurt` / `player.hurt` (0.8) / `slime.squish` / `glass.break` / `generic.explode` | au kart |
 | Bouclier qui absorbe | `item.shield.block` | au kart |
 | Choc (kart ou glissière) | `block.anvil.land` (0.5, 1.6) | au kart |
 | Retour au point d'attente, délai dépassé | `block.portal.trigger` (0.6), placé au point d'attente | joueur |
@@ -283,16 +283,17 @@ les dix ticks, pour ses seuls spectateurs.
   kart visé reçoit un composant `Lightning { delay, seed, remaining }` : son premier
   éclair tombe après son propre délai (distinct par victime, moins de 0,9 s), puis
   toutes les 0,3 s (6 ticks) la seed change et une entité `lightning_bolt` du moteur
-  apparaît sur le kart (le client joue l'animation ; le serveur la retire après 10
-  ticks), trois éclairs en tout. Le ralentissement de 2,5 s s'applique au premier
-  éclair (absorbé par le bouclier) ; chaque éclair joue le tonnerre depuis le kart et
-  émet une onde. Le composant disparaît après le troisième éclair : un kart sans
-  `Lightning` ne coûte rien.
+  apparaît sur le kart (le client joue l'animation, le tonnerre, l'impact et le flash
+  du ciel lui-même ; le serveur n'envoie aucun son par éclair et retire l'entité après
+  10 ticks), deux éclairs en tout : avec huit pilotes, un orage fait déjà flasher le
+  ciel de tous les joueurs 14 fois. Le ralentissement de 2,5 s s'applique au premier
+  éclair (absorbé par le bouclier) ; chaque éclair émet une onde. Le composant
+  disparaît après le deuxième éclair : un kart sans `Lightning` ne coûte rien.
 - **Boule de feu** : trois bâtons de blaze orbitent autour du pilote pendant 2 s, puis
   une entité `fireball` du moteur part tout droit dans le cap du kart à 1,2 bloc/tick,
   à ras de la piste, pendant 3 s au plus ou jusqu'à quitter la route ; elle touche le
-  premier kart adverse à moins de 2 blocs (jamais son tireur) : tête-à-queue, vitesse
-  divisée par trois, ralenti 1 s, explosion et onde comme un missile.
+  kart adverse le plus proche à moins de 2 blocs (jamais son tireur) : tête-à-queue,
+  vitesse divisée par trois, ralenti 1 s, explosion et onde comme un missile.
 
 | Bonus | Poids | Effet |
 |---|---|---|
@@ -312,8 +313,8 @@ anneau de six particules (`electric_spark`, `firework` ou `happy_villager`). Les
 destinataires d'un anneau, d'une orbite ou d'une traînée de missile sont résolus une
 seule fois (`ParticleRequest::recipients`), puis chaque point est envoyé en `packet()`.
 Un missile survit au départ de son tireur et peut encore toucher sa cible. Les
-missiles laissent `flame` et `smoke` tous les deux ticks, les boules de feu `flame` et
-`large_smoke` ; les pièges se signalent
+missiles laissent `flame` et `smoke` tous les deux ticks, les boules de feu `flame`
+seulement (le client dessine lui-même la fumée du `fireball`) ; les pièges se signalent
 tous les dix ticks (`item_slime` pour la banane, anneau `end_rod` de 2,5 blocs pour la
 glace). Les karts en course émettent leur traînée tous les trois ticks, pour leurs
 seuls spectateurs, selon leur état : `crit` (choc), `electric_spark` (bouclier),

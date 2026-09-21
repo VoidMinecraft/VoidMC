@@ -42,12 +42,11 @@ pub enum Cue {
     Shielded,
     Bump,
     Portal,
-    Thunder,
     Launch,
 }
 
 impl Cue {
-    pub const ALL: [Cue; 28] = [
+    pub const ALL: [Cue; 27] = [
         Cue::Beep,
         Cue::Go,
         Cue::Start,
@@ -74,7 +73,6 @@ impl Cue {
         Cue::Shielded,
         Cue::Bump,
         Cue::Portal,
-        Cue::Thunder,
         Cue::Launch,
     ];
 
@@ -97,14 +95,12 @@ impl Cue {
             Cue::Activate(PowerUp::Recharge) => "block.respawn_anchor.charge",
             Cue::Activate(PowerUp::Fireball) => "entity.blaze.ambient",
             Cue::Hit(Hit::Missile) | Cue::Hit(Hit::Fireball) => "entity.generic.explode",
-            Cue::Hit(Hit::Lightning) => "entity.lightning_bolt.impact",
-            Cue::Hit(Hit::Shockwave) => "entity.player.hurt",
+            Cue::Hit(Hit::Lightning) | Cue::Hit(Hit::Shockwave) => "entity.player.hurt",
             Cue::Hit(Hit::Banana) => "entity.slime.squish",
             Cue::Hit(Hit::Ice) => "block.glass.break",
             Cue::Shielded => "item.shield.block",
             Cue::Bump => "block.anvil.land",
             Cue::Portal => "block.portal.trigger",
-            Cue::Thunder => "entity.lightning_bolt.thunder",
             Cue::Launch => "entity.ghast.shoot",
         }
     }
@@ -116,8 +112,7 @@ impl Cue {
             Cue::Portal => 0.6,
             Cue::Activate(PowerUp::Lightning)
             | Cue::Hit(Hit::Missile)
-            | Cue::Hit(Hit::Fireball)
-            | Cue::Thunder => 0.8,
+            | Cue::Hit(Hit::Fireball) => 0.8,
             _ => 1.0,
         }
     }
