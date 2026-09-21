@@ -103,6 +103,7 @@ const SPECS: &[EnumSpec] = &[
             ("UnloadChunk", "minecraft:forget_level_chunk"),
             ("GameEvent", "minecraft:game_event"),
             ("KeepAlive", "minecraft:keep_alive"),
+            ("LevelParticles", "minecraft:level_particles"),
             ("Login", "minecraft:login"),
             ("UpdateEntityPosition", "minecraft:move_entity_pos"),
             (

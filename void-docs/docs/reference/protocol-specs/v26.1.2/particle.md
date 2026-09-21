@@ -110,8 +110,17 @@ A single `int` ARGB colour (`0xAARRGGBB`).
 +--------------------------+
 ```
 
-`ItemStackTemplate` is a thin variant of [Slot](./slot): a non-empty stack
-without a stack count (Item Holder + components patch).
+`ItemStackTemplate` (`ItemStackTemplate.STREAM_CODEC`) is a non-empty stack
+with the fields in a different order from [Slot](./slot) and no empty case:
+
+```text
++---------------------+-----------------+--------------------------+
+| Item ID (VarInt)    | Count (VarInt)  | Data Component Patch     |
++---------------------+-----------------+--------------------------+
+```
+
+The patch is `VarInt added`, `VarInt removed`, then each added component
+(`VarInt type id` + body) and each removed type id.
 
 ### `vibration`
 

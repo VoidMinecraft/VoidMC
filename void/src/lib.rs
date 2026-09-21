@@ -17,6 +17,7 @@ pub mod item;
 pub mod item_behavior;
 mod metrics;
 pub mod network;
+pub mod particles;
 pub mod players;
 pub mod plugins;
 pub mod registry;
@@ -49,6 +50,7 @@ pub use item_behavior::{
     BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
     UseResult,
 };
+pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
 pub use registry::{RegistryDataStore, default_registry_data};

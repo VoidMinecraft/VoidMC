@@ -7,6 +7,7 @@ pub mod commands;
 mod disconnect;
 mod game_event;
 mod keep_alive;
+mod level_particles;
 mod login;
 mod ping;
 mod player_info_remove;
@@ -38,6 +39,7 @@ pub use commands::*;
 pub use disconnect::*;
 pub use game_event::*;
 pub use keep_alive::*;
+pub use level_particles::*;
 pub use login::*;
 pub use ping::*;
 pub use player_info_remove::*;
@@ -86,6 +88,8 @@ pub enum PlayPacket {
     GameEvent(GameEvent),
     #[codec(packet_id = 0x2C)]
     KeepAlive(KeepAlive),
+    #[codec(packet_id = 0x2F)]
+    LevelParticles(LevelParticles),
     #[codec(packet_id = 0x31)]
     Login(Login),
     #[codec(packet_id = 0x35)]

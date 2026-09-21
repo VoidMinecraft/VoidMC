@@ -118,66 +118,39 @@ impl Encode for DataComponent {
     }
 }
 
-/// A network item slot. `count <= 0` means the slot is empty and carries no
-/// further fields on the wire.
+/// The component patch of a slot or item template: components to add, then
+/// component type ids to remove.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct Slot {
-    pub count: i32,
-    pub item_id: i32,
+pub struct DataComponentPatch {
     pub components_to_add: Vec<DataComponent>,
     pub components_to_remove: Vec<i32>,
 }
 
-impl Slot {
-    /// The empty slot (single `0x00` byte on the wire).
-    pub const EMPTY: Slot = Slot {
-        count: 0,
-        item_id: 0,
-        components_to_add: Vec::new(),
-        components_to_remove: Vec::new(),
-    };
-
-    /// A slot holding `count` of `item_id` with no components.
-    pub fn simple(item_id: i32, count: i32) -> Self {
-        Slot {
-            count,
-            item_id,
-            components_to_add: Vec::new(),
-            components_to_remove: Vec::new(),
-        }
-    }
-
-    /// Whether the slot is empty.
-    pub fn is_empty(&self) -> bool {
-        self.count <= 0
-    }
-}
-
-impl Encode for Slot {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        VarI32(self.count).encode(buf);
-        if self.count <= 0 {
-            return;
-        }
-        VarI32(self.item_id).encode(buf);
-        VarI32(self.components_to_add.len() as i32).encode(buf);
-        VarI32(self.components_to_remove.len() as i32).encode(buf);
-        for component in &self.components_to_add {
+impl DataComponentPatch {
+    pub fn encode_parts(
+        components_to_add: &[DataComponent],
+        components_to_remove: &[i32],
+        buf: &mut Vec<u8>,
+    ) {
+        VarI32(components_to_add.len() as i32).encode(buf);
+        VarI32(components_to_remove.len() as i32).encode(buf);
+        for component in components_to_add {
             component.encode(buf);
         }
-        for &type_id in &self.components_to_remove {
+        for &type_id in components_to_remove {
             VarI32(type_id).encode(buf);
         }
     }
 }
 
-impl Decode for Slot {
+impl Encode for DataComponentPatch {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        Self::encode_parts(&self.components_to_add, &self.components_to_remove, buf);
+    }
+}
+
+impl Decode for DataComponentPatch {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let count = decoder.decode::<VarI32>()?.0;
-        if count <= 0 {
-            return Ok(Slot::EMPTY);
-        }
-        let item_id = decoder.decode::<VarI32>()?.0;
         let n_add = decoder.decode::<VarI32>()?.0;
         let n_remove = decoder.decode::<VarI32>()?.0;
         let n_add = decoder.checked_len(
@@ -229,15 +202,75 @@ impl Decode for Slot {
             components_to_remove.push(decoder.decode::<VarI32>()?.0);
         }
 
-        Ok(Slot {
-            count,
-            item_id,
+        Ok(DataComponentPatch {
             components_to_add,
             components_to_remove,
         })
     }
 }
 
+/// A network item slot. `count <= 0` means the slot is empty and carries no
+/// further fields on the wire.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Slot {
+    pub count: i32,
+    pub item_id: i32,
+    pub components_to_add: Vec<DataComponent>,
+    pub components_to_remove: Vec<i32>,
+}
+
+impl Slot {
+    /// The empty slot (single `0x00` byte on the wire).
+    pub const EMPTY: Slot = Slot {
+        count: 0,
+        item_id: 0,
+        components_to_add: Vec::new(),
+        components_to_remove: Vec::new(),
+    };
+
+    /// A slot holding `count` of `item_id` with no components.
+    pub fn simple(item_id: i32, count: i32) -> Self {
+        Slot {
+            count,
+            item_id,
+            components_to_add: Vec::new(),
+            components_to_remove: Vec::new(),
+        }
+    }
+
+    /// Whether the slot is empty.
+    pub fn is_empty(&self) -> bool {
+        self.count <= 0
+    }
+}
+
+impl Encode for Slot {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        VarI32(self.count).encode(buf);
+        if self.count <= 0 {
+            return;
+        }
+        VarI32(self.item_id).encode(buf);
+        DataComponentPatch::encode_parts(&self.components_to_add, &self.components_to_remove, buf);
+    }
+}
+
+impl Decode for Slot {
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let count = decoder.decode::<VarI32>()?.0;
+        if count <= 0 {
+            return Ok(Slot::EMPTY);
+        }
+        let item_id = decoder.decode::<VarI32>()?.0;
+        let patch = DataComponentPatch::decode_with(decoder)?;
+        Ok(Slot {
+            count,
+            item_id,
+            components_to_add: patch.components_to_add,
+            components_to_remove: patch.components_to_remove,
+        })
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +308,19 @@ mod tests {
             components_to_remove: vec![component_ids::REPAIR_COST],
         };
         assert_eq!(roundtrip(&slot), slot);
+    }
+
+    #[test]
+    fn slot_wire_bytes_are_count_item_patch() {
+        let slot = Slot {
+            count: 1,
+            item_id: 895,
+            components_to_add: vec![DataComponent::Damage(123), DataComponent::MaxStackSize(1)],
+            components_to_remove: vec![component_ids::REPAIR_COST],
+        };
+        let mut buf = Vec::new();
+        slot.encode(&mut buf);
+        assert_eq!(buf, vec![1, 0xFF, 0x06, 2, 1, 3, 123, 1, 1, 19]);
     }
 
     #[test]

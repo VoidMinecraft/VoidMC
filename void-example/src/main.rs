@@ -19,6 +19,7 @@ use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 mod biome;
 mod boss_bar;
 mod circle;
+mod particle;
 mod sound;
 
 struct LogGuards {
@@ -95,6 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(boss_bar::bossbar_command());
             registry.register(sound::sound_command());
             registry.register(biome::biome_command());
+            registry.register(particle::particle_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);
