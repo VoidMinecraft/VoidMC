@@ -5,6 +5,7 @@
 
 pub mod metadata;
 pub mod passengers;
+pub mod visibility_index;
 
 use std::collections::HashSet;
 
@@ -23,12 +24,13 @@ pub use passengers::Passengers;
 pub use voidmc_data::v26_1_2::EntityKind;
 
 use crate::components::{
-    EntityCollider, EntityDimension, EntityType, EntityUuid, EntityViewers, Grounded, LoadedChunks,
-    MinecraftEntityId, MovementConfig, PlayerDimension, PlayerReady, Position, PreviousPosition,
-    RecentlySpawned, Rotation, SpawnedEntity, Velocity, VerticalVelocity,
+    EntityCollider, EntityDimension, EntityType, EntityUuid, EntityViewers, Grounded,
+    MinecraftEntityId, MovementConfig, Position, PreviousPosition, RecentlySpawned, Rotation,
+    SpawnedEntity, Velocity, VerticalVelocity,
 };
+use crate::entity::visibility_index::{ChunkViewerIndex, DirtyChunks};
 use crate::events::EntityDespawnEvent;
-use crate::players::{Players, Recipients};
+use crate::players::Players;
 use crate::schedule::VoidSystems;
 use crate::systems::entities::spawn_entity_packet;
 use crate::world::{ChunkPos, DimensionId};
@@ -252,6 +254,7 @@ impl Plugin for EntityPlugin {
                 PostUpdate,
                 track_entity_visibility.in_set(VoidSystems::EntityVisibility),
             );
+        visibility_index::register(app);
         metadata::register(app);
         passengers::register(app);
     }
@@ -289,41 +292,11 @@ pub(crate) fn chunk_of(position: &Position) -> ChunkPos {
     ChunkPos::from_block(position.x, position.z)
 }
 
-fn desired_viewers(
-    ready: &Recipients<'_>,
-    dimension: DimensionId,
-    chunk: ChunkPos,
-    out: &mut HashSet<Entity>,
-) {
-    out.clear();
-    out.extend(
-        ready
-            .iter()
-            .filter(|r| r.sees_chunk(dimension, chunk))
-            .map(|r| r.entity()),
-    );
-}
-
-#[derive(Default)]
-pub struct TrackerState {
-    ready_count: usize,
-}
-
 pub fn track_entity_visibility(
     players: Players,
     mut commands: Commands,
-    mut state: Local<TrackerState>,
-    changed_players: Query<
-        (),
-        (
-            With<PlayerReady>,
-            Or<(
-                Changed<LoadedChunks>,
-                Changed<PlayerDimension>,
-                Added<PlayerReady>,
-            )>,
-        ),
-    >,
+    index: Res<ChunkViewerIndex>,
+    mut dirty: ResMut<DirtyChunks>,
     mut entities: Query<
         (
             Entity,
@@ -339,27 +312,23 @@ pub fn track_entity_visibility(
         With<SpawnedEntity>,
     >,
 ) {
-    let ready = players.ready();
-    let players_changed = !changed_players.is_empty() || ready.len() != state.ready_count;
-    state.ready_count = ready.len();
-
-    let mut desired = HashSet::new();
+    let empty = HashSet::new();
     for (entity, id, uuid, kind, position, rotation, velocity, dimension, mut viewers) in
         entities.iter_mut()
     {
-        let chunk = chunk_of(position);
-        let moved = viewers.chunk != Some((dimension.0, chunk));
-        if !players_changed && !moved {
+        let key = (dimension.0, chunk_of(position));
+        let moved = viewers.chunk != Some(key);
+        if !moved && !dirty.contains(&key) {
             continue;
         }
-        viewers.chunk = Some((dimension.0, chunk));
+        viewers.chunk = Some(key);
 
-        desired_viewers(&ready, dimension.0, chunk, &mut desired);
-        if desired == viewers.players {
+        let desired = index.viewers(key).unwrap_or(&empty);
+        if *desired == viewers.players {
             continue;
         }
 
-        let gone: Vec<Entity> = viewers.players.difference(&desired).copied().collect();
+        let gone: Vec<Entity> = viewers.players.difference(desired).copied().collect();
         if !gone.is_empty() {
             let packet = clientbound::RemoveEntities {
                 entity_ids: vec![id.0],
@@ -383,8 +352,10 @@ pub fn track_entity_visibility(
             });
         }
 
-        viewers.players.clone_from(&desired);
+        viewers.players.clone_from(desired);
     }
+
+    dirty.clear();
 }
 
 #[cfg(test)]
@@ -399,7 +370,16 @@ mod tests {
 
     use super::*;
     use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
+    use crate::entity::visibility_index::ChunkViewerIndex;
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+
+    fn index_viewers(app: &App, dimension: DimensionId, chunk: (i32, i32)) -> HashSet<Entity> {
+        app.world()
+            .resource::<ChunkViewerIndex>()
+            .viewers((dimension, ChunkPos::new(chunk.0, chunk.1)))
+            .cloned()
+            .unwrap_or_default()
+    }
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
@@ -862,5 +842,121 @@ mod tests {
         app.update();
         app.world_mut().despawn(zombie);
         assert_eq!(app.world().resource::<Seen>().0, vec![id]);
+    }
+
+    #[test]
+    fn index_reflects_loaded_chunks_and_updates_on_unload() {
+        let (mut app, _rx) = test_app();
+        let p = player(&mut app, 1, &[(0, 0), (1, 0)]);
+        app.update();
+
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (0, 0)),
+            HashSet::from([p])
+        );
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (1, 0)),
+            HashSet::from([p])
+        );
+        assert!(index_viewers(&app, DimensionId::Overworld, (2, 2)).is_empty());
+
+        app.world_mut()
+            .get_mut::<LoadedChunks>(p)
+            .unwrap()
+            .0
+            .remove(&ChunkPos::new(0, 0));
+        app.update();
+
+        assert!(index_viewers(&app, DimensionId::Overworld, (0, 0)).is_empty());
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (1, 0)),
+            HashSet::from([p])
+        );
+    }
+
+    #[test]
+    fn moving_entity_viewer_set_follows_chunk_boundaries() {
+        let (mut app, rx) = test_app();
+        let left = player(&mut app, 1, &[(0, 0)]);
+        let right = player(&mut app, 2, &[(1, 0)]);
+        let pig = EntityBuilder::new(EntityKind::Pig)
+            .at(8.0, 64.0, 8.0)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, pig);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+        assert_eq!(
+            app.world()
+                .get::<EntityViewers>(pig)
+                .unwrap()
+                .iter()
+                .collect::<HashSet<_>>(),
+            HashSet::from([left])
+        );
+
+        // Cross into the right player's chunk (x >= 16 -> chunk (1, 0)).
+        app.world_mut().get_mut::<Position>(pig).unwrap().x = 20.0;
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(2, id), Sent::Remove(1, id)]);
+        assert_eq!(
+            app.world()
+                .get::<EntityViewers>(pig)
+                .unwrap()
+                .iter()
+                .collect::<HashSet<_>>(),
+            HashSet::from([right])
+        );
+    }
+
+    #[test]
+    fn dimension_change_re_scopes_index_and_viewers() {
+        let (mut app, rx) = test_app();
+        let traveller = player(&mut app, 1, &[(0, 0)]);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .at(1.0, 64.0, 1.0)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, zombie);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (0, 0)),
+            HashSet::from([traveller])
+        );
+
+        app.world_mut()
+            .get_mut::<PlayerDimension>(traveller)
+            .unwrap()
+            .0 = DimensionId::Nether;
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Remove(1, id)]);
+        assert!(index_viewers(&app, DimensionId::Overworld, (0, 0)).is_empty());
+        assert_eq!(
+            index_viewers(&app, DimensionId::Nether, (0, 0)),
+            HashSet::from([traveller])
+        );
+    }
+
+    #[test]
+    fn leaving_player_is_dropped_from_the_index() {
+        let (mut app, _rx) = test_app();
+        let leaver = player(&mut app, 1, &[(0, 0)]);
+        let stayer = player(&mut app, 2, &[(0, 0)]);
+        app.update();
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (0, 0)),
+            HashSet::from([leaver, stayer])
+        );
+
+        // Despawning fires the leave observer, purging the player synchronously.
+        app.world_mut().despawn(leaver);
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (0, 0)),
+            HashSet::from([stayer])
+        );
+
+        app.world_mut().despawn(stayer);
+        assert!(index_viewers(&app, DimensionId::Overworld, (0, 0)).is_empty());
     }
 }
