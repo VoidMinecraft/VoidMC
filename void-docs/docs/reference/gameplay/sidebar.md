@@ -84,8 +84,10 @@ handle stays valid for the life of its widget whatever is inserted or removed
 around it, so keep the handles of the widgets you update in a component next
 to the sidebar (as `RaceBoard` above) rather than positions. Every method
 taking a handle is fallible in one way: it returns `false` / `None` when the
-handle does not belong to this sidebar (or, for the typed accessors, when the
-widget is of another kind), never panics. The only panicking access is
+handle is unknown to this sidebar (or, for the typed accessors, when the
+widget is of another kind), never panics. Handles are minted per sidebar, so a
+handle from another board is not rejected on its own: keep each board's handles
+with that board. The only panicking access is
 `sidebar[id]` / `&mut sidebar[id]`, which behaves like `Vec` indexing.
 
 | Method | Effect |

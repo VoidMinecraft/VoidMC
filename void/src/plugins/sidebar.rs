@@ -701,9 +701,9 @@ impl Plugin for SidebarPlugin {
 }
 
 fn remove_board(event: On<Remove, Sidebar>, mut commands: Commands) {
-    if let Ok(mut entity) = commands.get_entity(event.entity) {
-        entity.remove::<Objective>();
-    }
+    commands
+        .entity(event.entity)
+        .try_remove::<(Objective, SidebarState)>();
 }
 
 fn render_sidebars(mut sidebars: Query<(Entity, Ref<Sidebar>, &mut Objective, &mut SidebarState)>) {
@@ -764,6 +764,8 @@ fn render_sidebars(mut sidebars: Query<(Entity, Ref<Sidebar>, &mut Objective, &m
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use bevy_app::App;
     use flume::Receiver;
     use ussr_nbt::owned::Tag;
@@ -1320,16 +1322,73 @@ mod tests {
         assert!(!sent.iter().any(|s| matches!(s, Sent::Remove(2))));
     }
 
+    struct WarningCounter;
+
+    static WARNINGS: AtomicUsize = AtomicUsize::new(0);
+
+    impl log::Log for WarningCounter {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) && record.target().starts_with("bevy_ecs") {
+                WARNINGS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    fn count_warnings() -> usize {
+        let _ = log::set_logger(&WarningCounter);
+        log::set_max_level(log::LevelFilter::Warn);
+        WARNINGS.load(Ordering::SeqCst)
+    }
+
     #[test]
     fn despawning_removes_the_board() {
         let (mut app, rx) = test_app();
         player(&mut app, 1, "Leo");
+        let before = count_warnings();
+
         let board = app.world_mut().spawn(race()).id();
         app.update();
         drain(&rx);
         app.world_mut().despawn(board);
         app.update();
         assert_eq!(drain(&rx), [Sent::Remove(1)]);
+
+        let board = app.world_mut().spawn(race()).id();
+        app.update();
+        drain(&rx);
+        app.world_mut().commands().entity(board).despawn();
+        app.update();
+        assert_eq!(drain(&rx), [Sent::Remove(1)]);
+
+        assert_eq!(WARNINGS.load(Ordering::SeqCst), before);
+    }
+
+    #[test]
+    fn a_reinserted_board_starts_with_fresh_state() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1, "Leo");
+        let mut sidebar = Sidebar::new("t");
+        for index in 0..20 {
+            sidebar.push(Widget::text(format!("line {index}")));
+        }
+        let board = app.world_mut().spawn(sidebar).id();
+        app.update();
+        assert!(app.world().get::<SidebarState>(board).unwrap().truncated);
+
+        app.world_mut().entity_mut(board).remove::<Sidebar>();
+        app.update();
+        assert!(app.world().get::<SidebarState>(board).is_none());
+
+        app.world_mut().entity_mut(board).insert(race());
+        app.update();
+        drain(&rx);
+        assert!(!app.world().get::<SidebarState>(board).unwrap().truncated);
     }
 
     #[test]
