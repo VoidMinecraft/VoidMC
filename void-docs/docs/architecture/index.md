@@ -50,6 +50,7 @@ The two threads communicate exclusively through [flume](https://docs.rs/flume) c
 | **`void-codec-macros`** | Derive macros (`#[derive(Encode, Decode)]`) and field attributes for codec automation. |
 | **`void-data`** | Vanilla Minecraft registry data extracted from Paper and embedded as NBT blobs at build time. |
 | **`void-example`** | Runnable example server demonstrating server setup, plugin registration, and logging. |
+| **`void-demo`** | Alpine Rush: procedural minecart-racing demo built on the public APIs (world generation and kart simulation; gameplay port in progress). |
 
 ## Connection State Machine
 

@@ -1938,6 +1938,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "voidmc-demo"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "flume",
+ "tracing",
+ "tracing-subscriber",
+ "voidmc",
+ "voidmc-data",
+ "voidmc-protocol",
+]
+
+[[package]]
 name = "voidmc-example"
 version = "0.1.0"
 dependencies = [
