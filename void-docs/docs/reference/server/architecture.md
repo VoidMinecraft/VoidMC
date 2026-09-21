@@ -92,7 +92,7 @@ The complete lifecycle of a packet through the system:
 Client (TCP)
   |
   v
-ClientSocket::receive()         -- Network thread
+ClientReader::receive()         -- Persistent network reader future
   |
   v
 IncomingPacket { client_id, raw_packet }
@@ -134,8 +134,14 @@ Server::run()                   -- Network thread
   v
 Client::run()
   |
-  +- ClientSocket::send()       -- Encode + write to TCP
+  +- ClientWriter::send()       -- Single serialized writer future
   |
   v
 Client (TCP)
 ```
+
+`ClientSocket` is consumed into independently owned `ClientReader` and
+`ClientWriter` halves. `Client::run` keeps one reader loop and one writer loop
+alive for the connection lifetime. Outbound readiness therefore cannot cancel
+an inbound frame after part of its length prefix or body has been consumed, and
+only the writer half can write, so partially written frames cannot interleave.
