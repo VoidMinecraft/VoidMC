@@ -8,7 +8,178 @@ pub trait Encode {
 }
 
 pub trait Decode: Sized {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError>;
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError>;
+
+    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+        let mut decoder = Decoder::new(buf, DecodeLimits::default());
+        let value = Self::decode_with(&mut decoder)?;
+        *buf = decoder.into_remaining();
+        Ok(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeLimits {
+    pub max_string_bytes: usize,
+    pub max_collection_elements: usize,
+    pub max_total_elements: usize,
+    pub max_allocation_bytes: usize,
+    pub max_remaining_bytes: usize,
+    pub max_nbt_bytes: usize,
+    pub max_nbt_depth: usize,
+    pub max_decode_depth: usize,
+}
+
+impl Default for DecodeLimits {
+    fn default() -> Self {
+        Self {
+            max_string_bytes: 32 * 1024,
+            max_collection_elements: 65_536,
+            max_total_elements: 131_072,
+            max_allocation_bytes: 4 * 1024 * 1024,
+            max_remaining_bytes: 2 * 1024 * 1024,
+            max_nbt_bytes: 2 * 1024 * 1024,
+            max_nbt_depth: 64,
+            max_decode_depth: 128,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitKind {
+    StringBytes,
+    CollectionElements,
+    TotalElements,
+    AllocationBytes,
+    RemainingBytes,
+    NbtBytes,
+    NbtDepth,
+    DecodeDepth,
+}
+
+pub struct Decoder<'a> {
+    remaining: &'a [u8],
+    limits: DecodeLimits,
+    total_elements: usize,
+    allocated_bytes: usize,
+    depth: usize,
+}
+
+impl<'a> Decoder<'a> {
+    pub fn new(bytes: &'a [u8], limits: DecodeLimits) -> Self {
+        Self {
+            remaining: bytes,
+            limits,
+            total_elements: 0,
+            allocated_bytes: 0,
+            depth: 0,
+        }
+    }
+
+    pub fn limits(&self) -> DecodeLimits {
+        self.limits
+    }
+
+    pub fn remaining(&self) -> &'a [u8] {
+        self.remaining
+    }
+
+    pub fn remaining_len(&self) -> usize {
+        self.remaining.len()
+    }
+
+    pub fn into_remaining(self) -> &'a [u8] {
+        self.remaining
+    }
+
+    pub fn take(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
+        if self.remaining.len() < len {
+            return Err(DecodeError::UnexpectedEof);
+        }
+        let (value, rest) = self.remaining.split_at(len);
+        self.remaining = rest;
+        Ok(value)
+    }
+
+    pub fn decode<T: Decode>(&mut self) -> Result<T, DecodeError> {
+        if self.depth >= self.limits.max_decode_depth {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::DecodeDepth,
+                requested: self.depth.saturating_add(1),
+                limit: self.limits.max_decode_depth,
+            });
+        }
+        self.depth += 1;
+        let result = T::decode_with(self);
+        self.depth -= 1;
+        result
+    }
+
+    pub fn decode_exact<T: Decode>(&mut self) -> Result<T, DecodeError> {
+        let value = self.decode()?;
+        if !self.remaining.is_empty() {
+            return Err(DecodeError::TrailingData {
+                remaining: self.remaining.len(),
+            });
+        }
+        Ok(value)
+    }
+
+    pub fn checked_len(
+        &self,
+        value: i32,
+        kind: LimitKind,
+        limit: usize,
+    ) -> Result<usize, DecodeError> {
+        let len = usize::try_from(value).map_err(|_| DecodeError::InvalidLength)?;
+        if len > limit {
+            return Err(DecodeError::LimitExceeded {
+                kind,
+                requested: len,
+                limit,
+            });
+        }
+        Ok(len)
+    }
+
+    pub fn charge_elements(&mut self, count: usize) -> Result<(), DecodeError> {
+        if count > self.limits.max_collection_elements {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::CollectionElements,
+                requested: count,
+                limit: self.limits.max_collection_elements,
+            });
+        }
+        let total = self
+            .total_elements
+            .checked_add(count)
+            .ok_or(DecodeError::InvalidLength)?;
+        if total > self.limits.max_total_elements {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::TotalElements,
+                requested: total,
+                limit: self.limits.max_total_elements,
+            });
+        }
+        self.total_elements = total;
+        Ok(())
+    }
+
+    pub fn charge_allocation(&mut self, bytes: usize) -> Result<(), DecodeError> {
+        let total = self
+            .allocated_bytes
+            .checked_add(bytes)
+            .ok_or(DecodeError::InvalidLength)?;
+        if total > self.limits.max_allocation_bytes {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::AllocationBytes,
+                requested: total,
+                limit: self.limits.max_allocation_bytes,
+            });
+        }
+        self.allocated_bytes = total;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +188,17 @@ pub enum DecodeError {
     InvalidVarintLength,
     InvalidPacketId(Option<u8>),
     InvalidLength,
+    LimitExceeded {
+        kind: LimitKind,
+        requested: usize,
+        limit: usize,
+    },
+    AllocationFailed {
+        requested: usize,
+    },
+    TrailingData {
+        remaining: usize,
+    },
 }
 
 impl std::fmt::Display for DecodeError {
@@ -29,6 +211,21 @@ impl std::fmt::Display for DecodeError {
             }
             DecodeError::InvalidPacketId(None) => write!(f, "Invalid packet id"),
             DecodeError::InvalidLength => write!(f, "Invalid length value"),
+            DecodeError::LimitExceeded {
+                kind,
+                requested,
+                limit,
+            } => write!(
+                f,
+                "{:?} limit exceeded: requested {}, limit {}",
+                kind, requested, limit
+            ),
+            DecodeError::AllocationFailed { requested } => {
+                write!(f, "Failed to allocate {} bytes while decoding", requested)
+            }
+            DecodeError::TrailingData { remaining } => {
+                write!(f, "Packet has {} trailing bytes", remaining)
+            }
         }
     }
 }

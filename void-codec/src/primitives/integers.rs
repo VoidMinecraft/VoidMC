@@ -1,4 +1,4 @@
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode};
 
 impl Encode for i32 {
     fn encode(&self, buf: &mut Vec<u8>) {
@@ -7,14 +7,8 @@ impl Encode for i32 {
 }
 
 impl Decode for i32 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 4 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(4);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(4)?;
         let mut array = [0u8; 4];
         array.copy_from_slice(bytes);
         Ok(i32::from_be_bytes(array))
@@ -28,14 +22,8 @@ impl Encode for u8 {
 }
 
 impl Decode for u8 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.is_empty() {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let value = buf[0];
-        *buf = &buf[1..];
-        Ok(value)
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        Ok(decoder.take(1)?[0])
     }
 }
 
@@ -46,14 +34,8 @@ impl Encode for i8 {
 }
 
 impl Decode for i8 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.is_empty() {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let value = buf[0] as i8;
-        *buf = &buf[1..];
-        Ok(value)
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        Ok(decoder.take(1)?[0] as i8)
     }
 }
 
@@ -64,14 +46,8 @@ impl Encode for i64 {
 }
 
 impl Decode for i64 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 8 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(8);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(8)?;
         let mut array = [0u8; 8];
         array.copy_from_slice(bytes);
         Ok(i64::from_be_bytes(array))
@@ -85,14 +61,8 @@ impl Encode for u64 {
 }
 
 impl Decode for u64 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 8 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(8);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(8)?;
         let mut array = [0u8; 8];
         array.copy_from_slice(bytes);
         Ok(u64::from_be_bytes(array))
@@ -106,14 +76,8 @@ impl Encode for u32 {
 }
 
 impl Decode for u32 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 4 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(4);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(4)?;
         let mut array = [0u8; 4];
         array.copy_from_slice(bytes);
         Ok(u32::from_be_bytes(array))
@@ -127,14 +91,8 @@ impl Encode for u16 {
 }
 
 impl Decode for u16 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 2 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(2);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(2)?;
         let mut array = [0u8; 2];
         array.copy_from_slice(bytes);
         Ok(u16::from_be_bytes(array))
@@ -148,14 +106,8 @@ impl Encode for i16 {
 }
 
 impl Decode for i16 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 2 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(2);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(2)?;
         let mut array = [0u8; 2];
         array.copy_from_slice(bytes);
         Ok(i16::from_be_bytes(array))

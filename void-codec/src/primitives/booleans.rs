@@ -1,4 +1,4 @@
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode};
 
 impl Encode for bool {
     fn encode(&self, buf: &mut Vec<u8>) {
@@ -7,14 +7,8 @@ impl Encode for bool {
 }
 
 impl Decode for bool {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.is_empty() {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let value = buf[0] != 0;
-        *buf = &buf[1..];
-        Ok(value)
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        Ok(decoder.take(1)?[0] != 0)
     }
 }
 

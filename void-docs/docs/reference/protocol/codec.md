@@ -10,12 +10,25 @@ pub trait Encode {
 }
 
 pub trait Decode: Sized {
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError>;
+
+    // Convenience entry point using DecodeLimits::default().
     fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError>;
 }
 ```
 
 - `Encode::encode` appends bytes to the buffer.
-- `Decode::decode` reads bytes from the front of the slice, advancing the slice reference.
+- `Decode::decode_with` is the implementation hook and shares one resource
+  budget through every nested value. Custom manual decoders should read nested
+  fields through `decoder.decode::<T>()`.
+- `Decode::decode` reads bytes from the front of a slice with production-safe
+  default limits. Network packets additionally use exact decoding and reject
+  trailing bytes.
+
+`DecodeLimits` configures string bytes, collection and total element counts,
+allocation bytes, remaining-byte fields, NBT bytes/depth, and general decode
+depth. Length conversions and fixed-length arithmetic are checked before any
+allocation or iteration.
 
 ## Derive Macros
 
@@ -177,6 +190,9 @@ pub enum DecodeError {
     InvalidVarintLength,        // VarInt exceeded maximum length
     InvalidPacketId(Option<u8>),// Unknown tag/discriminant
     InvalidLength,              // Length value is invalid
+    LimitExceeded { .. },       // A configured resource limit was exceeded
+    AllocationFailed { .. },    // A bounded allocation could not be reserved
+    TrailingData { .. },        // Exact packet decode left bytes unread
 }
 ```
 

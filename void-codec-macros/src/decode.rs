@@ -1,6 +1,6 @@
 use crate::attrs::{
-    is_vec_u8, parse_field_attrs, parse_repr_type, parse_type_attrs, parse_variant_attrs,
-    transform_expr_for_local,
+    checked_len_expr, is_vec_u8, parse_field_attrs, parse_repr_type, parse_type_attrs,
+    parse_variant_attrs,
 };
 use quote::quote;
 use syn::{Data, DeriveInput, Error, Fields, Result};
@@ -21,32 +21,32 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
 
                         let decode_expr = if field_attrs.varint32 {
                             quote! {
-                                let #field_name = voidmc_codec::VarI32::decode(buf)?.0;
+                                let #field_name = decoder.decode::<voidmc_codec::VarI32>()?.0;
                             }
                         } else if field_attrs.varint64 {
                             quote! {
-                                let #field_name = voidmc_codec::VarI64::decode(buf)?.0;
+                                let #field_name = decoder.decode::<voidmc_codec::VarI64>()?.0;
                             }
                         } else if field_attrs.json {
                             quote! {
-                                let json_str = String::decode(buf)?;
+                                let json_str = decoder.decode::<String>()?;
                                 let #field_name = serde_json::from_str(&json_str).map_err(|_| voidmc_codec::DecodeError::InvalidLength)?;
                             }
                         } else if let Some(len_expr) = &field_attrs.fixed_length {
-                            let transformed_expr = transform_expr_for_local(len_expr);
+                            let checked_expr = checked_len_expr(len_expr);
                             // Use optimized path for Vec<u8>
                             if is_vec_u8(f) {
                                 quote! {
                                     let #field_name = {
-                                        let expected_len = ((#transformed_expr) as i64) as usize;
-                                        voidmc_codec::decode_fixed_length_vec_u8(expected_len, buf)?
+                                        let expected_len = (#checked_expr)?;
+                                        voidmc_codec::decode_fixed_length_vec_u8(expected_len, decoder)?
                                     };
                                 }
                             } else {
                                 quote! {
                                     let #field_name = {
-                                        let expected_len = ((#transformed_expr) as i64) as usize;
-                                        voidmc_codec::decode_fixed_length_vec(expected_len, buf)?
+                                        let expected_len = (#checked_expr)?;
+                                        voidmc_codec::decode_fixed_length_vec(expected_len, decoder)?
                                     };
                                 }
                             }
@@ -54,7 +54,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             // Remaining attribute: consume all remaining bytes on decode
                             if is_vec_u8(f) {
                                 quote! {
-                                    let #field_name = voidmc_codec::decode_remaining_vec_u8(buf)?;
+                                    let #field_name = voidmc_codec::decode_remaining_vec_u8(decoder)?;
                                 }
                             } else {
                                 // Error: remaining only works with Vec<u8>
@@ -65,7 +65,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             }
                         } else {
                             quote! {
-                                let #field_name = <_>::decode(buf)?;
+                                let #field_name = decoder.decode::<_>()?;
                             }
                         };
 
@@ -77,7 +77,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
 
                 let expanded = quote! {
                     impl voidmc_codec::Decode for #name {
-                        fn decode(buf: &mut &[u8]) -> Result<Self, voidmc_codec::DecodeError> {
+                        fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, voidmc_codec::DecodeError> {
                             #(#decode_fields)*
                             Ok(Self {
                                 #(#field_names),*
@@ -95,7 +95,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
             Fields::Unit => {
                 let expanded = quote! {
                     impl voidmc_codec::Decode for #name {
-                        fn decode(_buf: &mut &[u8]) -> Result<Self, voidmc_codec::DecodeError> {
+                        fn decode_with(_decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, voidmc_codec::DecodeError> {
                             Ok(Self)
                         }
                     }
@@ -129,7 +129,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                                 quote! {
                                     #packet_id => {
-                                        let inner = <_>::decode(buf)?;
+                                        let inner = decoder.decode::<_>()?;
                                         Self::#variant_name(inner)
                                     }
                                 }
@@ -146,8 +146,8 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
 
                 let expanded = quote! {
                     impl voidmc_codec::Decode for #name {
-                        fn decode(buf: &mut &[u8]) -> Result<Self, voidmc_codec::DecodeError> {
-                            let packet_id = u8::decode(buf)?;
+                        fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, voidmc_codec::DecodeError> {
+                            let packet_id = decoder.decode::<u8>()?;
                             Ok(match packet_id {
                                 #(#decode_variants),*
                                 _ => return Err(voidmc_codec::DecodeError::InvalidPacketId(Some(packet_id))),
@@ -195,16 +195,16 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     .collect::<Result<Vec<_>>>()?;
 
                 let encode_part = if type_attrs.varint32 {
-                    quote! { voidmc_codec::VarI32::decode(buf)?.0 as #repr_type_ident }
+                    quote! { decoder.decode::<voidmc_codec::VarI32>()?.0 as #repr_type_ident }
                 } else if type_attrs.varint64 {
-                    quote! { voidmc_codec::VarI64::decode(buf)?.0 as #repr_type_ident }
+                    quote! { decoder.decode::<voidmc_codec::VarI64>()?.0 as #repr_type_ident }
                 } else {
-                    quote! { #repr_type_ident::decode(buf)? }
+                    quote! { decoder.decode::<#repr_type_ident>()? }
                 };
 
                 let expanded = quote! {
                     impl voidmc_codec::Decode for #name {
-                        fn decode(buf: &mut &[u8]) -> Result<Self, voidmc_codec::DecodeError> {
+                        fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, voidmc_codec::DecodeError> {
                             let discriminant = #encode_part;
                             Ok(match discriminant {
                                 #(#decode_variants)*

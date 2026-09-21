@@ -1,4 +1,4 @@
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
 use ussr_nbt::owned::Nbt;
 
 /// Custom reader that prepends the NBT protocol header for the root compound tag
@@ -70,21 +70,164 @@ impl Encode for Nbt {
 }
 
 impl Decode for Nbt {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let original = decoder.remaining();
+        let start_len = original.len();
+        let root_tag = nbt_take(decoder, start_len, 1)?[0];
+        if root_tag != 0x0A {
+            return Err(DecodeError::InvalidLength);
+        }
+        scan_compound(decoder, start_len, 0)?;
+        let consumed = start_len - decoder.remaining_len();
+        let nbt_bytes = &original[..consumed];
+
         // Wrap the buffer with the NBT reader that prepends the header
-        let mut reader = NbtReader::new(buf);
+        let mut reader = NbtReader::new(nbt_bytes);
 
         match Nbt::read(&mut reader) {
-            Ok(nbt) => {
-                // The reader has a read_bytes counter that tells us how much was consumed
-                // including the 3-byte header (0x0A + 0x00 0x00) it injected
-                let consumed = reader.read_bytes - 3; // Subtract 3 for the injected header
-                *buf = &buf[consumed..];
-                Ok(nbt)
-            }
+            Ok(nbt) => Ok(nbt),
             Err(_) => Err(DecodeError::InvalidLength),
         }
     }
+}
+
+fn nbt_take<'a>(
+    decoder: &mut Decoder<'a>,
+    start_len: usize,
+    len: usize,
+) -> Result<&'a [u8], DecodeError> {
+    let consumed = start_len
+        .checked_sub(decoder.remaining_len())
+        .and_then(|value| value.checked_add(len))
+        .ok_or(DecodeError::InvalidLength)?;
+    if consumed > decoder.limits().max_nbt_bytes {
+        return Err(DecodeError::LimitExceeded {
+            kind: LimitKind::NbtBytes,
+            requested: consumed,
+            limit: decoder.limits().max_nbt_bytes,
+        });
+    }
+    decoder.take(len)
+}
+
+fn nbt_i32(decoder: &mut Decoder<'_>, start_len: usize) -> Result<i32, DecodeError> {
+    let bytes: [u8; 4] = nbt_take(decoder, start_len, 4)?
+        .try_into()
+        .expect("four bytes");
+    Ok(i32::from_be_bytes(bytes))
+}
+
+fn scan_string(decoder: &mut Decoder<'_>, start_len: usize) -> Result<(), DecodeError> {
+    let bytes: [u8; 2] = nbt_take(decoder, start_len, 2)?
+        .try_into()
+        .expect("two bytes");
+    let len = usize::from(u16::from_be_bytes(bytes));
+    decoder.charge_allocation(len)?;
+    nbt_take(decoder, start_len, len)?;
+    Ok(())
+}
+
+fn scan_compound(
+    decoder: &mut Decoder<'_>,
+    start_len: usize,
+    depth: usize,
+) -> Result<(), DecodeError> {
+    check_nbt_depth(decoder, depth)?;
+    let mut entries = 0usize;
+    loop {
+        let tag = nbt_take(decoder, start_len, 1)?[0];
+        if tag == 0 {
+            return Ok(());
+        }
+        entries = entries.checked_add(1).ok_or(DecodeError::InvalidLength)?;
+        if entries > decoder.limits().max_collection_elements {
+            return Err(DecodeError::LimitExceeded {
+                kind: LimitKind::CollectionElements,
+                requested: entries,
+                limit: decoder.limits().max_collection_elements,
+            });
+        }
+        decoder.charge_elements(1)?;
+        decoder.charge_allocation(64)?;
+        scan_string(decoder, start_len)?;
+        scan_payload(decoder, start_len, tag, depth + 1)?;
+    }
+}
+
+fn scan_payload(
+    decoder: &mut Decoder<'_>,
+    start_len: usize,
+    tag: u8,
+    depth: usize,
+) -> Result<(), DecodeError> {
+    check_nbt_depth(decoder, depth)?;
+    match tag {
+        1 => {
+            nbt_take(decoder, start_len, 1)?;
+        }
+        2 => {
+            nbt_take(decoder, start_len, 2)?;
+        }
+        3 | 5 => {
+            nbt_take(decoder, start_len, 4)?;
+        }
+        4 | 6 => {
+            nbt_take(decoder, start_len, 8)?;
+        }
+        7 => scan_array(decoder, start_len, 1)?,
+        8 => scan_string(decoder, start_len)?,
+        9 => {
+            let element_tag = nbt_take(decoder, start_len, 1)?[0];
+            let raw_count = nbt_i32(decoder, start_len)?;
+            let count = checked_nbt_count(decoder, raw_count)?;
+            if element_tag == 0 && count != 0 {
+                return Err(DecodeError::InvalidLength);
+            }
+            decoder.charge_elements(count)?;
+            decoder.charge_allocation(count.checked_mul(32).ok_or(DecodeError::InvalidLength)?)?;
+            for _ in 0..count {
+                scan_payload(decoder, start_len, element_tag, depth + 1)?;
+            }
+        }
+        10 => scan_compound(decoder, start_len, depth + 1)?,
+        11 => scan_array(decoder, start_len, 4)?,
+        12 => scan_array(decoder, start_len, 8)?,
+        _ => return Err(DecodeError::InvalidLength),
+    }
+    Ok(())
+}
+
+fn scan_array(
+    decoder: &mut Decoder<'_>,
+    start_len: usize,
+    width: usize,
+) -> Result<(), DecodeError> {
+    let raw_count = nbt_i32(decoder, start_len)?;
+    let count = checked_nbt_count(decoder, raw_count)?;
+    decoder.charge_elements(count)?;
+    let bytes = count.checked_mul(width).ok_or(DecodeError::InvalidLength)?;
+    decoder.charge_allocation(bytes)?;
+    nbt_take(decoder, start_len, bytes)?;
+    Ok(())
+}
+
+fn checked_nbt_count(decoder: &Decoder<'_>, count: i32) -> Result<usize, DecodeError> {
+    decoder.checked_len(
+        count,
+        LimitKind::CollectionElements,
+        decoder.limits().max_collection_elements,
+    )
+}
+
+fn check_nbt_depth(decoder: &Decoder<'_>, depth: usize) -> Result<(), DecodeError> {
+    if depth > decoder.limits().max_nbt_depth {
+        return Err(DecodeError::LimitExceeded {
+            kind: LimitKind::NbtDepth,
+            requested: depth,
+            limit: decoder.limits().max_nbt_depth,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -54,6 +54,7 @@ impl VoidServer {
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
         let address = self.config.address.clone();
+        let frame_limits = self.config.frame_limits;
 
         let world_gen = WorldGen(self.config.world_generator);
 
@@ -71,7 +72,9 @@ impl VoidServer {
                 .unwrap();
 
             rt.block_on(async move {
-                let mut server = Server::new(&address).await.expect("Failed to start server");
+                let mut server = Server::new_with_limits(&address, frame_limits)
+                    .await
+                    .expect("Failed to start server");
                 server
                     .run_with_status(
                         incoming_tx,

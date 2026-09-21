@@ -1,4 +1,4 @@
-use crate::{Decode, DecodeError, Encode};
+use crate::{Decode, DecodeError, Decoder, Encode};
 
 impl Encode for f32 {
     fn encode(&self, buf: &mut Vec<u8>) {
@@ -7,14 +7,8 @@ impl Encode for f32 {
 }
 
 impl Decode for f32 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 4 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(4);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(4)?;
         let mut array = [0u8; 4];
         array.copy_from_slice(bytes);
         Ok(f32::from_be_bytes(array))
@@ -28,14 +22,8 @@ impl Encode for f64 {
 }
 
 impl Decode for f64 {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        if buf.len() < 8 {
-            return Err(DecodeError::UnexpectedEof);
-        }
-
-        let (bytes, rest) = buf.split_at(8);
-        *buf = rest;
-
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let bytes = decoder.take(8)?;
         let mut array = [0u8; 8];
         array.copy_from_slice(bytes);
         Ok(f64::from_be_bytes(array))

@@ -19,3 +19,5 @@
 
 # AI
 **/.github/copilot-instructions.md
+/.agents/
+/.codex/

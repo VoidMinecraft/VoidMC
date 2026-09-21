@@ -158,7 +158,7 @@ pub fn ingest_network_packets(world: &mut World) {
             client_entity,
             incoming_packet.packet,
         ) {
-            if e.kind() == std::io::ErrorKind::Unsupported {
+            if matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_)) {
                 // Unrecognized packet (e.g. one we don't handle yet): expected and
                 // non-fatal, so warn instead of error.
                 tracing::warn!(
@@ -221,7 +221,7 @@ fn dispatch_packet(
     client_id: u32,
     entity: Entity,
     packet: Packet,
-) -> std::io::Result<()> {
+) -> Result<(), voidmc_codec::DecodeError> {
     let state = world
         .get::<ConnectionState>(entity)
         .expect("Client must have a ConnectionState component");

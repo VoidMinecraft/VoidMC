@@ -27,7 +27,7 @@
 //! path is sufficient.
 
 use ussr_nbt::owned::Nbt;
-use voidmc_codec::{Decode, DecodeError, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, Decoder, Encode, LimitKind, VarI32};
 
 /// Numeric ids from the `minecraft:data_component_type` registry, taken from the
 /// registration order in Minecraft 26.1.2's `DataComponents` (verified against the
@@ -93,17 +93,18 @@ impl DataComponent {
     /// outside the curated *decode* set (their bodies can't be length-delimited,
     /// so the slot decode bails rather than mis-framing later fields).
     ///
-    /// NBT-bodied components (e.g. `custom_data`) are intentionally **not** in the
-    /// decode set yet: the shared NBT codec under-advances the read cursor by one
-    /// byte (`void-codec/src/primitives/nbt.rs`), which would corrupt any field
-    /// following the NBT. They remain fully supported on *encode*. Re-enable here
-    /// once that codec's cursor accounting is fixed (tracked for M6).
-    fn decode_body(type_id: i32, buf: &mut &[u8]) -> Option<Result<DataComponent, DecodeError>> {
+    fn decode_body(
+        type_id: i32,
+        decoder: &mut Decoder<'_>,
+    ) -> Option<Result<DataComponent, DecodeError>> {
         let component = match type_id {
-            component_ids::MAX_STACK_SIZE => VarI32::decode(buf).map(|v| Self::MaxStackSize(v.0)),
-            component_ids::MAX_DAMAGE => VarI32::decode(buf).map(|v| Self::MaxDamage(v.0)),
-            component_ids::DAMAGE => VarI32::decode(buf).map(|v| Self::Damage(v.0)),
-            component_ids::REPAIR_COST => VarI32::decode(buf).map(|v| Self::RepairCost(v.0)),
+            component_ids::CUSTOM_DATA => decoder.decode::<Nbt>().map(Self::CustomData),
+            component_ids::MAX_STACK_SIZE => {
+                decoder.decode::<VarI32>().map(|v| Self::MaxStackSize(v.0))
+            }
+            component_ids::MAX_DAMAGE => decoder.decode::<VarI32>().map(|v| Self::MaxDamage(v.0)),
+            component_ids::DAMAGE => decoder.decode::<VarI32>().map(|v| Self::Damage(v.0)),
+            component_ids::REPAIR_COST => decoder.decode::<VarI32>().map(|v| Self::RepairCost(v.0)),
             _ => return None,
         };
         Some(component)
@@ -171,31 +172,61 @@ impl Encode for Slot {
 }
 
 impl Decode for Slot {
-    fn decode(buf: &mut &[u8]) -> Result<Self, DecodeError> {
-        let count = VarI32::decode(buf)?.0;
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let count = decoder.decode::<VarI32>()?.0;
         if count <= 0 {
             return Ok(Slot::EMPTY);
         }
-        let item_id = VarI32::decode(buf)?.0;
-        let n_add = VarI32::decode(buf)?.0;
-        let n_remove = VarI32::decode(buf)?.0;
-        if n_add < 0 || n_remove < 0 {
-            return Err(DecodeError::InvalidLength);
-        }
+        let item_id = decoder.decode::<VarI32>()?.0;
+        let n_add = decoder.decode::<VarI32>()?.0;
+        let n_remove = decoder.decode::<VarI32>()?.0;
+        let n_add = decoder.checked_len(
+            n_add,
+            LimitKind::CollectionElements,
+            decoder.limits().max_collection_elements,
+        )?;
+        let n_remove = decoder.checked_len(
+            n_remove,
+            LimitKind::CollectionElements,
+            decoder.limits().max_collection_elements,
+        )?;
+        decoder.charge_elements(n_add)?;
+        decoder.charge_elements(n_remove)?;
+        let add_bytes = n_add
+            .checked_mul(std::mem::size_of::<DataComponent>())
+            .ok_or(DecodeError::InvalidLength)?;
+        let remove_bytes = n_remove
+            .checked_mul(std::mem::size_of::<i32>())
+            .ok_or(DecodeError::InvalidLength)?;
+        decoder.charge_allocation(
+            add_bytes
+                .checked_add(remove_bytes)
+                .ok_or(DecodeError::InvalidLength)?,
+        )?;
 
-        let mut components_to_add = Vec::with_capacity(n_add as usize);
+        let mut components_to_add = Vec::new();
+        components_to_add
+            .try_reserve_exact(n_add)
+            .map_err(|_| DecodeError::AllocationFailed {
+                requested: add_bytes,
+            })?;
         for _ in 0..n_add {
-            let type_id = VarI32::decode(buf)?.0;
-            match DataComponent::decode_body(type_id, buf) {
+            let type_id = decoder.decode::<VarI32>()?.0;
+            match DataComponent::decode_body(type_id, decoder) {
                 Some(component) => components_to_add.push(component?),
                 // Unknown component body — not self-delimiting, can't continue.
                 None => return Err(DecodeError::InvalidLength),
             }
         }
 
-        let mut components_to_remove = Vec::with_capacity(n_remove as usize);
+        let mut components_to_remove = Vec::new();
+        components_to_remove
+            .try_reserve_exact(n_remove)
+            .map_err(|_| DecodeError::AllocationFailed {
+                requested: remove_bytes,
+            })?;
         for _ in 0..n_remove {
-            components_to_remove.push(VarI32::decode(buf)?.0);
+            components_to_remove.push(decoder.decode::<VarI32>()?.0);
         }
 
         Ok(Slot {
@@ -247,10 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_data_encodes_but_decode_is_deferred() {
-        // CustomData is fully supported on encode (produces bytes), but NBT-bodied
-        // component decode is deferred (see `decode_body`), so a slot carrying it
-        // currently fails to decode rather than mis-framing — never panics.
+    fn custom_data_roundtrips_with_bounded_nbt_decode() {
         let nbt = Nbt {
             name: "".into(),
             compound: vec![("key".into(), Tag::Int(7))].into(),
@@ -261,11 +289,7 @@ mod tests {
             components_to_add: vec![DataComponent::CustomData(nbt)],
             components_to_remove: Vec::new(),
         };
-        let mut buf = Vec::new();
-        slot.encode(&mut buf);
-        assert!(buf.len() > 1, "custom_data produces a non-empty body");
-        let mut slice = buf.as_slice();
-        assert_eq!(Slot::decode(&mut slice), Err(DecodeError::InvalidLength));
+        assert_eq!(roundtrip(&slot), slot);
     }
 
     #[test]
