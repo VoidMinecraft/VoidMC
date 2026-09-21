@@ -2,6 +2,7 @@ use ussr_nbt::owned::Nbt;
 use voidmc_codec::{Decode, DecodeError, Decoder, Encode, LimitKind, VarI32, VarI64};
 
 use crate::slot::Slot;
+use crate::types::BlockPosition;
 
 /// `EntityDataSerializers` registration order, Paper 26.1.2.
 pub mod serializer {
@@ -14,6 +15,7 @@ pub mod serializer {
     pub const OPTIONAL_COMPONENT: i32 = 6;
     pub const ITEM_STACK: i32 = 7;
     pub const BOOLEAN: i32 = 8;
+    pub const OPTIONAL_BLOCK_POS: i32 = 11;
     pub const BLOCK_STATE: i32 = 14;
     pub const OPTIONAL_UNSIGNED_INT: i32 = 19;
     pub const POSE: i32 = 20;
@@ -32,6 +34,7 @@ pub enum EntityMetadataValue {
     OptionalComponent(Option<Nbt>),
     ItemStack(Slot),
     Boolean(bool),
+    OptionalBlockPos(Option<BlockPosition>),
     BlockState(i32),
     /// `None` on the wire is 0; `Some(n)` is `n + 1`.
     OptionalUnsignedInt(Option<u32>),
@@ -53,6 +56,7 @@ impl EntityMetadataValue {
             Self::OptionalComponent(_) => serializer::OPTIONAL_COMPONENT,
             Self::ItemStack(_) => serializer::ITEM_STACK,
             Self::Boolean(_) => serializer::BOOLEAN,
+            Self::OptionalBlockPos(_) => serializer::OPTIONAL_BLOCK_POS,
             Self::BlockState(_) => serializer::BLOCK_STATE,
             Self::OptionalUnsignedInt(_) => serializer::OPTIONAL_UNSIGNED_INT,
             Self::Pose(_) => serializer::POSE,
@@ -74,6 +78,7 @@ impl EntityMetadataValue {
             Self::OptionalComponent(value) => value.encode(buf),
             Self::ItemStack(slot) => slot.encode(buf),
             Self::Boolean(value) => value.encode(buf),
+            Self::OptionalBlockPos(value) => value.encode(buf),
             Self::OptionalUnsignedInt(value) => {
                 VarI32(value.map_or(0, |v| v.wrapping_add(1) as i32)).encode(buf)
             }
@@ -103,6 +108,9 @@ impl EntityMetadataValue {
             }
             serializer::ITEM_STACK => Self::ItemStack(decoder.decode::<Slot>()?),
             serializer::BOOLEAN => Self::Boolean(decoder.decode::<bool>()?),
+            serializer::OPTIONAL_BLOCK_POS => {
+                Self::OptionalBlockPos(decoder.decode::<Option<BlockPosition>>()?)
+            }
             serializer::BLOCK_STATE => Self::BlockState(decoder.decode::<VarI32>()?.0),
             serializer::OPTIONAL_UNSIGNED_INT => {
                 let raw = decoder.decode::<VarI32>()?.0;
@@ -214,6 +222,7 @@ mod tests {
     use ussr_nbt::owned::Tag;
 
     use super::*;
+    use crate::clientbound::entity_metadata::end_crystal_index;
 
     fn roundtrip(packet: &SetEntityData) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -252,6 +261,11 @@ mod tests {
             (V::OptionalComponent(Some(text("b"))), 6),
             (V::ItemStack(Slot::simple(2, 1)), 7),
             (V::Boolean(true), 8),
+            (V::OptionalBlockPos(None), 11),
+            (
+                V::OptionalBlockPos(Some(BlockPosition { x: -1, y: 64, z: 3 })),
+                11,
+            ),
             (V::BlockState(9), 14),
             (V::OptionalUnsignedInt(None), 19),
             (V::OptionalUnsignedInt(Some(0)), 19),
@@ -278,6 +292,24 @@ mod tests {
         let mut buf = Vec::new();
         packet.encode(&mut buf);
         assert_eq!(buf, [5, 0, 0, 0x60, 5, 8, 1, 19, 19, 5, 0xFF]);
+    }
+
+    #[test]
+    fn exact_bytes_for_end_crystal_indices() {
+        use EntityMetadataValue as V;
+        let packet = SetEntityData::new(45)
+            .with(
+                end_crystal_index::BEAM_TARGET,
+                V::OptionalBlockPos(Some(BlockPosition { x: 1, y: 2, z: 3 })),
+            )
+            .with(end_crystal_index::SHOW_BOTTOM, V::Boolean(false));
+        let mut buf = Vec::new();
+        packet.encode(&mut buf);
+        assert_eq!(
+            buf,
+            [45, 8, 11, 1, 0, 0, 0, 0x40, 0, 0, 0x30, 0x02, 9, 8, 0, 0xFF]
+        );
+        roundtrip(&packet);
     }
 
     #[test]

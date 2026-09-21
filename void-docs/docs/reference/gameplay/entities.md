@@ -68,6 +68,7 @@ full state once.
 | `Glowing`, `Invisible` | Entity flag bits (index 0) |
 | `NoGravity`, `Silent` | Indices 5 and 4 |
 | `ItemEntity { stack }` | Rendered item of a `minecraft:item` entity |
+| `EndCrystal::floating()` / `.show_base()` / `.beam_target(x, y, z)` | Bedrock base (index 9) and beam target (index 8) of a `minecraft:end_crystal`; the default is floating with no beam |
 
 Insert to enable, `remove::<T>()` to restore the vanilla default (every shipped
 source implements `clear`, including the display components). Mutating a

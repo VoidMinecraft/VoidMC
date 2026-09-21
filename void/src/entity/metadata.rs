@@ -10,7 +10,8 @@ use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
 use ussr_nbt::owned::{Nbt, Tag};
 use voidmc_protocol::clientbound::entity_metadata::{
-    display_index, entity_flag, entity_index, item_entity_index, text_display_flag,
+    display_index, end_crystal_index, entity_flag, entity_index, item_entity_index,
+    text_display_flag,
 };
 use voidmc_protocol::clientbound::{
     EntityMetadataEntry, EntityMetadataValue as Value, SetEntityData,
@@ -19,6 +20,7 @@ use voidmc_protocol::clientbound::{
 pub use voidmc_protocol::clientbound::{
     Billboard, DisplayTransform, ItemDisplayContext, MAX_TELEPORT_TICKS,
 };
+use voidmc_protocol::types::BlockPosition;
 
 use super::EntityShownEvent;
 use crate::components::{EntityViewers, ItemEntity, MinecraftEntityId, SpawnedEntity};
@@ -174,6 +176,47 @@ impl MetadataSource for ItemEntity {
             item_entity_index::ITEM,
             Value::ItemStack(ItemStack::EMPTY.to_slot()),
         );
+    }
+}
+
+/// Synched data of a `minecraft:end_crystal` entity. The default is the
+/// floating variant without the bedrock base and without a beam.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EndCrystal {
+    pub show_base: bool,
+    pub beam_target: Option<BlockPosition>,
+}
+
+impl EndCrystal {
+    pub fn floating() -> Self {
+        Self::default()
+    }
+
+    pub fn show_base(mut self) -> Self {
+        self.show_base = true;
+        self
+    }
+
+    pub fn beam_target(mut self, x: i32, y: i16, z: i32) -> Self {
+        self.beam_target = Some(BlockPosition { x, y, z });
+        self
+    }
+}
+
+impl MetadataSource for EndCrystal {
+    fn write(&self, meta: &mut EntityMetadata) {
+        meta.set(
+            end_crystal_index::BEAM_TARGET,
+            Value::OptionalBlockPos(self.beam_target),
+        );
+        meta.set(
+            end_crystal_index::SHOW_BOTTOM,
+            Value::Boolean(self.show_base),
+        );
+    }
+
+    fn clear(meta: &mut EntityMetadata) {
+        EndCrystal::default().show_base().write(meta);
     }
 }
 
@@ -552,6 +595,7 @@ pub(super) fn register(app: &mut App) {
         .add_metadata_source::<NoGravity>()
         .add_metadata_source::<Silent>()
         .add_metadata_source::<ItemEntity>()
+        .add_metadata_source::<EndCrystal>()
         .add_metadata_source::<Display>()
         .add_metadata_source::<BlockDisplay>()
         .add_metadata_source::<ItemDisplay>()
@@ -607,6 +651,7 @@ fn send_full_metadata_on_shown(
 mod tests {
     use bevy_app::App;
     use flume::Receiver;
+    use voidmc_codec::Encode;
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
@@ -867,6 +912,59 @@ mod tests {
             .shadow()
             .alignment(TextAlignment::Right);
         assert_eq!(text.flags(), 0b0001_0101);
+    }
+
+    #[test]
+    fn end_crystal_writes_its_indices_and_clears_to_vanilla_defaults() {
+        let (mut app, rx) = test_app();
+        let _viewer = player(&mut app, 1);
+        let crystal = EntityBuilder::new(EntityKind::EndCrystal)
+            .spawn_in(app.world_mut())
+            .insert(EndCrystal::floating())
+            .id();
+        app.update();
+        assert_eq!(metadata(&rx), vec![(1, vec![(8, 11), (9, 8)])]);
+        let meta = app.world().get::<EntityMetadata>(crystal).unwrap();
+        assert_eq!(meta.get(8), Some(&Value::OptionalBlockPos(None)));
+        assert_eq!(meta.get(9), Some(&Value::Boolean(false)));
+        let mut bytes = Vec::new();
+        SetEntityData {
+            entity_id: 0,
+            entries: meta.entries(),
+        }
+        .encode(&mut bytes);
+        assert_eq!(bytes, [0, 8, 11, 0, 9, 8, 0, 0xFF]);
+
+        app.update();
+        assert!(metadata(&rx).is_empty());
+
+        app.world_mut()
+            .get_mut::<EndCrystal>(crystal)
+            .unwrap()
+            .beam_target = Some(BlockPosition { x: 1, y: 2, z: 3 });
+        app.update();
+        assert_eq!(metadata(&rx), vec![(1, vec![(8, 11)])]);
+        let mut bytes = Vec::new();
+        SetEntityData {
+            entity_id: 0,
+            entries: app
+                .world()
+                .get::<EntityMetadata>(crystal)
+                .unwrap()
+                .entries(),
+        }
+        .encode(&mut bytes);
+        assert_eq!(
+            bytes,
+            [0, 8, 11, 1, 0, 0, 0, 0x40, 0, 0, 0x30, 0x02, 9, 8, 0, 0xFF]
+        );
+
+        app.world_mut().entity_mut(crystal).remove::<EndCrystal>();
+        app.update();
+        assert_eq!(metadata(&rx), vec![(1, vec![(8, 11), (9, 8)])]);
+        let meta = app.world().get::<EntityMetadata>(crystal).unwrap();
+        assert_eq!(meta.get(8), Some(&Value::OptionalBlockPos(None)));
+        assert_eq!(meta.get(9), Some(&Value::Boolean(true)));
     }
 
     #[test]
