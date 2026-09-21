@@ -84,7 +84,7 @@ On every tick during `PreUpdate`:
 
 1. **Drain** all packets from the incoming channel
 2. For each packet:
-   - Look up or create the client entity in `ClientToEntityMap`
+   - Look up or create the client entity in `ClientToEntityMap` (a new entity takes over the client's outbound sender in `ClientSenders`)
    - Read the entity's `ConnectionState`
    - Decode the raw packet bytes using the protocol crate
    - Call the appropriate `handle_{state}_packet()` function

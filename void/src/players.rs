@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryEntityError;
 use bevy_ecs::system::SystemParam;
-use flume::Sender;
+use flume::{Sender, TrySendError};
 use voidmc_protocol::clientbound::ClientboundPacket;
 
 use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
-use crate::network::{NetworkChannels, OutgoingPacket};
+use crate::network::{ClientSenders, NetworkChannels, OUTBOUND_QUEUE_CAPACITY, OutgoingPacket};
 use crate::world::{ChunkPos, DimensionId};
 
 static CHANNEL_CLOSED_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -56,7 +56,7 @@ impl Recipient<'_> {
 
 /// A snapshot of ready players; filters narrow it, [`Recipients::send`] delivers.
 pub struct Recipients<'a> {
-    sender: &'a Sender<OutgoingPacket>,
+    outbox: Outbox<'a>,
     targets: Vec<Recipient<'a>>,
 }
 
@@ -121,16 +121,12 @@ impl<'a> Recipients<'a> {
         let mut pending: Option<&Recipient<'a>> = None;
         for recipient in self.targets.iter().filter(|r| predicate(r)) {
             if let Some(previous) = pending.replace(recipient) {
-                deliver(
-                    self.sender,
-                    previous.entity,
-                    previous.client_id,
-                    packet.clone(),
-                );
+                self.outbox
+                    .deliver(previous.entity, previous.client_id, packet.clone());
             }
         }
         if let Some(last) = pending {
-            deliver(self.sender, last.entity, last.client_id, packet);
+            self.outbox.deliver(last.entity, last.client_id, packet);
         }
     }
 }
@@ -185,20 +181,56 @@ impl fmt::Debug for Audience {
     }
 }
 
-fn deliver(
-    sender: &Sender<OutgoingPacket>,
-    entity: Entity,
-    client_id: u32,
-    packet: ClientboundPacket,
-) {
-    if sender.send(OutgoingPacket { client_id, packet }).is_err()
-        && !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed)
-    {
-        tracing::error!(
-            ?entity,
-            client_id,
-            "Outgoing packet channel is closed; the network thread is gone and packets are being dropped"
-        );
+/// Where packets go: the client's own bounded queue when it has one, else the
+/// shared fallback channel. Never blocks the tick thread.
+#[derive(Clone, Copy)]
+struct Outbox<'a> {
+    direct: Option<&'a ClientSenders>,
+    fallback: &'a Sender<OutgoingPacket>,
+    kick: &'a Sender<u32>,
+}
+
+impl Outbox<'_> {
+    fn deliver(&self, entity: Entity, client_id: u32, packet: ClientboundPacket) {
+        let Some(client) = self.direct.and_then(|senders| senders.get(entity)) else {
+            if self
+                .fallback
+                .send(OutgoingPacket { client_id, packet })
+                .is_err()
+                && !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed)
+            {
+                tracing::error!(
+                    ?entity,
+                    client_id,
+                    "Client entity has no outbound channel and the fallback channel is closed; dropping packets"
+                );
+            }
+            return;
+        };
+
+        if client.kicked() {
+            return;
+        }
+        match client
+            .outgoing()
+            .try_send(OutgoingPacket { client_id, packet })
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                if client.mark_kicked() {
+                    tracing::warn!(
+                        ?entity,
+                        client_id,
+                        capacity = OUTBOUND_QUEUE_CAPACITY,
+                        "Outbound queue full; disconnecting client that cannot keep up"
+                    );
+                    let _ = self.kick.send(client_id);
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                tracing::debug!(?entity, client_id, "Client connection already closed");
+            }
+        }
     }
 }
 
@@ -221,6 +253,7 @@ fn resolve_client(world: &World, entity: Entity) -> Option<u32> {
 #[derive(SystemParam)]
 pub struct Players<'w, 's> {
     channels: Res<'w, NetworkChannels>,
+    senders: Option<Res<'w, ClientSenders>>,
     clients: Query<'w, 's, &'static ClientId>,
     ready: Query<
         'w,
@@ -236,10 +269,18 @@ pub struct Players<'w, 's> {
 }
 
 impl Players<'_, '_> {
+    fn outbox(&self) -> Outbox<'_> {
+        Outbox {
+            direct: self.senders.as_deref(),
+            fallback: &self.channels.outgoing,
+            kick: &self.channels.kick,
+        }
+    }
+
     /// Works for any client entity, ready or still in status/login/configuration.
     pub fn send(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
         match self.clients.get(entity) {
-            Ok(client_id) => deliver(&self.channels.outgoing, entity, client_id.0, packet.into()),
+            Ok(client_id) => self.outbox().deliver(entity, client_id.0, packet.into()),
             Err(QueryEntityError::NotSpawned(_)) => {
                 tracing::debug!(?entity, "Cannot send packet: entity no longer exists");
             }
@@ -262,7 +303,7 @@ impl Players<'_, '_> {
 
     pub fn ready(&self) -> Recipients<'_> {
         Recipients {
-            sender: &self.channels.outgoing,
+            outbox: self.outbox(),
             targets: self
                 .ready
                 .iter()
@@ -303,14 +344,19 @@ impl<'w> WorldPlayers<'w> {
         Self { world }
     }
 
-    fn sender(&self) -> &'w Sender<OutgoingPacket> {
-        &self.world.resource::<NetworkChannels>().outgoing
+    fn outbox(&self) -> Outbox<'w> {
+        let channels = self.world.resource::<NetworkChannels>();
+        Outbox {
+            direct: self.world.get_resource::<ClientSenders>(),
+            fallback: &channels.outgoing,
+            kick: &channels.kick,
+        }
     }
 
     /// Works for any client entity, ready or still in status/login/configuration.
     pub fn send(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
         if let Some(client_id) = resolve_client(self.world, entity) {
-            deliver(self.sender(), entity, client_id, packet.into());
+            self.outbox().deliver(entity, client_id, packet.into());
         }
     }
 
@@ -343,7 +389,7 @@ impl<'w> WorldPlayers<'w> {
             })
             .unwrap_or_default();
         Recipients {
-            sender: self.sender(),
+            outbox: self.outbox(),
             targets,
         }
     }
@@ -633,5 +679,107 @@ mod tests {
         let (app, rx) = test_app();
         WorldPlayers::new(app.world()).broadcast(keep_alive(1));
         assert!(drain(&rx).is_empty());
+    }
+
+    fn direct_client(
+        app: &mut App,
+        client_id: u32,
+        capacity: usize,
+    ) -> (Entity, Receiver<OutgoingPacket>) {
+        let entity = app
+            .world_mut()
+            .spawn((ClientId(client_id), PlayerReady))
+            .id();
+        let (tx, rx) = flume::bounded(capacity);
+        app.world_mut()
+            .resource_mut::<ClientSenders>()
+            .register(entity, tx);
+        (entity, rx)
+    }
+
+    fn with_registry(app: &mut App) -> Receiver<u32> {
+        let (_connected_tx, connected_rx) = flume::unbounded();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        app.world_mut().resource_mut::<NetworkChannels>().kick = kick_tx;
+        app.insert_resource(ClientSenders::new(connected_rx));
+        app.insert_non_send_resource(_connected_tx);
+        kick_rx
+    }
+
+    #[test]
+    fn direct_delivery_routes_to_the_right_client_in_order() {
+        let (mut app, fallback) = test_app();
+        with_registry(&mut app);
+        let (first, first_rx) = direct_client(&mut app, 1, 64);
+        let (second, second_rx) = direct_client(&mut app, 2, 64);
+        let unregistered = app.world_mut().spawn((ClientId(3), PlayerReady)).id();
+
+        app.add_systems(Update, move |players: Players| {
+            players.send(first, keep_alive(1));
+            players.broadcast(keep_alive(2));
+            players.send(second, keep_alive(3));
+            players.broadcast_except(first, keep_alive(4));
+            players.send_to([first, second], keep_alive(5));
+        });
+        app.update();
+        WorldPlayers::new(app.world()).send(second, keep_alive(6));
+        WorldPlayers::new(app.world()).broadcast_except(unregistered, keep_alive(7));
+
+        assert_eq!(drain(&first_rx), vec![(1, 1), (1, 2), (1, 5), (1, 7)]);
+        assert_eq!(
+            drain(&second_rx),
+            vec![(2, 2), (2, 3), (2, 4), (2, 5), (2, 6), (2, 7)]
+        );
+        assert_eq!(drain(&fallback), vec![(3, 2), (3, 4)]);
+    }
+
+    #[test]
+    fn full_queue_kicks_the_client_once_instead_of_growing() {
+        let (mut app, fallback) = test_app();
+        let kick_rx = with_registry(&mut app);
+        let (slow, slow_rx) = direct_client(&mut app, 1, 2);
+        let (fast, fast_rx) = direct_client(&mut app, 2, 2);
+
+        app.add_systems(Update, move |players: Players| {
+            for id in 1..=5 {
+                players.send(slow, keep_alive(id));
+            }
+            players.send(fast, keep_alive(9));
+        });
+        app.update();
+
+        assert_eq!(slow_rx.len(), 2);
+        assert_eq!(kick_rx.try_iter().collect::<Vec<_>>(), vec![1]);
+        assert!(
+            app.world()
+                .resource::<ClientSenders>()
+                .get(slow)
+                .unwrap()
+                .kicked()
+        );
+        assert_eq!(drain(&slow_rx), vec![(1, 1), (1, 2)]);
+        assert_eq!(drain(&fast_rx), vec![(2, 9)]);
+        assert!(drain(&fallback).is_empty());
+
+        app.update();
+        assert!(drain(&slow_rx).is_empty());
+        assert!(kick_rx.is_empty());
+        assert_eq!(drain(&fast_rx), vec![(2, 9)]);
+    }
+
+    #[test]
+    fn closed_client_channel_drops_silently() {
+        let (mut app, fallback) = test_app();
+        let kick_rx = with_registry(&mut app);
+        let (gone, gone_rx) = direct_client(&mut app, 1, 2);
+        drop(gone_rx);
+
+        app.add_systems(Update, move |players: Players| {
+            players.send(gone, keep_alive(1));
+        });
+        app.update();
+
+        assert!(kick_rx.is_empty());
+        assert!(drain(&fallback).is_empty());
     }
 }

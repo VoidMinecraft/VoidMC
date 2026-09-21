@@ -102,7 +102,9 @@ Nothing is silently dropped. Each failure is logged once, with the entity and cl
 |---|---|
 | Entity no longer exists (player left this tick) | `debug` |
 | Entity exists but has no `ClientId` | `warn` |
-| Outgoing channel closed (network thread gone) | `error`, once per process |
+| Client's outbound queue full (client not draining) | `warn`, once per client; the client is kicked |
+| Client's connection already closed (disconnect not yet ingested) | `debug` |
+| Client entity has no outbound channel and the fallback channel is closed | `error`, once per process |
 
 ### Parameter conflicts
 
@@ -113,8 +115,12 @@ streaming does this.
 
 ### Raw layer
 
-`NetworkChannels.outgoing` and `OutgoingPacket { client_id, packet }` remain
-public for code that already holds a client id; prefer `Players`.
+Every client has its own bounded outbound queue (`OUTBOUND_QUEUE_CAPACITY`)
+held in `ClientSenders`; sends are non-blocking `try_send`s and never stall the
+tick. A client that cannot drain its queue is disconnected rather than having
+packets dropped. `NetworkChannels.outgoing` is only a fallback for client
+entities with no direct sender (tests use it as their packet sink); prefer
+`Players`.
 
 ## System sets
 

@@ -12,22 +12,38 @@ The two threads communicate exclusively through [flume](https://docs.rs/flume) c
 | Channel | Direction | Type | Purpose |
 |---|---|---|---|
 | `incoming` | Network -> Game | `IncomingPacket` | Raw packets received from clients |
-| `outgoing` | Game -> Network | `OutgoingPacket` | Encoded packets to send to clients |
+| `connected` | Network -> Game | `ClientConnected` | A new client's id and its own bounded outbound sender |
+| per-client outbound | Game -> Network | `OutgoingPacket` | One bounded queue per client, written to directly by the send path |
 | `disconnect` | Network -> Game | `u32` (client ID) | Client disconnection notifications |
 | `kick` | Game -> Network | `u32` (client ID) | Server-initiated kick requests |
 
 ```
 +-----------------------------+       flume channels       +------------------------------+
-|       Network Thread        | <---- outgoing, kick ----- |        Game Thread            |
-|   (Tokio multi-threaded)    | -----> incoming, disconnect |   (Bevy ECS tick loop)       |
-|                             |                             |                              |
-|  Server::run()              |                             |  App::run()                  |
+|       Network Thread        | <-- per-client outbound, -- |        Game Thread            |
+|   (Tokio multi-threaded)    |     kick                    |   (Bevy ECS tick loop)       |
+|                             | --> incoming, connected,    |                              |
+|  Server::run()              |     disconnect              |  App::run()                  |
 |   +- accept TCP connections |                             |   +- PreUpdate: ingest packets|
 |   +- spawn Client tasks     |                             |   +- Update: keep-alive       |
-|   +- route outgoing packets |                             |   +- PostUpdate: broadcast    |
-|   +- handle kick requests   |                             |   +- Observers: events        |
+|   +- handle kick requests   |                             |   +- PostUpdate: broadcast    |
+|                             |                             |   +- Observers: events        |
 +-----------------------------+                             +------------------------------+
 ```
+
+There is no global outgoing channel. On accept, the network thread creates a
+bounded outbound queue for the connection (`OUTBOUND_QUEUE_CAPACITY`, 16384
+packets) and announces its sender through `connected` before the client task
+starts, so the game thread always owns the sender before the first packet from
+that client arrives. `ClientSenders` keeps the senders keyed by client entity,
+and `Players` / `WorldPlayers` push straight into the target client's queue
+with a non-blocking `try_send`.
+
+If a queue is full the client is not keeping up; the game thread never blocks
+and never drops individual packets (which would desync the client). Instead it
+sends the client id through `kick`, the network thread aborts that client's
+task (closing the socket even while its writer is stalled), the usual
+`disconnect` notification follows, and the entity is despawned like any other
+disconnect.
 
 ## Tick Loop
 
@@ -127,18 +143,13 @@ PostUpdate systems              -- Same tick (see VoidSystems sets)
   +- stream_chunks: load/unload chunks by view distance
   |
   v
-Players / WorldPlayers          -- voidmc::players (Entity -> ClientId)
+Players / WorldPlayers          -- voidmc::players (Entity -> ClientSenders)
   |
   v
 OutgoingPacket { client_id, packet }
-  |                             -- flume channel
+  |                             -- that client's bounded flume channel (try_send)
   v
-Server::run()                   -- Network thread
-  |
-  +- Route to per-client channel
-  |
-  v
-Client::run()
+Client::run()                   -- Network thread
   |
   +- ClientWriter::send()       -- Single serialized writer future
   |
