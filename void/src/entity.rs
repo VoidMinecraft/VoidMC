@@ -3,6 +3,9 @@
 //! and despawning is the only removal API — a `RemoveEntities` packet always
 //! follows, so clients never keep ghosts.
 
+pub mod metadata;
+pub mod passengers;
+
 use std::collections::HashSet;
 
 use bevy_app::{App, Plugin, PostUpdate};
@@ -11,6 +14,12 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::EntityCommands;
 use voidmc_protocol::clientbound;
 
+pub use metadata::{
+    Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EntityMetadata, Glowing,
+    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
+    Silent, TextAlignment, TextDisplay,
+};
+pub use passengers::Passengers;
 pub use voidmc_data::v26_1_2::EntityKind;
 
 use crate::components::{
@@ -116,7 +125,7 @@ impl EntityBuilder {
     pub fn bundle(self) -> impl Bundle {
         let gravity = self.movement.gravity_enabled;
         (
-            SpawnedEntity,
+            SpawnedEntity(()),
             MinecraftEntityId::allocate(),
             EntityUuid::default(),
             EntityType(self.kind.id()),
@@ -178,6 +187,8 @@ impl Plugin for EntityPlugin {
                 PostUpdate,
                 track_entity_visibility.in_set(VoidSystems::EntityVisibility),
             );
+        metadata::register(app);
+        passengers::register(app);
     }
 }
 
@@ -436,13 +447,6 @@ mod tests {
             *world.get::<EntityCollider>(b).unwrap(),
             EntityCollider::for_entity_name("minecraft:pig")
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "spawn through EntityBuilder")]
-    fn inserting_the_marker_alone_fails_loudly() {
-        let (mut app, _rx) = test_app();
-        app.world_mut().spawn(SpawnedEntity);
     }
 
     #[test]

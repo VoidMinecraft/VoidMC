@@ -48,6 +48,7 @@ impl Plugin for GameSystemsPlugin {
                 (
                     VoidSystems::ChunkStreaming,
                     VoidSystems::EntityBroadcast,
+                    VoidSystems::EntityMetadataSync,
                     VoidSystems::EntityVisibility,
                 )
                     .chain(),

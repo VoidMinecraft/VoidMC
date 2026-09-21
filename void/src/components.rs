@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use bevy_ecs::prelude::*;
 use uuid::Uuid;
 
+use crate::entity::EntityMetadata;
 use crate::item::ItemStack;
 use crate::world::{ChunkPos, DimensionId};
 
@@ -126,19 +127,15 @@ impl ContainerSync {
 }
 
 /// Numeric entity type ID from the `minecraft:entity_type` registry.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EntityType(pub i32);
 
-impl Default for EntityType {
-    fn default() -> Self {
-        panic!("SpawnedEntity inserted without an EntityType; spawn through EntityBuilder")
-    }
-}
-
-/// Marker for non-player, server-owned entities. Requiring it pulls in every
-/// component the replication and simulation systems read, so an entity can
-/// never be half-spawned; [`crate::entity::EntityBuilder`] fills the values.
-#[derive(Component, Default)]
+/// Marker for non-player, server-owned entities. Only
+/// [`crate::entity::EntityBuilder`] can construct it (private field), and
+/// requiring it pulls in every component the replication and simulation
+/// systems read, so a half-spawned entity cannot exist. Downstream code uses
+/// it as a query filter.
+#[derive(Component)]
 #[require(
     MinecraftEntityId,
     EntityUuid,
@@ -153,9 +150,10 @@ impl Default for EntityType {
     VerticalVelocity,
     Grounded,
     RecentlySpawned,
-    EntityViewers
+    EntityViewers,
+    EntityMetadata
 )]
-pub struct SpawnedEntity;
+pub struct SpawnedEntity(pub(crate) ());
 
 /// Which dimension a non-player entity belongs to.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]

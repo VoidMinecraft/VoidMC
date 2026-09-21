@@ -2,24 +2,22 @@
 //!
 //! A drop is requested with an [`ItemDropEvent`] (emitted by inventory throws and
 //! the drop key); this plugin spawns a `minecraft:item` entity carrying an
-//! [`ItemEntity`]. The entity tracker replicates it, and an [`EntityShownEvent`]
-//! observer sends the `SetEntityData` packet that makes the client show the
-//! actual item. Nearby players pick drops up after a short delay.
+//! [`ItemEntity`]; the entity tracker replicates it and `ItemEntity` projects
+//! the item into the entity metadata so the client shows the actual item.
+//! Nearby players pick drops up after a short delay.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use tracing::instrument;
-use voidmc_protocol::clientbound;
 
 use crate::components::{
-    EntityDimension, ItemEntity, MinecraftEntityId, PickupDelay, PlayerDimension, PlayerReady,
-    Position, SpawnedEntity, Velocity,
+    EntityDimension, ItemEntity, PickupDelay, PlayerDimension, PlayerReady, Position,
+    SpawnedEntity, Velocity,
 };
-use crate::entity::{EntityBuilder, EntityKind, EntityShownEvent};
+use crate::entity::{EntityBuilder, EntityKind};
 use crate::events::{EntityDespawnEvent, ItemDropEvent, PlayerDropItemEvent};
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
-use crate::players::Players;
 use crate::plugins::inventory::InventoryDirty;
 use crate::schedule::VoidSystems;
 use crate::world::DimensionId;
@@ -35,18 +33,11 @@ impl Plugin for ItemDropsPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(on_item_drop)
             .add_observer(on_player_drop_item)
-            .add_observer(send_item_data_on_shown)
             .add_systems(
                 Update,
                 (tick_pickup_delay, pickup_items).in_set(VoidSystems::ItemPickup),
             );
     }
-}
-
-fn item_data_packet(entity_id: i32, stack: &ItemStack) -> clientbound::ClientboundPacket {
-    clientbound::ClientboundPacket::Play(clientbound::PlayPacket::SetEntityData(
-        clientbound::SetEntityData::item(entity_id, stack.to_slot()),
-    ))
 }
 
 fn spawn_drop(
@@ -135,16 +126,6 @@ fn on_player_drop_item(
         stack: dropped,
     });
     commands.entity(event.entity).insert(InventoryDirty);
-}
-
-fn send_item_data_on_shown(
-    event: On<EntityShownEvent>,
-    players: Players,
-    items: Query<(&MinecraftEntityId, &ItemEntity)>,
-) {
-    if let Ok((entity_id, item)) = items.get(event.entity) {
-        players.send(event.viewer, item_data_packet(entity_id.0, &item.stack));
-    }
 }
 
 fn tick_pickup_delay(mut delays: Query<&mut PickupDelay>) {

@@ -302,6 +302,8 @@ application/plugin crate instead of in `void` itself.
 | Command | Description | Arguments |
 |---|---|---|
 | `/circle` | Spawn or remove an orbiting entity ring | `[entity:resource_location] [player:player] [--stop]` |
+| `/spawn` | Spawn an entity with metadata sugar (`CustomName`, `Glowing`, `Invisible`, `NoGravity`) | `[entity:resource_location] [--name <text>] [--glow] [--invisible] [--float]` |
+| `/display` | Display-entity and passenger demos (see [Entities](/reference/gameplay/entities)) | `<shield|sign|item|ride|clear> [text]` |
 
 `/circle` defaults to `minecraft:pig` and the executor and spawns the ring
 through `EntityBuilder`. `/circle --stop` despawns the entities directly; the

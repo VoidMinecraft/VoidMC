@@ -43,7 +43,12 @@ pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
-pub use entity::{EntityBuilder, EntityHiddenEvent, EntityKind, EntityPlugin, EntityShownEvent};
+pub use entity::{
+    Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EntityBuilder,
+    EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing,
+    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
+    Passengers, Silent, TextAlignment, TextDisplay,
+};
 pub use inventory::Inventory;
 pub use item::{ItemId, ItemStack};
 pub use item_behavior::{
