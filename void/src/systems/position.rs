@@ -25,7 +25,10 @@ pub fn broadcast_position(
         ),
     >,
     mut dismounted: RemovedComponents<Mount>,
-    resync_query: Query<(&MinecraftEntityId, &Position, &Rotation), With<PlayerReady>>,
+    resync_query: Query<
+        (&MinecraftEntityId, &Position, &Rotation),
+        (With<PlayerReady>, Without<Mount>),
+    >,
 ) {
     let ready = players.ready();
     let mut resynced = Vec::new();
@@ -33,7 +36,7 @@ pub fn broadcast_position(
         let Ok((mc_entity_id, pos, rotation)) = resync_query.get(rider) else {
             continue;
         };
-        ready.send_except(rider, teleport_packet(mc_entity_id.0, pos, rotation));
+        ready.send_except(rider, sync_packet(mc_entity_id.0, pos, rotation));
         ready.send_except(
             rider,
             clientbound::SetHeadRotation {
@@ -75,7 +78,6 @@ pub fn broadcast_position(
             continue;
         }
 
-        // Deltas are i16 (~8 blocks); beyond that, send an absolute teleport.
         let packet = if let (Some(delta_x), Some(delta_y), Some(delta_z)) = (
             relative_delta(pos.x, prev_pos.x),
             relative_delta(pos.y, prev_pos.y),
@@ -93,13 +95,10 @@ pub fn broadcast_position(
                 },
             )
         } else {
-            teleport_packet(mc_entity_id.0, pos, &rotation)
+            sync_packet(mc_entity_id.0, pos, &rotation)
         };
 
-        // Send position + rotation update
         ready.send_except(mover, packet);
-
-        // Send head rotation
         ready.send_except(
             mover,
             clientbound::SetHeadRotation {
@@ -110,8 +109,8 @@ pub fn broadcast_position(
     }
 }
 
-fn teleport_packet(entity_id: i32, pos: &Position, rotation: &Rotation) -> clientbound::PlayPacket {
-    clientbound::PlayPacket::TeleportEntity(clientbound::TeleportEntity {
+fn sync_packet(entity_id: i32, pos: &Position, rotation: &Rotation) -> clientbound::PlayPacket {
+    clientbound::PlayPacket::EntityPositionSync(clientbound::EntityPositionSync {
         entity_id,
         x: pos.x,
         y: pos.y,
@@ -121,7 +120,6 @@ fn teleport_packet(entity_id: i32, pos: &Position, rotation: &Rotation) -> clien
         vz: 0.0,
         yaw: rotation.yaw,
         pitch: rotation.pitch,
-        relatives: clientbound::TeleportFlags::empty(),
         on_ground: true,
     })
 }
@@ -256,10 +254,11 @@ mod tests {
 
         app.update();
 
-        let clientbound::ClientboundPacket::Play(clientbound::PlayPacket::TeleportEntity(teleport)) =
-            outgoing_rx.recv().unwrap().packet
+        let clientbound::ClientboundPacket::Play(clientbound::PlayPacket::EntityPositionSync(
+            teleport,
+        )) = outgoing_rx.recv().unwrap().packet
         else {
-            panic!("expected absolute teleport for a move beyond the i16 delta range");
+            panic!("expected absolute position sync for a move beyond the i16 delta range");
         };
         assert_eq!(teleport.entity_id, 42);
         assert_eq!((teleport.x, teleport.y, teleport.z), (100.0, 64.0, 0.0));
@@ -357,7 +356,7 @@ mod tests {
         app.update();
         let sent = packets(&rx);
         assert_eq!(sent.len(), 2);
-        let clientbound::PlayPacket::TeleportEntity(teleport) = &sent[0] else {
+        let clientbound::PlayPacket::EntityPositionSync(teleport) = &sent[0] else {
             panic!("expected absolute resync after dismount, got {:?}", sent[0]);
         };
         assert_eq!((teleport.x, teleport.y, teleport.z), (3.0, 64.0, -2.5));
@@ -413,7 +412,7 @@ mod tests {
         app.update();
         let sent = packets(&rx);
         assert_eq!(sent.len(), 2);
-        let clientbound::PlayPacket::TeleportEntity(teleport) = &sent[0] else {
+        let clientbound::PlayPacket::EntityPositionSync(teleport) = &sent[0] else {
             panic!("expected absolute resync after dismount, got {:?}", sent[0]);
         };
         assert_eq!(teleport.y, 65.0);

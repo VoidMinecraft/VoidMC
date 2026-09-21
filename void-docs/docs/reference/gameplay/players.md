@@ -109,7 +109,7 @@ let delta_z = relative_delta(pos.z, prev_pos.z);
 
 An `i16` delta only covers about ±8 blocks. If any axis moved further than that
 in a single tick, `relative_delta` returns `None` and the update is sent as an
-absolute `TeleportEntity` instead of a saturated delta.
+absolute `EntityPositionSync` instead of a saturated delta.
 
 ### Rotation Encoding
 
@@ -124,8 +124,8 @@ let pitch = (rotation.pitch / 360.0 * 256.0) as u8;
 
 For each player with changed `Position` or `Rotation`:
 1. `UpdateEntityPositionAndRotation` — Combined position delta + rotation, or
-   `TeleportEntity` (absolute position, zero velocity) when the move exceeds the
-   ~8 block delta range
+   `EntityPositionSync` (absolute position, zero velocity) when the move exceeds
+   the ~8 block delta range
 2. `SetHeadRotation` — Head yaw (for smooth head turning)
 
 The `update_previous_positions` system runs after broadcasting to sync `PreviousPosition` with current `Position`.
@@ -133,13 +133,23 @@ The `update_previous_positions` system runs after broadcasting to sync `Previous
 ### Riding a vehicle
 
 A player listed in some entity's `Passengers` carries a `Mount(Entity)`
-component (see [Passengers](./entities#passengers)). While mounted, the client
-derives the rider's position from the vehicle, so `broadcast_position` sends
-only `UpdateEntityRotation` + `SetHeadRotation` when `Rotation` changes and
-nothing when only `Position` changes; `PreviousPosition` keeps following
-`Position` so the rider can still be written every tick for chunk streaming.
-On the tick `Mount` disappears the rider is resynced with one absolute
-`TeleportEntity` + `SetHeadRotation`, after which delta encoding resumes.
+component (see [Passengers](./entities#passengers)). A riding client keeps
+sending `SetPlayerPos`/`SetPlayerPosAndRot` every tick with a meaningless
+position (`y = -999`); like vanilla, the movement handlers ignore the position
+of a mounted player — `Position` is left to whatever positions the vehicle
+seats and no `PlayerMoveEvent` fires — and apply only the rotation
+(`Rotation` + `PlayerRotateEvent`). `Rotation` is written only when it actually
+differs from the current value, so `Changed<Rotation>` means a real turn.
+
+While mounted, the client derives the rider's position from the vehicle, so
+`broadcast_position` sends only `UpdateEntityRotation` + `SetHeadRotation` when
+`Rotation` changes and nothing when only `Position` changes; `PreviousPosition`
+keeps following `Position` so the rider can still be written every tick for
+chunk streaming. On the tick `Mount` disappears the rider is resynced with one
+absolute `EntityPositionSync` + `SetHeadRotation` — the packet that resets the
+client's delta base, unlike `TeleportEntity` — after which delta encoding
+resumes. Moving a rider from one `Passengers` list to another in the same tick
+keeps `Mount` and triggers no resync.
 
 ## Teleportation
 
