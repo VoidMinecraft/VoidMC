@@ -32,7 +32,9 @@ pub struct Teleport {
     /// `None` keeps the player's current look direction.
     pub yaw: Option<f32>,
     pub pitch: Option<f32>,
-    /// `None` stays in the player's current dimension.
+    /// `None` stays in the player's current dimension. A change only updates
+    /// `PlayerDimension` and restreams chunks: the client keeps its current
+    /// dimension environment until a Respawn packet exists.
     pub dimension: Option<DimensionId>,
     /// Chunk packets per tick while the teleport is in flight; `None` leaves
     /// the player's own [`ChunkSendBudget`] (or lack of one) untouched.
@@ -70,6 +72,8 @@ impl Teleport {
         self
     }
 
+    /// Switches the server-side dimension used for chunk streaming; the
+    /// client's environment is not changed (no Respawn packet yet).
     pub fn in_dimension(mut self, dimension: DimensionId) -> Self {
         self.dimension = Some(dimension);
         self
@@ -120,7 +124,6 @@ enum Stage {
     #[default]
     Streaming,
     Fence(i32),
-    ChunksReady,
     Sync,
 }
 
@@ -213,7 +216,9 @@ fn begin_teleport(
             if let Some(mut loaded) = loaded {
                 unload.extend(loaded.0.drain());
             }
-            commands.entity(entity).insert(ChunkStreamBacklog);
+            commands
+                .entity(entity)
+                .insert(ChunkStreamBacklog::default());
         }
 
         let mut entity_commands = commands.entity(entity);
@@ -280,10 +285,6 @@ fn advance_teleports(
                 players.send(entity, clientbound::Ping { id });
             }
             Stage::Fence(_) => {}
-            Stage::ChunksReady => {
-                send_sync(&players, entity, teleport, &mut state, rotation);
-                progress.stage = Stage::Sync;
-            }
             Stage::Sync => {
                 if state.pending_id.is_none() {
                     progress.outcome = Some(TeleportOutcome::Confirmed);
@@ -301,33 +302,57 @@ fn send_sync(
     state: &mut TeleportState,
     rotation: Option<&Rotation>,
 ) {
+    players.send(entity, sync_packet(teleport, state, rotation));
+}
+
+fn sync_packet(
+    teleport: &Teleport,
+    state: &mut TeleportState,
+    rotation: Option<&Rotation>,
+) -> clientbound::SynchronizePlayerPosition {
     let id = state.next_id;
     state.next_id = state.next_id.wrapping_add(1);
     state.pending_id = Some(id);
     let current = rotation.copied().unwrap_or_default();
-    players.send(
-        entity,
-        clientbound::SynchronizePlayerPosition {
-            teleport_id: id,
-            x: teleport.x,
-            y: teleport.y,
-            z: teleport.z,
-            vx: 0.0,
-            vy: 0.0,
-            vz: 0.0,
-            yaw: teleport.yaw.unwrap_or(current.yaw),
-            pitch: teleport.pitch.unwrap_or(current.pitch),
-            flags: clientbound::TeleportFlags::empty(),
-        },
-    );
+    clientbound::SynchronizePlayerPosition {
+        teleport_id: id,
+        x: teleport.x,
+        y: teleport.y,
+        z: teleport.z,
+        vx: 0.0,
+        vy: 0.0,
+        vz: 0.0,
+        yaw: teleport.yaw.unwrap_or(current.yaw),
+        pitch: teleport.pitch.unwrap_or(current.pitch),
+        flags: clientbound::TeleportFlags::empty(),
+    }
 }
 
-fn fence_acknowledged(event: On<PacketEvent<Pong>>, mut in_flight: Query<&mut TeleportProgress>) {
-    if let Ok(mut progress) = in_flight.get_mut(event.entity)
-        && progress.stage == Stage::Fence(event.packet.id)
-    {
-        progress.stage = Stage::ChunksReady;
-    }
+fn fence_acknowledged(
+    event: On<PacketEvent<Pong>>,
+    mut in_flight_and_players: ParamSet<(
+        Query<(
+            &Teleport,
+            &mut TeleportProgress,
+            &mut TeleportState,
+            Option<&Rotation>,
+        )>,
+        Players,
+    )>,
+) {
+    let entity = event.entity;
+    let sync = {
+        let mut in_flight = in_flight_and_players.p0();
+        let Ok((teleport, mut progress, mut state, rotation)) = in_flight.get_mut(entity) else {
+            return;
+        };
+        if progress.stage != Stage::Fence(event.packet.id) {
+            return;
+        }
+        progress.stage = Stage::Sync;
+        sync_packet(teleport, &mut state, rotation)
+    };
+    in_flight_and_players.p1().send(entity, sync);
 }
 
 fn end_teleport(
@@ -359,7 +384,11 @@ fn end_teleport(
             }
         }
     }
-    commands.trigger(PlayerTeleportEvent { entity, outcome });
+    commands.queue(move |world: &mut World| {
+        if world.get_entity(entity).is_ok() {
+            world.trigger(PlayerTeleportEvent { entity, outcome });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -498,7 +527,6 @@ mod tests {
         assert!(syncs(&receiver).is_empty());
 
         pong(&mut app, entity, ping[0]);
-        app.update();
         let sync = syncs(&receiver);
         assert_eq!(sync.len(), 1);
         assert_eq!((sync[0].x, sync[0].y, sync[0].z), (168.0, 70.0, 168.0));
@@ -588,6 +616,38 @@ mod tests {
         assert_eq!(
             world.resource::<Outcomes>().0,
             vec![(entity, TeleportOutcome::Cancelled)]
+        );
+    }
+
+    #[test]
+    fn despawning_mid_flight_delivers_no_outcome_and_observers_stay_safe() {
+        #[derive(Component)]
+        struct Marker;
+
+        let (mut app, _receiver) = test_app();
+        app.add_observer(|event: On<PlayerTeleportEvent>, mut commands: Commands| {
+            commands.entity(event.entity).insert(Marker);
+        });
+        let entity = player(&mut app, []);
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(Teleport::to(1.0, 2.0, 3.0));
+        app.update();
+        assert!(app.world().get::<TeleportProgress>(entity).is_some());
+
+        app.world_mut().despawn(entity);
+        app.update();
+        let world = app.world_mut();
+        assert!(world.get_entity(entity).is_err());
+        assert!(world.resource::<Outcomes>().0.is_empty());
+        assert_eq!(world.query::<&Marker>().iter(world).count(), 0);
+        assert_eq!(world.query::<&ChunkSendBudget>().iter(world).count(), 0);
+        assert_eq!(
+            world
+                .query::<&ServerControlledPosition>()
+                .iter(world)
+                .count(),
+            0
         );
     }
 

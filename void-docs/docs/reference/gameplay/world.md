@@ -76,7 +76,7 @@ The `stream_chunks` system (runs in `PostUpdate`) manages chunk loading and unlo
    - If the chunk entity exists in `ChunkIndex`, send its data.
    - If not, generate it on-demand using the `WorldGenerator`, spawn a chunk entity, and send the data.
    - New chunks are sent in nearest-first order (from `chunks_in_radius` sorting).
-6. **Throttle**: A player with a `ChunkSendBudget(n)` receives at most `n` chunk packets per tick (cached ones included). When the budget, the `max_chunk_generations_per_tick` cap or a chunk still pending spawn leaves chunks unsent, the player is marked `ChunkStreamBacklog` and the pass resumes next tick; the marker is removed once the range is complete. Players without a budget receive their whole range at once.
+6. **Throttle**: A player with a `ChunkSendBudget(n)` receives at most `n` chunk packets per tick (cached ones included). When the budget, the `max_chunk_generations_per_tick` cap or a chunk still pending spawn leaves chunks unsent, the unsent tail is stored nearest-first in `ChunkStreamBacklog` and drained on the following ticks without recomputing the range or the unload set (steps 4–5 only rerun when the chunk column or view distance changes); the component is removed once the range is complete. Players without a budget receive their whole range at once.
 
 ## Spawn Area Pre-Generation
 

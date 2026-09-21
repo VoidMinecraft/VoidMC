@@ -95,9 +95,13 @@ pub struct LoadedChunks(pub HashSet<ChunkPos>);
 
 /// Set by chunk streaming when a pass could not send every chunk in range
 /// (send budget or generation cap); the player is revisited next tick even
-/// while stationary. Cleared once the range is fully streamed.
-#[derive(Component)]
-pub struct ChunkStreamBacklog;
+/// while stationary. Carries the unsent chunks nearest-first so a stationary
+/// player drains them without recomputing the range. Cleared once the range
+/// is fully streamed; an empty backlog forces a full recompute.
+#[derive(Component, Default)]
+pub struct ChunkStreamBacklog {
+    pub(crate) pending: Vec<ChunkPos>,
+}
 
 /// Caps how many chunk packets stream to this player per tick, cached chunks
 /// included; at least one is always sent. Absent means unlimited, which is the

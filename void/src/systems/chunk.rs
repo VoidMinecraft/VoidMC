@@ -47,7 +47,7 @@ pub fn stream_chunks(
                 &PlayerDimension,
                 Option<&ClientSettings>,
                 Option<&ChunkSendBudget>,
-                Has<ChunkStreamBacklog>,
+                Option<&mut ChunkStreamBacklog>,
             ),
             With<PlayerReady>,
         >,
@@ -76,7 +76,7 @@ pub fn stream_chunks(
         dimension,
         settings,
         send_budget,
-        has_backlog,
+        mut backlog,
     ) in viewers.iter_mut()
     {
         let new_chunk = ChunkPos::from_block(position.x, position.z);
@@ -88,6 +88,7 @@ pub fn stream_chunks(
 
         let chunk_changed = new_chunk != current_chunk.0;
         let vd_changed = view_distance != effective_vd.0;
+        let has_backlog = backlog.is_some();
         if !chunk_changed && !vd_changed && !has_backlog {
             continue;
         }
@@ -108,52 +109,54 @@ pub fn stream_chunks(
             ));
         }
 
-        let desired_sorted = new_chunk.chunks_in_radius(view_distance);
-        let desired_set: std::collections::HashSet<ChunkPos> =
-            desired_sorted.iter().copied().collect();
-
-        // Unload chunks no longer in range
-        let to_unload: Vec<ChunkPos> = loaded_chunks
-            .0
-            .iter()
-            .filter(|pos| !desired_set.contains(pos))
-            .copied()
-            .collect();
-
-        for pos in &to_unload {
-            outbox.push((
-                player,
-                clientbound::UnloadChunk {
-                    chunk_x: pos.x,
-                    chunk_z: pos.z,
+        let carried = backlog
+            .as_deref_mut()
+            .filter(|_| !chunk_changed && !vd_changed)
+            .map(|b| std::mem::take(&mut b.pending))
+            .filter(|pending| !pending.is_empty());
+        let mut pending = match carried {
+            Some(pending) => pending,
+            None => {
+                let desired_sorted = new_chunk.chunks_in_radius(view_distance);
+                let desired_set: std::collections::HashSet<ChunkPos> =
+                    desired_sorted.iter().copied().collect();
+                let to_unload: Vec<ChunkPos> = loaded_chunks
+                    .0
+                    .iter()
+                    .filter(|pos| !desired_set.contains(pos))
+                    .copied()
+                    .collect();
+                for pos in &to_unload {
+                    outbox.push((
+                        player,
+                        clientbound::UnloadChunk {
+                            chunk_x: pos.x,
+                            chunk_z: pos.z,
+                        }
+                        .into(),
+                    ));
+                    loaded_chunks.0.remove(pos);
                 }
-                .into(),
-            ));
-            loaded_chunks.0.remove(pos);
-        }
+                desired_sorted
+            }
+        };
 
-        // Load new chunks in range (nearest-first order preserved)
         let dim_id = dimension.0;
         let budget = send_budget.map_or(usize::MAX, |b| b.0.max(1));
         let mut sent = 0usize;
-        let mut backlog = false;
-        for pos in &desired_sorted {
+        pending.retain(|pos| {
             if loaded_chunks.0.contains(pos) {
-                continue;
+                return false;
             }
             if sent >= budget {
-                backlog = true;
-                break;
+                return true;
             }
 
             let key = (dim_id, *pos);
-
-            // Generate chunk on-demand if not in index
             if !chunk_index.0.contains_key(&key) {
                 if max_chunk_generations > 0 && generated_this_tick >= max_chunk_generations {
                     throttled = true;
-                    backlog = true;
-                    continue;
+                    return true;
                 }
 
                 let mut chunk_data = load_or_generate(loader.as_deref(), &world_gen, dim_id, pos);
@@ -170,26 +173,33 @@ pub fn stream_chunks(
                 outbox.push((player, packet.into()));
                 loaded_chunks.0.insert(*pos);
                 sent += 1;
-                continue;
+                return false;
             }
 
-            // Chunk exists in index — query its data
-            if let Some(&chunk_entity) = chunk_index.0.get(&key) {
-                if let Ok((chunk_pos, chunk_data)) = chunk_query.get(chunk_entity) {
-                    let packet = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
-                    outbox.push((player, packet.into()));
-                    loaded_chunks.0.insert(*pos);
-                    sent += 1;
-                } else {
-                    backlog = true;
-                }
-            }
-        }
+            let Some(&chunk_entity) = chunk_index.0.get(&key) else {
+                return true;
+            };
+            let Ok((chunk_pos, chunk_data)) = chunk_query.get(chunk_entity) else {
+                return true;
+            };
+            let packet = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
+            outbox.push((player, packet.into()));
+            loaded_chunks.0.insert(*pos);
+            sent += 1;
+            false
+        });
 
-        if backlog && !has_backlog {
-            commands.entity(player).insert(ChunkStreamBacklog);
-        } else if !backlog && has_backlog {
-            commands.entity(player).remove::<ChunkStreamBacklog>();
+        match (pending.is_empty(), backlog) {
+            (true, Some(_)) => {
+                commands.entity(player).remove::<ChunkStreamBacklog>();
+            }
+            (true, None) => {}
+            (false, Some(mut backlog)) => backlog.pending = pending,
+            (false, None) => {
+                commands
+                    .entity(player)
+                    .insert(ChunkStreamBacklog { pending });
+            }
         }
     }
 
@@ -199,7 +209,7 @@ pub fn stream_chunks(
     }
 
     if throttled {
-        tracing::warn!(
+        tracing::debug!(
             generated_this_tick,
             max_chunk_generations_per_tick = max_chunk_generations,
             "Chunk generation throttled"
@@ -269,17 +279,21 @@ mod tests {
             .id()
     }
 
-    fn chunk_packets(receiver: &flume::Receiver<OutgoingPacket>, client: u32) -> usize {
+    fn chunk_positions(receiver: &flume::Receiver<OutgoingPacket>, client: u32) -> Vec<ChunkPos> {
         receiver
             .drain()
-            .filter(|p| {
-                p.client_id == client
-                    && matches!(
-                        p.packet,
-                        ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(_))
-                    )
+            .filter(|p| p.client_id == client)
+            .filter_map(|p| match p.packet {
+                ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(chunk)) => {
+                    Some(ChunkPos::new(chunk.chunk_x, chunk.chunk_z))
+                }
+                _ => None,
             })
-            .count()
+            .collect()
+    }
+
+    fn chunk_packets(receiver: &flume::Receiver<OutgoingPacket>, client: u32) -> usize {
+        chunk_positions(receiver, client).len()
     }
 
     #[test]
@@ -320,6 +334,70 @@ mod tests {
         app.update();
         assert_eq!(chunk_packets(&receiver, 2), 1);
         assert_eq!(app.world().resource::<ChunkIndex>().0.len(), 25);
+    }
+
+    #[test]
+    fn budgeted_drain_sends_every_chunk_exactly_once_nearest_first_without_recomputing() {
+        let (mut app, receiver) = test_app(ServerConfig {
+            view_distance: 3,
+            max_chunk_generations_per_tick: 0,
+            ..Default::default()
+        });
+        let entity = player(&mut app, 1);
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(ChunkSendBudget(5));
+        let expected = ChunkPos::new(0, 0).chunks_in_radius(3);
+
+        let mut received = Vec::new();
+        for tick in 1..=9 {
+            app.update();
+            let sent = chunk_positions(&receiver, 1);
+            assert_eq!(sent.len(), 5, "tick {tick}");
+            received.extend(sent);
+            let backlog = app.world().get::<ChunkStreamBacklog>(entity).unwrap();
+            assert_eq!(backlog.pending, expected[received.len()..]);
+        }
+        app.update();
+        received.extend(chunk_positions(&receiver, 1));
+        assert_eq!(received, expected);
+        assert!(app.world().get::<ChunkStreamBacklog>(entity).is_none());
+        app.update();
+        assert!(chunk_positions(&receiver, 1).is_empty());
+    }
+
+    #[test]
+    fn moving_mid_backlog_rebuilds_the_range_around_the_new_chunk() {
+        let (mut app, receiver) = test_app(ServerConfig {
+            view_distance: 1,
+            max_chunk_generations_per_tick: 0,
+            ..Default::default()
+        });
+        let entity = player(&mut app, 1);
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(ChunkSendBudget(4));
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 4);
+
+        app.world_mut().get_mut::<Position>(entity).unwrap().x = 160.0;
+        app.update();
+        let sent = chunk_positions(&receiver, 1);
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[0], ChunkPos::new(10, 0));
+        let pending = &app
+            .world()
+            .get::<ChunkStreamBacklog>(entity)
+            .unwrap()
+            .pending;
+        assert_eq!(pending.len(), 5);
+        assert!(
+            pending
+                .iter()
+                .all(|p| (p.x - 10).abs() <= 1 && p.z.abs() <= 1)
+        );
+        let loaded = &app.world().get::<LoadedChunks>(entity).unwrap().0;
+        assert!(loaded.iter().all(|p| (p.x - 10).abs() <= 1));
     }
 
     #[test]

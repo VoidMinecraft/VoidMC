@@ -137,26 +137,22 @@ The `update_previous_positions` system runs after broadcasting to sync `Previous
 Insert a `Teleport` on a player and the framework runs the whole handshake:
 
 ```rust
-commands.entity(player).insert(
-    Teleport::to(120.0, 70.0, -40.0)
-        .facing(90.0, 0.0)
-        .in_dimension(DimensionId::Nether),
-);
+commands.entity(player).insert(Teleport::to(120.0, 70.0, -40.0).facing(90.0, 0.0));
 ```
 
 While the component is present:
 
 1. `ServerControlledPosition` is inserted (client movement packets no longer
    update `Position`) and `Position` jumps to the destination so chunk
-   streaming starts there immediately. A dimension change updates
-   `PlayerDimension`, unloads every chunk and restreams.
+   streaming starts there immediately.
 2. A `ChunkSendBudget` (default `Teleport::DEFAULT_CHUNK_BUDGET` = 2 per tick)
    throttles the destination chunks; `.chunk_budget(n)` / `.unthrottled()`
    override it.
 3. Once every chunk within `preload_radius` (default 2) of the destination has
    been sent, a play `Ping` fences the stream; the matching `Pong` proves the
    client has processed them.
-4. `SynchronizePlayerPosition` is sent with a fresh `TeleportState` id.
+4. `SynchronizePlayerPosition` is sent with a fresh `TeleportState` id as soon
+   as that `Pong` arrives.
 5. `ConfirmTeleportation` clears the id; the `Teleport` is removed, control and
    the previous budget are restored and `PlayerTeleportEvent { outcome:
    Confirmed }` fires.
@@ -166,6 +162,15 @@ A client that never answers is released after `timeout_ticks` (default 600 =
 lands at the destination whenever it catches up. Removing the component
 yourself yields `TeleportOutcome::Cancelled`. If the player already carried
 `ServerControlledPosition` before the teleport (a vehicle seat, say) it is kept.
+A player who disconnects mid-teleport gets no `PlayerTeleportEvent` at all: the
+event is only ever delivered for a live entity.
+
+`.in_dimension(DimensionId::Nether)` is server-side only. It updates
+`PlayerDimension`, unloads every chunk and restreams the destination from that
+dimension's generator — the client's dimension environment (sky, fog, ambient
+light, world height) does **not** change because `void-protocol` has no
+`Respawn` packet yet. Use it for same-environment worlds (e.g. two overworld
+maps); a visible Nether/End switch has to wait for `Respawn`.
 
 The barrier advances in `Update` (`VoidSystems::TeleportBarrier`, after
 `CommandDrain`).

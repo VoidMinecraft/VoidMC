@@ -56,7 +56,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `EffectiveViewDistance(i32)` | Distance | The capped view distance used for chunk streaming |
 | `LoadedChunks(HashSet<ChunkPos>)` | Loaded set | Chunks currently sent to this player |
 | `ChunkSendBudget(usize)` | Per tick | Optional cap on chunk packets per tick (at least 1); absent means unlimited |
-| `ChunkStreamBacklog` | Marker | Set by `stream_chunks` while chunks in range remain unsent; the player is revisited even when stationary |
+| `ChunkStreamBacklog` | Unsent tail | Set by `stream_chunks` while chunks in range remain unsent; carries them nearest-first so a stationary player is drained without recomputing the range |
 
 ### Non-Player Entities
 
