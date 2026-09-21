@@ -143,18 +143,18 @@ fn send_passengers_on_shown(
     players.send(event.viewer, packet(id.0, passengers, &ids));
 }
 
-fn prune_passenger(
-    passenger: Entity,
-    mounts: &Query<&Mount>,
-    vehicles: &mut Query<&mut Passengers>,
+fn prune_despawned_passenger(
+    event: On<Despawn, MinecraftEntityId>,
+    mounts: Query<&Mount>,
+    mut vehicles: Query<&mut Passengers>,
 ) {
+    let passenger = event.entity;
     if let Some(mut list) = mounts
         .get(passenger)
         .ok()
         .and_then(|mount| vehicles.get_mut(mount.0).ok())
-        && list.0.contains(&passenger)
+        && list.remove(passenger)
     {
-        list.remove(passenger);
         return;
     }
     for mut passengers in vehicles.iter_mut() {
@@ -164,20 +164,16 @@ fn prune_passenger(
     }
 }
 
-fn prune_despawned_passenger(
-    event: On<Despawn, MinecraftEntityId>,
-    mounts: Query<&Mount>,
-    mut vehicles: Query<&mut Passengers>,
-) {
-    prune_passenger(event.entity, &mounts, &mut vehicles);
-}
-
 fn prune_hidden_passenger(
     event: On<Remove, SpawnedEntity>,
     mounts: Query<&Mount>,
     mut vehicles: Query<&mut Passengers>,
 ) {
-    prune_passenger(event.entity, &mounts, &mut vehicles);
+    if let Ok(mount) = mounts.get(event.entity)
+        && let Ok(mut list) = vehicles.get_mut(mount.0)
+    {
+        list.remove(event.entity);
+    }
 }
 
 #[cfg(test)]

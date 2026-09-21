@@ -1,5 +1,11 @@
 use bevy_app::{App, Plugin};
-use bevy_ecs::{entity::Entity, observer::On, system::Commands, world::World};
+use bevy_ecs::{
+    change_detection::DetectChangesMut,
+    entity::Entity,
+    observer::On,
+    system::Commands,
+    world::{EntityWorldMut, World},
+};
 use voidmc_protocol::serverbound::{
     ConfirmTeleportation, PlayerAbilities, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation,
 };
@@ -45,31 +51,41 @@ fn handle_confirm_teleportation(
     }
 }
 
-/// A riding client keeps sending its position (`y = -999`); like vanilla,
-/// only the rotation of a passenger is trusted.
 fn apply_position(world: &World, commands: &mut Commands, entity: Entity, new: Position) {
     if world.get::<Mount>(entity).is_some() {
         return;
     }
-    let old_position = world.get::<Position>(entity).copied();
-    commands.entity(entity).insert(new);
-    if let Some(old) = old_position {
-        commands.trigger(PlayerMoveEvent {
-            entity,
-            old_x: old.x,
-            old_y: old.y,
-            old_z: old.z,
-            new_x: new.x,
-            new_y: new.y,
-            new_z: new.z,
-        });
-    }
+    commands.queue(move |world: &mut World| {
+        let Ok(mut entity_mut) = world.get_entity_mut(entity) else {
+            return;
+        };
+        let old = entity_mut.get::<Position>().copied();
+        entity_mut.insert(new);
+        if let Some(old) = old {
+            world.trigger(PlayerMoveEvent {
+                entity,
+                old_x: old.x,
+                old_y: old.y,
+                old_z: old.z,
+                new_x: new.x,
+                new_y: new.y,
+                new_z: new.z,
+            });
+        }
+    });
 }
 
-fn apply_rotation(world: &World, commands: &mut Commands, entity: Entity, new: Rotation) {
-    if world.get::<Rotation>(entity) != Some(&new) {
-        commands.entity(entity).insert(new);
-    }
+fn apply_rotation(commands: &mut Commands, entity: Entity, new: Rotation) {
+    commands
+        .entity(entity)
+        .queue(move |mut e: EntityWorldMut| match e.get_mut::<Rotation>() {
+            Some(mut r) => {
+                r.set_if_neq(new);
+            }
+            None => {
+                e.insert(new);
+            }
+        });
     commands.trigger(PlayerRotateEvent {
         entity,
         yaw: new.yaw,
@@ -110,7 +126,6 @@ fn handle_set_player_pos_and_rot(
         },
     );
     apply_rotation(
-        world,
         &mut commands,
         event.entity,
         Rotation {
@@ -120,13 +135,8 @@ fn handle_set_player_pos_and_rot(
     );
 }
 
-fn handle_set_player_rotation(
-    event: On<PacketEvent<SetPlayerRotation>>,
-    world: &World,
-    mut commands: Commands,
-) {
+fn handle_set_player_rotation(event: On<PacketEvent<SetPlayerRotation>>, mut commands: Commands) {
     apply_rotation(
-        world,
         &mut commands,
         event.entity,
         Rotation {
@@ -155,6 +165,9 @@ mod tests {
     struct Moves(u32);
 
     #[derive(Resource, Default)]
+    struct LastMove(Option<(f64, f64)>);
+
+    #[derive(Resource, Default)]
     struct Rotates(u32);
 
     #[derive(Resource, Default)]
@@ -172,9 +185,17 @@ mod tests {
         app.init_resource::<Moves>()
             .init_resource::<Rotates>()
             .init_resource::<RotationWrites>()
+            .init_resource::<LastMove>()
             .add_plugins(MovementPlugin)
             .add_systems(bevy_app::PostUpdate, count_rotation_writes)
-            .add_observer(|_: On<PlayerMoveEvent>, mut moves: ResMut<Moves>| moves.0 += 1)
+            .add_observer(
+                |event: On<PlayerMoveEvent>,
+                 mut moves: ResMut<Moves>,
+                 mut last: ResMut<LastMove>| {
+                    moves.0 += 1;
+                    last.0 = Some((event.old_x, event.new_x));
+                },
+            )
             .add_observer(|_: On<PlayerRotateEvent>, mut rotates: ResMut<Rotates>| rotates.0 += 1);
         app
     }
@@ -244,5 +265,60 @@ mod tests {
         pos_and_rot(&mut app, walker, 64.0, 90.0);
         assert_eq!(app.world().resource::<RotationWrites>().0, 2);
         assert_eq!(app.world().resource::<Rotates>().0, 2);
+    }
+
+    #[test]
+    fn two_rotation_packets_in_one_tick_keep_the_last() {
+        let mut app = test_app();
+        let walker = app
+            .world_mut()
+            .spawn((Position::default(), Rotation::default()))
+            .id();
+        app.update();
+
+        for yaw in [90.0, 0.0] {
+            app.world_mut().trigger(PacketEvent {
+                client_id: 1,
+                entity: walker,
+                packet: SetPlayerRotation {
+                    yaw,
+                    pitch: 0.0,
+                    flags: 0,
+                },
+            });
+        }
+        app.update();
+
+        let rot = app.world().get::<Rotation>(walker).unwrap();
+        assert_eq!((rot.yaw, rot.pitch), (0.0, 0.0));
+        assert_eq!(app.world().resource::<Rotates>().0, 2);
+    }
+
+    #[test]
+    fn two_move_packets_in_one_tick_report_the_real_previous_position() {
+        let mut app = test_app();
+        let walker = app
+            .world_mut()
+            .spawn((Position::default(), Rotation::default()))
+            .id();
+        app.update();
+
+        for x in [1.0, 2.0] {
+            app.world_mut().trigger(PacketEvent {
+                client_id: 1,
+                entity: walker,
+                packet: SetPlayerPos {
+                    x,
+                    y: 64.0,
+                    z: 0.0,
+                    flags: 0,
+                },
+            });
+        }
+        app.update();
+
+        assert_eq!(app.world().resource::<Moves>().0, 2);
+        assert_eq!(app.world().resource::<LastMove>().0, Some((1.0, 2.0)));
+        assert_eq!(app.world().get::<Position>(walker).unwrap().x, 2.0);
     }
 }
