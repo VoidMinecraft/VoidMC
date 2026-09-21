@@ -1,6 +1,7 @@
 use bevy_ecs::prelude::*;
 use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 
+use crate::plugins::teleport::TeleportOutcome;
 use crate::world::DimensionId;
 
 // Semantic game events — triggered via world.trigger() and handled by observers
@@ -171,6 +172,13 @@ pub struct PlayerSwingArmEvent {
 pub struct PlayerChangeSlotEvent {
     pub entity: Entity,
     pub slot: i16,
+}
+
+/// Fired when a [`crate::Teleport`] leaves the player, whatever the reason.
+#[derive(Event, Clone, Copy, Debug)]
+pub struct PlayerTeleportEvent {
+    pub entity: Entity,
+    pub outcome: TeleportOutcome,
 }
 
 #[derive(Event)]
