@@ -660,12 +660,7 @@ mod tests {
     #[test]
     fn oversized_custom_name_round_trips_below_the_nbt_limit() {
         let text = "😀".repeat(11000);
-        let mut bytes = Vec::new();
-        text_component(&text).encode(&mut bytes);
-        let (len, decoded) = crate::messages::decode_wire_text(&bytes);
-        assert!(len <= u16::MAX as usize);
-        assert!(decoded.len() < text.len());
-        assert!(text.starts_with(&decoded));
+        crate::messages::assert_guarded(&text_component(&text), &text);
     }
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {

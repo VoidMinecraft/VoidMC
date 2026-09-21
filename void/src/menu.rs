@@ -598,19 +598,13 @@ impl<'w> WorldMenus<'w> {
 
 #[cfg(test)]
 mod tests {
-    use voidmc_codec::Encode;
 
     use super::*;
 
     #[test]
     fn oversized_title_round_trips_below_the_nbt_limit() {
         let text = "😀".repeat(11000);
-        let mut bytes = Vec::new();
-        Menu::hopper(text.clone()).title_nbt().encode(&mut bytes);
-        let (len, decoded) = crate::messages::decode_wire_text(&bytes);
-        assert!(len <= u16::MAX as usize);
-        assert!(decoded.len() < text.len());
-        assert!(text.starts_with(&decoded));
+        crate::messages::assert_guarded(&Menu::hopper(text.clone()).title_nbt(), &text);
     }
 
     #[test]
