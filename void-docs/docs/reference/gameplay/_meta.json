@@ -21,6 +21,11 @@
   },
   {
     "type": "file",
+    "name": "sounds",
+    "label": "Sounds"
+  },
+  {
+    "type": "file",
     "name": "world",
     "label": "World & Chunks"
   },
