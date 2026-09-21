@@ -3,8 +3,8 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    ClientSettings, CurrentChunkPos, EffectiveViewDistance, LoadedChunks, PlayerDimension,
-    PlayerReady, Position,
+    ChunkSendBudget, ChunkStreamBacklog, ClientSettings, CurrentChunkPos, EffectiveViewDistance,
+    LoadedChunks, PlayerDimension, PlayerReady, Position,
 };
 use crate::config::ServerConfigResource;
 use crate::players::Players;
@@ -15,6 +15,10 @@ use crate::world::{
 };
 
 /// Streams chunks to players as they move through the world.
+///
+/// A player is revisited while stationary only when marked
+/// [`ChunkStreamBacklog`], which this system sets whenever a pass ends with
+/// chunks still unsent (per-player [`ChunkSendBudget`] or the generation cap).
 ///
 /// `LoadedChunks` is both mutated here and read by `Players`, hence the
 /// `ParamSet` and the outbox.
@@ -42,6 +46,8 @@ pub fn stream_chunks(
                 &mut LoadedChunks,
                 &PlayerDimension,
                 Option<&ClientSettings>,
+                Option<&ChunkSendBudget>,
+                Has<ChunkStreamBacklog>,
             ),
             With<PlayerReady>,
         >,
@@ -69,6 +75,8 @@ pub fn stream_chunks(
         mut loaded_chunks,
         dimension,
         settings,
+        send_budget,
+        has_backlog,
     ) in viewers.iter_mut()
     {
         let new_chunk = ChunkPos::from_block(position.x, position.z);
@@ -78,10 +86,9 @@ pub fn stream_chunks(
             .unwrap_or(config.view_distance)
             .min(config.view_distance);
 
-        // Skip if player hasn't moved to a new chunk AND view distance is unchanged
         let chunk_changed = new_chunk != current_chunk.0;
         let vd_changed = view_distance != effective_vd.0;
-        if !chunk_changed && !vd_changed {
+        if !chunk_changed && !vd_changed && !has_backlog {
             continue;
         }
 
@@ -127,9 +134,16 @@ pub fn stream_chunks(
 
         // Load new chunks in range (nearest-first order preserved)
         let dim_id = dimension.0;
+        let budget = send_budget.map_or(usize::MAX, |b| b.0.max(1));
+        let mut sent = 0usize;
+        let mut backlog = false;
         for pos in &desired_sorted {
             if loaded_chunks.0.contains(pos) {
                 continue;
+            }
+            if sent >= budget {
+                backlog = true;
+                break;
             }
 
             let key = (dim_id, *pos);
@@ -138,6 +152,7 @@ pub fn stream_chunks(
             if !chunk_index.0.contains_key(&key) {
                 if max_chunk_generations > 0 && generated_this_tick >= max_chunk_generations {
                     throttled = true;
+                    backlog = true;
                     continue;
                 }
 
@@ -154,6 +169,7 @@ pub fn stream_chunks(
 
                 outbox.push((player, packet.into()));
                 loaded_chunks.0.insert(*pos);
+                sent += 1;
                 continue;
             }
 
@@ -163,8 +179,17 @@ pub fn stream_chunks(
                     let packet = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
                     outbox.push((player, packet.into()));
                     loaded_chunks.0.insert(*pos);
+                    sent += 1;
+                } else {
+                    backlog = true;
                 }
             }
+        }
+
+        if backlog && !has_backlog {
+            commands.entity(player).insert(ChunkStreamBacklog);
+        } else if !backlog && has_backlog {
+            commands.entity(player).remove::<ChunkStreamBacklog>();
         }
     }
 
@@ -179,5 +204,154 @@ pub fn stream_chunks(
             max_chunk_generations_per_tick = max_chunk_generations,
             "Chunk generation throttled"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_app::{App, PostUpdate};
+    use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, ClientboundPacket, ManualPlayPacket};
+
+    use super::*;
+    use crate::WorldGenerator;
+    use crate::components::ClientId;
+    use crate::config::ServerConfig;
+    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::world::DimensionId;
+
+    struct Empty;
+
+    impl WorldGenerator for Empty {
+        fn generate_chunk(&self, pos: &ChunkPos) -> Chunk {
+            ChunkBuilder::new(pos.x, pos.z).build()
+        }
+
+        fn surface_height_at(&self, _: i32, _: i32) -> i32 {
+            64
+        }
+    }
+
+    fn test_app(config: ServerConfig) -> (App, flume::Receiver<OutgoingPacket>) {
+        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        let mut app = App::new();
+        app.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        })
+        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .insert_resource(ServerConfigResource::from(&config))
+        .insert_resource(WorldGen(Box::new(Empty)))
+        .init_resource::<ChunkIndex>()
+        .add_systems(PostUpdate, stream_chunks);
+        (app, outgoing_rx)
+    }
+
+    fn player(app: &mut App, id: u32) -> Entity {
+        app.world_mut()
+            .spawn((
+                ClientId(id),
+                Position {
+                    x: 0.0,
+                    y: 64.0,
+                    z: 0.0,
+                },
+                CurrentChunkPos(ChunkPos::new(0, 0)),
+                EffectiveViewDistance(0),
+                LoadedChunks(Default::default()),
+                PlayerDimension(DimensionId::Overworld),
+                PlayerReady,
+            ))
+            .id()
+    }
+
+    fn chunk_packets(receiver: &flume::Receiver<OutgoingPacket>, client: u32) -> usize {
+        receiver
+            .drain()
+            .filter(|p| {
+                p.client_id == client
+                    && matches!(
+                        p.packet,
+                        ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(_))
+                    )
+            })
+            .count()
+    }
+
+    #[test]
+    fn budget_throttles_generated_and_cached_chunks_until_the_range_is_complete() {
+        let (mut app, receiver) = test_app(ServerConfig {
+            view_distance: 2,
+            max_chunk_generations_per_tick: 0,
+            ..Default::default()
+        });
+        let throttled = player(&mut app, 1);
+        app.world_mut()
+            .entity_mut(throttled)
+            .insert(ChunkSendBudget(2));
+
+        for tick in 1..=12 {
+            app.update();
+            assert_eq!(chunk_packets(&receiver, 1), 2, "tick {tick}");
+            assert!(app.world().get::<ChunkStreamBacklog>(throttled).is_some());
+        }
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 1);
+        assert_eq!(
+            app.world().get::<LoadedChunks>(throttled).unwrap().0.len(),
+            25
+        );
+        assert!(app.world().get::<ChunkStreamBacklog>(throttled).is_none());
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 0);
+
+        let cached = player(&mut app, 2);
+        app.world_mut()
+            .entity_mut(cached)
+            .insert(ChunkSendBudget(4));
+        for _ in 0..6 {
+            app.update();
+            assert_eq!(chunk_packets(&receiver, 2), 4);
+        }
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 2), 1);
+        assert_eq!(app.world().resource::<ChunkIndex>().0.len(), 25);
+    }
+
+    #[test]
+    fn players_without_a_budget_receive_the_whole_range_at_once() {
+        let (mut app, receiver) = test_app(ServerConfig {
+            view_distance: 3,
+            max_chunk_generations_per_tick: 0,
+            ..Default::default()
+        });
+        let free = player(&mut app, 1);
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 49);
+        assert!(app.world().get::<ChunkStreamBacklog>(free).is_none());
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 0);
+    }
+
+    #[test]
+    fn generation_cap_backlog_resumes_while_stationary() {
+        let (mut app, receiver) = test_app(ServerConfig {
+            view_distance: 1,
+            max_chunk_generations_per_tick: 4,
+            ..Default::default()
+        });
+        let entity = player(&mut app, 1);
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 4);
+        assert!(app.world().get::<ChunkStreamBacklog>(entity).is_some());
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 4);
+        app.update();
+        assert_eq!(chunk_packets(&receiver, 1), 1);
+        assert!(app.world().get::<ChunkStreamBacklog>(entity).is_none());
     }
 }

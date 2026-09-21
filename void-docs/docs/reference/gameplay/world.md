@@ -68,7 +68,7 @@ fn my_system(chunk_index: Res<ChunkIndex>, chunks: Query<&ChunkData>) {
 
 The `stream_chunks` system (runs in `PostUpdate`) manages chunk loading and unloading for each player:
 
-1. **Check movement**: Skip if the player hasn't moved to a new chunk column and view distance hasn't changed.
+1. **Check movement**: Skip if the player hasn't moved to a new chunk column, view distance hasn't changed and they carry no `ChunkStreamBacklog`.
 2. **Cap view distance**: `min(client_view_distance, server_view_distance)` — stored in `EffectiveViewDistance`.
 3. **Send SetCenterChunk**: When the player's chunk position changes, notify the client.
 4. **Unload out-of-range**: Send `UnloadChunk` for chunks no longer within view distance, remove from `LoadedChunks`.
@@ -76,6 +76,7 @@ The `stream_chunks` system (runs in `PostUpdate`) manages chunk loading and unlo
    - If the chunk entity exists in `ChunkIndex`, send its data.
    - If not, generate it on-demand using the `WorldGenerator`, spawn a chunk entity, and send the data.
    - New chunks are sent in nearest-first order (from `chunks_in_radius` sorting).
+6. **Throttle**: A player with a `ChunkSendBudget(n)` receives at most `n` chunk packets per tick (cached ones included). When the budget, the `max_chunk_generations_per_tick` cap or a chunk still pending spawn leaves chunks unsent, the player is marked `ChunkStreamBacklog` and the pass resumes next tick; the marker is removed once the range is complete. Players without a budget receive their whole range at once.
 
 ## Spawn Area Pre-Generation
 

@@ -38,6 +38,9 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | Component | Fields | Description |
 |---|---|---|
 | `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms |
+| `ServerControlledPosition` | Marker | Server owns the position; client movement packets update `Rotation` only |
+| `Teleport { x, y, z, .. }` | Destination + options | Teleport with loading barrier; removed once the client confirms, times out or it is cancelled (see [Players](../gameplay/players.md#teleportation)) |
+| `PlayerAbilities { flying, allow_flight, .. }` | Flags + speeds | Opt-in; changes are sent as Player Abilities packets |
 
 ### Keep-Alive
 
@@ -52,6 +55,8 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `CurrentChunkPos(ChunkPos)` | Chunk column | The chunk the player is currently standing in |
 | `EffectiveViewDistance(i32)` | Distance | The capped view distance used for chunk streaming |
 | `LoadedChunks(HashSet<ChunkPos>)` | Loaded set | Chunks currently sent to this player |
+| `ChunkSendBudget(usize)` | Per tick | Optional cap on chunk packets per tick (at least 1); absent means unlimited |
+| `ChunkStreamBacklog` | Marker | Set by `stream_chunks` while chunks in range remain unsent; the player is revisited even when stationary |
 
 ### Non-Player Entities
 

@@ -40,6 +40,10 @@ pub enum VoidSystems {
     InventorySync,
     /// `PostUpdate`: boss bar add/update/remove packets.
     BossBarSync,
+    /// `PostUpdate`: Player Abilities packets for changed `PlayerAbilities`.
+    AbilitiesSync,
+    /// `Update`, after `CommandDrain`: advances in-flight [`crate::Teleport`]s.
+    TeleportBarrier,
     /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
     StatusSnapshot,
     /// `PostUpdate`: TPS tracking (only with `metrics_debug`).

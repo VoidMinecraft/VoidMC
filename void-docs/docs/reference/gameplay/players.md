@@ -132,7 +132,54 @@ The `update_previous_positions` system runs after broadcasting to sync `Previous
 
 ## Teleportation
 
-Server-initiated teleportation (e.g., `/tp` command) works through:
+### `Teleport` (with loading barrier)
+
+Insert a `Teleport` on a player and the framework runs the whole handshake:
+
+```rust
+commands.entity(player).insert(
+    Teleport::to(120.0, 70.0, -40.0)
+        .facing(90.0, 0.0)
+        .in_dimension(DimensionId::Nether),
+);
+```
+
+While the component is present:
+
+1. `ServerControlledPosition` is inserted (client movement packets no longer
+   update `Position`) and `Position` jumps to the destination so chunk
+   streaming starts there immediately. A dimension change updates
+   `PlayerDimension`, unloads every chunk and restreams.
+2. A `ChunkSendBudget` (default `Teleport::DEFAULT_CHUNK_BUDGET` = 2 per tick)
+   throttles the destination chunks; `.chunk_budget(n)` / `.unthrottled()`
+   override it.
+3. Once every chunk within `preload_radius` (default 2) of the destination has
+   been sent, a play `Ping` fences the stream; the matching `Pong` proves the
+   client has processed them.
+4. `SynchronizePlayerPosition` is sent with a fresh `TeleportState` id.
+5. `ConfirmTeleportation` clears the id; the `Teleport` is removed, control and
+   the previous budget are restored and `PlayerTeleportEvent { outcome:
+   Confirmed }` fires.
+
+A client that never answers is released after `timeout_ticks` (default 600 =
+30 s) with `TeleportOutcome::TimedOut`; the position sync is still sent so it
+lands at the destination whenever it catches up. Removing the component
+yourself yields `TeleportOutcome::Cancelled`. If the player already carried
+`ServerControlledPosition` before the teleport (a vehicle seat, say) it is kept.
+
+The barrier advances in `Update` (`VoidSystems::TeleportBarrier`, after
+`CommandDrain`).
+
+### `ServerControlledPosition`
+
+A marker: while present the server owns the player's position. `SetPlayerPos`
+is ignored and `SetPlayerPosAndRot` updates `Rotation` only (the
+`PlayerRotateEvent` still fires, `PlayerMoveEvent` does not). Whoever inserts
+it must keep the client in sync — `Teleport` does this for you.
+
+### Raw handshake
+
+The `/tp` command shows the underlying steps:
 
 1. **Update `TeleportState`**: Increment `next_id`, set `pending_id` to the new ID
 2. **Update `Position`**: Set the entity's position to target coordinates
@@ -140,6 +187,30 @@ Server-initiated teleportation (e.g., `/tp` command) works through:
 4. **Client confirms**: `ConfirmTeleportation` packet clears `pending_id`
 
 While `pending_id` is `Some`, the server knows a teleportation is in-flight and the client has not yet acknowledged it.
+
+## Abilities and Flight
+
+`PlayerAbilities` is an opt-in component; insert or mutate it and the client
+receives the matching Player Abilities packet in `PostUpdate`
+(`VoidSystems::AbilitiesSync`):
+
+```rust
+commands
+    .entity(player)
+    .insert(PlayerAbilities::new().flying(true).flying_speed(0.1));
+```
+
+| Builder | Effect |
+|---|---|
+| `allow_flight(bool)` | Player may toggle flight; `false` also stops flying |
+| `flying(bool)` | Start/stop flying; `true` also allows flight |
+| `invulnerable(bool)`, `instant_build(bool)` | The remaining protocol flags |
+| `flying_speed(f32)`, `walking_speed(f32)` | Defaults `0.05` and `0.1` |
+
+When the client toggles flight itself, `flying` is updated in place without a
+round trip. If flight is not allowed the component is left with
+`flying = false` and re-sent, which puts the client back on the ground.
+`PlayerToggleFlyEvent` fires either way.
 
 ## Chat Messages
 
