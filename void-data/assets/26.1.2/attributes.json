@@ -1,0 +1,212 @@
+{
+  "minecraft:armor": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 30.0,
+    "syncable": true
+  },
+  "minecraft:armor_toughness": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 20.0,
+    "syncable": true
+  },
+  "minecraft:attack_damage": {
+    "default": 2.0,
+    "min": 0.0,
+    "max": 2048.0,
+    "syncable": false
+  },
+  "minecraft:attack_knockback": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 5.0,
+    "syncable": false
+  },
+  "minecraft:attack_speed": {
+    "default": 4.0,
+    "min": 0.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:block_break_speed": {
+    "default": 1.0,
+    "min": 0.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:block_interaction_range": {
+    "default": 4.5,
+    "min": 0.0,
+    "max": 64.0,
+    "syncable": true
+  },
+  "minecraft:burning_time": {
+    "default": 1.0,
+    "min": 0.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:camera_distance": {
+    "default": 4.0,
+    "min": 0.0,
+    "max": 32.0,
+    "syncable": true
+  },
+  "minecraft:explosion_knockback_resistance": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1.0,
+    "syncable": true
+  },
+  "minecraft:entity_interaction_range": {
+    "default": 3.0,
+    "min": 0.0,
+    "max": 64.0,
+    "syncable": true
+  },
+  "minecraft:fall_damage_multiplier": {
+    "default": 1.0,
+    "min": 0.0,
+    "max": 100.0,
+    "syncable": true
+  },
+  "minecraft:flying_speed": {
+    "default": 0.4,
+    "min": 0.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:follow_range": {
+    "default": 32.0,
+    "min": 0.0,
+    "max": 2048.0,
+    "syncable": false
+  },
+  "minecraft:gravity": {
+    "default": 0.08,
+    "min": -1.0,
+    "max": 1.0,
+    "syncable": true
+  },
+  "minecraft:jump_strength": {
+    "default": 0.42,
+    "min": 0.0,
+    "max": 32.0,
+    "syncable": true
+  },
+  "minecraft:knockback_resistance": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1.0,
+    "syncable": false
+  },
+  "minecraft:luck": {
+    "default": 0.0,
+    "min": -1024.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:max_absorption": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 2048.0,
+    "syncable": true
+  },
+  "minecraft:max_health": {
+    "default": 20.0,
+    "min": 1.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:mining_efficiency": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:movement_efficiency": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1.0,
+    "syncable": true
+  },
+  "minecraft:movement_speed": {
+    "default": 0.7,
+    "min": 0.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:oxygen_bonus": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:safe_fall_distance": {
+    "default": 3.0,
+    "min": -1024.0,
+    "max": 1024.0,
+    "syncable": true
+  },
+  "minecraft:scale": {
+    "default": 1.0,
+    "min": 0.0625,
+    "max": 16.0,
+    "syncable": true
+  },
+  "minecraft:sneaking_speed": {
+    "default": 0.3,
+    "min": 0.0,
+    "max": 1.0,
+    "syncable": true
+  },
+  "minecraft:spawn_reinforcements": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1.0,
+    "syncable": false
+  },
+  "minecraft:step_height": {
+    "default": 0.6,
+    "min": 0.0,
+    "max": 10.0,
+    "syncable": true
+  },
+  "minecraft:submerged_mining_speed": {
+    "default": 0.2,
+    "min": 0.0,
+    "max": 20.0,
+    "syncable": true
+  },
+  "minecraft:sweeping_damage_ratio": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1.0,
+    "syncable": true
+  },
+  "minecraft:tempt_range": {
+    "default": 10.0,
+    "min": 0.0,
+    "max": 2048.0,
+    "syncable": false
+  },
+  "minecraft:water_movement_efficiency": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 1.0,
+    "syncable": true
+  },
+  "minecraft:waypoint_transmit_range": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 60000000.0,
+    "syncable": false
+  },
+  "minecraft:waypoint_receive_range": {
+    "default": 0.0,
+    "min": 0.0,
+    "max": 60000000.0,
+    "syncable": false
+  }
+}

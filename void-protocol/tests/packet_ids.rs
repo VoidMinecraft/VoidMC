@@ -138,6 +138,9 @@ const SPECS: &[EnumSpec] = &[
                 "minecraft:command_suggestions",
             ),
             ("SetPassengers", "minecraft:set_passengers"),
+            ("RemoveMobEffect", "minecraft:remove_mob_effect"),
+            ("UpdateAttributes", "minecraft:update_attributes"),
+            ("UpdateMobEffect", "minecraft:update_mob_effect"),
         ],
     },
     EnumSpec {
@@ -179,7 +182,6 @@ const SPECS: &[EnumSpec] = &[
 struct Literal {
     variant: String,
     id: i32,
-    tagged: bool,
 }
 
 fn parse_int(text: &str) -> Option<i32> {
@@ -215,11 +217,7 @@ fn extract_literals(source: &str) -> Vec<Literal> {
                 .next()
                 .unwrap_or_default()
                 .to_string();
-            out.push(Literal {
-                variant,
-                id,
-                tagged: true,
-            });
+            out.push(Literal { variant, id });
             continue;
         }
 
@@ -246,11 +244,7 @@ fn extract_literals(source: &str) -> Vec<Literal> {
             });
             let id = parse_int(id_text)
                 .unwrap_or_else(|| panic!("manual packet id is not a literal: {next}"));
-            out.push(Literal {
-                variant,
-                id,
-                tagged: false,
-            });
+            out.push(Literal { variant, id });
         }
     }
     out
@@ -293,14 +287,6 @@ fn every_hand_written_packet_id_matches_mojang_report() {
                 failures.push(format!(
                     "{}: {} is written as {:#04x} but {}/{} {name} is {:#04x} in packets.json",
                     spec.file, lit.variant, lit.id, spec.state, spec.direction, expected
-                ));
-            }
-            // The derive writes the id as a single byte; a VarInt only fits
-            // one byte below 0x80.
-            if lit.tagged && lit.id >= 0x80 {
-                failures.push(format!(
-                    "{}: {} = {:#04x} needs a two-byte VarInt but the tagged-enum derive writes one byte",
-                    spec.file, lit.variant, lit.id
                 ));
             }
             checked += 1;

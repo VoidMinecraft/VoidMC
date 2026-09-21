@@ -1,0 +1,164 @@
+{
+  "minecraft:speed": {
+    "category": "beneficial",
+    "color": 3402751
+  },
+  "minecraft:slowness": {
+    "category": "harmful",
+    "color": 9154528
+  },
+  "minecraft:haste": {
+    "category": "beneficial",
+    "color": 14270531
+  },
+  "minecraft:mining_fatigue": {
+    "category": "harmful",
+    "color": 4866583
+  },
+  "minecraft:strength": {
+    "category": "beneficial",
+    "color": 16762624
+  },
+  "minecraft:instant_health": {
+    "category": "beneficial",
+    "color": 16262179
+  },
+  "minecraft:instant_damage": {
+    "category": "harmful",
+    "color": 11101546
+  },
+  "minecraft:jump_boost": {
+    "category": "beneficial",
+    "color": 16646020
+  },
+  "minecraft:nausea": {
+    "category": "harmful",
+    "color": 5578058
+  },
+  "minecraft:regeneration": {
+    "category": "beneficial",
+    "color": 13458603
+  },
+  "minecraft:resistance": {
+    "category": "beneficial",
+    "color": 9520880
+  },
+  "minecraft:fire_resistance": {
+    "category": "beneficial",
+    "color": 16750848
+  },
+  "minecraft:water_breathing": {
+    "category": "beneficial",
+    "color": 10017472
+  },
+  "minecraft:invisibility": {
+    "category": "beneficial",
+    "color": 16185078
+  },
+  "minecraft:blindness": {
+    "category": "harmful",
+    "color": 2039587
+  },
+  "minecraft:night_vision": {
+    "category": "beneficial",
+    "color": 12779366
+  },
+  "minecraft:hunger": {
+    "category": "harmful",
+    "color": 5797459
+  },
+  "minecraft:weakness": {
+    "category": "harmful",
+    "color": 4738376
+  },
+  "minecraft:poison": {
+    "category": "harmful",
+    "color": 8889187
+  },
+  "minecraft:wither": {
+    "category": "harmful",
+    "color": 7561558
+  },
+  "minecraft:health_boost": {
+    "category": "beneficial",
+    "color": 16284963
+  },
+  "minecraft:absorption": {
+    "category": "beneficial",
+    "color": 2445989
+  },
+  "minecraft:saturation": {
+    "category": "beneficial",
+    "color": 16262179
+  },
+  "minecraft:glowing": {
+    "category": "neutral",
+    "color": 9740385
+  },
+  "minecraft:levitation": {
+    "category": "harmful",
+    "color": 13565951
+  },
+  "minecraft:luck": {
+    "category": "beneficial",
+    "color": 5882118
+  },
+  "minecraft:unluck": {
+    "category": "harmful",
+    "color": 12624973
+  },
+  "minecraft:slow_falling": {
+    "category": "beneficial",
+    "color": 15978425
+  },
+  "minecraft:conduit_power": {
+    "category": "beneficial",
+    "color": 1950417
+  },
+  "minecraft:dolphins_grace": {
+    "category": "beneficial",
+    "color": 8954814
+  },
+  "minecraft:bad_omen": {
+    "category": "neutral",
+    "color": 745784
+  },
+  "minecraft:hero_of_the_village": {
+    "category": "beneficial",
+    "color": 4521796
+  },
+  "minecraft:darkness": {
+    "category": "harmful",
+    "color": 2696993
+  },
+  "minecraft:trial_omen": {
+    "category": "neutral",
+    "color": 1484454,
+    "particle": "minecraft:trial_omen"
+  },
+  "minecraft:raid_omen": {
+    "category": "neutral",
+    "color": 14565464,
+    "particle": "minecraft:raid_omen"
+  },
+  "minecraft:wind_charged": {
+    "category": "harmful",
+    "color": 12438015
+  },
+  "minecraft:weaving": {
+    "category": "harmful",
+    "color": 7891290
+  },
+  "minecraft:oozing": {
+    "category": "harmful",
+    "color": 10092451
+  },
+  "minecraft:infested": {
+    "category": "harmful",
+    "color": 9214860
+  },
+  "minecraft:breath_of_the_nautilus": {
+    "category": "beneficial",
+    "color": 65518
+  }
+}

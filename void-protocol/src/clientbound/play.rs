@@ -17,6 +17,7 @@ mod ping;
 mod player_info_remove;
 mod player_info_update;
 mod remove_entities;
+mod remove_mob_effect;
 mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
@@ -32,9 +33,11 @@ mod synchronize_player_position;
 mod system_chat;
 mod teleport_entity;
 mod unload_chunk;
+mod update_attributes;
 mod update_entity_position;
 mod update_entity_position_and_rotation;
 mod update_entity_rotation;
+mod update_mob_effect;
 
 pub use block_changed_ack::*;
 pub use block_entity_data::*;
@@ -57,6 +60,7 @@ pub use ping::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
 pub use remove_entities::*;
+pub use remove_mob_effect::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
@@ -72,9 +76,11 @@ pub use synchronize_player_position::*;
 pub use system_chat::*;
 pub use teleport_entity::*;
 pub use unload_chunk::*;
+pub use update_attributes::*;
 pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
 pub use update_entity_rotation::*;
+pub use update_mob_effect::*;
 use voidmc_codec::{Decode, Encode};
 
 #[derive(Debug, Clone, Encode, Decode)]
@@ -146,6 +152,12 @@ pub enum PlayPacket {
     SystemChat(SystemChat),
     #[codec(packet_id = 0x7D)]
     TeleportEntity(TeleportEntity),
+    #[codec(packet_id = 0x4E)]
+    RemoveMobEffect(RemoveMobEffect),
+    #[codec(packet_id = 0x83)]
+    UpdateAttributes(UpdateAttributes),
+    #[codec(packet_id = 0x84)]
+    UpdateMobEffect(UpdateMobEffect),
 }
 
 /// Packets with manual Encode impls that can't be in the tagged enum.

@@ -116,7 +116,7 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                         let variant_attrs = parse_variant_attrs(&v.attrs)?;
 
                         let packet_id = match variant_attrs.packet_id {
-                            Some(id) => id,
+                            Some(id) => id as i32,
                             None => {
                                 return Err(Error::new_spanned(
                                 v,
@@ -147,10 +147,10 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                 let expanded = quote! {
                     impl voidmc_codec::Decode for #name {
                         fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, voidmc_codec::DecodeError> {
-                            let packet_id = decoder.decode::<u8>()?;
+                            let packet_id = decoder.decode::<voidmc_codec::VarI32>()?.0;
                             Ok(match packet_id {
                                 #(#decode_variants),*
-                                _ => return Err(voidmc_codec::DecodeError::InvalidPacketId(Some(packet_id))),
+                                _ => return Err(voidmc_codec::DecodeError::InvalidPacketId(u8::try_from(packet_id).ok())),
                             })
                         }
                     }

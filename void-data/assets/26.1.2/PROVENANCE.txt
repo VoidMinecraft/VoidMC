@@ -32,6 +32,13 @@ Notes:
     net/minecraft/world/level/block/entity/BlockEntityType.java by
     scripts/extract_block_entity_hosts.py. void-data/build.rs turns it into
     block-state ranges; a block name missing from blocks.json fails the build.
+  - mob_effects.json (category, particle colour, custom particle) and
+    attributes.json (default, range, client-sync flag) are extracted from the
+    `register(...)` tables of Paper 26.1.2's world/effect/MobEffects.java and
+    world/entity/ai/attributes/Attributes.java by scripts/extract_mob_effects.py
+    and scripts/extract_attributes.py. Both feed the generated `Effect` and
+    `EntityAttribute` enums; an entry missing from registries.json fails the
+    build.
   - Re-run scripts/extract.sh once prismarine publishes 26.1.2.
   - The `Minecraft version:` line must match the directory name and
     version.json's `id`.
