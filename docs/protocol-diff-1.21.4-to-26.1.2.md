@@ -16,9 +16,9 @@
 | Marketing | Protocol | Notes |
 |-----------|----------|-------|
 | 1.21.4 | 769 | current target of `void/` |
-| 26.1.2 | 773 | new target |
+| 26.1.2 | 775 | new target (`SharedConstants.RELEASE_NETWORK_PROTOCOL_VERSION`; earlier drafts of this doc said 773) |
 
-Status response must advertise `protocol_version = 773`, `version_name = "26.1.2"`.
+Status response must advertise `protocol_version = 775`, `version_name = "26.1.2"`.
 
 ## Phase summary
 
@@ -251,7 +251,7 @@ Likely **new** registries shipped by 26.1.2 (verify after extraction):
 
 ## Action items for implementation
 
-1. **Status response**: bump `protocol_version` to 773, `version_name` to
+1. **Status response**: bump `protocol_version` to 775, `version_name` to
    `"26.1.2"` in `void/src/plugins/status.rs`.
 2. **Login (login phase) packet 0x02**: drop `strict_error_handling` field if
    present.
