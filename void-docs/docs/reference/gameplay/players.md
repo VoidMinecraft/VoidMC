@@ -130,6 +130,17 @@ For each player with changed `Position` or `Rotation`:
 
 The `update_previous_positions` system runs after broadcasting to sync `PreviousPosition` with current `Position`.
 
+### Riding a vehicle
+
+A player listed in some entity's `Passengers` carries a `Mount(Entity)`
+component (see [Passengers](./entities#passengers)). While mounted, the client
+derives the rider's position from the vehicle, so `broadcast_position` sends
+only `UpdateEntityRotation` + `SetHeadRotation` when `Rotation` changes and
+nothing when only `Position` changes; `PreviousPosition` keeps following
+`Position` so the rider can still be written every tick for chunk streaming.
+On the tick `Mount` disappears the rider is resynced with one absolute
+`TeleportEntity` + `SetHeadRotation`, after which delta encoding resumes.
+
 ## Teleportation
 
 Server-initiated teleportation (e.g., `/tp` command) works through:

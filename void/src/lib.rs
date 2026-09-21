@@ -49,8 +49,8 @@ pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnP
 pub use entity::{
     Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityBuilder,
     EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing,
-    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
-    Passengers, Silent, TextAlignment, TextDisplay,
+    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, Mount,
+    NoGravity, Passengers, Silent, TextAlignment, TextDisplay,
 };
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
