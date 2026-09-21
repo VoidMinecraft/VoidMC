@@ -3,7 +3,7 @@ use voidmc_codec::{Decode, DecodeError, Decoder, Encode, VarI32};
 /// A block position packed into an i64 using Minecraft's bit layout.
 ///
 /// Layout: x (26 bits) | z (26 bits) | y (12 bits)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockPosition {
     pub x: i32,
     pub y: i16,

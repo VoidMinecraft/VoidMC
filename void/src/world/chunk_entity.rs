@@ -5,7 +5,9 @@ use tracing::instrument;
 use voidmc_protocol::clientbound::chunk::{
     Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData, blocks,
 };
+use voidmc_protocol::types::BlockPosition;
 
+use super::block_entity::{BlockEntity, BlockEntityError, BlockEntityKind};
 use super::chunk_pos::ChunkPos;
 use super::dimension::DimensionId;
 
@@ -19,6 +21,38 @@ pub struct ChunkData {
     pub sections: Vec<ChunkSection>,
     pub heightmaps: ChunkHeightmaps,
     pub light: LightData,
+    block_entities: HashMap<LocalBlockPos, BlockEntity>,
+    pending_block_entities: HashMap<LocalBlockPos, BlockEntityKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LocalBlockPos {
+    x: u8,
+    y: i16,
+    z: u8,
+}
+
+impl LocalBlockPos {
+    fn of(chunk: ChunkPos, position: BlockPosition) -> Self {
+        debug_assert_eq!(
+            ChunkPos::new(position.x.div_euclid(16), position.z.div_euclid(16)),
+            chunk,
+            "block position {position:?} is not in chunk {chunk:?}"
+        );
+        Self {
+            x: position.x.rem_euclid(16) as u8,
+            y: position.y,
+            z: position.z.rem_euclid(16) as u8,
+        }
+    }
+
+    fn in_chunk(self, chunk: ChunkPos) -> BlockPosition {
+        BlockPosition {
+            x: chunk.x * 16 + self.x as i32,
+            y: self.y,
+            z: chunk.z * 16 + self.z as i32,
+        }
+    }
 }
 
 /// World y range covered by `ChunkData::sections`.
@@ -35,17 +69,110 @@ impl ChunkData {
             sections,
             heightmaps,
             light,
+            block_entities: HashMap::new(),
+            pending_block_entities: HashMap::new(),
         }
     }
 
     /// Creates ChunkData from a protocol Chunk, consuming its data.
     #[instrument(name = "chunk_data_conversion", level = "info", skip(chunk))]
     pub fn from_protocol_chunk(chunk: &ProtocolChunk) -> Self {
-        Self {
-            sections: chunk.sections.clone(),
-            heightmaps: chunk.heightmaps.clone(),
-            light: chunk.light.clone(),
+        Self::new(
+            chunk.sections.clone(),
+            chunk.heightmaps.clone(),
+            chunk.light.clone(),
+        )
+    }
+
+    /// `chunk` is this chunk's column; a position from another column is a caller bug.
+    pub fn block_entity(&self, chunk: ChunkPos, position: BlockPosition) -> Option<&BlockEntity> {
+        self.block_entities.get(&LocalBlockPos::of(chunk, position))
+    }
+
+    /// Every block entity with its world position; `chunk` is this chunk's column.
+    pub fn block_entities(
+        &self,
+        chunk: ChunkPos,
+    ) -> impl Iterator<Item = (BlockPosition, &BlockEntity)> + '_ {
+        self.block_entities
+            .iter()
+            .map(move |(local, block_entity)| (local.in_chunk(chunk), block_entity))
+    }
+
+    /// Stores `block_entity` at `position` and returns the one it replaced.
+    /// Fails unless the block at `position` hosts that kind, so a sign's NBT
+    /// can never sit on a stone block.
+    pub fn set_block_entity(
+        &mut self,
+        chunk: ChunkPos,
+        position: BlockPosition,
+        block_entity: impl Into<BlockEntity>,
+    ) -> Result<Option<BlockEntity>, BlockEntityError> {
+        let block_entity = block_entity.into();
+        let local = LocalBlockPos::of(chunk, position);
+        let block_state = self
+            .get_block(local.x, local.y as i32, local.z)
+            .ok_or(BlockEntityError::OutsideWorld)?;
+        if !block_entity.kind().hosted_by(block_state) {
+            return Err(BlockEntityError::WrongBlock {
+                block_state,
+                kind: block_entity.kind(),
+            });
         }
+        self.pending_block_entities
+            .insert(local, block_entity.kind());
+        Ok(self.block_entities.insert(local, block_entity))
+    }
+
+    /// Loads persisted block entities without queueing updates; entries whose
+    /// block no longer hosts their kind are dropped with a warning.
+    pub fn restore_block_entities(
+        &mut self,
+        chunk: ChunkPos,
+        block_entities: impl IntoIterator<Item = (BlockPosition, BlockEntity)>,
+    ) {
+        for (position, block_entity) in block_entities {
+            let local = LocalBlockPos::of(chunk, position);
+            let hosted = self
+                .get_block(local.x, local.y as i32, local.z)
+                .is_some_and(|state| block_entity.kind().hosted_by(state));
+            if hosted {
+                self.block_entities.insert(local, block_entity);
+            } else {
+                tracing::warn!(
+                    ?position,
+                    kind = block_entity.kind().name(),
+                    "Dropping persisted block entity: its block does not host it"
+                );
+            }
+        }
+    }
+
+    pub fn remove_block_entity(
+        &mut self,
+        chunk: ChunkPos,
+        position: BlockPosition,
+    ) -> Option<BlockEntity> {
+        let local = LocalBlockPos::of(chunk, position);
+        let removed = self.block_entities.remove(&local)?;
+        self.pending_block_entities.insert(local, removed.kind());
+        Some(removed)
+    }
+
+    /// Positions changed since the last sync, with the kind to reset when the
+    /// block entity is gone. Draining it is the sync system's job.
+    pub fn take_pending_block_entities(
+        &mut self,
+        chunk: ChunkPos,
+    ) -> Vec<(BlockPosition, BlockEntityKind)> {
+        std::mem::take(&mut self.pending_block_entities)
+            .into_iter()
+            .map(|(local, kind)| (local.in_chunk(chunk), kind))
+            .collect()
+    }
+
+    pub fn has_pending_block_entities(&self) -> bool {
+        !self.pending_block_entities.is_empty()
     }
 
     /// Reads the block-state id at the given local-x, world-y, local-z. Returns
@@ -67,7 +194,23 @@ impl ChunkData {
     ) -> Option<i32> {
         let (section_idx, local_y) = world_y_to_section(world_y)?;
         let section = self.sections.get_mut(section_idx)?;
-        Some(section.set_block_state(local_x, local_y, local_z, block_state_id))
+        let previous = section.set_block_state(local_x, local_y, local_z, block_state_id);
+        if previous != block_state_id && !self.block_entities.is_empty() {
+            let local = LocalBlockPos {
+                x: local_x,
+                y: world_y as i16,
+                z: local_z,
+            };
+            let stale = self
+                .block_entities
+                .get(&local)
+                .is_some_and(|block_entity| !block_entity.kind().hosted_by(block_state_id));
+            if stale {
+                self.block_entities.remove(&local);
+                self.pending_block_entities.remove(&local);
+            }
+        }
+        Some(previous)
     }
 
     /// Converts this chunk data into a ChunkDataAndLight packet.
@@ -83,7 +226,13 @@ impl ChunkData {
             chunk_z: z,
             heightmaps: self.heightmaps.clone(),
             data,
-            block_entities: Vec::new(),
+            block_entities: self
+                .block_entities
+                .iter()
+                .map(|(local, block_entity)| {
+                    block_entity.chunk_entry(local.in_chunk(ChunkPos::new(x, z)))
+                })
+                .collect(),
             sky_light_mask: self.light.sky_light_mask.clone(),
             block_light_mask: self.light.block_light_mask.clone(),
             empty_sky_light_mask: self.light.empty_sky_light_mask.clone(),
@@ -162,11 +311,11 @@ mod tests {
     use super::*;
 
     fn empty_chunk_data() -> ChunkData {
-        ChunkData {
-            sections: (0..24).map(|_| ChunkSection::empty()).collect(),
-            heightmaps: ChunkHeightmaps::empty(),
-            light: LightData::empty(),
-        }
+        ChunkData::new(
+            (0..24).map(|_| ChunkSection::empty()).collect(),
+            ChunkHeightmaps::empty(),
+            LightData::empty(),
+        )
     }
 
     #[test]

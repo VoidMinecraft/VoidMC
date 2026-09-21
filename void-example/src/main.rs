@@ -21,6 +21,7 @@ mod boss_bar;
 mod circle;
 mod entities;
 mod particle;
+mod sign;
 mod sound;
 
 struct LogGuards {
@@ -100,6 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(particle::particle_command());
             registry.register(entities::spawn_command());
             registry.register(entities::display_command());
+            registry.register(sign::sign_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);

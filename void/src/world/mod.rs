@@ -1,4 +1,5 @@
 pub mod biome;
+pub mod block_entity;
 pub mod chunk_entity;
 pub mod chunk_pos;
 pub mod dimension;
@@ -8,6 +9,11 @@ pub mod mutation;
 
 pub use biome::{
     Attribute, BiomeBuilder, BiomeError, BiomeId, GrassColorModifier, biome_at, set_biome,
+};
+pub use block_entity::{
+    Banner, BannerLayer, BannerPattern, BlockEntities, BlockEntity, BlockEntityError,
+    BlockEntityKind, DyeColor, Sign, SignSide, Skull, block_entity_at, remove_block_entity,
+    set_block_entity,
 };
 pub use chunk_entity::*;
 pub use chunk_pos::*;

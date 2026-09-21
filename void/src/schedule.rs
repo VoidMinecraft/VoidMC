@@ -30,6 +30,8 @@ pub enum VoidSystems {
     EntityVisibility,
     /// `PostUpdate`: other players' movement and head rotation.
     PlayerBroadcast,
+    /// `PostUpdate`, before `ChunkStreaming`: Block Entity Data packets for changed block entities.
+    BlockEntitySync,
     /// `PostUpdate`: chunk load/unload packets, updates `LoadedChunks`.
     ChunkStreaming,
     /// `PostUpdate`: resync of `InventoryDirty` players.

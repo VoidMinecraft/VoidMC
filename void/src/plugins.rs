@@ -1,5 +1,6 @@
 use bevy_app::Plugin;
 
+pub mod block_entity;
 pub mod boss_bar;
 pub mod chat;
 pub mod configuration;
@@ -31,6 +32,7 @@ impl Plugin for DefaultPlugins {
             item_drops::ItemDropsPlugin,
             boss_bar::BossBarPlugin,
             crate::entity::EntityPlugin,
+            block_entity::BlockEntityPlugin,
         ));
     }
 }

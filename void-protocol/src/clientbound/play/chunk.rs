@@ -1,4 +1,7 @@
+use ussr_nbt::owned::Nbt;
 use voidmc_codec::{Decode, DecodeError, Encode};
+
+use crate::block_entity::BlockEntityKind;
 
 pub mod blocks {
     pub const AIR: i32 = 0;
@@ -666,13 +669,57 @@ impl Chunk {
 // ChunkDataAndLight Packet
 // ============================================================================
 
+/// One block entity of a chunk packet. `data` is `None` when the client only
+/// needs to know the block entity exists (vanilla sends a bare `TAG_End`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChunkBlockEntity {
+    pub local_x: u8,
+    pub local_z: u8,
+    pub y: i16,
+    pub kind: BlockEntityKind,
+    pub data: Option<Nbt>,
+}
+
+impl Encode for ChunkBlockEntity {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.push((self.local_x & 15) << 4 | (self.local_z & 15));
+        buf.extend_from_slice(&self.y.to_be_bytes());
+        self.kind.encode(buf);
+        match &self.data {
+            Some(nbt) => nbt.encode(buf),
+            None => buf.push(0x00),
+        }
+    }
+}
+
+impl Decode for ChunkBlockEntity {
+    fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, DecodeError> {
+        let packed = decoder.decode::<u8>()?;
+        let y = decoder.decode::<i16>()?;
+        let kind = decoder.decode::<BlockEntityKind>()?;
+        let data = if decoder.remaining().first() == Some(&0x00) {
+            decoder.take(1)?;
+            None
+        } else {
+            Some(decoder.decode::<Nbt>()?)
+        };
+        Ok(Self {
+            local_x: packed >> 4,
+            local_z: packed & 15,
+            y,
+            kind,
+            data,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChunkDataAndLight {
     pub chunk_x: i32,
     pub chunk_z: i32,
     pub heightmaps: ChunkHeightmaps,
     pub data: Vec<u8>,
-    pub block_entities: Vec<u8>,
+    pub block_entities: Vec<ChunkBlockEntity>,
     pub sky_light_mask: Vec<u64>,
     pub block_light_mask: Vec<u64>,
     pub empty_sky_light_mask: Vec<u64>,
@@ -731,7 +778,10 @@ impl Encode for ChunkDataAndLight {
         write_varint(buf, self.data.len() as i32);
         buf.extend_from_slice(&self.data);
 
-        write_varint(buf, 0); // Block entities count
+        write_varint(buf, self.block_entities.len() as i32);
+        for block_entity in &self.block_entities {
+            block_entity.encode(buf);
+        }
 
         write_bitset(buf, &self.sky_light_mask);
         write_bitset(buf, &self.block_light_mask);

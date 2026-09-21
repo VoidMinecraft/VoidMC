@@ -41,6 +41,11 @@
   },
   {
     "type": "file",
+    "name": "block-entities",
+    "label": "Block Entities"
+  },
+  {
+    "type": "file",
     "name": "world",
     "label": "World & Chunks"
   },

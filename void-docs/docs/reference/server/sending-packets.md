@@ -132,6 +132,7 @@ inside one schedule.
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
 | `EntityBroadcast` | `PostUpdate` | Spawn / movement / motion / metadata packets for non-player entities. |
 | `PlayerBroadcast` | `PostUpdate` | Other players' movement and head rotation. |
+| `BlockEntitySync` | `PostUpdate` | Block Entity Data packets for changed block entities; before `ChunkStreaming` (see [Block Entities](../gameplay/block-entities.md)). |
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Resync players flagged `InventoryDirty`. |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
