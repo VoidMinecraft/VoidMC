@@ -12,20 +12,26 @@ mod game_event;
 mod keep_alive;
 mod level_particles;
 mod login;
+mod number_format;
 mod open_screen;
 mod ping;
 mod player_info_remove;
 mod player_info_update;
 mod remove_entities;
+mod reset_score;
 mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
 mod set_cursor_item;
+mod set_display_objective;
 mod set_entity_data;
 mod set_entity_motion;
 mod set_head_rotation;
 mod set_held_slot;
+mod set_objective;
 mod set_passengers;
+mod set_player_team;
+mod set_score;
 mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
@@ -52,20 +58,26 @@ pub use game_event::*;
 pub use keep_alive::*;
 pub use level_particles::*;
 pub use login::*;
+pub use number_format::*;
 pub use open_screen::*;
 pub use ping::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
 pub use remove_entities::*;
+pub use reset_score::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
 pub use set_cursor_item::*;
+pub use set_display_objective::*;
 pub use set_entity_data::*;
 pub use set_entity_motion::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
+pub use set_objective::*;
 pub use set_passengers::*;
+pub use set_player_team::*;
+pub use set_score::*;
 pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
@@ -124,6 +136,8 @@ pub enum PlayPacket {
     Ping(Ping),
     #[codec(packet_id = 0x48)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
+    #[codec(packet_id = 0x4F)]
+    ResetScore(ResetScore),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x65)]
@@ -132,10 +146,18 @@ pub enum PlayPacket {
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]
     SetCursorItem(SetCursorItem),
+    #[codec(packet_id = 0x62)]
+    SetDisplayObjective(SetDisplayObjective),
     #[codec(packet_id = 0x63)]
     SetEntityData(SetEntityData),
     #[codec(packet_id = 0x69)]
     SetHeldSlot(SetHeldSlot),
+    #[codec(packet_id = 0x6A)]
+    SetObjective(SetObjective),
+    #[codec(packet_id = 0x6D)]
+    SetPlayerTeam(SetPlayerTeam),
+    #[codec(packet_id = 0x6E)]
+    SetScore(SetScore),
     #[codec(packet_id = 0x74)]
     EntitySoundEffect(EntitySoundEffect),
     #[codec(packet_id = 0x75)]
