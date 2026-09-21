@@ -7,7 +7,9 @@ viewer has been sent and pushes only the difference in `PostUpdate`
 (`VoidSystems::ScoreboardSync`): one `Set Score` per changed score, a
 `Reset Score` per removed one, an objective or team update only when a header
 field changed, and entity add/remove lists for team membership. Nothing is
-sent on ticks where nothing changed.
+sent on ticks where nothing changed. For a text sidebar made of widgets
+(title ornaments, labels, rankings, timers, progress bars) use the
+[`Sidebar`](sidebar.md) component built on top of this layer.
 
 ## Objectives
 
@@ -152,5 +154,6 @@ Despawn the entity, or remove the `Objective` / `Team` component; viewers get
 the remove packet immediately. The client drops an objective's scores and
 display slot together with it.
 
-The example server shows a live altitude sidebar and a `/team <name> [--leave]`
-command (`void-example/src/scoreboard.rs`).
+The example server shows a `/team <name> [--leave]` command
+(`void-example/src/scoreboard.rs`) and a live altitude sidebar built with the
+[`Sidebar`](sidebar.md) widgets (`void-example/src/sidebar.rs`).

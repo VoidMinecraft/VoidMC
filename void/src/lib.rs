@@ -72,6 +72,10 @@ pub use plugins::scoreboard::{
     CollisionRule, DisplaySlot, NameTagVisibility, Objective, ObjectiveState, RenderType, Score,
     ScoreFormat, Team, TeamColor, TeamState,
 };
+pub use plugins::sidebar::{
+    Labeled, MAX_LINE_CHARS, MAX_SIDEBAR_LINES, Ornament, Progress, Ranking, Sidebar, SidebarState,
+    Text, Timer, Widget, WidgetId,
+};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
