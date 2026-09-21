@@ -10,11 +10,12 @@ use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
-use ussr_nbt::owned::{Nbt, Tag};
+use ussr_nbt::owned::Nbt;
 use voidmc_data::Version;
 pub use voidmc_protocol::serverbound::ContainerInput;
 
 use crate::item::ItemStack;
+use crate::messages::TextColor;
 use crate::players::WorldPlayers;
 use crate::window::{DragState, Layout};
 
@@ -287,10 +288,7 @@ impl Menu {
     }
 
     pub(crate) fn title_nbt(&self) -> Nbt {
-        Nbt {
-            name: "".into(),
-            compound: vec![("text".into(), Tag::String(self.title.as_str().into()))].into(),
-        }
+        crate::messages::plain_text_component(&self.title)
     }
 
     pub(crate) fn layout(&self) -> Layout {
@@ -480,7 +478,7 @@ impl<'a> MenuClickContext<'a> {
     }
 
     pub fn reply(&self, message: &str) {
-        crate::commands::send_system_chat(self.world, self.player, message, "white");
+        crate::commands::send_system_chat(self.world, self.player, message, TextColor::White);
     }
 
     pub fn players(&self) -> WorldPlayers<'_> {
@@ -600,7 +598,14 @@ impl<'w> WorldMenus<'w> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+
+    #[test]
+    fn oversized_title_round_trips_below_the_nbt_limit() {
+        let text = "😀".repeat(11000);
+        crate::messages::assert_guarded(&Menu::hopper(text.clone()).title_nbt(), &text);
+    }
 
     #[test]
     fn every_menu_type_resolves_in_the_registry() {

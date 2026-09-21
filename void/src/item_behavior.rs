@@ -35,6 +35,7 @@ use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 use crate::components::PlayerDimension;
 use crate::inventory::Inventory;
 use crate::item::{ItemId, ItemStack};
+use crate::messages::TextColor;
 use crate::world::mutation::send_ack;
 use crate::world::{BlockMutation, mutate_block, offset_position};
 
@@ -135,7 +136,7 @@ impl ItemUseContext<'_> {
 
     /// Sends a chat message to the acting player.
     pub fn reply(&self, message: &str) {
-        crate::commands::send_system_chat(self.world, self.player, message, "white");
+        crate::commands::send_system_chat(self.world, self.player, message, TextColor::White);
     }
 
     /// Read-only world access for advanced behaviours.
@@ -193,7 +194,7 @@ impl BlockBreakContext<'_> {
 
     /// Sends a chat message to the breaking player.
     pub fn reply(&self, message: &str) {
-        crate::commands::send_system_chat(self.world, self.player, message, "white");
+        crate::commands::send_system_chat(self.world, self.player, message, TextColor::White);
     }
 
     /// Read-only world access.
