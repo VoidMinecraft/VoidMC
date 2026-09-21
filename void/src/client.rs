@@ -17,6 +17,11 @@ enum StatusAction {
     Consumed(Option<clientbound::StatusPacket>),
 }
 
+enum Outbound {
+    Game(OutgoingPacket),
+    Status(clientbound::StatusPacket),
+}
+
 pub struct Client {
     socket: ClientSocket,
     incoming_tx: Sender<IncomingPacket>,
@@ -144,14 +149,9 @@ impl Client {
         outgoing_rx: &Receiver<OutgoingPacket>,
         status_rx: &Receiver<clientbound::StatusPacket>,
     ) -> Result<(), SocketError> {
-        enum Outbound {
-            Game(OutgoingPacket),
-            Status(clientbound::StatusPacket),
-        }
-
         let mut status_open = true;
         loop {
-            let outbound = if status_open {
+            let first = if status_open {
                 tokio::select! {
                     result = outgoing_rx.recv_async() => {
                         let Ok(packet) = result else {
@@ -176,24 +176,43 @@ impl Client {
                 Outbound::Game(packet)
             };
 
-            match outbound {
-                Outbound::Status(packet) => writer.send(&packet).await?,
-                Outbound::Game(outgoing_packet) => match outgoing_packet.packet {
-                    clientbound::ClientboundPacket::Status(packet) => writer.send(&packet).await?,
-                    clientbound::ClientboundPacket::Login(packet) => writer.send(&packet).await?,
-                    clientbound::ClientboundPacket::Configuration(packet) => {
-                        writer.send(&packet).await?
-                    }
-                    clientbound::ClientboundPacket::ManualConfiguration(packet) => {
-                        writer.send(&packet).await?
-                    }
-                    clientbound::ClientboundPacket::Play(packet) => writer.send(&packet).await?,
-                    clientbound::ClientboundPacket::ManualPlay(packet) => {
-                        writer.send(&packet).await?
-                    }
-                },
+            Self::write_outbound(writer, first).await?;
+
+            // Coalesce every packet already queued for this tick into the same
+            // buffered batch, preserving per-channel FIFO order, then flush once.
+            while let Ok(packet) = outgoing_rx.try_recv() {
+                Self::write_outbound(writer, Outbound::Game(packet)).await?;
             }
+            if status_open {
+                while let Ok(packet) = status_rx.try_recv() {
+                    Self::write_outbound(writer, Outbound::Status(packet)).await?;
+                }
+            }
+
+            writer.flush().await?;
         }
+    }
+
+    async fn write_outbound(
+        writer: &mut ClientWriter,
+        outbound: Outbound,
+    ) -> Result<(), SocketError> {
+        match outbound {
+            Outbound::Status(packet) => writer.send(&packet).await?,
+            Outbound::Game(outgoing_packet) => match outgoing_packet.packet {
+                clientbound::ClientboundPacket::Status(packet) => writer.send(&packet).await?,
+                clientbound::ClientboundPacket::Login(packet) => writer.send(&packet).await?,
+                clientbound::ClientboundPacket::Configuration(packet) => {
+                    writer.send(&packet).await?
+                }
+                clientbound::ClientboundPacket::ManualConfiguration(packet) => {
+                    writer.send(&packet).await?
+                }
+                clientbound::ClientboundPacket::Play(packet) => writer.send(&packet).await?,
+                clientbound::ClientboundPacket::ManualPlay(packet) => writer.send(&packet).await?,
+            },
+        }
+        Ok(())
     }
 }
 
