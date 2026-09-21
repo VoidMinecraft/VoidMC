@@ -15,6 +15,7 @@ use voidmc_data::Version;
 pub use voidmc_protocol::serverbound::ContainerInput;
 
 use crate::item::ItemStack;
+use crate::messages::TextColor;
 use crate::players::WorldPlayers;
 use crate::window::{DragState, Layout};
 
@@ -480,7 +481,7 @@ impl<'a> MenuClickContext<'a> {
     }
 
     pub fn reply(&self, message: &str) {
-        crate::commands::send_system_chat(self.world, self.player, message, "white");
+        crate::commands::send_system_chat(self.world, self.player, message, TextColor::White);
     }
 
     pub fn players(&self) -> WorldPlayers<'_> {

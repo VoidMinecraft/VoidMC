@@ -3,14 +3,119 @@
 //! `.broadcast(..)` / `.broadcast_action_bar(..)` for every ready player. The
 //! [`SystemChat`] packet is built here so call sites never touch NBT.
 
+use std::fmt;
+
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
+use tracing::warn;
 use ussr_nbt::owned::{Nbt, Tag};
 use voidmc_protocol::clientbound::SystemChat;
 
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 
-const DEFAULT_COLOR: &str = "white";
+const MAX_TEXT_BYTES: usize = u16::MAX as usize;
+
+/// Only these names and `#rrggbb` decode on the client; anything else
+/// disconnects the recipient with a `DecoderException`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TextColor {
+    Black,
+    DarkBlue,
+    DarkGreen,
+    DarkAqua,
+    DarkRed,
+    DarkPurple,
+    Gold,
+    Gray,
+    DarkGray,
+    Blue,
+    Green,
+    Aqua,
+    Red,
+    LightPurple,
+    Yellow,
+    #[default]
+    White,
+    Rgb(u32),
+}
+
+impl TextColor {
+    pub const NAMED: [TextColor; 16] = [
+        TextColor::Black,
+        TextColor::DarkBlue,
+        TextColor::DarkGreen,
+        TextColor::DarkAqua,
+        TextColor::DarkRed,
+        TextColor::DarkPurple,
+        TextColor::Gold,
+        TextColor::Gray,
+        TextColor::DarkGray,
+        TextColor::Blue,
+        TextColor::Green,
+        TextColor::Aqua,
+        TextColor::Red,
+        TextColor::LightPurple,
+        TextColor::Yellow,
+        TextColor::White,
+    ];
+
+    pub const fn rgb(value: u32) -> Self {
+        TextColor::Rgb(value & 0xFF_FFFF)
+    }
+
+    pub fn name(self) -> Option<&'static str> {
+        Some(match self {
+            TextColor::Black => "black",
+            TextColor::DarkBlue => "dark_blue",
+            TextColor::DarkGreen => "dark_green",
+            TextColor::DarkAqua => "dark_aqua",
+            TextColor::DarkRed => "dark_red",
+            TextColor::DarkPurple => "dark_purple",
+            TextColor::Gold => "gold",
+            TextColor::Gray => "gray",
+            TextColor::DarkGray => "dark_gray",
+            TextColor::Blue => "blue",
+            TextColor::Green => "green",
+            TextColor::Aqua => "aqua",
+            TextColor::Red => "red",
+            TextColor::LightPurple => "light_purple",
+            TextColor::Yellow => "yellow",
+            TextColor::White => "white",
+            TextColor::Rgb(_) => return None,
+        })
+    }
+
+    pub fn parse(color: &str) -> Option<Self> {
+        if let Some(hex) = color.strip_prefix('#') {
+            if hex.is_empty() || hex.len() > 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            return u32::from_str_radix(hex, 16).ok().map(TextColor::Rgb);
+        }
+        TextColor::NAMED
+            .into_iter()
+            .find(|named| named.name() == Some(color))
+    }
+
+    pub fn parse_or_white(color: &str) -> Self {
+        TextColor::parse(color).unwrap_or_else(|| {
+            warn!(color, "invalid text colour, falling back to white");
+            TextColor::White
+        })
+    }
+}
+
+impl fmt::Display for TextColor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.name() {
+            Some(name) => f.write_str(name),
+            None => match self {
+                TextColor::Rgb(value) => write!(f, "#{:06x}", value & 0xFF_FFFF),
+                _ => unreachable!(),
+            },
+        }
+    }
+}
 
 #[derive(SystemParam)]
 pub struct Messages<'w, 's> {
@@ -18,40 +123,29 @@ pub struct Messages<'w, 's> {
 }
 
 impl Messages<'_, '_> {
+    fn request(
+        &self,
+        target: Target,
+        text: impl Into<String>,
+        overlay: bool,
+    ) -> MessageRequest<'_> {
+        MessageRequest::new(Sink::Players(&self.players), target, text, overlay)
+    }
+
     pub fn message(&self, player: Entity, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::Players(&self.players),
-            Target::Player(player),
-            text,
-            false,
-        )
+        self.request(Target::Player(player), text, false)
     }
 
     pub fn action_bar(&self, player: Entity, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::Players(&self.players),
-            Target::Player(player),
-            text,
-            true,
-        )
+        self.request(Target::Player(player), text, true)
     }
 
     pub fn broadcast(&self, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::Players(&self.players),
-            Target::Audience(Audience::All),
-            text,
-            false,
-        )
+        self.request(Target::Audience(Audience::All), text, false)
     }
 
     pub fn broadcast_action_bar(&self, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::Players(&self.players),
-            Target::Audience(Audience::All),
-            text,
-            true,
-        )
+        self.request(Target::Audience(Audience::All), text, true)
     }
 }
 
@@ -66,40 +160,29 @@ impl<'w> WorldMessages<'w> {
         }
     }
 
+    fn request(
+        &self,
+        target: Target,
+        text: impl Into<String>,
+        overlay: bool,
+    ) -> MessageRequest<'_> {
+        MessageRequest::new(Sink::World(&self.players), target, text, overlay)
+    }
+
     pub fn message(&self, player: Entity, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::World(&self.players),
-            Target::Player(player),
-            text,
-            false,
-        )
+        self.request(Target::Player(player), text, false)
     }
 
     pub fn action_bar(&self, player: Entity, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::World(&self.players),
-            Target::Player(player),
-            text,
-            true,
-        )
+        self.request(Target::Player(player), text, true)
     }
 
     pub fn broadcast(&self, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::World(&self.players),
-            Target::Audience(Audience::All),
-            text,
-            false,
-        )
+        self.request(Target::Audience(Audience::All), text, false)
     }
 
     pub fn broadcast_action_bar(&self, text: impl Into<String>) -> MessageRequest<'_> {
-        MessageRequest::new(
-            Sink::World(&self.players),
-            Target::Audience(Audience::All),
-            text,
-            true,
-        )
+        self.request(Target::Audience(Audience::All), text, true)
     }
 }
 
@@ -134,7 +217,7 @@ pub struct MessageRequest<'a> {
     sink: Sink<'a>,
     target: Target,
     text: String,
-    color: String,
+    color: TextColor,
     overlay: bool,
 }
 
@@ -144,18 +227,19 @@ impl<'a> MessageRequest<'a> {
             sink,
             target,
             text: text.into(),
-            color: DEFAULT_COLOR.to_string(),
+            color: TextColor::White,
             overlay,
         }
     }
 
-    /// A named colour (`"red"`, `"gray"`, …) or `"#rrggbb"`.
-    pub fn color(mut self, color: impl Into<String>) -> Self {
-        self.color = color.into();
+    pub fn color(mut self, color: TextColor) -> Self {
+        self.color = color;
         self
     }
 
-    /// Replaces the target with the ready players the audience selects.
+    /// Replaces the target with the ready players the audience selects; the
+    /// `player` given to `message`/`action_bar` is discarded and delivery
+    /// becomes ready-only.
     pub fn audience(mut self, audience: Audience) -> Self {
         self.target = Target::Audience(audience);
         self
@@ -167,7 +251,7 @@ impl<'a> MessageRequest<'a> {
 
     pub fn packet(&self) -> SystemChat {
         SystemChat {
-            content: text_component(&self.text, &self.color),
+            content: text_component(&self.text, self.color),
             overlay: self.overlay,
         }
     }
@@ -181,15 +265,32 @@ impl<'a> MessageRequest<'a> {
     }
 }
 
-pub fn text_component(text: &str, color: &str) -> Nbt {
+pub fn text_component(text: &str, color: TextColor) -> Nbt {
+    let text = truncate_text(text);
     Nbt {
         name: "".into(),
         compound: vec![
             ("text".into(), Tag::String(text.into())),
-            ("color".into(), Tag::String(color.into())),
+            ("color".into(), Tag::String(color.to_string().into())),
         ]
         .into(),
     }
+}
+
+fn truncate_text(text: &str) -> &str {
+    if text.len() <= MAX_TEXT_BYTES {
+        return text;
+    }
+    let mut end = MAX_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    warn!(
+        bytes = text.len(),
+        kept = end,
+        "message text exceeds the NBT string limit, truncating"
+    );
+    &text[..end]
 }
 
 #[cfg(test)]
@@ -198,6 +299,7 @@ mod tests {
 
     use bevy_app::{App, Update};
     use flume::Receiver;
+    use voidmc_codec::Encode;
     use voidmc_protocol::clientbound;
 
     use super::*;
@@ -269,7 +371,7 @@ mod tests {
             messages.message(alice, "hello").send();
             messages
                 .action_bar(bob, "above the hotbar")
-                .color("gold")
+                .color(TextColor::Gold)
                 .send();
             messages.message(joining, "welcome").send();
         });
@@ -342,7 +444,7 @@ mod tests {
 
         let messages = WorldMessages::new(app.world());
         messages.action_bar(alice, "twin").send();
-        messages.broadcast("all").color("red").send();
+        messages.broadcast("all").color(TextColor::Red).send();
 
         let sent = drain(&rx);
         assert_eq!(sent.len(), 3);
@@ -350,5 +452,125 @@ mod tests {
         assert!(sent[0].1.overlay);
         assert_eq!(client_ids(&sent[1..]), HashSet::from([1, 2]));
         assert_eq!(field(&sent[1].1, "color"), "red");
+    }
+
+    #[test]
+    fn named_colors_round_trip_through_their_vanilla_names() {
+        let names = [
+            "black",
+            "dark_blue",
+            "dark_green",
+            "dark_aqua",
+            "dark_red",
+            "dark_purple",
+            "gold",
+            "gray",
+            "dark_gray",
+            "blue",
+            "green",
+            "aqua",
+            "red",
+            "light_purple",
+            "yellow",
+            "white",
+        ];
+        for (color, name) in TextColor::NAMED.into_iter().zip(names) {
+            assert_eq!(color.to_string(), name);
+            assert_eq!(TextColor::parse(name), Some(color));
+        }
+        assert_eq!(TextColor::parse("Gold"), None);
+        assert_eq!(TextColor::parse("grey"), None);
+        assert_eq!(TextColor::parse(""), None);
+        assert_eq!(TextColor::parse("#"), None);
+        assert_eq!(TextColor::parse("#1000000"), None);
+        assert_eq!(TextColor::parse("#gg0000"), None);
+    }
+
+    #[test]
+    fn rgb_colors_serialise_as_hex_and_mask_to_24_bits() {
+        assert_eq!(TextColor::Rgb(0xff8800).to_string(), "#ff8800");
+        assert_eq!(TextColor::Rgb(0x000001).to_string(), "#000001");
+        assert_eq!(TextColor::Rgb(0xffff8800).to_string(), "#ff8800");
+        assert_eq!(TextColor::rgb(0xffff8800), TextColor::Rgb(0xff8800));
+        assert_eq!(TextColor::parse("#ff8800"), Some(TextColor::Rgb(0xff8800)));
+        assert_eq!(TextColor::parse("#FF8800"), Some(TextColor::Rgb(0xff8800)));
+        assert_eq!(TextColor::parse("#ff0"), Some(TextColor::Rgb(0xff0)));
+        assert_eq!(TextColor::parse("#ffffff"), Some(TextColor::Rgb(0xffffff)));
+        assert_eq!(
+            field(&system_chat_packet("x", TextColor::rgb(0xabcdef)), "color"),
+            "#abcdef"
+        );
+    }
+
+    fn system_chat_packet(text: &str, color: TextColor) -> SystemChat {
+        SystemChat {
+            content: text_component(text, color),
+            overlay: false,
+        }
+    }
+
+    #[test]
+    fn string_entry_points_fall_back_to_white_instead_of_kicking_the_client() {
+        let nbt = crate::commands::text_to_nbt("hi", "Gold");
+        let packet = SystemChat {
+            content: nbt,
+            overlay: false,
+        };
+        assert_eq!(field(&packet, "color"), "white");
+        assert_eq!(
+            field(&crate::commands::system_chat("hi", "gold"), "color"),
+            "gold"
+        );
+        assert_eq!(TextColor::parse_or_white("#12345"), TextColor::Rgb(0x12345));
+    }
+
+    #[test]
+    fn oversized_text_is_cut_on_a_char_boundary_below_the_nbt_limit() {
+        let text = "é".repeat(40000);
+        let packet = system_chat_packet(&text, TextColor::White);
+        let sent = field(&packet, "text");
+        assert_eq!(sent.len(), MAX_TEXT_BYTES - 1);
+        assert!(sent.chars().all(|c| c == 'é'));
+
+        let mut bytes = Vec::new();
+        packet.encode(&mut bytes);
+        let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
+        assert_eq!(len, MAX_TEXT_BYTES - 1);
+        assert!(std::str::from_utf8(&bytes[10..10 + len]).is_ok());
+
+        let exact = "a".repeat(MAX_TEXT_BYTES);
+        assert_eq!(
+            field(&system_chat_packet(&exact, TextColor::White), "text").len(),
+            MAX_TEXT_BYTES
+        );
+    }
+
+    #[test]
+    fn system_chat_wire_bytes_match_paper() {
+        let mut bytes = Vec::new();
+        system_chat_packet("hi", TextColor::Gold).encode(&mut bytes);
+        let expected: Vec<u8> = [
+            &[0x0A][..],
+            &[0x08, 0x00, 0x04],
+            b"text",
+            &[0x00, 0x02],
+            b"hi",
+            &[0x08, 0x00, 0x05],
+            b"color",
+            &[0x00, 0x04],
+            b"gold",
+            &[0x00],
+            &[0x00],
+        ]
+        .concat();
+        assert_eq!(bytes, expected);
+
+        let mut overlay = Vec::new();
+        SystemChat {
+            content: text_component("", TextColor::rgb(0xff8800)),
+            overlay: true,
+        }
+        .encode(&mut overlay);
+        assert_eq!(&overlay[overlay.len() - 9..], b"#ff8800\x00\x01");
     }
 }
