@@ -7,7 +7,7 @@ pub struct SetDisplayObjective {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Encode, Decode)]
 #[codec(varint32)]
 #[repr(i32)]
 pub enum DisplaySlot {

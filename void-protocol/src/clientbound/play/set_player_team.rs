@@ -226,7 +226,10 @@ mod tests {
     fn membership_methods_write_only_the_entity_list() {
         let mut expected = header(3);
         expected.extend(names(&["Leo"]));
-        assert_eq!(encode(TeamAction::AddEntities(vec!["Leo".into()])), expected);
+        assert_eq!(
+            encode(TeamAction::AddEntities(vec!["Leo".into()])),
+            expected
+        );
 
         let mut expected = header(4);
         expected.extend(names(&[]));
