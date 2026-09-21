@@ -6,10 +6,11 @@ sur une chaussée : ses déplacements sont simulés par le serveur.
 
 > **État du portage.** Cette version couvre le socle (D0) du portage de la démo sur les
 > API actuelles du moteur — génération du monde, géométrie du circuit et simulation
-> pure des karts — et la machine à états de la course (D1) : phases, commandes,
-> annonces et bossbars. Le reste — karts en tant qu'entités, cristaux, bonus,
-> affichages et téléportation — est **en cours de portage** et arrive dans les unités
-> suivantes.
+> pure des karts —, la machine à états de la course (D1) : phases, commandes,
+> annonces et bossbars, et les karts en tant qu'entités du moteur (D2) : minecart
+> monté, pilotage au clavier et déplacement piloté par le serveur. Le reste —
+> cristaux, bonus, affichages et barrière de téléportation — est **en cours de
+> portage** et arrive dans les unités suivantes.
 
 ## Lancer
 
@@ -21,9 +22,9 @@ cargo run --release -p voidmc-demo
 
 La démo écoute par défaut sur toutes les interfaces IPv4 (`0.0.0.0:25565`).
 Se connecter à `127.0.0.1:25565` depuis la machine hôte, ou à son adresse IP depuis
-une autre machine. Le joueur apparaît à **Y = 110**, au-dessus de la vallée, et
-retombe sur le relief ; le vol libre revient avec l'unité travel (D5). Aucune
-plateforme ne gêne la vue du paysage.
+une autre machine. Le joueur apparaît à **Y = 110**, au-dessus de la vallée, assis
+dans son minecart d'attente ; le vol libre des spectateurs revient avec l'unité
+travel (D5). Aucune plateforme ne gêne la vue du paysage.
 
 Pour utiliser une autre carte :
 
@@ -37,12 +38,24 @@ entier non signé sur 64 bits ; sa valeur par défaut est `42`. Le serveur tourn
 
 ## Jouer
 
-*Pilotage en cours de portage (D2).* Les règles de conduite (accélération, freinage,
-marche arrière, boost rechargeable, rebonds sur les glissières, chocs entre minecarts)
-sont implémentées et testées dans `src/kart.rs`, mais aucun minecart n'est encore
-monté : les pilotes restent en vol et la course se joue pour l'instant « à blanc ».
+Chaque pilote inscrit est assis dans **un minecart** qui lui appartient (`src/vehicle.rs`).
+Le minecart est une entité du moteur : le serveur le fait apparaître chez les joueurs
+qui ont chargé son chunk, le retire quand ils s'éloignent ou se déconnectent, et
+transmet ses déplacements. Le pilote en est le passager ; s'il descend (touche
+Sneak), le serveur le remet en selle aussitôt — uniquement sur cette pression, jamais
+périodiquement.
 
-La manche, elle, est complète (`src/race.rs`) :
+Le pilotage utilise les touches de déplacement du client (`ServerboundPlayerInput`) :
+**Avancer** accélère, **Reculer** freine puis passe en marche arrière, **Gauche/Droite**
+tournent, **Saut** enclenche le boost (tant qu'il reste du carburant), **Sprint**
+utilisera le bonus ramassé (D3). Les règles de conduite (accélération, traînée,
+boost rechargeable, rebonds sur les glissières, chocs entre minecarts) sont celles de
+`src/kart.rs` ; elles ne s'appliquent que pendant la course. À chaque tick, le
+serveur déplace l'entité minecart vers la position simulée ; le moteur choisit
+lui-même entre un déplacement relatif et une téléportation (au-delà de 8 blocs, par
+exemple lors de la mise en grille). Un kart immobile ne génère aucun paquet.
+
+La manche est complète (`src/race.rs`) :
 
 - `/race [tours]` accepte **1 à 20 tours** (3 par défaut). Le nombre choisi vaut pour
   tous les pilotes de la manche ; une commande invalide ne lance pas de course, et une
@@ -60,7 +73,8 @@ La manche, elle, est complète (`src/race.rs`) :
   pénalités, vitesse et bonus pendant la course. La **bossbar bleue** de chaque pilote
   affiche sa réserve de boost ; une bossbar partagée suit la construction, le compte
   à rebours et le temps restant.
-- `/reset` ramène au dernier checkpoint avec trois secondes de pénalité.
+- `/reset` ramène au dernier checkpoint avec trois secondes de pénalité ; le minecart
+  y est téléporté par le moteur.
 - `/scores` affiche les temps de la manche et les meilleurs temps du circuit actuel
   pour le même nombre de tours. Les records sont en mémoire, par seed de circuit,
   nombre de tours et nom de joueur, et disparaissent au redémarrage.
@@ -125,6 +139,14 @@ est recommandé.
   accélération, traînée, glissières, `collide`, `crosses_gate`, `progress`),
   `PowerUp` et `Strike` (effets des bonus sur le véhicule). Les constantes numériques
   sont celles de la référence ; le yaw du modèle de minecart est décalé de +90°.
+- `src/vehicle.rs` : le kart comme entité du moteur — `spawn` (`EntityBuilder`
+  minecart + `Kart` + `Pilot` + `Passengers`), `Karts` (accès au kart d'un joueur via
+  `Racer::kart`), l'observateur `input` (`PlayerInputEvent` → `Kart::input`,
+  remontée sur Sneak), le système `drive` (`Kart::drive` puis `collide` pendant la
+  course) et `pose`, qui ne réécrit `Position`/`Rotation` que si la simulation a
+  bougé le kart.
+- `src/race.rs` : phases, commandes, annonces, bossbars et HUD ; `Racer` relie le
+  joueur à son kart.
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
 
 ## Vérifications
@@ -137,4 +159,8 @@ Les tests couvrent la génération déterministe (paysage et arène), la diversi
 seeds, la continuité de 65 tracés, le parcours de trois tours sur plusieurs
 géométries, les checkpoints ordonnés, la marche arrière, les rebonds, les bumps, les
 boucliers, les bonus à usage unique et leurs effets, la préservation du paysage
-pendant la construction et la restauration exacte au démontage.
+pendant la construction et la restauration exacte au démontage. Les tests d'`App`
+sans réseau vérifient l'inscription (un seul minecart par pilote, passager compris),
+la remontée unique par pression de Sneak, le déplacement de l'entité pendant la
+course (et l'absence de tout paquet pour un kart immobile), la disparition du kart
+au départ du joueur et le choc entre deux karts, identique à la simulation pure.

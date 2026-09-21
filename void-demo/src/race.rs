@@ -15,6 +15,7 @@ use crate::arena::Arena;
 use crate::kart::{Kart, PowerUp};
 use crate::terrain::mix;
 use crate::track::{GATES, Track};
+use crate::vehicle::{self, Karts, Pilot};
 
 pub const LAPS: usize = 3;
 pub const MAX_LAPS: usize = 20;
@@ -138,6 +139,7 @@ fn seconds(ticks: u64) -> String {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct Racer {
     pub gate: usize,
+    pub kart: Entity,
 }
 
 #[derive(Component)]
@@ -205,6 +207,7 @@ impl Chat<'_, '_> {
 struct Grid<'w, 's> {
     race: ResMut<'w, Race>,
     chat: Chat<'w, 's>,
+    racers: Query<'w, 's, &'static Racer>,
     commands: Commands<'w, 's>,
 }
 
@@ -219,9 +222,9 @@ impl Grid<'_, '_> {
                 .tell(player, format!("La grille est pleine ({GRID} pilotes)."));
             return;
         }
-        let Ok(mut entity) = self.commands.get_entity(player) else {
+        if self.commands.get_entity(player).is_err() {
             return;
-        };
+        }
         let mut kart = Kart {
             fuel: 100.0,
             next_gate: 1,
@@ -229,9 +232,9 @@ impl Grid<'_, '_> {
         };
         kart.wait(slot);
         self.race.roster.push(player);
-        entity.insert((
-            kart,
-            Racer { gate: 1 },
+        let kart = vehicle::spawn(&mut self.commands, player, kart);
+        self.commands.entity(player).insert((
+            Racer { gate: 1, kart },
             BossBar::new(BOOST_TITLE)
                 .color(BossBarColor::Blue)
                 .viewers([player]),
@@ -265,9 +268,12 @@ impl Grid<'_, '_> {
             return false;
         };
         self.race.roster.remove(index);
+        if let Ok(racer) = self.racers.get(player) {
+            self.commands.entity(racer.kart).despawn();
+        }
         self.commands
             .entity(player)
-            .remove::<(Kart, Racer, BossBar, BossBarState)>();
+            .remove::<(Racer, BossBar, BossBarState)>();
         true
     }
 }
@@ -286,10 +292,20 @@ impl Plugin for RacePlugin {
             .add_observer(rescue)
             .add_observer(launch)
             .add_observer(scores)
+            .add_observer(vehicle::input)
             .add_systems(
                 Update,
                 (
-                    clock, construct, load, countdown, racing, hud, race_bar, boost_bar,
+                    clock,
+                    construct,
+                    load,
+                    countdown,
+                    vehicle::drive,
+                    racing,
+                    hud,
+                    race_bar,
+                    boost_bar,
+                    vehicle::pose,
                 )
                     .chain()
                     .after(CommandSystems::DrainQueue),
@@ -359,9 +375,9 @@ fn ready(event: On<PlayerReadyEvent>, mut grid: Grid) {
     );
 }
 
-fn quit(event: On<PlayerQuitEvent>, karts: Query<&Kart>, mut grid: Grid) {
+fn quit(event: On<PlayerQuitEvent>, karts: Karts, mut grid: Grid) {
     let player = event.entity;
-    let racing = grid.race.phase == Phase::Racing && karts.get(player).is_ok_and(Kart::racing);
+    let racing = grid.race.phase == Phase::Racing && karts.get(player).is_some_and(Kart::racing);
     grid.leave(player);
     let name = grid.chat.name(player);
     grid.chat.others(
@@ -392,17 +408,11 @@ fn leave(event: On<Leave>, mut grid: Grid) {
     );
 }
 
-fn rescue(
-    event: On<Rescue>,
-    race: Res<Race>,
-    map: Res<Track>,
-    mut karts: Query<&mut Kart>,
-    chat: Chat,
-) {
+fn rescue(event: On<Rescue>, race: Res<Race>, map: Res<Track>, mut karts: Karts, chat: Chat) {
     if race.phase != Phase::Racing {
         return;
     }
-    let Ok(mut kart) = karts.get_mut(event.0) else {
+    let Some(mut kart) = karts.get_mut(event.0) else {
         return;
     };
     if !kart.racing() {
@@ -419,7 +429,7 @@ fn launch(
     event: On<Launch>,
     mut race: ResMut<Race>,
     arena: Res<Arena>,
-    mut karts: Query<&mut Kart>,
+    mut karts: Karts,
     chat: Chat,
     mut commands: Commands,
 ) {
@@ -437,7 +447,7 @@ fn launch(
         return;
     }
     for (slot, pilot) in race.roster.iter().enumerate() {
-        if let Ok(mut kart) = karts.get_mut(*pilot) {
+        if let Some(mut kart) = karts.get_mut(*pilot) {
             kart.wait(slot);
             kart.participant = true;
         }
@@ -494,7 +504,8 @@ fn clock(mut race: ResMut<Race>) {
 fn construct(
     mut race: ResMut<Race>,
     arena: Res<Arena>,
-    mut racers: Query<(&mut Racer, &mut Kart)>,
+    mut racers: Query<&mut Racer>,
+    mut karts: Query<&mut Kart>,
     chat: Chat,
     mut commands: Commands,
 ) {
@@ -525,7 +536,10 @@ fn construct(
         let track = arena.track();
         let mut slot = 0;
         for pilot in &race.roster {
-            let Ok((mut racer, mut kart)) = racers.get_mut(*pilot) else {
+            let Ok(mut racer) = racers.get_mut(*pilot) else {
+                continue;
+            };
+            let Ok(mut kart) = karts.get_mut(racer.kart) else {
                 continue;
             };
             if !kart.participant {
@@ -576,7 +590,8 @@ fn racing(
     mut race: ResMut<Race>,
     arena: Res<Arena>,
     map: Res<Track>,
-    mut racers: Query<(Entity, &mut Racer, &mut Kart)>,
+    mut racers: Query<&mut Racer>,
+    mut karts: Query<(&Pilot, &mut Kart)>,
     chat: Chat,
 ) {
     if race.phase != Phase::Racing {
@@ -590,10 +605,14 @@ fn racing(
         ));
     }
     let mut unfinished = 0;
-    for (player, mut racer, mut kart) in &mut racers {
+    for (pilot, mut kart) in &mut karts {
+        let player = pilot.0;
         if !kart.racing() {
             continue;
         }
+        let Ok(mut racer) = racers.get_mut(player) else {
+            continue;
+        };
         if kart.next_gate != racer.gate {
             racer.gate = kart.next_gate;
             if (kart.next_gate - 1).is_multiple_of(GATES) && kart.next_gate <= laps * GATES {
@@ -646,18 +665,21 @@ fn racing(
     }
     chat.all("Retour en vol : demontage de la piste. /scores pour le classement complet.");
     for (slot, pilot) in race.roster.iter().enumerate() {
-        if let Ok((_, _, mut kart)) = racers.get_mut(*pilot) {
+        let Ok(racer) = racers.get(*pilot) else {
+            continue;
+        };
+        if let Ok((_, mut kart)) = karts.get_mut(racer.kart) {
             kart.wait(slot);
         }
     }
 }
 
-fn hud(race: Res<Race>, racers: Query<(Entity, &Kart), With<Racer>>, chat: Chat) {
+fn hud(race: Res<Race>, karts: Query<(&Pilot, &Kart)>, chat: Chat) {
     if !race.tick.is_multiple_of(HUD_PERIOD) {
         return;
     }
-    for (player, kart) in &racers {
-        chat.bar(player, race.status(kart));
+    for (pilot, kart) in &karts {
+        chat.bar(pilot.0, race.status(kart));
     }
 }
 
@@ -718,8 +740,14 @@ fn race_bar(
     }
 }
 
-fn boost_bar(mut bars: Query<(&Kart, &mut BossBar), Changed<Kart>>) {
-    for (kart, mut bar) in &mut bars {
+fn boost_bar(
+    karts: Query<(&Pilot, &Kart), Changed<Kart>>,
+    mut bars: Query<&mut BossBar, With<Racer>>,
+) {
+    for (pilot, kart) in &karts {
+        let Ok(mut bar) = bars.get_mut(pilot.0) else {
+            continue;
+        };
         let progress = (kart.fuel / 100.0) as f32;
         if bar.progress != progress {
             bar.progress = progress;
@@ -728,17 +756,20 @@ fn boost_bar(mut bars: Query<(&Kart, &mut BossBar), Changed<Kart>>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
+pub(crate) mod tests {
 
-    use bevy_app::App;
+    use bevy_app::{App, PostUpdate};
     use flume::Receiver;
     use ussr_nbt::owned::{Nbt, Tag};
     use voidmc::commands::{dispatch_command, plugin::CommandPlugin};
-    use voidmc::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
+    use voidmc::components::{
+        ClientId, LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerReady,
+    };
     use voidmc::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
     use voidmc::plugins::boss_bar::BossBarPlugin;
+    use voidmc::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
     use voidmc::world::{ChunkIndex, DimensionId};
+    use voidmc::{EntityPlugin, VoidSystems};
     use voidmc_protocol::clientbound::{
         BossEventAction, ClientboundPacket, ManualPlayPacket, Parser, PlayPacket,
     };
@@ -748,8 +779,10 @@ mod tests {
     use crate::kart::RESET_PENALTY;
     use crate::terrain::Alpine;
 
+    pub(crate) const VIEW_RADIUS: i32 = 20;
+
     #[derive(Debug, Clone, PartialEq)]
-    enum Out {
+    pub(crate) enum Out {
         Chat {
             client: u32,
             overlay: bool,
@@ -763,11 +796,39 @@ mod tests {
             progress: Option<f32>,
         },
         Chunk(u32),
+        Spawn {
+            client: u32,
+            id: i32,
+            kind: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            yaw: u8,
+        },
+        Remove(u32, Vec<i32>),
+        Passengers(u32, i32, Vec<i32>),
+        Move {
+            client: u32,
+            id: i32,
+            delta: (i16, i16, i16),
+            yaw: Option<u8>,
+        },
+        Rotate(u32, i32, u8),
+        Teleport {
+            client: u32,
+            id: i32,
+            x: f64,
+            y: f64,
+            z: f64,
+            yaw: f32,
+        },
+        HeadRotation(u32, i32),
+        Metadata(u32, i32),
     }
 
-    struct Harness {
-        app: App,
-        rx: Receiver<OutgoingPacket>,
+    pub(crate) struct Harness {
+        pub(crate) app: App,
+        pub(crate) rx: Receiver<OutgoingPacket>,
     }
 
     fn text(nbt: &Nbt, key: &str) -> String {
@@ -783,7 +844,7 @@ mod tests {
     }
 
     impl Harness {
-        fn new(seed: u64) -> Self {
+        pub(crate) fn new(seed: u64) -> Self {
             let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
             let (outgoing_tx, rx) = flume::unbounded::<OutgoingPacket>();
             let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
@@ -797,47 +858,76 @@ mod tests {
             })
             .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
             .init_resource::<ChunkIndex>()
+            .configure_sets(
+                PostUpdate,
+                (
+                    VoidSystems::EntityBroadcast,
+                    VoidSystems::EntityMetadataSync,
+                    VoidSystems::EntityVisibility,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                PostUpdate,
+                (broadcast_entity_movement, update_previous_entity_positions)
+                    .chain()
+                    .in_set(VoidSystems::EntityBroadcast),
+            )
             .add_plugins((
                 CommandPlugin,
                 BossBarPlugin,
+                EntityPlugin,
                 RacePlugin(Arena::new(Alpine { seed })),
             ));
             Self { app, rx }
         }
 
-        fn world(&mut self) -> &mut World {
+        pub(crate) fn world(&mut self) -> &mut World {
             self.app.world_mut()
         }
 
-        fn race(&self) -> &Race {
+        pub(crate) fn race(&self) -> &Race {
             self.app.world().resource::<Race>()
         }
 
-        fn race_mut(&mut self) -> Mut<'_, Race> {
+        pub(crate) fn race_mut(&mut self) -> Mut<'_, Race> {
             self.world().resource_mut::<Race>()
         }
 
-        fn kart(&self, player: Entity) -> &Kart {
-            self.app.world().get::<Kart>(player).unwrap()
+        pub(crate) fn kart_entity(&self, player: Entity) -> Entity {
+            self.app.world().get::<Racer>(player).unwrap().kart
         }
 
-        fn kart_mut(&mut self, player: Entity) -> Mut<'_, Kart> {
-            self.world().get_mut::<Kart>(player).unwrap()
+        pub(crate) fn kart(&self, player: Entity) -> &Kart {
+            self.app
+                .world()
+                .get::<Kart>(self.kart_entity(player))
+                .unwrap()
         }
 
-        fn spawn(&mut self, id: u32) -> Entity {
+        pub(crate) fn kart_mut(&mut self, player: Entity) -> Mut<'_, Kart> {
+            let kart = self.kart_entity(player);
+            self.world().get_mut::<Kart>(kart).unwrap()
+        }
+
+        pub(crate) fn spawn(&mut self, id: u32) -> Entity {
+            let loaded = ChunkPos::new(0, 0)
+                .chunks_in_radius(VIEW_RADIUS)
+                .into_iter()
+                .collect();
             self.world()
                 .spawn((
                     ClientId(id),
                     PlayerReady,
+                    MinecraftEntityId::allocate(),
                     PlayerName(format!("Pilot{id}")),
                     PlayerDimension(DimensionId::Overworld),
-                    LoadedChunks(HashSet::new()),
+                    LoadedChunks(loaded),
                 ))
                 .id()
         }
 
-        fn connect(&mut self, id: u32) -> Entity {
+        pub(crate) fn connect(&mut self, id: u32) -> Entity {
             let entity = self.spawn(id);
             self.world().trigger(PlayerReadyEvent {
                 client_id: id,
@@ -847,7 +937,7 @@ mod tests {
             entity
         }
 
-        fn disconnect(&mut self, player: Entity) {
+        pub(crate) fn disconnect(&mut self, player: Entity) {
             let client_id = self.app.world().get::<ClientId>(player).unwrap().0;
             self.world().trigger(PlayerQuitEvent {
                 client_id,
@@ -857,7 +947,7 @@ mod tests {
             self.world().despawn(player);
         }
 
-        fn command(&mut self, player: Entity, name: &str, args: &[&str]) {
+        pub(crate) fn command(&mut self, player: Entity, name: &str, args: &[&str]) {
             let client_id = self.app.world().get::<ClientId>(player).unwrap().0;
             dispatch_command(
                 self.world(),
@@ -869,17 +959,17 @@ mod tests {
             self.world().flush();
         }
 
-        fn tick(&mut self) {
+        pub(crate) fn tick(&mut self) {
             self.app.update();
         }
 
-        fn ticks(&mut self, n: usize) {
+        pub(crate) fn ticks(&mut self, n: usize) {
             for _ in 0..n {
                 self.tick();
             }
         }
 
-        fn drain(&self) -> Vec<Out> {
+        pub(crate) fn drain(&self) -> Vec<Out> {
             self.rx
                 .try_iter()
                 .map(|out| match out.packet {
@@ -912,12 +1002,58 @@ mod tests {
                     ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(_)) => {
                         Out::Chunk(out.client_id)
                     }
+                    ClientboundPacket::Play(PlayPacket::SpawnEntity(p)) => Out::Spawn {
+                        client: out.client_id,
+                        id: p.entity_id,
+                        kind: p.entity_type,
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        yaw: p.yaw,
+                    },
+                    ClientboundPacket::ManualPlay(ManualPlayPacket::RemoveEntities(p)) => {
+                        Out::Remove(out.client_id, p.entity_ids)
+                    }
+                    ClientboundPacket::ManualPlay(ManualPlayPacket::SetPassengers(p)) => {
+                        Out::Passengers(out.client_id, p.entity_id, p.passengers)
+                    }
+                    ClientboundPacket::Play(PlayPacket::UpdateEntityPosition(p)) => Out::Move {
+                        client: out.client_id,
+                        id: p.entity_id,
+                        delta: (p.delta_x, p.delta_y, p.delta_z),
+                        yaw: None,
+                    },
+                    ClientboundPacket::Play(PlayPacket::UpdateEntityPositionAndRotation(p)) => {
+                        Out::Move {
+                            client: out.client_id,
+                            id: p.entity_id,
+                            delta: (p.delta_x, p.delta_y, p.delta_z),
+                            yaw: Some(p.yaw),
+                        }
+                    }
+                    ClientboundPacket::Play(PlayPacket::UpdateEntityRotation(p)) => {
+                        Out::Rotate(out.client_id, p.entity_id, p.yaw)
+                    }
+                    ClientboundPacket::Play(PlayPacket::TeleportEntity(p)) => Out::Teleport {
+                        client: out.client_id,
+                        id: p.entity_id,
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        yaw: p.yaw,
+                    },
+                    ClientboundPacket::Play(PlayPacket::SetHeadRotation(p)) => {
+                        Out::HeadRotation(out.client_id, p.entity_id)
+                    }
+                    ClientboundPacket::Play(PlayPacket::SetEntityData(p)) => {
+                        Out::Metadata(out.client_id, p.entity_id)
+                    }
                     other => panic!("unexpected packet {other:?}"),
                 })
                 .collect()
         }
 
-        fn chats(&self, client: u32) -> Vec<String> {
+        pub(crate) fn chats(&self, client: u32) -> Vec<String> {
             self.drain()
                 .into_iter()
                 .filter_map(|out| match out {
@@ -932,7 +1068,7 @@ mod tests {
                 .collect()
         }
 
-        fn shortcut_to_countdown(&mut self, player: Entity, laps: &[&str]) {
+        pub(crate) fn shortcut_to_countdown(&mut self, player: Entity, laps: &[&str]) {
             self.command(player, "race", laps);
             assert_eq!(self.race().phase, Phase::Generating);
             self.race_mut().pending.clear();
@@ -940,7 +1076,7 @@ mod tests {
             assert_eq!(self.race().phase, Phase::Countdown);
         }
 
-        fn shortcut_to_racing(&mut self, player: Entity, laps: &[&str]) {
+        pub(crate) fn shortcut_to_racing(&mut self, player: Entity, laps: &[&str]) {
             self.shortcut_to_countdown(player, laps);
             let tick = self.race().tick;
             self.race_mut().start = tick;
@@ -1223,7 +1359,7 @@ mod tests {
         assert_eq!(h.app.world().resource::<ChunkIndex>().0.len(), chunk_count);
         assert!(h.kart(a).y < WAIT_Y);
         assert_eq!(h.kart(a).next_gate, 1);
-        assert!(h.app.world().get::<Kart>(b).is_none());
+        assert!(h.app.world().get::<Racer>(b).is_none());
 
         let mut countdown = Vec::new();
         let mut ticks = 0;
@@ -1367,7 +1503,6 @@ mod tests {
         h.tick();
         h.drain();
         h.command(c, "leave", &[]);
-        assert!(h.app.world().get::<Kart>(c).is_none());
         assert!(h.app.world().get::<Racer>(c).is_none());
         assert!(h.app.world().get::<BossBar>(c).is_none());
         assert!(h.app.world().get::<BossBarState>(c).is_none());
@@ -1556,8 +1691,8 @@ mod tests {
         assert_eq!(
             overlays(&out, 1),
             vec![
-                "Tour 2/3 | CP 2/8 | 0.5s (+3s) | 36 km/h | Bonus : TURBO [Sprint]".to_string(),
-                "Tour 2/3 | CP 2/8 | 0.7s (+3s) | 36 km/h | Bonus : TURBO [Sprint]".to_string()
+                "Tour 2/3 | CP 2/8 | 0.5s (+3s) | 33 km/h | Bonus : TURBO [Sprint]".to_string(),
+                "Tour 2/3 | CP 2/8 | 0.7s (+3s) | 30 km/h | Bonus : TURBO [Sprint]".to_string()
             ]
         );
         h.kart_mut(a).next_gate = LAPS * GATES + 1;
@@ -1666,8 +1801,10 @@ mod tests {
         );
         h.kart_mut(a).fuel = 50.0;
         h.tick();
-        assert_eq!(h.app.world().get::<BossBar>(a).unwrap().progress, 0.5);
-        assert!(bars(&h.drain(), 1).contains(&("progress".into(), None, Some(0.5))));
+        let progress = h.app.world().get::<BossBar>(a).unwrap().progress;
+        assert_eq!(progress, (h.kart(a).fuel / 100.0) as f32);
+        assert!((progress - 0.5035).abs() < 1e-6);
+        assert!(bars(&h.drain(), 1).contains(&("progress".into(), None, Some(progress))));
         h.kart_mut(a).next_gate = LAPS * GATES + 1;
         h.tick();
         assert_eq!(
