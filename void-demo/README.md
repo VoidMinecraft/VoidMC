@@ -365,9 +365,9 @@ Les onze genres reprennent les modèles de la référence, tous issus de `voidmc
   rotation, orientés selon la piste.
 - **Ondes** : douze segments en anneau (`emerald_block`, `orange_stained_glass`, ou
   sea lantern et verre cyan alternés) dont le rayon suit l'onde.
-- **Éclair** : sept prismes fins (sea lantern et béton jaune alternés, 0,2 bloc de
-  côté) mis bout à bout en zigzag depuis 12 blocs au-dessus du point d'impact jusqu'au
-  kart ; les décalages latéraux (±0,9 bloc) de chaque coude viennent de la seed du
+- **Éclair** : cinq prismes fins (sea lantern et béton jaune alternés, 0,2 bloc de
+  côté) mis bout à bout en zigzag depuis 6,75 blocs au-dessus du point d'impact jusqu'au
+  kart ; les décalages latéraux (±0,25 bloc) de chaque coude viennent de la seed du
   coup, chaque éclair est donc différent. Il vit 8 ticks : plein pendant 4 ticks, puis
   une seule image le réduit à zéro (l'interpolation client fait le fondu) avant son
   retrait — deux images en tout, jamais de recréation.

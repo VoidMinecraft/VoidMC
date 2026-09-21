@@ -15,11 +15,11 @@ use crate::track::Track;
 
 pub const KEYFRAME_TICKS: u16 = 2;
 pub const JUMP: f64 = 6.0;
-pub const BOLT_SEGMENTS: usize = 7;
-pub const BOLT_HEIGHT: f64 = 12.0;
+pub const BOLT_SEGMENTS: usize = 5;
+pub const BOLT_HEIGHT: f64 = 6.75;
 pub const BOLT_FLASH: u8 = 4;
 const BOLT_WIDTH: f64 = 0.2;
-const BOLT_SWAY: f64 = 0.9;
+const BOLT_SWAY: f64 = 0.25;
 const BRIGHTNESS: (u8, u8) = (15, 15);
 const VIEW_RANGE: f32 = 2.0;
 pub const RAINBOW: [i32; 11] = [
@@ -1176,8 +1176,8 @@ mod tests {
             assert!((point[1] - height).abs() < 1e-9);
             assert!(point[0].abs() <= BOLT_SWAY && point[2].abs() <= BOLT_SWAY);
         }
-        assert!(path.iter().any(|p| p[0].abs() > 0.2));
-        assert!(path.iter().any(|p| p[2].abs() > 0.2));
+        assert!(path.iter().any(|p| p[0].abs() > BOLT_SWAY / 4.0));
+        assert!(path.iter().any(|p| p[2].abs() > BOLT_SWAY / 4.0));
         assert_ne!(path, bolt_path(&seeded(0x0fed_cba9_8765_4321)));
         for pair in path.windows(2) {
             let d = [
