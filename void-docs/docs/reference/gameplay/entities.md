@@ -17,10 +17,16 @@ fn spawn_guard(mut commands: Commands, pos: Position, dim: DimensionId) {
         .rotation(90.0, 0.0)
         .gravity(true)            // server-side vertical physics
         .block_collision(true)
-        .spawn(&mut commands)     // EntityCommands; .spawn_in(&mut world) from commands
-        .insert(Guard);
+        .with(Guard)              // extra components declared before the spawn
+        .spawn(&mut commands);    // EntityCommands; .spawn_in(&mut world) from a World
 }
 ```
+
+Declare extra components up front with `.with(component)` (or `.with_bundle(bundle)`
+for several at once); they land on the entity the moment it spawns, so you never
+need a follow-up `.insert(...)`. If you would rather hand a raw bundle straight to
+Bevy, `EntityBuilder::bundle()` returns the assembled bundle:
+`commands.spawn(EntityBuilder::new(EntityKind::Zombie).at(x, y, z).bundle())`.
 
 `EntityKind` is generated from the `minecraft:entity_type` registry
 (`EntityKind::from_name("minecraft:pig")`, `.id()`, `.name()`, `EntityKind::ALL`).
@@ -116,9 +122,12 @@ use voidmc_data::v26_1_2::blocks;
 
 EntityBuilder::new(EntityKind::BlockDisplay)
     .position(pos)
-    .spawn(&mut commands)
-    .insert(BlockDisplay(blocks::CYAN_STAINED_GLASS));
+    .with(BlockDisplay(blocks::CYAN_STAINED_GLASS))
+    .spawn(&mut commands);
 ```
+
+As above, `.with(...)` attaches the component during the spawn; reach for
+`bundle()` (`commands.spawn(builder.bundle())`) when you want the raw bundle.
 
 Assigning `Display::transform` starts a new keyframe that the client
 interpolates over `interpolation_ticks`; the interpolation clock reset is

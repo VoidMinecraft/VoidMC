@@ -62,23 +62,23 @@ fn handle_spawn(ctx: &mut CommandContext) {
 
     ctx.with_world_mut(|world| {
         let (position, dimension) = origin(world, executor);
-        let mut entity = EntityBuilder::new(kind)
+        let mut builder = EntityBuilder::new(kind)
             .position(position)
             .in_dimension(dimension)
-            .gravity(!float)
-            .spawn_in(world);
+            .gravity(!float);
         if let Some(name) = name {
-            entity.insert(CustomName::new(name));
+            builder = builder.with(CustomName::new(name));
         }
         if glow {
-            entity.insert(Glowing);
+            builder = builder.with(Glowing);
         }
         if invisible {
-            entity.insert(Invisible);
+            builder = builder.with(Invisible);
         }
         if float {
-            entity.insert(NoGravity);
+            builder = builder.with(NoGravity);
         }
+        builder.spawn_in(world);
     });
     ctx.reply(&format!("Spawned {}.", entity_name));
 }
@@ -106,8 +106,7 @@ fn handle_display(ctx: &mut CommandContext) {
                     EntityBuilder::new(EntityKind::BlockDisplay)
                         .position(position)
                         .in_dimension(dimension)
-                        .spawn_in(world)
-                        .insert((
+                        .with_bundle((
                             BlockDisplay(blocks::CYAN_STAINED_GLASS),
                             Display::default()
                                 .transform(shield_transform(angle))
@@ -117,30 +116,30 @@ fn handle_display(ctx: &mut CommandContext) {
                                 .culling_box(2.0 * SHIELD_RADIUS + 1.0, 2.0),
                             ShieldSegment { angle },
                             DemoDisplay { owner: executor },
-                        ));
+                        ))
+                        .spawn_in(world);
                 }
                 "Shield raised. /display clear removes it."
             }
             "sign" => {
-                let mut sign = EntityBuilder::new(EntityKind::TextDisplay)
+                EntityBuilder::new(EntityKind::TextDisplay)
                     .at(position.x, position.y + 2.2, position.z)
                     .in_dimension(dimension)
+                    .with_bundle((
+                        TextDisplay::new(text.unwrap_or_else(|| "Hello from void".into()))
+                            .shadow()
+                            .alignment(TextAlignment::Center),
+                        Display::default().billboard(voidmc::Billboard::Center),
+                        DemoDisplay { owner: executor },
+                    ))
                     .spawn_in(world);
-                sign.insert((
-                    TextDisplay::new(text.unwrap_or_else(|| "Hello from void".into()))
-                        .shadow()
-                        .alignment(TextAlignment::Center),
-                    Display::default().billboard(voidmc::Billboard::Center),
-                    DemoDisplay { owner: executor },
-                ));
                 "Sign placed above you."
             }
             "item" => {
                 EntityBuilder::new(EntityKind::ItemDisplay)
                     .at(position.x, position.y + 1.0, position.z)
                     .in_dimension(dimension)
-                    .spawn_in(world)
-                    .insert((
+                    .with_bundle((
                         ItemDisplay::new(ItemStack::new(
                             voidmc::ItemId::from_name("minecraft:diamond_sword").unwrap(),
                             1,
@@ -148,7 +147,8 @@ fn handle_display(ctx: &mut CommandContext) {
                         Display::default()
                             .transform(DisplayTransform::default().uniform_scale(2.0)),
                         DemoDisplay { owner: executor },
-                    ));
+                    ))
+                    .spawn_in(world);
                 "Item display placed."
             }
             "ride" => {
@@ -157,17 +157,17 @@ fn handle_display(ctx: &mut CommandContext) {
                     .in_dimension(dimension)
                     .gravity(true)
                     .block_collision(true)
+                    .with(DemoDisplay { owner: executor })
                     .spawn_in(world)
-                    .insert(DemoDisplay { owner: executor })
                     .id();
                 let chicken = EntityBuilder::new(EntityKind::Chicken)
                     .position(position)
                     .in_dimension(dimension)
-                    .spawn_in(world)
-                    .insert((
+                    .with_bundle((
                         CustomName::new("Passenger"),
                         DemoDisplay { owner: executor },
                     ))
+                    .spawn_in(world)
                     .id();
                 world.entity_mut(pig).insert(Passengers::new([chicken]));
                 "A chicken now rides a pig."
