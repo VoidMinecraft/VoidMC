@@ -27,6 +27,8 @@ pub enum VoidSystems {
     ChunkStreaming,
     /// `PostUpdate`: resync of `InventoryDirty` players.
     InventorySync,
+    /// `PostUpdate`: boss bar add/update/remove packets.
+    BossBarSync,
     /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
     StatusSnapshot,
     /// `PostUpdate`: TPS tracking (only with `metrics_debug`).

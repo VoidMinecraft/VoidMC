@@ -46,7 +46,8 @@ pub use item_behavior::{
     BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
     UseResult,
 };
-pub use players::{Players, Recipient, Recipients, WorldPlayers};
+pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
+pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;

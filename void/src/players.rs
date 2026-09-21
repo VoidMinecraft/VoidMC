@@ -4,6 +4,8 @@
 //! `ParamSet` (B0001).
 
 use std::collections::HashSet;
+use std::fmt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy_ecs::prelude::*;
@@ -85,6 +87,10 @@ impl<'a> Recipients<'a> {
         self
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &Recipient<'a>> + '_ {
+        self.targets.iter()
+    }
+
     pub fn entities(&self) -> impl Iterator<Item = Entity> + '_ {
         self.targets.iter().map(|r| r.entity)
     }
@@ -125,6 +131,56 @@ impl<'a> Recipients<'a> {
         }
         if let Some(last) = pending {
             deliver(self.sender, last.entity, last.client_id, packet);
+        }
+    }
+}
+
+/// Which ready players a feature addresses; [`Audience::resolve`] narrows a
+/// [`Recipients`] snapshot, [`Audience::includes`] tests one [`Recipient`].
+#[derive(Clone, Default)]
+pub enum Audience {
+    #[default]
+    All,
+    InDimension(DimensionId),
+    Explicit(HashSet<Entity>),
+    Custom(Arc<dyn Fn(&Recipient) -> bool + Send + Sync>),
+}
+
+impl Audience {
+    pub fn explicit(players: impl IntoIterator<Item = Entity>) -> Self {
+        Audience::Explicit(players.into_iter().collect())
+    }
+
+    pub fn custom(predicate: impl Fn(&Recipient) -> bool + Send + Sync + 'static) -> Self {
+        Audience::Custom(Arc::new(predicate))
+    }
+
+    pub fn includes(&self, recipient: &Recipient) -> bool {
+        match self {
+            Audience::All => true,
+            Audience::InDimension(dimension) => recipient.dimension == Some(*dimension),
+            Audience::Explicit(players) => players.contains(&recipient.entity),
+            Audience::Custom(predicate) => predicate(recipient),
+        }
+    }
+
+    pub fn resolve<'a>(&self, ready: Recipients<'a>) -> Recipients<'a> {
+        match self {
+            Audience::All => ready,
+            _ => ready.filter(|r| self.includes(r)),
+        }
+    }
+}
+
+impl fmt::Debug for Audience {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Audience::All => f.write_str("All"),
+            Audience::InDimension(dimension) => {
+                f.debug_tuple("InDimension").field(dimension).finish()
+            }
+            Audience::Explicit(players) => f.debug_tuple("Explicit").field(players).finish(),
+            Audience::Custom(_) => f.write_str("Custom(..)"),
         }
     }
 }
@@ -536,6 +592,40 @@ mod tests {
         let mut sent = drain(&rx);
         sent.sort();
         assert_eq!(sent, vec![(1, 4), (2, 3), (2, 4), (3, 1)]);
+    }
+
+    #[test]
+    fn audience_resolves_against_ready_snapshot() {
+        let (mut app, rx) = test_app();
+        let first = app
+            .world_mut()
+            .spawn((ClientId(1), PlayerReady, PlayerDimension(DimensionId::End)))
+            .id();
+        app.world_mut()
+            .spawn((ClientId(2), PlayerReady, PlayerDimension(DimensionId::End)));
+        app.world_mut().spawn((ClientId(3), PlayerReady));
+
+        app.add_systems(Update, move |players: Players| {
+            Audience::All.resolve(players.ready()).send(keep_alive(1));
+            Audience::InDimension(DimensionId::End)
+                .resolve(players.ready())
+                .send(keep_alive(2));
+            Audience::explicit([first])
+                .resolve(players.ready())
+                .send(keep_alive(3));
+            Audience::custom(|r| r.client_id() == 3)
+                .resolve(players.ready())
+                .send(keep_alive(4));
+            assert!(Audience::default().includes(players.ready().iter().next().unwrap()));
+        });
+        app.update();
+
+        let mut sent = drain(&rx);
+        sent.sort();
+        assert_eq!(
+            sent,
+            vec![(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (3, 1), (3, 4)]
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use bevy_app::Plugin;
 
+pub mod boss_bar;
 pub mod chat;
 pub mod configuration;
 pub mod handshake;
@@ -28,6 +29,7 @@ impl Plugin for DefaultPlugins {
             item_use::ItemUsePlugin,
             inventory::InventoryPlugin,
             item_drops::ItemDropsPlugin,
+            boss_bar::BossBarPlugin,
         ));
     }
 }

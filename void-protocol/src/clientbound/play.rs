@@ -1,5 +1,6 @@
 mod block_changed_ack;
 mod block_update;
+mod boss_event;
 pub mod chunk;
 mod command_suggestions_response;
 pub mod commands;
@@ -29,6 +30,7 @@ mod update_entity_rotation;
 
 pub use block_changed_ack::*;
 pub use block_update::*;
+pub use boss_event::*;
 pub use chunk::*;
 pub use command_suggestions_response::*;
 pub use commands::*;
@@ -66,6 +68,8 @@ pub enum PlayPacket {
     BlockChangedAck(BlockChangedAck),
     #[codec(packet_id = 0x08)]
     BlockUpdate(BlockUpdate),
+    #[codec(packet_id = 0x09)]
+    BossEvent(BossEvent),
     #[codec(packet_id = 0x12)]
     SetContainerContent(SetContainerContent),
     #[codec(packet_id = 0x14)]

@@ -16,6 +16,11 @@
   },
   {
     "type": "file",
+    "name": "boss-bars",
+    "label": "Boss Bars"
+  },
+  {
+    "type": "file",
     "name": "world",
     "label": "World & Chunks"
   },
