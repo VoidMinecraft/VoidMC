@@ -29,7 +29,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Position from the previous tick (used for delta encoding) |
 | `Rotation { yaw, pitch }` | `f32` angles | Current look direction |
-| `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game |
+| `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
 | `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
 
