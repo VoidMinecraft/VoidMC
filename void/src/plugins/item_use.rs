@@ -124,8 +124,8 @@ fn queue_break(
     );
 }
 
-/// Applies a creative-mode slot change to the server-side inventory. The client
-/// already shows the change, so no resync is sent.
+/// Applies a creative-mode slot change to the server-side inventory; the slot
+/// is echoed back by the inventory sync like any other change.
 fn handle_creative_slot(
     event: On<PacketEvent<SetCreativeModeSlot>>,
     mut inventories: Query<&mut Inventory>,

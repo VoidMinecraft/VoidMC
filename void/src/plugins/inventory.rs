@@ -11,6 +11,7 @@ use voidmc_protocol::clientbound;
 use voidmc_protocol::serverbound::{ClickContainer, CloseContainer};
 use voidmc_protocol::slot::Slot;
 
+use crate::config::ServerConfigResource;
 use crate::events::{ItemDropEvent, PlayerChangeSlotEvent, PlayerQuitEvent, PlayerReadyEvent};
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
@@ -25,6 +26,8 @@ use crate::window::{Layout, Window};
 
 /// Window id of the player's own inventory.
 pub const PLAYER_WINDOW_ID: i32 = 0;
+
+const CREATIVE_GAME_MODE: u8 = 1;
 
 pub struct InventoryPlugin;
 
@@ -86,10 +89,12 @@ fn track_selected_slot(event: On<PlayerChangeSlotEvent>, mut inventories: Query<
 fn handle_container_click(
     event: On<PacketEvent<ClickContainer>>,
     mut players: Query<(&mut Inventory, Option<&mut OpenMenu>)>,
+    config: Option<Res<ServerConfigResource>>,
     mut queue: ResMut<MenuClickQueue>,
     mut commands: Commands,
 ) {
     let packet = &event.packet;
+    let creative = config.is_some_and(|config| config.game_mode == CREATIVE_GAME_MODE);
     let Ok((mut inv, open)) = players.get_mut(event.entity) else {
         return;
     };
@@ -104,7 +109,7 @@ fn handle_container_click(
         if packet.state_id != inv.state_id() {
             inv.mark_full();
         }
-        let dropped = inv.apply_click(packet.slot, packet.button, packet.input);
+        let dropped = inv.apply_click(packet.slot, packet.button, packet.input, creative);
         drop_all(&mut commands, event.entity, dropped);
         return;
     }
@@ -127,7 +132,7 @@ fn handle_container_click(
     let stale = packet.state_id != open.state_id;
 
     if open.is_editable() {
-        let dropped = apply_menu_click(&mut inv, &mut open, &layout, packet);
+        let dropped = apply_menu_click(&mut inv, &mut open, &layout, packet, creative);
         drop_all(&mut commands, event.entity, dropped);
     } else {
         for changed in &packet.changed_slots {
@@ -158,6 +163,7 @@ fn apply_menu_click(
     open: &mut OpenMenu,
     layout: &Layout,
     packet: &ClickContainer,
+    creative: bool,
 ) -> Vec<ItemStack> {
     let mut slots: Vec<ItemStack> = open
         .slots()
@@ -172,6 +178,7 @@ fn apply_menu_click(
         cursor: &mut cursor,
         drag: &mut open.drag,
         layout,
+        creative,
     }
     .apply_click(packet.slot, packet.button, packet.input);
 
@@ -232,18 +239,16 @@ fn on_menu_removed(
     if reason != MenuCloseReason::Client && reason != MenuCloseReason::Disconnect {
         players.send(event.entity, clientbound::CloseContainer { container_id });
     }
-    if reason != MenuCloseReason::Disconnect {
-        let carried = std::mem::replace(inv.cursor_mut(), ItemStack::EMPTY);
-        inv.mark_cursor();
-        let leftover = inv.give(carried);
-        if !leftover.is_empty() {
-            commands.trigger(ItemDropEvent {
-                dropper: event.entity,
-                stack: leftover,
-            });
-        }
-        inv.mark_full();
+    let carried = std::mem::replace(inv.cursor_mut(), ItemStack::EMPTY);
+    inv.mark_cursor();
+    let leftover = inv.give(carried);
+    if !leftover.is_empty() {
+        commands.trigger(ItemDropEvent {
+            dropper: event.entity,
+            stack: leftover,
+        });
     }
+    inv.mark_full();
     commands.trigger(MenuClosedEvent {
         player: event.entity,
         container_id,
@@ -270,6 +275,10 @@ fn drain_menu_clicks(world: &mut World) {
 /// The inventory indices a menu window shows after its own slots.
 fn visible_inventory(layout: &Layout) -> std::ops::Range<usize> {
     Inventory::MAIN_START..Inventory::MAIN_START + layout.hotbar.end - layout.main.start
+}
+
+fn range_mask(range: std::ops::Range<usize>) -> u64 {
+    range.fold(0, |mask, index| mask | (1 << index))
 }
 
 fn window_slots(inv: &Inventory, open: &OpenMenu, layout: &Layout) -> Vec<Slot> {
@@ -301,6 +310,7 @@ fn sync_containers(
                 Some(id) => {
                     if title_dirty {
                         players.send(entity, open_screen(id, open));
+                        open.full_resync = true;
                     }
                     id
                 }
@@ -313,7 +323,14 @@ fn sync_containers(
                 }
             };
             let layout = open.layout();
-            if std::mem::take(&mut open.full_resync) {
+            let visible = visible_inventory(&layout);
+            let hidden = range_mask(0..Inventory::SIZE) & !range_mask(visible.clone());
+            inv.retain_dirty(if dirty.full {
+                hidden
+            } else {
+                dirty.slots & hidden
+            });
+            if std::mem::take(&mut open.full_resync) || dirty.full {
                 let state_id = open.next_state_id();
                 players.send(
                     entity,
@@ -337,7 +354,6 @@ fn sync_containers(
                         },
                     );
                 }
-                let visible = visible_inventory(&layout);
                 for index in dirty.slot_indices().filter(|i| visible.contains(i)) {
                     let state_id = open.next_state_id();
                     players.send(
@@ -712,11 +728,10 @@ mod tests {
         app.update();
         drain(&rx);
 
-        {
-            let mut open = app.world_mut().get_mut::<OpenMenu>(p).unwrap();
-            open.set_slot(2, stone(1));
-            open.set_title("H2");
-        }
+        app.world_mut()
+            .get_mut::<OpenMenu>(p)
+            .unwrap()
+            .set_slot(2, stone(1));
         {
             let mut inv = app.world_mut().get_mut::<Inventory>(p).unwrap();
             inv.set(Inventory::MAIN_START, stone(2));
@@ -727,7 +742,6 @@ mod tests {
         assert_eq!(
             drain(&rx),
             vec![
-                Sent::Open(1, MenuType::Hopper.registry_id()),
                 Sent::SlotSet(1, 2, 2, stone(1).to_slot()),
                 Sent::SlotSet(1, 3, 5, stone(2).to_slot()),
                 Sent::SlotSet(1, 4, 40, stone(3).to_slot()),
@@ -986,5 +1000,137 @@ mod tests {
         let e = app.world_mut().spawn(ClientId(9)).id();
         assert!(!WorldMenus::new(app.world_mut()).open(e, Menu::chest(1, "A")));
         assert!(!WorldMenus::new(app.world_mut()).is_open(e));
+    }
+
+    #[test]
+    fn title_change_resends_screen_and_full_contents() {
+        let (mut app, rx) = test_app();
+        let p = player(&mut app, 1);
+        WorldMenus::new(app.world_mut()).open(p, Menu::hopper("H").slot(0, stone(1)));
+        app.update();
+        drain(&rx);
+
+        app.world_mut()
+            .get_mut::<OpenMenu>(p)
+            .unwrap()
+            .set_title("H2");
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Open(1, MenuType::Hopper.registry_id()),
+                Sent::Content(1, 2, 41, Slot::EMPTY),
+            ]
+        );
+    }
+
+    #[test]
+    fn hidden_inventory_changes_survive_an_open_menu() {
+        let (mut app, rx) = test_app();
+        let p = player(&mut app, 1);
+        WorldMenus::new(app.world_mut()).open(p, Menu::hopper("H"));
+        app.update();
+        drain(&rx);
+
+        app.world_mut()
+            .get_mut::<Inventory>(p)
+            .unwrap()
+            .set(Inventory::ARMOR_HEAD, stone(1));
+        app.update();
+        assert!(drain(&rx).is_empty());
+        app.world_mut()
+            .get_mut::<Inventory>(p)
+            .unwrap()
+            .set(Inventory::MAIN_START, stone(2));
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::SlotSet(1, 2, 5, stone(2).to_slot())]);
+
+        WorldMenus::new(app.world_mut()).close(p);
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![Sent::Close(1), Sent::Content(0, 1, 46, Slot::EMPTY)]
+        );
+
+        WorldMenus::new(app.world_mut()).open(p, Menu::hopper("H"));
+        app.update();
+        drain(&rx);
+        app.world_mut().get_mut::<Inventory>(p).unwrap().clear();
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Content(2, 2, 41, Slot::EMPTY)]);
+        app.world_mut()
+            .get_mut::<Inventory>(p)
+            .unwrap()
+            .set(Inventory::HOTBAR_START, stone(3));
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![Sent::SlotSet(2, 3, 32, stone(3).to_slot())]
+        );
+        let inv = app.world().get::<Inventory>(p).unwrap();
+        assert_eq!(
+            inv.dirty().slot_indices().collect::<Vec<_>>(),
+            (0..9).chain([45]).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn disconnect_returns_the_cursor_item_to_the_inventory() {
+        let (mut app, rx) = test_app();
+        let p = player(&mut app, 1);
+        WorldMenus::new(app.world_mut()).open(p, Menu::chest(1, "E").slot(0, stone(5)).editable());
+        app.update();
+        click(&mut app, p, 1, 1, 0);
+        app.update();
+        drain(&rx);
+        assert_eq!(app.world().get::<Inventory>(p).unwrap().cursor(), &stone(5));
+
+        app.world_mut().trigger(PlayerQuitEvent {
+            client_id: 1,
+            entity: p,
+        });
+        app.world_mut().entity_mut(p).remove::<OpenMenu>();
+        let inv = app.world().get::<Inventory>(p).unwrap();
+        assert!(inv.cursor().is_empty());
+        assert_eq!(inv.get(Inventory::HOTBAR_START), &stone(5));
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn clone_is_a_no_op_in_survival_and_works_in_creative() {
+        let (mut app, rx) = test_app();
+        let p = player(&mut app, 1);
+        app.world_mut()
+            .get_mut::<Inventory>(p)
+            .unwrap()
+            .set(Inventory::HOTBAR_START, stone(1));
+        app.update();
+        drain(&rx);
+
+        let clone = |app: &mut App| {
+            app.world_mut().trigger(PacketEvent {
+                client_id: 1,
+                entity: p,
+                packet: ClickContainer {
+                    container_id: 0,
+                    state_id: 1,
+                    slot: Inventory::HOTBAR_START as i16,
+                    button: 2,
+                    input: ContainerInput::Clone,
+                    changed_slots: vec![],
+                    carried: None,
+                },
+            });
+        };
+        clone(&mut app);
+        assert!(app.world().get::<Inventory>(p).unwrap().cursor().is_empty());
+
+        let config = crate::config::ServerConfig {
+            game_mode: 1,
+            ..Default::default()
+        };
+        app.insert_resource(ServerConfigResource::from(&config));
+        clone(&mut app);
+        assert_eq!(app.world().get::<Inventory>(p).unwrap().cursor().count, 64);
     }
 }

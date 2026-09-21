@@ -167,8 +167,14 @@ impl Inventory {
     }
 
     /// Applies a Container Click on window 0 and returns the stacks it threw
-    /// into the world.
-    pub fn apply_click(&mut self, slot: i16, button: i8, input: ContainerInput) -> Vec<ItemStack> {
+    /// into the world. `creative` allows cloning and middle-button drags.
+    pub fn apply_click(
+        &mut self,
+        slot: i16,
+        button: i8,
+        input: ContainerInput,
+        creative: bool,
+    ) -> Vec<ItemStack> {
         let before = self.slots.clone();
         let cursor_before = self.cursor.clone();
         let dropped = Window {
@@ -176,6 +182,7 @@ impl Inventory {
             cursor: &mut self.cursor,
             drag: &mut self.drag,
             layout: &Layout::PLAYER,
+            creative,
         }
         .apply_click(slot, button, input);
         self.mark_changed_since(&before);
@@ -224,6 +231,12 @@ impl Inventory {
 
     pub(crate) fn take_dirty(&mut self) -> Dirty {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// Puts back changes a menu window could not show, for the resync that
+    /// follows its close.
+    pub(crate) fn retain_dirty(&mut self, slots: u64) {
+        self.dirty.slots |= slots;
     }
 
     #[cfg(test)]
@@ -412,10 +425,10 @@ mod tests {
     fn left_click_picks_up_then_places() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(10));
-        inv.apply_click(H0, 0, ContainerInput::Pickup);
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
         assert!(inv.get(Inventory::HOTBAR_START).is_empty());
         assert_eq!(inv.cursor().count, 10);
-        inv.apply_click(M0, 0, ContainerInput::Pickup);
+        inv.apply_click(M0, 0, ContainerInput::Pickup, false);
         assert_eq!(inv.get(Inventory::MAIN_START).count, 10);
         assert!(inv.cursor().is_empty());
     }
@@ -425,8 +438,8 @@ mod tests {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(60));
         inv.set(Inventory::MAIN_START, stone(20));
-        inv.apply_click(M0, 0, ContainerInput::Pickup);
-        inv.apply_click(H0, 0, ContainerInput::Pickup);
+        inv.apply_click(M0, 0, ContainerInput::Pickup, false);
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 64);
         assert_eq!(inv.cursor().count, 16);
     }
@@ -435,10 +448,10 @@ mod tests {
     fn right_click_splits_and_places_one() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(9));
-        inv.apply_click(H0, 1, ContainerInput::Pickup);
+        inv.apply_click(H0, 1, ContainerInput::Pickup, false);
         assert_eq!(inv.cursor().count, 5);
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 4);
-        inv.apply_click(M0, 1, ContainerInput::Pickup);
+        inv.apply_click(M0, 1, ContainerInput::Pickup, false);
         assert_eq!(inv.get(Inventory::MAIN_START).count, 1);
         assert_eq!(inv.cursor().count, 4);
     }
@@ -447,7 +460,7 @@ mod tests {
     fn number_key_swaps_with_hotbar() {
         let mut inv = Inventory::new();
         inv.set(Inventory::MAIN_START, stone(5));
-        inv.apply_click(M0, 0, ContainerInput::Swap);
+        inv.apply_click(M0, 0, ContainerInput::Swap, false);
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 5);
         assert!(inv.get(Inventory::MAIN_START).is_empty());
     }
@@ -456,7 +469,7 @@ mod tests {
     fn shift_click_moves_main_to_hotbar() {
         let mut inv = Inventory::new();
         inv.set(Inventory::MAIN_START, stone(32));
-        inv.apply_click(M0, 0, ContainerInput::QuickMove);
+        inv.apply_click(M0, 0, ContainerInput::QuickMove, false);
         assert!(inv.get(Inventory::MAIN_START).is_empty());
         assert_eq!(inv.get(Inventory::HOTBAR_START).count, 32);
     }
@@ -465,7 +478,7 @@ mod tests {
     fn throw_drops_items() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(5));
-        let dropped = inv.apply_click(H0, 1, ContainerInput::Throw);
+        let dropped = inv.apply_click(H0, 1, ContainerInput::Throw, false);
         assert_eq!(dropped.len(), 1);
         assert_eq!(dropped[0].count, 5);
         assert!(inv.get(Inventory::HOTBAR_START).is_empty());
@@ -477,16 +490,9 @@ mod tests {
         inv.set(Inventory::MAIN_START, stone(10));
         inv.set(Inventory::MAIN_START + 1, stone(20));
         inv.set(Inventory::MAIN_START + 2, stone(5));
-        inv.apply_click(
-            (Inventory::MAIN_START + 2) as i16,
-            0,
-            ContainerInput::Pickup,
-        );
-        inv.apply_click(
-            (Inventory::MAIN_START + 2) as i16,
-            0,
-            ContainerInput::PickupAll,
-        );
+        let slot = (Inventory::MAIN_START + 2) as i16;
+        inv.apply_click(slot, 0, ContainerInput::Pickup, false);
+        inv.apply_click(slot, 0, ContainerInput::PickupAll, false);
         assert_eq!(inv.cursor().count, 35);
     }
 
@@ -503,11 +509,11 @@ mod tests {
     fn left_drag_distributes_evenly() {
         let mut inv = Inventory::new();
         inv.set(Inventory::HOTBAR_START, stone(4));
-        inv.apply_click(H0, 0, ContainerInput::Pickup);
-        inv.apply_click(-999, 0, ContainerInput::QuickCraft);
-        inv.apply_click(M0, 1, ContainerInput::QuickCraft);
-        inv.apply_click(M0 + 1, 1, ContainerInput::QuickCraft);
-        inv.apply_click(-999, 2, ContainerInput::QuickCraft);
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
+        inv.apply_click(-999, 0, ContainerInput::QuickCraft, false);
+        inv.apply_click(M0, 1, ContainerInput::QuickCraft, false);
+        inv.apply_click(M0 + 1, 1, ContainerInput::QuickCraft, false);
+        inv.apply_click(-999, 2, ContainerInput::QuickCraft, false);
         assert_eq!(inv.get(Inventory::MAIN_START).count, 2);
         assert_eq!(inv.get(Inventory::MAIN_START + 1).count, 2);
         assert!(inv.cursor().is_empty());
@@ -543,12 +549,12 @@ mod tests {
         assert_eq!(inv.dirty().slot_indices().collect::<Vec<_>>(), vec![36, 37]);
         inv.take_dirty();
 
-        inv.apply_click(H0, 0, ContainerInput::Pickup);
+        inv.apply_click(H0, 0, ContainerInput::Pickup, false);
         let dirty = inv.take_dirty();
         assert_eq!(dirty.slot_indices().collect::<Vec<_>>(), vec![36]);
         assert!(dirty.cursor);
 
-        inv.apply_click(-999, 5, ContainerInput::QuickCraft);
+        inv.apply_click(-999, 5, ContainerInput::QuickCraft, false);
         assert!(inv.take_dirty().is_clean());
 
         inv.clear();

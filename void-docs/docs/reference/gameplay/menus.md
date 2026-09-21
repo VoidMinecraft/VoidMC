@@ -76,9 +76,10 @@ fn tick_timer(mut open: Query<&mut OpenMenu>) {
 }
 ```
 
-Only the slots that changed are sent (`SetContainerSlot`); a title change
-re-sends Open Screen with the same container id, which the client applies
-without closing.
+Only the slots that changed are sent (`SetContainerSlot`). A title change
+re-sends Open Screen with the same container id followed by the full
+contents: the client rebuilds the screen on Open Screen, so the menu stays
+open but must be refilled.
 
 `menus.close(player)` / `WorldMenus::close`, removing `OpenMenu`, the player
 pressing escape, opening another menu and disconnecting all end a menu. Each

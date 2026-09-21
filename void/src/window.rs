@@ -4,11 +4,12 @@
 
 use std::ops::Range;
 
-use voidmc_protocol::serverbound::ContainerInput;
+use voidmc_protocol::serverbound::{ClickContainer, ContainerInput};
 
 use crate::item::{ItemId, ItemStack};
 
 const VERSION: voidmc_data::Version = voidmc_data::Version::V26_1_2;
+const OUTSIDE: i16 = ClickContainer::SLOT_OUTSIDE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Layout {
@@ -146,11 +147,20 @@ pub(crate) struct Window<'a> {
     pub cursor: &'a mut ItemStack,
     pub drag: &'a mut Option<DragState>,
     pub layout: &'a Layout,
+    /// Creative players may clone and middle-drag full stacks out of nothing.
+    pub creative: bool,
 }
 
 impl Window<'_> {
     /// Applies one Container Click and returns the stacks thrown into the world.
+    /// `slot` is a window index or `-999` (outside); anything else is ignored.
     pub fn apply_click(&mut self, slot: i16, button: i8, input: ContainerInput) -> Vec<ItemStack> {
+        if slot < 0 && slot != OUTSIDE {
+            return Vec::new();
+        }
+        if input != ContainerInput::QuickCraft {
+            *self.drag = None;
+        }
         let valid = (slot >= 0 && (slot as usize) < self.layout.size).then_some(slot as usize);
         match input {
             ContainerInput::Pickup => match valid {
@@ -248,7 +258,7 @@ impl Window<'_> {
     }
 
     fn clone_stack(&mut self, slot: usize) {
-        if self.cursor.is_empty() && !self.slots[slot].is_empty() {
+        if self.creative && self.cursor.is_empty() && !self.slots[slot].is_empty() {
             *self.cursor = with_count(&self.slots[slot], max_stack(&self.slots[slot]));
         }
     }
@@ -303,6 +313,7 @@ impl Window<'_> {
 
     fn quick_craft(&mut self, slot: Option<usize>, button: i8) {
         match button {
+            8 if !self.creative => *self.drag = None,
             0 | 4 | 8 => {
                 let kind = match button {
                     0 => DragKind::Left,
@@ -427,6 +438,7 @@ mod tests {
             cursor,
             drag: &mut drag,
             layout,
+            creative: false,
         };
         clicks
             .iter()
@@ -503,5 +515,80 @@ mod tests {
             ],
         );
         assert_eq!(cursor.count, 4);
+    }
+
+    #[test]
+    fn clone_and_middle_drag_need_creative() {
+        let layout = Layout::menu(9, true);
+        let mut slots = vec![ItemStack::EMPTY; layout.size];
+        slots[0] = stone(1);
+        let mut cursor = ItemStack::EMPTY;
+        run(
+            &layout,
+            &mut slots,
+            &mut cursor,
+            &[(0, 2, ContainerInput::Clone)],
+        );
+        assert!(cursor.is_empty());
+
+        cursor = stone(1);
+        run(
+            &layout,
+            &mut slots,
+            &mut cursor,
+            &[
+                (-999, 8, ContainerInput::QuickCraft),
+                (1, 9, ContainerInput::QuickCraft),
+                (-999, 10, ContainerInput::QuickCraft),
+            ],
+        );
+        assert!(slots[1].is_empty());
+        assert_eq!(cursor.count, 1);
+
+        let mut drag = None;
+        let mut window = Window {
+            slots: &mut slots,
+            cursor: &mut cursor,
+            drag: &mut drag,
+            layout: &layout,
+            creative: true,
+        };
+        window.apply_click(-999, 8, ContainerInput::QuickCraft);
+        window.apply_click(1, 9, ContainerInput::QuickCraft);
+        window.apply_click(-999, 10, ContainerInput::QuickCraft);
+        assert_eq!(window.slots[1].count, 64);
+        *window.cursor = ItemStack::EMPTY;
+        window.apply_click(0, 2, ContainerInput::Clone);
+        assert_eq!(window.cursor.count, 64);
+    }
+
+    #[test]
+    fn negative_slots_other_than_outside_are_ignored_and_reset_drag() {
+        let layout = Layout::menu(9, true);
+        let mut slots = vec![ItemStack::EMPTY; layout.size];
+        let mut cursor = stone(4);
+        run(
+            &layout,
+            &mut slots,
+            &mut cursor,
+            &[(-1, 0, ContainerInput::Pickup)],
+        );
+        assert_eq!(cursor.count, 4);
+
+        let mut drag = None;
+        let mut window = Window {
+            slots: &mut slots,
+            cursor: &mut cursor,
+            drag: &mut drag,
+            layout: &layout,
+            creative: false,
+        };
+        window.apply_click(-999, 0, ContainerInput::QuickCraft);
+        window.apply_click(1, 1, ContainerInput::QuickCraft);
+        window.apply_click(5, 0, ContainerInput::QuickMove);
+        assert!(window.drag.is_none());
+        window.apply_click(-999, 2, ContainerInput::QuickCraft);
+        assert!(window.slots[1].is_empty());
+        assert_eq!(window.cursor.count, 4);
     }
 }

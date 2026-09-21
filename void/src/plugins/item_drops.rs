@@ -18,8 +18,6 @@ use crate::entity::{EntityBuilder, EntityKind};
 use crate::events::{EntityDespawnEvent, ItemDropEvent, PlayerDropItemEvent};
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
-use crate::players::Players;
-use crate::plugins::inventory::InventoryDirty;
 use crate::schedule::VoidSystems;
 use crate::world::DimensionId;
 
