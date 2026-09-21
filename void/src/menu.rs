@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
-use ussr_nbt::owned::{Nbt, Tag};
+use ussr_nbt::owned::Nbt;
 use voidmc_data::Version;
 pub use voidmc_protocol::serverbound::ContainerInput;
 
@@ -288,10 +288,7 @@ impl Menu {
     }
 
     pub(crate) fn title_nbt(&self) -> Nbt {
-        Nbt {
-            name: "".into(),
-            compound: vec![("text".into(), Tag::String(self.title.as_str().into()))].into(),
-        }
+        crate::messages::plain_text_component(&self.title)
     }
 
     pub(crate) fn layout(&self) -> Layout {
@@ -601,7 +598,20 @@ impl<'w> WorldMenus<'w> {
 
 #[cfg(test)]
 mod tests {
+    use voidmc_codec::Encode;
+
     use super::*;
+
+    #[test]
+    fn oversized_title_round_trips_below_the_nbt_limit() {
+        let text = "😀".repeat(11000);
+        let mut bytes = Vec::new();
+        Menu::hopper(text.clone()).title_nbt().encode(&mut bytes);
+        let (len, decoded) = crate::messages::decode_wire_text(&bytes);
+        assert!(len <= u16::MAX as usize);
+        assert!(decoded.len() < text.len());
+        assert!(text.starts_with(&decoded));
+    }
 
     #[test]
     fn every_menu_type_resolves_in_the_registry() {
