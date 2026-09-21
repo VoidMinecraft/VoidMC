@@ -54,6 +54,28 @@ Other builder methods: `velocity(Velocity)`, `collider(EntityCollider)`,
 Player entities are still replicated dimension-wide (see
 [Players](/reference/gameplay/players)).
 
+### Hiding without despawning
+
+```rust
+commands.entity(kart).insert(Hidden);
+commands.entity(kart).remove::<Hidden>();
+```
+
+`Hidden` is a marker component: while it is present the tracker treats the
+entity as visible to nobody. Inserting it sends `RemoveEntities` to every
+current viewer that tick and empties `EntityViewers`, so movement, velocity,
+metadata and passenger changes go nowhere; the entity keeps its id, UUID,
+components and back-references. Removing it re-runs the normal spawn path for
+every player in range (`SpawnEntity`, full metadata, `SetPassengers`), exactly
+like a chunk load, and `EntityShownEvent` / `EntityHiddenEvent` fire as usual.
+A late joiner, a chunk reload or a dimension change while hidden never spawns
+the entity. Hiding and showing in the same tick sends nothing.
+
+Passengers are their own entities and are not cascaded: hiding a vehicle
+leaves its riders visible where they are (as vanilla would render them), so
+hide them too if the whole stack must vanish. Per-viewer hiding is not
+supported.
+
 ## Metadata
 
 Every spawned entity carries an `EntityMetadata` component: the indexed synched
@@ -157,11 +179,13 @@ world.entity_mut(pig).insert(Passengers::new([chicken]));
 `Passengers` on the vehicle sends `SetPassengers` to the vehicle's viewers when
 it changes and to players who start seeing the vehicle. A passenger that
 despawns is pruned automatically. Passengers and vehicle should sit in the same
-chunk so viewers know both.
+chunk so viewers know both. Hiding the vehicle with `Hidden` does not hide its
+passengers.
 
 ## Example commands
 
 `void-example` ships `/spawn [entity] [--name <text>] [--glow] [--invisible] [--float]`
-and `/display <shield|sign|item|ride|clear> [text]`: the shield is eight
+and `/display <shield|sign|item|ride|hide|clear> [text]`: the shield is eight
 `BlockDisplay` segments orbiting the player through keyframed transforms, the
-sign a `TextDisplay`, `ride` a chicken riding a pig through `Passengers`.
+sign a `TextDisplay`, `ride` a chicken riding a pig through `Passengers`, and
+`hide` toggles `Hidden` on everything you spawned with the command.
