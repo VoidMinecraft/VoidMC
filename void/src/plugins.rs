@@ -16,8 +16,8 @@ pub mod play;
 pub mod scoreboard;
 pub mod sidebar;
 pub mod status;
-pub mod teleport;
 pub mod tab_list;
+pub mod teleport;
 
 pub struct DefaultPlugins;
 

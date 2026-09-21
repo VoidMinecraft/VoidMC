@@ -67,7 +67,6 @@ pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldPa
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
-pub use plugins::teleport::{Teleport, TeleportOutcome};
 pub use plugins::scoreboard::{
     CollisionRule, DisplaySlot, NameTagVisibility, Objective, ObjectiveState, RenderType, Score,
     ScoreFormat, Team, TeamColor, TeamState,
@@ -77,6 +76,7 @@ pub use plugins::sidebar::{
     Text, Timer, Widget, WidgetId,
 };
 pub use plugins::tab_list::{TabEntry, TabEntryState, TabList, TabListState};
+pub use plugins::teleport::{Teleport, TeleportOutcome};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;

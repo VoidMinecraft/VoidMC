@@ -91,8 +91,8 @@ La manche est complète (`src/race.rs`) :
 - `/race` renvoie d'abord **tout le monde en vol au-dessus du point d'attente**
   (`Teleport` du moteur vers `travel::LOBBY`, orientation 180°/15°) et décroche les
   pilotes de leur kart. Chaque manche construit ensuite un **nouveau tracé** dans la
-  vallée, un chunk tous les deux ticks ; la progression est affichée par la bossbar
-  partagée et le HUD.
+  vallée, un chunk tous les deux ticks ; la progression est affichée par le panneau
+  latéral et le HUD.
 - Circuit prêt : les karts des participants sont placés sur la grille (téléportation
   d'entité par le moteur) et chaque pilote **embarque** via la barrière de
   téléportation du moteur (`Teleport::to(siège).facing(cap, 0)`) : position tenue par
@@ -115,8 +115,9 @@ La manche est complète (`src/race.rs`) :
   tour ; le chat prévient à 60, 30 et 10 secondes de la fin.
 - La **barre d'action** des pilotes affiche la phase, puis tour, checkpoint, temps,
   pénalités, vitesse et bonus pendant la course. La **bossbar bleue** de chaque pilote
-  affiche sa réserve de boost ; une bossbar partagée suit la construction, le compte
-  à rebours et le temps restant.
+  affiche sa réserve de boost ; une bossbar partagée suit le compte à rebours et le
+  temps restant. Le **panneau latéral** (ci-dessous) porte l'état persistant : rang
+  en direct, tour, chrono, meilleur tour et record.
 - `/reset` ramène au dernier checkpoint avec trois secondes de pénalité ; le minecart
   y est téléporté par le moteur.
 - `/scores` affiche les temps de la manche et les meilleurs temps du circuit actuel
@@ -147,7 +148,7 @@ délais dépassés et erreurs de commande. Tout ce qui est éphémère — tour 
 bonus ramassé ou activé, coup reçu, bouclier, retour au checkpoint, missile sans
 cible — passe par la **barre d'action** (`Chat::flash`) ; la progression de
 construction, « tous les pilotes chargés » et le compte à rebours chiffré ont disparu
-du chat, la bossbar et le HUD les affichent déjà. Aucun préfixe : la couleur porte la
+du chat, le panneau latéral, la bossbar et le HUD les affichent déjà. Aucun préfixe : la couleur porte la
 catégorie, définie une seule fois dans `src/chat.rs` (`Tone`) :
 
 | Ton | Couleur | Usage |
@@ -202,6 +203,51 @@ un coup d'onde ; explosion + étincelles pour un éclair ; flocons et boules de 
 un anneau de douze flammes (rayon 1,2) à l'activation du turbo ; une coque de trente
 étincelles quand le bouclier absorbe. Les traînées, orbites et anneaux gardent leur
 cadence.
+
+### Panneau latéral
+
+Chaque joueur connecté — pilote ou spectateur — a **son propre panneau** à droite de
+l'écran (`src/sidebar.rs`, un composant `Sidebar` du moteur sur l'entité joueur,
+audience `viewers([joueur])`), titré « ✦ Alpine Rush ✦ » en or. La liste d'onglets
+(`TabList`, entité unique) porte l'en-tête « Alpine Rush » et le pied
+« Circuit #seed · /race [tours] [seed] », réécrit quand la seed change. Le contenu
+suit la phase, en trois dispositions (`sidebar::Layout`) ; changer de disposition
+reconstruit le panneau une seule fois :
+
+| Phase | Disposition | Lignes |
+|---|---|---|
+| Lobby, Results | `Idle` | `Circuit: #seed`, `Manche: n`, les derniers résultats (top 5, temps en `m:ss.d`, or / gris pour les deux premiers, jaune pour soi) ou « Aucun resultat : /race », `Record` |
+| Generating, Loading, Destroying | `Building` | `Circuit`, `Manche`, une jauge `Construction` / `Chargement` / `Demontage` sur dix cases et `Avancement: n%`, `Record` |
+| Countdown, Racing | `Racing` | `Circuit`, `Tour: x/N` (ou `Spectateur`, `Arrivee`), `Position: r/n`, `Temps: mm:ss`, le **classement** (top 5, `1. Nom T2` ou `1. Nom 1:23.4` une fois arrivé, soi en jaune, arrivés en vert), `Meilleur tour`, `Record` |
+
+Le classement est **le même ordre que celui des missiles** : pilotes arrivés d'abord
+(par temps), puis les autres par `Kart::progress` (tours + fraction du tour, avancée
+vers la porte suivante comprise). Il est calculé une fois par tick pour tout le monde
+(ressource `Standings`, huit karts au plus) ; il ne porte que des identités et des
+tours, pas de distances, si bien que sa **version** ne change que lorsque l'ordre, un
+tour ou une arrivée change — deux karts qui se dépassent produisent une seule
+réécriture chez chacun, deux karts qui roulent sans se dépasser n'en produisent aucune.
+
+**Poussé sur changement, strictement.** Le panneau ne compare que des valeurs
+quantifiées (`View` : disposition, seed, manche, tour, position, secondes du chrono,
+pourcentage, meilleur tour, record, version du classement) avec ce qu'il a déjà
+affiché ; rien n'est formaté ni écrit tant qu'elles sont égales, et seul le widget
+dont la valeur a changé est réécrit. Le moteur n'envoie ensuite que les lignes dont le
+texte diffère : en régime établi un pilote reçoit **une ligne par seconde** (le chrono),
+plus une réécriture immédiate à chaque changement de tour, de rang ou de meilleur
+tour. Un tick sans changement n'émet aucun paquet.
+
+Le **meilleur tour** est chronométré par `Racer` (`lap_start`, `best_lap`) : à chaque
+franchissement de la ligne (`racing`, sur le même événement de porte que les messages
+de tour) le temps du tour est `tick − max(lap_start, départ)` et le meilleur est
+conservé jusqu'à la manche suivante, qui l'efface à la mise en grille. Le **record**
+affiché est le meilleur temps connu du circuit pour ce nombre de tours, y compris la
+manche en cours (`min(race.record, results[0])`) ; l'annonce de record dans le chat
+reste jugée contre le meilleur temps d'avant la manche.
+
+Sans doublon avec la bossbar : la construction et le démontage n'y sont plus (le panneau
+les porte), la bossbar partagée ne garde que l'éphémère — compte à rebours et temps
+restant — et la barre d'action reste le HUD instantané.
 
 ### Power-ups et effets
 
@@ -369,8 +415,13 @@ est recommandé.
 - `src/audio.rs` : les sons — `Cue` (nom d'événement, volume, hauteur, catégorie) et
   `Audio` (`ui`, `ui_at`, `everyone`, `at`) au-dessus de `voidmc::Sounds`.
 - `src/race.rs` : phases, commandes (`SeedArg` pour la seed de circuit), annonces,
-  bossbars et HUD ; `Racer` relie le joueur à son kart ; `circuit_seed` dérive la seed
-  d'une manche tirée au hasard.
+  bossbars et HUD ; `Racer` relie le joueur à son kart et chronomètre ses tours
+  (`lap_start`, `best_lap`) ; `circuit_seed` dérive la seed d'une manche tirée au
+  hasard.
+- `src/sidebar.rs` : le panneau latéral et la liste d'onglets — `board` (un `Sidebar`
+  du moteur par joueur), `tab` (`TabList` partagée), le composant `Board` (poignées de
+  widgets et dernière `View` affichée), la ressource `Standings` (classement partagé,
+  versionné), les systèmes `standings`, `sync` et `tab_list`, et `clock_tenths`.
 - `src/lib.rs` : `seed` (variable d'environnement ou tirage aléatoire non nul).
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
 
@@ -433,3 +484,14 @@ un choc un son par kart toutes les dix ticks exactement, chaque `Cue` résout un
 position en huitièmes, volume, hauteur, seed) suivent Paper 26.1.2 ; les rafales
 d'impact partent au tick de l'événement et jamais au suivant ; la seed est reprise
 telle quelle depuis l'environnement ou tirée non nulle et différente à chaque appel.
+Pour le panneau latéral : un panneau et l'en-tête d'onglets créés au premier tick après
+l'arrivée avec les bonnes lignes, puis aucun paquet sur quarante ticks calmes ; les
+trois dispositions au fil d'une manche complète (construction en pourcentage, jauge de
+chargement pleine, classement au départ, arrivée, démontage, résultats avec soi en
+jaune) sans que la bossbar ne rapporte plus la construction ; le chrono qui coûte une
+ligne par seconde et rien entre ; un classement réécrit une seule fois quand deux
+karts se dépassent et jamais quand ils roulent sans changer d'ordre ; le meilleur tour
+fixé au franchissement de la ligne, conservé si le tour suivant est plus lent,
+amélioré sinon, et effacé à la manche suivante avec le pied d'onglets qui passe à la
+nouvelle seed ; le spectateur qui garde un panneau et la déconnexion qui retire
+l'objectif.

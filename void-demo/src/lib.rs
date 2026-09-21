@@ -5,6 +5,7 @@ pub mod displays;
 pub mod items;
 pub mod kart;
 pub mod race;
+pub mod sidebar;
 pub mod terrain;
 pub mod track;
 pub mod travel;

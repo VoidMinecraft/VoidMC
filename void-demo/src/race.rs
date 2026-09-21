@@ -19,6 +19,7 @@ use crate::chat::{Chat, Flash, Tone};
 use crate::displays;
 use crate::items::{self, Items};
 use crate::kart::{Kart, PowerUp};
+use crate::sidebar;
 use crate::terrain::mix;
 use crate::track::{GATES, Track};
 use crate::travel::{self, Transfer, Travel};
@@ -144,6 +145,26 @@ fn seconds(ticks: u64) -> String {
 pub struct Racer {
     pub gate: usize,
     pub kart: Entity,
+    pub lap_start: u64,
+    pub best_lap: Option<u64>,
+}
+
+impl Racer {
+    pub fn new(kart: Entity) -> Self {
+        Self {
+            gate: 1,
+            kart,
+            lap_start: 0,
+            best_lap: None,
+        }
+    }
+
+    fn lap_done(&mut self, race: &Race) -> u64 {
+        let time = race.tick - self.lap_start.max(race.start);
+        self.lap_start = race.tick;
+        self.best_lap = Some(self.best_lap.map_or(time, |best| best.min(time)));
+        time
+    }
 }
 
 #[derive(Component)]
@@ -202,7 +223,7 @@ impl Grid<'_, '_> {
         self.race.roster.push(player);
         let kart = vehicle::spawn(&mut self.commands, player, kart);
         self.commands.entity(player).insert((
-            Racer { gate: 1, kart },
+            Racer::new(kart),
             Flash::default(),
             BossBar::new(BOOST_TITLE)
                 .color(BossBarColor::Blue)
@@ -255,6 +276,7 @@ impl Plugin for RacePlugin {
             .init_resource::<Race>()
             .init_resource::<Items>()
             .init_resource::<displays::Scene>()
+            .init_resource::<sidebar::Standings>()
             .add_observer(ready)
             .add_observer(quit)
             .add_observer(join)
@@ -277,6 +299,9 @@ impl Plugin for RacePlugin {
                     vehicle::drive,
                     vehicle::bumps,
                     racing,
+                    sidebar::standings,
+                    sidebar::sync,
+                    sidebar::tab_list,
                     hud,
                     race_bar,
                     boost_bar,
@@ -294,6 +319,8 @@ impl Plugin for RacePlugin {
                 .color(BossBarColor::White)
                 .audience(Audience::explicit([])),
         ));
+        let seed = self.0.track().seed;
+        app.world_mut().spawn(sidebar::tab(seed));
         let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
         for command in race_commands() {
             registry.register(command);
@@ -361,6 +388,7 @@ fn request<E: Event<Trigger<'static>: Default>>(
 fn ready(event: On<PlayerReadyEvent>, mut grid: Grid, mut travel: Travel) {
     let player = event.entity;
     travel.fly(player);
+    grid.commands.entity(player).insert(sidebar::board(player));
     grid.chat.say_all(
         Tone::Event,
         format!("{} rejoint Alpine Rush !", grid.chat.name(player)),
@@ -584,6 +612,8 @@ fn construct(
             }
             kart.grid(&track, slot);
             racer.gate = kart.next_gate;
+            racer.lap_start = 0;
+            racer.best_lap = None;
             placement.travel.board(*pilot, racer.kart, &kart);
             slot += 1;
         }
@@ -673,6 +703,9 @@ fn racing(
         };
         if kart.next_gate != racer.gate {
             racer.gate = kart.next_gate;
+            if (kart.next_gate - 1).is_multiple_of(GATES) {
+                racer.lap_done(&race);
+            }
             if (kart.next_gate - 1).is_multiple_of(GATES) && kart.next_gate <= laps * GATES {
                 let lap = (kart.next_gate - 1) / GATES + 1;
                 if lap == laps {
@@ -773,10 +806,9 @@ fn race_bar(
     mut shown: Local<Option<(Phase, u64)>>,
 ) {
     let value = match race.phase {
-        Phase::Generating | Phase::Destroying => race.construction() as u64,
         Phase::Countdown => race.countdown().div_ceil(20),
         Phase::Racing => race.time_limit().saturating_sub(race.elapsed()) / 20,
-        Phase::Lobby | Phase::Loading | Phase::Results => {
+        Phase::Lobby | Phase::Generating | Phase::Loading | Phase::Destroying | Phase::Results => {
             *shown = None;
             if !matches!(&bar.audience, Audience::Explicit(viewers) if viewers.is_empty()) {
                 bar.audience = Audience::explicit([]);
@@ -789,16 +821,6 @@ fn race_bar(
     }
     *shown = Some((race.phase, value));
     let (title, progress, color) = match race.phase {
-        Phase::Generating => (
-            format!("Construction du circuit : {value}%"),
-            value as f32 / 100.0,
-            BossBarColor::White,
-        ),
-        Phase::Destroying => (
-            format!("Destruction du circuit : {value}%"),
-            value as f32 / 100.0,
-            BossBarColor::White,
-        ),
         Phase::Countdown => (
             format!("Depart dans {value}..."),
             value as f32 / COUNTDOWN.div_ceil(20) as f32,
@@ -854,14 +876,17 @@ pub(crate) mod tests {
     use voidmc::plugins::abilities::AbilitiesPlugin;
     use voidmc::plugins::boss_bar::BossBarPlugin;
     use voidmc::plugins::movement::MovementPlugin;
+    use voidmc::plugins::scoreboard::ScoreboardPlugin;
+    use voidmc::plugins::sidebar::SidebarPlugin;
+    use voidmc::plugins::tab_list::TabListPlugin;
     use voidmc::plugins::teleport::TeleportPlugin;
     use voidmc::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
     use voidmc::world::{ChunkIndex, DimensionId};
     use voidmc::{EntityPlugin, Particle, Teleport, TextColor};
     use voidmc_codec::{Encode, VarI32};
     use voidmc_protocol::clientbound::{
-        BossEventAction, ClientboundPacket, ManualPlayPacket, Parser, PlayPacket, SoundEffect,
-        SoundEvent, SoundSource,
+        BossEventAction, ClientboundPacket, ManualPlayPacket, ObjectiveAction, Parser, PlayPacket,
+        SoundEffect, SoundEvent, SoundSource,
     };
     use voidmc_protocol::serverbound::{ConfirmTeleportation, Pong};
 
@@ -951,6 +976,23 @@ pub(crate) mod tests {
             volume: f32,
             pitch: f32,
         },
+        Objective {
+            client: u32,
+            action: String,
+            title: Option<String>,
+        },
+        Display(u32, String),
+        Line {
+            client: u32,
+            owner: String,
+            text: String,
+        },
+        ResetLine(u32, String),
+        Tab {
+            client: u32,
+            header: String,
+            footer: String,
+        },
     }
 
     pub(crate) struct Harness {
@@ -1022,6 +1064,9 @@ pub(crate) mod tests {
                 TeleportPlugin,
                 MovementPlugin,
                 AbilitiesPlugin,
+                ScoreboardPlugin,
+                SidebarPlugin,
+                TabListPlugin,
                 RacePlugin(Arena::new(Alpine { seed })),
             ));
             Self { app, rx }
@@ -1351,6 +1396,37 @@ pub(crate) mod tests {
                         at: None,
                         volume: p.volume,
                         pitch: p.pitch,
+                    },
+                    ClientboundPacket::Play(PlayPacket::SetObjective(p)) => {
+                        let (action, title) = match &p.action {
+                            ObjectiveAction::Create(info) => ("create", Some(&info.display_name)),
+                            ObjectiveAction::Update(info) => ("update", Some(&info.display_name)),
+                            ObjectiveAction::Remove => ("remove", None),
+                        };
+                        Out::Objective {
+                            client: out.client_id,
+                            action: action.into(),
+                            title: title.map(|nbt| text(nbt, "text")),
+                        }
+                    }
+                    ClientboundPacket::Play(PlayPacket::SetDisplayObjective(p)) => {
+                        Out::Display(out.client_id, p.name)
+                    }
+                    ClientboundPacket::Play(PlayPacket::SetScore(p)) => Out::Line {
+                        client: out.client_id,
+                        owner: p.owner,
+                        text: p
+                            .display_name
+                            .map(|nbt| text(&nbt, "text"))
+                            .unwrap_or_default(),
+                    },
+                    ClientboundPacket::Play(PlayPacket::ResetScore(p)) => {
+                        Out::ResetLine(out.client_id, p.owner)
+                    }
+                    ClientboundPacket::Play(PlayPacket::SetTabListHeaderFooter(p)) => Out::Tab {
+                        client: out.client_id,
+                        header: text(&p.header, "text"),
+                        footer: text(&p.footer, "text"),
                     },
                     other => panic!("unexpected packet {other:?}"),
                 })
@@ -2304,31 +2380,11 @@ pub(crate) mod tests {
         assert!(bars(&h.drain(), 1).is_empty());
         h.command(a, "race", &[]);
         h.tick();
-        assert_eq!(
-            bars(&h.drain(), 1),
-            vec![(
-                "add".into(),
-                Some("Construction du circuit : 0%".into()),
-                Some(0.0)
-            )]
-        );
+        assert!(bars(&h.drain(), 1).is_empty());
         while h.race().phase == Phase::Generating {
             h.tick();
         }
-        let out = h.drain();
-        let updates = bars(&out, 1);
-        assert!(
-            updates[..updates.len() - 1]
-                .iter()
-                .all(|(action, _, _)| ["title", "progress", "style"].contains(&action.as_str())),
-            "{updates:?}"
-        );
-        let titles = updates
-            .iter()
-            .filter(|(action, _, _)| action == "title")
-            .count();
-        assert!(titles <= h.race().tick as usize / 2);
-        assert_eq!(updates[updates.len() - 1], ("remove".into(), None, None));
+        assert!(bars(&h.drain(), 1).is_empty());
         h.ticks(4);
         assert!(bars(&h.drain(), 1).is_empty());
         let out = h.settle_transfers();
@@ -2382,12 +2438,12 @@ pub(crate) mod tests {
         assert!(bars(&h.drain(), 1).contains(&("progress".into(), None, Some(progress))));
         h.kart_mut(a).next_gate = LAPS * GATES + 1;
         h.tick();
-        assert_eq!(
-            bars(&h.drain(), 1)
-                .into_iter()
-                .filter_map(|(_, title, _)| title)
-                .collect::<Vec<_>>(),
-            vec!["Destruction du circuit : 0%"]
+        assert_eq!(h.race().phase, Phase::Destroying);
+        let out = bars(&h.drain(), 1);
+        assert_eq!(out[0], ("remove".into(), None, None));
+        assert!(
+            out[1..].iter().all(|(action, _, _)| action == "progress"),
+            "{out:?}"
         );
     }
 
