@@ -21,6 +21,7 @@ mod menu;
 mod particle;
 mod sign;
 mod sound;
+mod tab_list;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -101,6 +102,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
+            registry.register(tab_list::tablist_command());
+            registry.register(tab_list::nick_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);

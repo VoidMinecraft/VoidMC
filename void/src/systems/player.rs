@@ -1,18 +1,21 @@
 use bevy_ecs::prelude::*;
-use voidmc_protocol::clientbound;
+use voidmc_protocol::clientbound::{self, PlayerInfoActions, PlayerInfoUpdate};
 
 use crate::components::{
-    ClientId, MinecraftEntityId, PlayerName, PlayerReady, PlayerUuid, Position, Rotation,
+    ClientId, KeepAliveState, MinecraftEntityId, PlayerName, PlayerReady, PlayerUuid, Position,
+    Rotation,
 };
 use crate::config::ServerConfigResource;
 use crate::events::{PlayerQuitEvent, PlayerReadyEvent};
 use crate::players::Players;
+use crate::plugins::tab_list::{EntrySnapshot, TabEntry, TabEntryState};
 
 /// Observer: when a player becomes ready, broadcast spawn info to/from all other ready players.
 pub fn on_player_ready(
     event: On<PlayerReadyEvent>,
     players: Players,
     config: Res<ServerConfigResource>,
+    mut commands: Commands,
     new_player: Query<(
         &ClientId,
         &MinecraftEntityId,
@@ -20,6 +23,8 @@ pub fn on_player_ready(
         &PlayerName,
         &Position,
         &Rotation,
+        Option<&TabEntry>,
+        Option<&KeepAliveState>,
     )>,
     all_players: Query<
         (
@@ -29,6 +34,9 @@ pub fn on_player_ready(
             &PlayerName,
             &Position,
             &Rotation,
+            Option<&TabEntry>,
+            Option<&KeepAliveState>,
+            Option<&TabEntryState>,
         ),
         With<PlayerReady>,
     >,
@@ -36,7 +44,7 @@ pub fn on_player_ready(
     let new_entity = event.entity;
     let game_mode = config.game_mode;
 
-    let Ok((new_client_id, new_mc_id, new_uuid, new_name, new_pos, new_rot)) =
+    let Ok((new_client_id, new_mc_id, new_uuid, new_name, new_pos, new_rot, entry, keep_alive)) =
         new_player.get(new_entity)
     else {
         return;
@@ -49,41 +57,63 @@ pub fn on_player_ready(
         "Player connected"
     );
 
-    // Send the new player their own tab list entry (no SpawnEntity for self)
-    players.send(
-        new_entity,
-        player_info_packet(new_uuid.0, &new_name.0, game_mode),
-    );
+    let snapshot = EntrySnapshot::resolve(entry, keep_alive, game_mode);
+    let own_entry = snapshot.initial(new_uuid.0, &new_name.0);
+    commands
+        .entity(new_entity)
+        .insert_if_new(TabEntry::default())
+        .insert(TabEntryState::sent(snapshot));
 
-    for (other_entity, other_mc_id, other_uuid, other_name, other_pos, other_rot) in
+    let mut listing = Vec::with_capacity(all_players.iter().len());
+    listing.push(own_entry.clone());
+    for (other_entity, _, other_uuid, other_name, _, _, entry, keep_alive, state) in
         all_players.iter()
     {
         if new_entity == other_entity {
             continue;
         }
+        let snapshot = match state.and_then(TabEntryState::last_sent) {
+            Some(sent) => sent.clone(),
+            None => EntrySnapshot::resolve(entry, keep_alive, game_mode),
+        };
+        listing.push(snapshot.initial(other_uuid.0, &other_name.0));
+    }
+    players.send(
+        new_entity,
+        PlayerInfoUpdate {
+            actions: PlayerInfoActions::INITIALIZING,
+            entries: listing,
+        },
+    );
+    players
+        .ready()
+        .except(new_entity)
+        .send(PlayerInfoUpdate::single(
+            PlayerInfoActions::INITIALIZING,
+            own_entry,
+        ));
 
-        // Tell the new player about the existing player
+    for (other_entity, other_mc_id, other_uuid, _, other_pos, other_rot, ..) in all_players.iter() {
+        if new_entity == other_entity {
+            continue;
+        }
+
         send_player_spawn(
             &players,
             new_entity,
             other_mc_id.0,
             other_uuid.0,
-            &other_name.0,
             other_pos,
             other_rot,
-            game_mode,
         );
 
-        // Tell the existing player about the new player
         send_player_spawn(
             &players,
             other_entity,
             new_mc_id.0,
             new_uuid.0,
-            &new_name.0,
             new_pos,
             new_rot,
-            game_mode,
         );
     }
 }
@@ -118,39 +148,17 @@ pub fn on_player_quit(
     );
 }
 
-/// The PlayerInfoUpdate (tab list entry) for one player.
-fn player_info_packet(
-    uuid: uuid::Uuid,
-    name: &str,
-    game_mode: u8,
-) -> clientbound::PlayerInfoUpdate {
-    clientbound::PlayerInfoUpdate {
-        entries: vec![clientbound::PlayerInfoEntry {
-            uuid,
-            name: name.to_string(),
-            game_mode: game_mode.into(),
-            listed: true,
-        }],
-    }
-}
-
 fn send_player_spawn(
     players: &Players,
     receiver: Entity,
     entity_id: i32,
     uuid: uuid::Uuid,
-    name: &str,
     pos: &Position,
     rot: &Rotation,
-    game_mode: u8,
 ) {
     let yaw = (rot.yaw.rem_euclid(360.0) / 360.0 * 256.0) as u8;
     let pitch = (rot.pitch.rem_euclid(360.0) / 360.0 * 256.0) as u8;
 
-    // Send PlayerInfoUpdate (adds to tab list)
-    players.send(receiver, player_info_packet(uuid, name, game_mode));
-
-    // Send SpawnEntity (creates the entity in the world)
     players.send(
         receiver,
         clientbound::SpawnEntity {
@@ -172,9 +180,206 @@ fn send_player_spawn(
 #[cfg(test)]
 mod tests {
     use bevy_app::{App, Update};
+    use flume::Receiver;
+    use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket, PlayPacket};
 
     use super::*;
+    use crate::config::{ServerConfigBuilder, ServerConfigResource};
+    use crate::messages::TextColor;
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::plugins::tab_list::TabListPlugin;
+
+    fn join_app() -> (App, Receiver<OutgoingPacket>) {
+        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        let mut app = App::new();
+        app.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        })
+        .insert_resource(ServerConfigResource::from(
+            &ServerConfigBuilder::new().game_mode(2).build(),
+        ))
+        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .add_plugins(TabListPlugin)
+        .add_observer(on_player_ready)
+        .add_observer(on_player_quit);
+        (app, outgoing_rx)
+    }
+
+    fn join(app: &mut App, id: u32, name: &str, entry: Option<TabEntry>) -> Entity {
+        let entity = app
+            .world_mut()
+            .spawn((
+                ClientId(id),
+                MinecraftEntityId(id as i32),
+                PlayerUuid(uuid::Uuid::from_u128(id.into())),
+                PlayerName(name.into()),
+                Position::default(),
+                Rotation::default(),
+                KeepAliveState {
+                    latency: 10 * id as i32,
+                    ..Default::default()
+                },
+                PlayerReady,
+            ))
+            .id();
+        if let Some(entry) = entry {
+            app.world_mut().entity_mut(entity).insert(entry);
+        }
+        app.world_mut().trigger(PlayerReadyEvent {
+            client_id: id,
+            entity,
+        });
+        app.world_mut().flush();
+        entity
+    }
+
+    #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum Sent {
+        Info(u32, u8, Vec<(u32, i32, bool, i32, bool, i32)>),
+        Remove(u32, Vec<u32>),
+        Spawn(u32, i32),
+        Despawn(u32, Vec<i32>),
+    }
+
+    fn drain(rx: &Receiver<OutgoingPacket>) -> Vec<Sent> {
+        let mut sent: Vec<Sent> = rx
+            .try_iter()
+            .map(|out| match out.packet {
+                ClientboundPacket::ManualPlay(ManualPlayPacket::PlayerInfoUpdate(p)) => Sent::Info(
+                    out.client_id,
+                    p.actions.bits(),
+                    p.entries
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.uuid.as_u128() as u32,
+                                e.game_mode,
+                                e.listed,
+                                e.latency,
+                                e.display_name.is_some(),
+                                e.list_order,
+                            )
+                        })
+                        .collect(),
+                ),
+                ClientboundPacket::ManualPlay(ManualPlayPacket::PlayerInfoRemove(p)) => {
+                    Sent::Remove(
+                        out.client_id,
+                        p.uuids.iter().map(|u| u.as_u128() as u32).collect(),
+                    )
+                }
+                ClientboundPacket::ManualPlay(ManualPlayPacket::RemoveEntities(p)) => {
+                    Sent::Despawn(out.client_id, p.entity_ids)
+                }
+                ClientboundPacket::Play(PlayPacket::SpawnEntity(p)) => {
+                    Sent::Spawn(out.client_id, p.entity_id)
+                }
+                other => panic!("unexpected packet {other:?}"),
+            })
+            .collect();
+        sent.sort();
+        sent
+    }
+
+    #[test]
+    fn join_sends_the_full_list_and_announces_to_others() {
+        let (mut app, rx) = join_app();
+        join(&mut app, 1, "alpha", None);
+        assert_eq!(
+            drain(&rx),
+            vec![Sent::Info(1, 0xFF, vec![(1, 2, true, 10, false, 0)])]
+        );
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        let beta = join(
+            &mut app,
+            2,
+            "beta",
+            Some(TabEntry::new().display_name("Beta").list_order(4)),
+        );
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Info(1, 0xFF, vec![(2, 2, true, 20, true, 4)]),
+                Sent::Info(
+                    2,
+                    0xFF,
+                    vec![(2, 2, true, 20, true, 4), (1, 2, true, 10, false, 0)]
+                ),
+                Sent::Spawn(1, 2),
+                Sent::Spawn(2, 1),
+            ]
+        );
+        app.update();
+        assert!(drain(&rx).is_empty());
+        assert_eq!(
+            app.world().get::<TabEntry>(beta).unwrap().display_name,
+            Some("Beta".into())
+        );
+    }
+
+    #[test]
+    fn join_uses_what_others_were_last_sent_then_diffs() {
+        let (mut app, rx) = join_app();
+        let alpha = join(&mut app, 1, "alpha", None);
+        app.update();
+        drain(&rx);
+
+        {
+            let mut entry = app.world_mut().get_mut::<TabEntry>(alpha).unwrap();
+            entry.display_name = Some("Alpha".into());
+            entry.color = TextColor::Gold;
+        }
+        join(&mut app, 2, "beta", None);
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Info(1, 0xFF, vec![(2, 2, true, 20, false, 0)]),
+                Sent::Info(
+                    2,
+                    0xFF,
+                    vec![(2, 2, true, 20, false, 0), (1, 2, true, 10, false, 0)]
+                ),
+                Sent::Spawn(1, 2),
+                Sent::Spawn(2, 1),
+            ]
+        );
+
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Info(1, 0x20, vec![(1, 2, true, 10, true, 0)]),
+                Sent::Info(2, 0x20, vec![(1, 2, true, 10, true, 0)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn quit_removes_the_entry_and_the_entity_for_others() {
+        let (mut app, rx) = join_app();
+        let alpha = join(&mut app, 1, "alpha", None);
+        join(&mut app, 2, "beta", None);
+        app.update();
+        drain(&rx);
+
+        app.world_mut().trigger(PlayerQuitEvent {
+            client_id: 1,
+            entity: alpha,
+        });
+        app.world_mut().flush();
+        assert_eq!(
+            drain(&rx),
+            vec![Sent::Remove(2, vec![1]), Sent::Despawn(2, vec![1])]
+        );
+    }
 
     #[test]
     fn player_spawn_wraps_negative_rotation() {
@@ -197,7 +402,6 @@ mod tests {
                 receiver,
                 42,
                 uuid::Uuid::nil(),
-                "player",
                 &Position {
                     x: 0.0,
                     y: 64.0,
@@ -207,12 +411,10 @@ mod tests {
                     yaw: -90.0,
                     pitch: -45.0,
                 },
-                0,
             );
         });
         app.update();
 
-        let _player_info = outgoing_rx.recv().unwrap();
         let spawn = outgoing_rx.recv().unwrap();
         assert_eq!(spawn.client_id, 7);
         let clientbound::ClientboundPacket::Play(clientbound::PlayPacket::SpawnEntity(spawn)) =

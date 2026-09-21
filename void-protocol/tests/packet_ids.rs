@@ -127,6 +127,7 @@ const SPECS: &[EnumSpec] = &[
             ("SetEntityData", "minecraft:set_entity_data"),
             ("SetHeldSlot", "minecraft:set_held_slot"),
             ("SystemChat", "minecraft:system_chat"),
+            ("SetTabListHeaderFooter", "minecraft:tab_list"),
             ("TeleportEntity", "minecraft:teleport_entity"),
             ("PlayerInfoUpdate", "minecraft:player_info_update"),
             ("PlayerInfoRemove", "minecraft:player_info_remove"),

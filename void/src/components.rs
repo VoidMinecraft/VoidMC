@@ -70,10 +70,11 @@ pub struct TeleportState {
     pub pending_id: Option<i32>,
 }
 
-#[derive(Component)]
+#[derive(Component, Default, Clone, Copy)]
 pub struct KeepAliveState {
     pub last_sent_id: i64,
     pub awaiting_response: bool,
+    pub latency: i32,
 }
 
 #[derive(Component)]

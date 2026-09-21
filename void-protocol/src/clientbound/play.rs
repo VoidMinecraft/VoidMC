@@ -26,6 +26,7 @@ mod set_entity_motion;
 mod set_head_rotation;
 mod set_held_slot;
 mod set_passengers;
+mod set_tab_list_header_footer;
 mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
@@ -66,6 +67,7 @@ pub use set_entity_motion::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
 pub use set_passengers::*;
+pub use set_tab_list_header_footer::*;
 pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
@@ -144,6 +146,8 @@ pub enum PlayPacket {
     StopSound(StopSound),
     #[codec(packet_id = 0x79)]
     SystemChat(SystemChat),
+    #[codec(packet_id = 0x7A)]
+    SetTabListHeaderFooter(SetTabListHeaderFooter),
     #[codec(packet_id = 0x7D)]
     TeleportEntity(TeleportEntity),
 }
