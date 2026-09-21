@@ -274,7 +274,6 @@ fn packet(id: i32, attributes: Vec<AttributeSnapshot>) -> UpdateAttributes {
 fn sync_attributes(
     players: Players,
     mut entities: Query<(
-        Entity,
         &MinecraftEntityId,
         &mut Attributes,
         &mut AttributesState,
@@ -283,52 +282,55 @@ fn sync_attributes(
     )>,
 ) {
     let ready = players.ready();
-    for (entity, id, mut attributes, mut state, viewers, is_player) in entities.iter_mut() {
-        let dirty: Vec<EntityAttribute> = if attributes.is_changed() {
-            attributes
+    for (id, mut attributes, mut state, viewers, is_player) in entities.iter_mut() {
+        let changed = attributes.is_changed();
+        let mut desired: Option<HashSet<Entity>> = None;
+        if is_player {
+            let mut count = 0;
+            let same_members = ready.entities().all(|e| {
+                count += 1;
+                state.recipients.contains(&e)
+            }) && count == state.recipients.len();
+            if !same_members {
+                desired = Some(ready.entities().collect());
+            }
+        }
+        if !changed && desired.is_none() {
+            continue;
+        }
+
+        if changed {
+            let dirty: Vec<EntityAttribute> = attributes
                 .bypass_change_detection()
                 .take_dirty()
                 .into_iter()
                 .filter(|a| a.is_client_syncable())
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let mut desired: Option<HashSet<Entity>> = None;
-        let kept: Vec<Entity> = if is_player {
-            let mut count = 0;
-            let same = ready.entities().all(|e| {
-                count += 1;
-                state.recipients.contains(&e)
-            }) && count == state.recipients.len();
-            if !same {
-                desired = Some(ready.entities().collect());
-            }
-            state
-                .recipients
-                .iter()
-                .copied()
-                .filter(|r| desired.as_ref().is_none_or(|d| d.contains(r)))
-                .collect()
-        } else {
-            viewers.map(|v| v.iter().collect()).unwrap_or_default()
-        };
-
-        if !dirty.is_empty() {
-            let snapshots: Vec<AttributeSnapshot> = dirty
-                .iter()
-                .map(|attribute| attributes.snapshot_of(*attribute))
                 .collect();
-            for attribute in &dirty {
-                if attributes.has(*attribute) {
-                    state.sent.insert(*attribute);
-                } else {
-                    state.sent.remove(attribute);
+            if !dirty.is_empty() {
+                let snapshots: Vec<AttributeSnapshot> = dirty
+                    .iter()
+                    .map(|attribute| attributes.snapshot_of(*attribute))
+                    .collect();
+                for attribute in &dirty {
+                    if attributes.has(*attribute) {
+                        state.sent.insert(*attribute);
+                    } else {
+                        state.sent.remove(attribute);
+                    }
                 }
-            }
-            if !kept.is_empty() {
-                players.send_to(kept.iter().copied(), packet(id.0, snapshots));
+                let kept: Vec<Entity> = if is_player {
+                    state
+                        .recipients
+                        .iter()
+                        .copied()
+                        .filter(|r| desired.as_ref().is_none_or(|d| d.contains(r)))
+                        .collect()
+                } else {
+                    viewers.map(|v| v.iter().collect()).unwrap_or_default()
+                };
+                if !kept.is_empty() {
+                    players.send_to(kept, packet(id.0, snapshots));
+                }
             }
         }
 
@@ -346,7 +348,6 @@ fn sync_attributes(
                 players.send(*joined, packet(id.0, full.clone()));
             }
         }
-        let _ = entity;
         state.recipients = desired;
     }
 }

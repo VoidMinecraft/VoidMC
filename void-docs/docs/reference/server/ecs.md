@@ -69,6 +69,8 @@ to ready players by `systems::entities`.
 | `EntityViewers` | Player set | Players currently receiving this entity's packets; maintained by the visibility tracker |
 | `EntityMetadata` | Indexed values | Synched entity data with dirty tracking; typed components (`CustomName`, `Glowing`, `Display`, ...) project into it |
 | `Passengers(Vec<Entity>)` | Riders | Entities riding this one; changes send `SetPassengers` to viewers |
+| `StatusEffects` | Effect map | Server-timed status effects; diffs go to the entity's own client and player passengers, visible effects project into `EntityMetadata` (see [Effects & Attributes](../gameplay/effects.md)) |
+| `Attributes` | Attribute map | Base values and modifiers; changed client-syncable attributes go to the own client and viewers |
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |
 | `Rotation { yaw, pitch }` | `f32` angles | Current body/look rotation |

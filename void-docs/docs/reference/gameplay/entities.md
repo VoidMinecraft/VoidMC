@@ -159,6 +159,11 @@ it changes and to players who start seeing the vehicle. A passenger that
 despawns is pruned automatically. Passengers and vehicle should sit in the same
 chunk so viewers know both.
 
+## Effects and attributes
+
+`StatusEffects` and `Attributes` attach to spawned entities and players alike;
+see [Effects & Attributes](./effects.md).
+
 ## Example commands
 
 `void-example` ships `/spawn [entity] [--name <text>] [--glow] [--invisible] [--float]`

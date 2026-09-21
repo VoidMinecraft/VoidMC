@@ -366,50 +366,47 @@ fn sync_status_effects(
             effects.remove(effect);
         }
 
-        let mut desired: HashSet<Entity> = HashSet::new();
-        if ready_players.contains(entity) {
-            desired.insert(entity);
-        }
-        if let Some(passengers) = passengers {
-            desired.extend(
-                passengers
-                    .0
-                    .iter()
-                    .copied()
-                    .filter(|p| ready_players.contains(*p)),
-            );
-        }
-
-        let (dirty, removed) = if effects.dirty.is_empty() && effects.removed.is_empty() {
-            (BTreeSet::new(), BTreeSet::new())
-        } else {
-            effects.bypass_change_detection().take_changes()
+        let members = || {
+            let riders = passengers.map(|p| p.0.as_slice()).unwrap_or_default();
+            std::iter::once(entity)
+                .chain(riders.iter().copied())
+                .filter(|e| ready_players.contains(*e))
         };
-        let kept: Vec<Entity> = state
-            .recipients
-            .iter()
-            .copied()
-            .filter(|r| desired.contains(r))
-            .collect();
-        for effect in removed {
-            if state.sent.remove(&effect) {
-                players.send_to(kept.iter().copied(), remove_packet(id.0, effect));
+        let mut count = 0;
+        let same_members = members().all(|e| {
+            count += 1;
+            state.recipients.contains(&e)
+        }) && count == state.recipients.len();
+        let desired: Option<HashSet<Entity>> = (!same_members).then(|| members().collect());
+
+        if !effects.dirty.is_empty() || !effects.removed.is_empty() {
+            let (dirty, removed) = effects.bypass_change_detection().take_changes();
+            let kept: Vec<Entity> = state
+                .recipients
+                .iter()
+                .copied()
+                .filter(|r| desired.as_ref().is_none_or(|d| d.contains(r)))
+                .collect();
+            for effect in removed {
+                if state.sent.remove(&effect) {
+                    players.send_to(kept.iter().copied(), remove_packet(id.0, effect));
+                }
+            }
+            for effect in dirty {
+                let Some(instance) = effects.get(effect) else {
+                    continue;
+                };
+                let blend = state.sent.insert(effect);
+                players.send_to(
+                    kept.iter().copied(),
+                    update_packet(id.0, effect, instance, blend),
+                );
             }
         }
-        for effect in dirty {
-            let Some(instance) = effects.get(effect) else {
-                continue;
-            };
-            let blend = state.sent.insert(effect);
-            players.send_to(
-                kept.iter().copied(),
-                update_packet(id.0, effect, instance, blend),
-            );
-        }
 
-        if desired == state.recipients {
+        let Some(desired) = desired else {
             continue;
-        }
+        };
         for gone in state.recipients.difference(&desired) {
             for effect in &state.sent {
                 players.send(*gone, remove_packet(id.0, *effect));
