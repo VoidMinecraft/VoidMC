@@ -14,6 +14,7 @@ use crate::race::{Phase, Race};
 use crate::track::Track;
 
 pub const KEYFRAME_TICKS: u16 = 2;
+pub const JUMP: f64 = 6.0;
 const BRIGHTNESS: (u8, u8) = (15, 15);
 const VIEW_RANGE: f32 = 2.0;
 
@@ -124,6 +125,7 @@ impl Stage<'_, '_, '_, '_, '_> {
                 return;
             }
             if slot.frame.model.kind() == frame.model.kind()
+                && !jumped(slot.frame.at, frame.at)
                 && let Ok((mut position, mut display, block, item)) =
                     self.props.get_mut(slot.entity)
             {
@@ -183,6 +185,11 @@ impl Stage<'_, '_, '_, '_, '_> {
             despawn(commands, slot.1.entity);
         }
     }
+}
+
+fn jumped(from: Position, to: Position) -> bool {
+    let (dx, dy, dz) = (to.x - from.x, to.y - from.y, to.z - from.z);
+    dx * dx + dy * dy + dz * dz > JUMP * JUMP
 }
 
 fn despawn(commands: &mut Commands, entity: Entity) {
@@ -717,6 +724,112 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn a_kart_that_jumps_gets_fresh_displays_instead_of_a_slide() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        h.shortcut_to_racing(a, &[]);
+        h.kart_mut(a).item = Some(PowerUp::Turbo);
+        keyframe(&mut h);
+        let icon = props(&mut h)[0];
+        let id = network_id(&h, icon);
+        h.drain();
+        h.kart_mut(a).next_gate = 3;
+        h.command(a, "reset", &[]);
+        h.kart_mut(a).item = Some(PowerUp::Turbo);
+        let kart = h.kart(a).clone();
+        keyframe(&mut h);
+        let replaced = props(&mut h);
+        assert_eq!(replaced.len(), 1);
+        assert_ne!(replaced[0], icon);
+        let fresh = network_id(&h, replaced[0]);
+        assert_eq!(
+            *h.app.world().get::<Position>(replaced[0]).unwrap(),
+            Position {
+                x: kart.x,
+                y: kart.y,
+                z: kart.z
+            }
+        );
+        let out = h.drain();
+        assert!(
+            touching(&out, id)
+                .iter()
+                .all(|o| matches!(o, Out::Remove(1, _))),
+            "{out:?}"
+        );
+        assert!(
+            touching(&out, fresh)
+                .iter()
+                .any(|o| matches!(o, Out::Spawn { client: 1, x, y, z, .. } if (*x, *y, *z) == (kart.x, kart.y, kart.z)))
+        );
+        assert!(
+            !out.iter()
+                .any(|o| matches!(o, Out::Teleport { id: i, .. } if *i == id || *i == fresh))
+        );
+        assert!(jumped(
+            Position::default(),
+            Position {
+                x: JUMP + 0.01,
+                y: 0.0,
+                z: 0.0
+            }
+        ));
+        assert!(!jumped(
+            Position::default(),
+            Position {
+                x: 2.0,
+                y: 2.0,
+                z: 2.0
+            }
+        ));
+    }
+
+    #[test]
+    fn a_driven_kart_moves_its_held_item_on_even_ticks_only() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        h.shortcut_to_racing(a, &[]);
+        h.kart_mut(a).item = Some(PowerUp::Turbo);
+        keyframe(&mut h);
+        let icon = props(&mut h)[0];
+        let id = network_id(&h, icon);
+        h.kart_mut(a).input.forward = true;
+        h.drain();
+        for _ in 0..8 {
+            h.tick();
+            let out = h.drain();
+            let moved = touching(&out, id)
+                .into_iter()
+                .filter(|o| matches!(o, Out::Move { client: 1, .. }))
+                .count();
+            if h.race().tick.is_multiple_of(u64::from(KEYFRAME_TICKS)) {
+                assert_eq!(moved, 1, "{out:?}");
+            } else {
+                assert_eq!(moved, 0, "{out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_disconnect_mid_race_clears_the_scene_for_the_remaining_viewer() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        h.connect(2);
+        h.shortcut_to_racing(a, &[]);
+        h.kart_mut(a).item = Some(PowerUp::Turbo);
+        keyframe(&mut h);
+        let icon = props(&mut h)[0];
+        let id = network_id(&h, icon);
+        h.drain();
+        h.disconnect(a);
+        keyframe(&mut h);
+        assert!(scene(&h).is_empty());
+        assert!(props(&mut h).is_empty());
+        let out = h.drain();
+        assert!(out.contains(&Out::Remove(2, vec![id])), "{out:?}");
     }
 
     #[test]

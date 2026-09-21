@@ -9,10 +9,11 @@ sur une chaussée : ses déplacements sont simulés par le serveur.
 > pure des karts —, la machine à états de la course (D1) : phases, commandes,
 > annonces et bossbars, les karts en tant qu'entités du moteur (D2) : minecart
 > monté, pilotage au clavier et déplacement piloté par le serveur, l'arsenal
-> arcade (D3) : cristaux de bonus, pièges, missiles, ondes et particules, et les
+> arcade (D3) : cristaux de bonus, pièges, missiles, ondes et particules, les
 > affichages animés (D4) : bonus tenu, réacteurs, bouclier, recharge, débuffs, pièges,
-> missiles et ondes en entités *display* persistantes. Le reste — barrière de
-> téléportation — est **en cours de portage** et arrive dans l'unité suivante.
+> missiles et ondes en entités *display* persistantes, et les déplacements (D5) :
+> vol libre des spectateurs, barrière de téléportation et embarquement dans le kart
+> une fois les chunks de la grille reçus par le client.
 
 ## Lancer
 
@@ -24,9 +25,9 @@ cargo run --release -p voidmc-demo
 
 La démo écoute par défaut sur toutes les interfaces IPv4 (`0.0.0.0:25565`).
 Se connecter à `127.0.0.1:25565` depuis la machine hôte, ou à son adresse IP depuis
-une autre machine. Le joueur apparaît à **Y = 110**, au-dessus de la vallée, assis
-dans son minecart d'attente ; le vol libre des spectateurs revient avec l'unité
-travel (D5). Aucune plateforme ne gêne la vue du paysage.
+une autre machine. Le joueur apparaît à **Y = 110**, au-dessus de la vallée, en
+**vol libre** (vol autorisé, invulnérable, vitesse de vol 0,07) ; son minecart l'attend
+sur la ligne de stationnement aérienne. Aucune plateforme ne gêne la vue du paysage.
 
 Pour utiliser une autre carte :
 
@@ -40,10 +41,12 @@ entier non signé sur 64 bits ; sa valeur par défaut est `42`. Le serveur tourn
 
 ## Jouer
 
-Chaque pilote inscrit est assis dans **un minecart** qui lui appartient (`src/vehicle.rs`).
-Le minecart est une entité du moteur : le serveur le fait apparaître chez les joueurs
-qui ont chargé son chunk, le retire quand ils s'éloignent ou se déconnectent, et
-transmet ses déplacements. Le pilote en est le passager. Sur une pression de Sneak,
+Chaque pilote inscrit possède **un minecart** (`src/vehicle.rs`). Le minecart est une
+entité du moteur : le serveur le fait apparaître chez les joueurs qui ont chargé son
+chunk, le retire quand ils s'éloignent ou se déconnectent, et transmet ses déplacements.
+Entre deux manches il est **stationné, vide**, sur la ligne d'attente à Y = 110 : le
+pilote vole librement autour. Il n'en devient le passager qu'à l'embarquement sur la
+grille, une fois la barrière de téléportation franchie (`src/travel.rs`). Sur une pression de Sneak,
 le serveur renvoie la liste des passagers du kart (fidèle à la référence) — uniquement
 sur cette pression, jamais périodiquement ; comme la descente d'un véhicule est
 décidée côté serveur en 26.1.2 et que ce moteur ne l'implémente pas, le client ne
@@ -69,11 +72,24 @@ La manche est complète (`src/race.rs`) :
 - `/race [tours]` accepte **1 à 20 tours** (3 par défaut). Le nombre choisi vaut pour
   tous les pilotes de la manche ; une commande invalide ne lance pas de course, et une
   manche en cours ne peut pas être relancée.
-- Chaque manche construit un **nouveau tracé** dans la vallée, un chunk tous les deux
-  ticks, avec une annonce à 25/50/75 %. La grille est placée dès que le circuit est
-  prêt ; le chargement des chunks chez chaque pilote et la barrière de téléportation
-  reviennent avec l'unité travel (D5), le compte à rebours de cinq secondes démarre
-  donc immédiatement.
+- `/race` renvoie d'abord **tout le monde en vol au-dessus du point d'attente**
+  (`Teleport` du moteur vers `travel::LOBBY`, orientation 180°/15°) et décroche les
+  pilotes de leur kart. Chaque manche construit ensuite un **nouveau tracé** dans la
+  vallée, un chunk tous les deux ticks, avec une annonce à 25/50/75 %.
+- Circuit prêt : les karts des participants sont placés sur la grille (téléportation
+  d'entité par le moteur) et chaque pilote **embarque** via la barrière de
+  téléportation du moteur (`Teleport::to(siège).facing(cap, 0)`) : position tenue par
+  le serveur (`ServerControlledPosition`) pendant tout le transfert, chunks de la
+  destination envoyés à raison de **deux par tick** (`ChunkSendBudget`), *Ping/Pong*
+  pour s'assurer que le client les a traités, synchronisation de position, puis
+  confirmation du client. Le kart est donc toujours apparu chez le pilote **avant**
+  `SetPassengers`. À la confirmation (`PlayerTeleportEvent::Confirmed`), le pilote
+  est installé dans le kart, garde une position pilotée par le serveur et perd le
+  vol. La phase de chargement dure tant qu'un participant n'a pas confirmé ; un
+  client qui ne répond pas en **30 secondes** (`TimedOut`) est retiré de la manche,
+  prévenu, et renvoyé en vol ; un transfert annulé (`Cancelled`) ou une déconnexion
+  libère simplement le joueur. Le compte à rebours de cinq secondes démarre quand
+  tous les participants sont à bord.
 - Le nombre de tours choisi, avec huit checkpoints par tour, à franchir dans l'ordre.
   Le chat annonce chaque nouveau tour au pilote concerné, les arrivées, puis le podium.
   La limite de temps est de dix minutes jusqu'à trois tours, puis de 200 secondes par
@@ -87,10 +103,15 @@ La manche est complète (`src/race.rs`) :
 - `/scores` affiche les temps de la manche et les meilleurs temps du circuit actuel
   pour le même nombre de tours. Les records sont en mémoire, par seed de circuit,
   nombre de tours et nom de joueur, et disparaissent au redémarrage.
-- `/leave` passe en spectateur ; `/join` inscrit pour le prochain départ. Chaque joueur
-  qui arrive est inscrit automatiquement (huit pilotes au maximum). Une arrivée ou un
-  retour pendant une manche attend la suivante ; un pilote qui se déconnecte pendant
-  la course abandonne la manche.
+- `/leave` passe en spectateur : le kart disparaît et le joueur repart **en vol** vers
+  le point d'attente par la même barrière ; `/join` inscrit pour le prochain départ
+  sans renvoyer d'abilities déjà en place. Chaque joueur qui arrive est inscrit
+  automatiquement (huit pilotes au maximum) et reçoit le vol (`PlayerAbilities` du
+  moteur, drapeaux 0x07, vitesses 0,07 / 0,1) ; s'il coupe le vol en l'air, le serveur
+  le lui rend aussitôt. Une arrivée ou un retour pendant une manche attend la suivante,
+  en vol ; un pilote qui se déconnecte pendant la course abandonne la manche.
+- Fin de manche : tout le monde est renvoyé en vol au point d'attente, les karts se
+  garent, puis le circuit se démonte.
 - Lorsque tous les participants ont terminé ou quitté, le circuit se démonte dans
   l'ordre inverse et le terrain initial est restauré ; `/race` redevient disponible
   à la fin du démontage.
@@ -176,7 +197,10 @@ le serveur ne réécrit que ce qui a changé — position de l'entité, transfor
 (translation, échelle, rotation) ou modèle — et le moteur n'envoie que les entrées
 de métadonnées modifiées, précédées du redémarrage de l'horloge d'interpolation.
 Un décor immobile (une banane posée) ne génère aucun paquet. Les ticks impairs sont
-ignorés en bloc. Les rotations sont des quaternions composés (lacet puis tangage)
+ignorés en bloc. Quand la source d'un décor **saute** de plus de `displays::JUMP`
+(6 blocs) entre deux images — retour au checkpoint par `/reset` —, ses entités sont
+retirées et recréées à la nouvelle position au lieu de glisser à travers la carte en
+interpolation. Les rotations sont des quaternions composés (lacet puis tangage)
 pour rester continues au passage de ±180° ; les modèles de bloc, qui pivotent autour
 de leur coin, sont recentrés sur le point demandé. Les fondus utilisent `smoothstep`
 et une enveloppe qui atteint zéro deux ticks avant le retrait.
@@ -238,6 +262,13 @@ est recommandé.
   seulement, retrait hors course), les modèles par genre (`kart_frames`, pièges,
   missiles, ondes) et les mathématiques de rotation et de fondu (`rotation`,
   `rotate`, `smoothstep`, `envelope`).
+- `src/travel.rs` : les déplacements des joueurs — `Travel` (`fly`, `to_lobby`,
+  `everyone_to_lobby`, `board`) qui n'utilise que les primitives du moteur
+  (`Teleport`, `PlayerAbilities`, `ServerControlledPosition`, `Passengers`), les
+  marqueurs `Airborne` et `Transfer { Lobby | Boarding }`, l'observateur `arrived`
+  (`PlayerTeleportEvent` : embarquement, délai dépassé, annulation) et `keep_flying`
+  (`PlayerToggleFlyEvent`). L'état de la barrière vit dans le moteur ; aucun travail
+  par tick pour un joueur qui n'est pas en transfert.
 - `src/race.rs` : phases, commandes, annonces, bossbars et HUD ; `Racer` relie le
   joueur à son kart.
 - `src/main.rs` : configuration par variables d'environnement et démarrage du serveur.
@@ -253,11 +284,20 @@ seeds, la continuité de 65 tracés, le parcours de trois tours sur plusieurs
 géométries, les checkpoints ordonnés, la marche arrière, les rebonds, les bumps, les
 boucliers, les bonus à usage unique et leurs effets, la préservation du paysage
 pendant la construction et la restauration exacte au démontage. Les tests d'`App`
-sans réseau vérifient l'inscription (un seul minecart par pilote, passager compris),
-le renvoi unique des passagers par pression de Sneak, le déplacement de l'entité et
-du pilote pendant la course (et l'absence de tout paquet ou écriture pour un kart
-immobile), la disparition du kart
-au départ du joueur et le choc entre deux karts, identique à la simulation pure.
+sans réseau vérifient l'inscription (un seul minecart par pilote, stationné et vide),
+le renvoi unique des passagers par pression de Sneak une fois à bord, le déplacement
+de l'entité et du pilote pendant la course (et l'absence de tout paquet ou écriture
+pour un kart immobile), la disparition du kart au départ du joueur et le choc entre
+deux karts, identique à la simulation pure. Pour les déplacements : le vol accordé à
+l'arrivée (paquet `PlayerAbilities` 0x07), le retour de tous au point d'attente sur
+`/race`, l'embarquement qui attend les chunks de la grille, le *Pong* au bon
+identifiant puis la confirmation du bon identifiant avant de monter le pilote
+(`SpawnEntity` du kart avant `SetPassengers`, une seule fois, vol retiré en 0x01), le
+délai dépassé (pilote retiré, message, renvoi en vol, position toujours synchronisée),
+la déconnexion ou l'annulation en plein transfert, le vol rendu quand le client le
+coupe en l'air seulement, `/leave` qui renvoie en vol sans HUD en transfert et
+`/join` qui ne renvoie rien, et un transfert vers le point d'attente qui recouvre un
+embarquement inachevé et libère bien la position.
 Pour l'arsenal : le cycle apparition / ramassage / réapparition des 24 cristaux
 (entités, métadonnées End Crystal, paquets spawn/remove, aucun renvoi entre-temps,
 retrait en fin de manche), le tirage des huit bonus, le guidage du missile sur le
@@ -268,8 +308,10 @@ consommée, expiration) et les particules capturées sur le fil aux ticks attend
 avec les types, quantités, offsets et audiences de référence. Pour les affichages :
 un bonus tenu produit exactement une entité `item_display` qui persiste sur dix ticks,
 ne reçoit une métadonnée (redémarrage d'interpolation, translation, rotation) qu'aux
-ticks pairs, change d'objet sans être recréée et disparaît chez tous les spectateurs
-quand le bonus est utilisé ; une banane posée n'émet plus rien une fois stabilisée et
+ticks pairs, change d'objet sans être recréée, suit un kart en mouvement par un
+déplacement relatif aux seuls ticks pairs, est recréée plutôt que glissée quand le
+kart revient à son checkpoint, disparaît chez tous les spectateurs quand le bonus est
+utilisé ou que le pilote se déconnecte ; une banane posée n'émet plus rien une fois stabilisée et
 un joueur qui arrive ensuite reçoit ses quatre blocs avec leurs métadonnées complètes
 par le moteur ; les huit genres ont une géométrie bornée (translations, échelles,
 quaternions unitaires) sur 250 ticks sans aucun nouveau spawn et la scène se vide

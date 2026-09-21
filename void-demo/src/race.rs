@@ -518,13 +518,18 @@ fn clock(mut race: ResMut<Race>) {
     race.tick += 1;
 }
 
+#[derive(SystemParam)]
+struct Placement<'w, 's> {
+    racers: Query<'w, 's, &'static mut Racer>,
+    karts: Query<'w, 's, &'static mut Kart>,
+    travel: Travel<'w, 's>,
+}
+
 fn construct(
     mut race: ResMut<Race>,
     mut items: ResMut<Items>,
     arena: Res<Arena>,
-    mut racers: Query<&mut Racer>,
-    mut karts: Query<&mut Kart>,
-    mut travel: Travel,
+    mut placement: Placement,
     chat: Chat,
     mut commands: Commands,
 ) {
@@ -555,10 +560,10 @@ fn construct(
         let track = arena.track();
         let mut slot = 0;
         for pilot in &race.roster {
-            let Ok(mut racer) = racers.get_mut(*pilot) else {
+            let Ok(mut racer) = placement.racers.get_mut(*pilot) else {
                 continue;
             };
-            let Ok(mut kart) = karts.get_mut(racer.kart) else {
+            let Ok(mut kart) = placement.karts.get_mut(racer.kart) else {
                 continue;
             };
             if !kart.participant {
@@ -566,7 +571,7 @@ fn construct(
             }
             kart.grid(&track, slot);
             racer.gate = kart.next_gate;
-            travel.board(*pilot, &kart);
+            placement.travel.board(*pilot, &kart);
             slot += 1;
         }
         items.place(&track);
@@ -1048,9 +1053,18 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn settle_transfers(&mut self) -> Vec<Out> {
+            let everyone: Vec<Entity> = self.transfers().into_iter().map(|(e, _)| e).collect();
+            self.settle_transfers_of(&everyone)
+        }
+
+        pub(crate) fn settle_transfers_of(&mut self, players: &[Entity]) -> Vec<Out> {
             let mut out = Vec::new();
             for _ in 0..8 {
-                let transfers = self.transfers();
+                let transfers: Vec<_> = self
+                    .transfers()
+                    .into_iter()
+                    .filter(|(e, _)| players.contains(e))
+                    .collect();
                 if transfers.is_empty() {
                     break;
                 }
@@ -1063,7 +1077,9 @@ pub(crate) mod tests {
                 for o in &sent {
                     if let Out::Ping(client, id) = o {
                         let player = self.player(*client);
-                        self.pong(player, *id);
+                        if players.contains(&player) {
+                            self.pong(player, *id);
+                        }
                     }
                 }
                 out.extend(sent);
@@ -1071,14 +1087,16 @@ pub(crate) mod tests {
                 for o in &sent {
                     if let Out::Sync { client, id, .. } = o {
                         let player = self.player(*client);
-                        self.confirm(player, *id);
+                        if players.contains(&player) {
+                            self.confirm(player, *id);
+                        }
                     }
                 }
                 out.extend(sent);
                 self.tick();
                 out.extend(self.drain());
             }
-            assert!(self.transfers().is_empty());
+            assert!(self.transfers().iter().all(|(e, _)| !players.contains(e)));
             out
         }
 
@@ -1965,11 +1983,7 @@ pub(crate) mod tests {
         let out = h.settle_transfers();
         assert_eq!(
             bars(&out, 1),
-            vec![(
-                "add".into(),
-                Some("Depart dans 5...".into()),
-                Some(1.0)
-            )]
+            vec![("add".into(), Some("Depart dans 5...".into()), Some(1.0))]
         );
         h.ticks((COUNTDOWN - 1) as usize);
         let out = h.drain();

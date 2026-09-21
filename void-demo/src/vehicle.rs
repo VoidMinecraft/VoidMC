@@ -91,16 +91,7 @@ pub fn drive(race: Res<Race>, map: Res<Track>, mut karts: Query<&mut Kart>) {
 pub const SEAT_HEIGHT: f64 = 0.35;
 
 pub fn pose(
-    mut karts: Query<
-        (
-            &Kart,
-            &Pilot,
-            &Passengers,
-            &mut Position,
-            &mut Rotation,
-        ),
-        Changed<Kart>,
-    >,
+    mut karts: Query<(&Kart, &Pilot, &Passengers, &mut Position, &mut Rotation), Changed<Kart>>,
     mut pilots: Query<&mut Position, Without<Kart>>,
 ) {
     for (kart, pilot, seats, mut position, mut rotation) in &mut karts {
@@ -274,7 +265,7 @@ mod tests {
         h.drain();
         h.tick();
         let out = h.drain();
-        let (kart_id, player_id) = (network_id(&h, kart), network_id(&h, a));
+        let kart_id = network_id(&h, kart);
         let spawned = spawns(&out, 1);
         assert_eq!(spawned.len(), 1);
         assert_eq!(
@@ -300,14 +291,12 @@ mod tests {
         assert!(passengers(&out, 1).is_empty());
         assert!(movement(&out, 1, kart_id).is_empty());
 
-        let b = h.connect(2);
+        h.connect(2);
         h.tick();
         let out = h.drain();
-        let other = h.kart_entity(b);
         assert_eq!(karts(&mut h).len(), 2);
         assert_eq!(spawns(&out, 1).len() + spawns(&out, 2).len(), 3, "{out:?}");
         assert!(passengers(&out, 1).is_empty() && passengers(&out, 2).is_empty());
-        let _ = (player_id, other);
     }
 
     #[test]
