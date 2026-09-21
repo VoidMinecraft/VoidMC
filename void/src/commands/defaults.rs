@@ -8,6 +8,7 @@ use crate::components::{
     PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState, Wander,
 };
 use crate::entity::{EntityBuilder, EntityKind};
+use crate::messages::TextColor;
 use crate::world::DimensionId;
 use voidmc_data::{Version, is_summonable_entity_type};
 
@@ -261,7 +262,7 @@ fn handle_kick(ctx: &mut CommandContext) {
     match target {
         Some(target) => {
             // Send Disconnect packet
-            let reason_nbt = crate::commands::text_to_nbt(&reason, "red");
+            let reason_nbt = crate::messages::text_component(&reason, TextColor::Red);
             ctx.players().send(
                 target,
                 voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
@@ -335,7 +336,7 @@ fn handle_tell(ctx: &mut CommandContext) {
                     world,
                     target,
                     &format!("{} whispers to you: {}", sender_name, message),
-                    "gray",
+                    TextColor::Gray,
                 );
             });
             ctx.reply(&format!("You whisper to {}: {}", target_name, message));

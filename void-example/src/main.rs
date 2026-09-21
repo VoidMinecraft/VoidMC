@@ -4,13 +4,12 @@ use bevy_app::Update;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_flame::FlameLayer;
 use tracing_subscriber::prelude::*;
-use voidmc::commands::system_chat;
 use voidmc::components::PlayerName;
 use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
 use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
 use voidmc::{
-    CommandBuilder, CommandRegistry, Inventory, ItemStack, On, Players, Query, ServerConfigBuilder,
-    VoidServer, register_default_commands,
+    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
+    ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
@@ -253,15 +252,19 @@ fn give_starter_kit(event: On<PlayerReadyEvent>, mut inventories: Query<&mut Inv
 }
 
 /// Demo of the packet-send API: tell everyone else who just joined.
-fn announce_join(event: On<PlayerReadyEvent>, players: Players, names: Query<&PlayerName>) {
+fn announce_join(event: On<PlayerReadyEvent>, messages: Messages, names: Query<&PlayerName>) {
     let name = names
         .get(event.entity)
         .map(|n| n.0.as_str())
         .unwrap_or("Someone");
-    players.broadcast_except(
-        event.entity,
-        system_chat(&format!("{name} joined the server"), "yellow"),
-    );
+    let joined = event.entity;
+    messages
+        .broadcast(format!("{name} joined the server"))
+        .color(TextColor::Yellow)
+        .audience(Audience::custom(move |recipient| {
+            recipient.entity() != joined
+        }))
+        .send();
 }
 
 fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) {

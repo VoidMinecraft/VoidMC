@@ -12,7 +12,7 @@ use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::commands::{CommandNode, Commands, Parser, StringType};
 
 use crate::components::{PlayerName, Position};
-use crate::messages::WorldMessages;
+use crate::messages::{TextColor, WorldMessages};
 use crate::players::WorldPlayers;
 
 pub use error::ParseError;
@@ -273,7 +273,7 @@ impl<'a> CommandContext<'a> {
     pub fn reply_error(&self, message: &str) {
         WorldMessages::new(self.world)
             .message(self.entity, message)
-            .color("red")
+            .color(TextColor::Red)
             .send();
     }
 
@@ -308,15 +308,16 @@ pub fn system_chat(message: &str, color: &str) -> voidmc_protocol::clientbound::
     }
 }
 
-pub(crate) fn send_system_chat(world: &World, player: Entity, message: &str, color: &str) {
+pub(crate) fn send_system_chat(world: &World, player: Entity, message: &str, color: TextColor) {
     WorldMessages::new(world)
         .message(player, message)
         .color(color)
         .send();
 }
 
+/// Invalid colours fall back to white; prefer [`crate::messages::text_component`].
 pub fn text_to_nbt(text: &str, color: &str) -> ussr_nbt::owned::Nbt {
-    crate::messages::text_component(text, color)
+    crate::messages::text_component(text, TextColor::parse_or_white(color))
 }
 
 // ---------------------------------------------------------------------------
@@ -870,9 +871,14 @@ pub fn dispatch_command(
 
             if !flag_errors.is_empty() {
                 for err in &flag_errors {
-                    send_system_chat(world, entity, &err.to_player_message(), "red");
+                    send_system_chat(world, entity, &err.to_player_message(), TextColor::Red);
                 }
-                send_system_chat(world, entity, &format!("Usage: {}", res.usage), "gray");
+                send_system_chat(
+                    world,
+                    entity,
+                    &format!("Usage: {}", res.usage),
+                    TextColor::Gray,
+                );
                 return;
             }
 
@@ -939,14 +945,19 @@ pub fn dispatch_command(
                 }
                 Err(errors) => {
                     for err in &errors {
-                        send_system_chat(world, entity, &err.to_player_message(), "red");
+                        send_system_chat(world, entity, &err.to_player_message(), TextColor::Red);
                     }
-                    send_system_chat(world, entity, &format!("Usage: {}", res.usage), "gray");
+                    send_system_chat(
+                        world,
+                        entity,
+                        &format!("Usage: {}", res.usage),
+                        TextColor::Gray,
+                    );
                 }
             }
         }
         Resolved::NotFound(err) => {
-            send_system_chat(world, entity, &err, "red");
+            send_system_chat(world, entity, &err, TextColor::Red);
         }
     }
 }
