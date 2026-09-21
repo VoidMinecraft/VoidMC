@@ -46,6 +46,11 @@
   },
   {
     "type": "file",
+    "name": "menus",
+    "label": "Menus"
+  },
+  {
+    "type": "file",
     "name": "world",
     "label": "World & Chunks"
   },

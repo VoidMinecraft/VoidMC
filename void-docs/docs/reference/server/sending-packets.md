@@ -127,6 +127,7 @@ inside one schedule.
 | `NetworkIngest` | `PreUpdate` | Drain incoming channel, spawn client entities, decode + dispatch (`On<PacketEvent<T>>` observers), handle disconnects. |
 | `CommandDrain` | `Update` | Execute queued commands (`CommandSystems::DrainQueue` is inside it). |
 | `ItemUseDrain` | `Update` | Run `ItemBehavior` handlers for queued uses/breaks. |
+| `MenuClickDrain` | `Update` | Fire `MenuClickEvent` and menu `on_click` handlers (see [Menus](../gameplay/menus.md)). |
 | `KeepAlive` | `Update` | Send `KeepAlive`. After `CommandDrain`. |
 | `EntitySimulation` | `Update` | Settle spawns, wander, physics. After `KeepAlive`. |
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
@@ -134,7 +135,7 @@ inside one schedule.
 | `PlayerBroadcast` | `PostUpdate` | Other players' movement and head rotation. |
 | `BlockEntitySync` | `PostUpdate` | Block Entity Data packets for changed block entities; before `ChunkStreaming` (see [Block Entities](../gameplay/block-entities.md)). |
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
-| `InventorySync` | `PostUpdate` | Resync players flagged `InventoryDirty`. |
+| `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
 | `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
 | `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |
