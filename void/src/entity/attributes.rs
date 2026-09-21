@@ -2,20 +2,23 @@
 //! truth for every attribute an entity overrides; one `PostUpdate` system
 //! sends only the attributes that changed, and only the ones vanilla syncs
 //! to clients (`EntityAttribute::is_client_syncable`), to the entity's own
-//! client and to its viewers.
+//! client and to its viewers. Defaults are the entity kind's vanilla
+//! `AttributeSupplier` (`EntityKind::default_attribute`), not the attribute
+//! registry's: a player walks at 0.1, a zombie at 0.23.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use bevy_app::{App, PostUpdate};
-use bevy_ecs::lifecycle::Remove;
+use bevy_ecs::lifecycle::{Add, Remove};
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::{AttributeModifier, AttributeSnapshot, UpdateAttributes};
 
 pub use voidmc_data::v26_1_2::EntityAttribute;
 pub use voidmc_protocol::clientbound::ModifierOperation;
 
-use super::EntityShownEvent;
-use crate::components::{ClientId, EntityViewers, MinecraftEntityId};
+use super::{EntityKind, EntityShownEvent};
+use crate::components::{ClientId, EntityType, EntityViewers, MinecraftEntityId};
 use crate::players::Players;
 use crate::schedule::VoidSystems;
 
@@ -59,13 +62,15 @@ impl Modifier {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttributeInstance {
     base: f64,
+    base_is_default: bool,
     modifiers: BTreeMap<String, Modifier>,
 }
 
 impl AttributeInstance {
-    fn new(base: f64) -> Self {
+    fn seeded(base: f64) -> Self {
         Self {
             base,
+            base_is_default: true,
             modifiers: BTreeMap::new(),
         }
     }
@@ -122,27 +127,74 @@ fn clamp(attribute: EntityAttribute, value: f64) -> f64 {
     }
 }
 
-fn default_snapshot(attribute: EntityAttribute) -> AttributeSnapshot {
+fn default_snapshot(kind: EntityKind, attribute: EntityAttribute) -> AttributeSnapshot {
     AttributeSnapshot {
         attribute_id: attribute.id(),
-        base: attribute.default_value(),
+        base: kind.default_attribute(attribute),
         modifiers: Vec::new(),
     }
 }
 
 /// Attribute overrides of a player or living entity. An attribute that is
-/// never touched keeps its vanilla default on the client; resetting one sends
-/// that default back.
-#[derive(Component, Debug, Clone, Default)]
+/// never touched keeps the entity kind's vanilla default on the client;
+/// resetting one sends that default back. [`Attributes::new`] assumes a
+/// player; an entity spawned with `EntityBuilder` re-seeds the component to
+/// its own kind when it is inserted, so `for_kind` only matters for reading
+/// `value()` before insertion.
+#[derive(Component, Debug, Clone)]
 #[require(AttributesState)]
 pub struct Attributes {
+    kind: EntityKind,
     attributes: BTreeMap<EntityAttribute, AttributeInstance>,
     dirty: BTreeSet<EntityAttribute>,
+}
+
+impl Default for Attributes {
+    fn default() -> Self {
+        Self::for_player()
+    }
 }
 
 impl Attributes {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn for_player() -> Self {
+        Self::for_kind(EntityKind::Player)
+    }
+
+    pub fn for_kind(kind: EntityKind) -> Self {
+        Self {
+            kind,
+            attributes: BTreeMap::new(),
+            dirty: BTreeSet::new(),
+        }
+    }
+
+    pub fn kind(&self) -> EntityKind {
+        self.kind
+    }
+
+    /// Base vanilla gives this entity kind for `attribute`.
+    pub fn default_base(&self, attribute: EntityAttribute) -> f64 {
+        self.kind.default_attribute(attribute)
+    }
+
+    fn rebase(&mut self, kind: EntityKind) {
+        if self.kind == kind {
+            return;
+        }
+        self.kind = kind;
+        for (attribute, instance) in self.attributes.iter_mut() {
+            if instance.base_is_default {
+                let base = kind.default_attribute(*attribute);
+                if base != instance.base {
+                    instance.base = base;
+                    self.dirty.insert(*attribute);
+                }
+            }
+        }
     }
 
     pub fn base(mut self, attribute: EntityAttribute, base: f64) -> Self {
@@ -157,13 +209,16 @@ impl Attributes {
 
     fn instance(&mut self, attribute: EntityAttribute) -> &mut AttributeInstance {
         self.dirty.insert(attribute);
+        let kind = self.kind;
         self.attributes
             .entry(attribute)
-            .or_insert_with(|| AttributeInstance::new(attribute.default_value()))
+            .or_insert_with(|| AttributeInstance::seeded(kind.default_attribute(attribute)))
     }
 
     pub fn set_base(&mut self, attribute: EntityAttribute, base: f64) {
-        self.instance(attribute).base = base;
+        let instance = self.instance(attribute);
+        instance.base = base;
+        instance.base_is_default = false;
     }
 
     /// Replaces any modifier with the same id.
@@ -190,7 +245,7 @@ impl Attributes {
     }
 
     /// Forgets every override of `attribute`; the client goes back to the
-    /// vanilla default.
+    /// entity kind's vanilla default.
     pub fn reset(&mut self, attribute: EntityAttribute) -> bool {
         let removed = self.attributes.remove(&attribute).is_some();
         if removed {
@@ -210,10 +265,10 @@ impl Attributes {
     /// Final value the client computes: base, then modifiers in operation
     /// order, clamped to the attribute's range.
     pub fn value(&self, attribute: EntityAttribute) -> f64 {
-        let raw = self
-            .attributes
-            .get(&attribute)
-            .map_or(attribute.default_value(), AttributeInstance::raw_value);
+        let raw = self.attributes.get(&attribute).map_or_else(
+            || self.default_base(attribute),
+            AttributeInstance::raw_value,
+        );
         clamp(attribute, raw)
     }
 
@@ -232,9 +287,10 @@ impl Attributes {
     }
 
     fn snapshot_of(&self, attribute: EntityAttribute) -> AttributeSnapshot {
-        self.attributes
-            .get(&attribute)
-            .map_or_else(|| default_snapshot(attribute), |i| i.snapshot(attribute))
+        self.attributes.get(&attribute).map_or_else(
+            || default_snapshot(self.kind, attribute),
+            |i| i.snapshot(attribute),
+        )
     }
 
     fn syncable_snapshots(&self) -> Vec<AttributeSnapshot> {
@@ -256,7 +312,8 @@ pub struct AttributesState {
 }
 
 pub(super) fn register(app: &mut App) {
-    app.add_observer(send_attributes_on_shown)
+    app.add_observer(adopt_entity_kind)
+        .add_observer(send_attributes_on_shown)
         .add_observer(reset_on_remove)
         .add_systems(
             PostUpdate,
@@ -281,11 +338,12 @@ fn sync_attributes(
         Has<ClientId>,
     )>,
 ) {
-    let ready = players.ready();
+    let ready = OnceCell::new();
     for (id, mut attributes, mut state, viewers, is_player) in entities.iter_mut() {
         let changed = attributes.is_changed();
         let mut desired: Option<HashSet<Entity>> = None;
         if is_player {
+            let ready = ready.get_or_init(|| players.ready());
             let mut count = 0;
             let same_members = ready.entities().all(|e| {
                 count += 1;
@@ -338,8 +396,11 @@ fn sync_attributes(
             continue;
         };
         if !state.sent.is_empty() {
-            let reset: Vec<AttributeSnapshot> =
-                state.sent.iter().copied().map(default_snapshot).collect();
+            let reset: Vec<AttributeSnapshot> = state
+                .sent
+                .iter()
+                .map(|attribute| default_snapshot(attributes.kind, *attribute))
+                .collect();
             for gone in state.recipients.difference(&desired) {
                 players.send(*gone, packet(id.0, reset.clone()));
             }
@@ -349,6 +410,18 @@ fn sync_attributes(
             }
         }
         state.recipients = desired;
+    }
+}
+
+fn adopt_entity_kind(
+    event: On<Add, Attributes>,
+    mut entities: Query<(&EntityType, &mut Attributes)>,
+) {
+    let Ok((entity_type, mut attributes)) = entities.get_mut(event.entity) else {
+        return;
+    };
+    if let Some(kind) = EntityKind::from_id(entity_type.0) {
+        attributes.rebase(kind);
     }
 }
 
@@ -372,16 +445,20 @@ fn reset_on_remove(
     players: Players,
     mut entities: Query<(
         &MinecraftEntityId,
+        &Attributes,
         &mut AttributesState,
         Option<&EntityViewers>,
     )>,
 ) {
-    let Ok((id, mut state, viewers)) = entities.get_mut(event.entity) else {
+    let Ok((id, attributes, mut state, viewers)) = entities.get_mut(event.entity) else {
         return;
     };
     if !state.sent.is_empty() {
-        let reset: Vec<AttributeSnapshot> =
-            state.sent.iter().copied().map(default_snapshot).collect();
+        let reset: Vec<AttributeSnapshot> = state
+            .sent
+            .iter()
+            .map(|attribute| default_snapshot(attributes.kind, *attribute))
+            .collect();
         let recipients: Vec<Entity> = match viewers {
             Some(viewers) => viewers.iter().collect(),
             None => state.recipients.iter().copied().collect(),
@@ -475,6 +552,9 @@ mod tests {
         (attribute.id(), base, vec![])
     }
 
+    const PLAYER_SPEED: f64 = 0.1f32 as f64;
+    const ZOMBIE_SPEED: f64 = 0.23f32 as f64;
+
     #[test]
     fn builder_value_and_modifier_bookkeeping() {
         let mut attributes = Attributes::new()
@@ -528,8 +608,117 @@ mod tests {
         assert!((attributes.value(EntityAttribute::MovementSpeed) - 0.1).abs() < 1e-9);
         assert!(attributes.reset(EntityAttribute::MovementSpeed));
         assert!(!attributes.reset(EntityAttribute::MovementSpeed));
-        assert_eq!(attributes.value(EntityAttribute::MovementSpeed), 0.7);
+        assert_eq!(
+            attributes.value(EntityAttribute::MovementSpeed),
+            PLAYER_SPEED
+        );
         assert_eq!(attributes.iter().count(), 2);
+    }
+
+    #[test]
+    fn defaults_come_from_the_entity_kind_not_the_registry() {
+        let mut player = Attributes::new();
+        assert_eq!(player.kind(), EntityKind::Player);
+        assert_eq!(player.value(EntityAttribute::MovementSpeed), PLAYER_SPEED);
+        assert_eq!(
+            player.default_base(EntityAttribute::MovementSpeed),
+            PLAYER_SPEED
+        );
+        player.add_modifier(
+            EntityAttribute::MovementSpeed,
+            Modifier::multiply_total("voidmc:speed", 1.0),
+        );
+        let snapshot = player.snapshot_of(EntityAttribute::MovementSpeed);
+        assert_eq!(snapshot.base, PLAYER_SPEED);
+        assert_eq!(snapshot.modifiers.len(), 1);
+        assert!((player.value(EntityAttribute::MovementSpeed) - 2.0 * PLAYER_SPEED).abs() < 1e-12);
+        assert!(player.reset(EntityAttribute::MovementSpeed));
+        assert_eq!(
+            player.snapshot_of(EntityAttribute::MovementSpeed).base,
+            PLAYER_SPEED
+        );
+        assert_eq!(player.value(EntityAttribute::MovementSpeed), PLAYER_SPEED);
+
+        let mut zombie = Attributes::for_kind(EntityKind::Zombie);
+        assert_eq!(zombie.value(EntityAttribute::MovementSpeed), ZOMBIE_SPEED);
+        zombie.add_modifier(
+            EntityAttribute::MovementSpeed,
+            Modifier::add("voidmc:slow", -0.03),
+        );
+        assert_eq!(
+            zombie.get(EntityAttribute::MovementSpeed).unwrap().base(),
+            ZOMBIE_SPEED
+        );
+        assert_eq!(zombie.value(EntityAttribute::FollowRange), 35.0);
+        assert_eq!(zombie.value(EntityAttribute::Scale), 1.0);
+    }
+
+    #[test]
+    fn inserting_on_a_spawned_entity_rebases_seeded_instances_only() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .insert(
+                Attributes::new()
+                    .modifier(
+                        EntityAttribute::MovementSpeed,
+                        Modifier::multiply_total("voidmc:boost", 1.0),
+                    )
+                    .base(EntityAttribute::MaxHealth, 40.0)
+                    .modifier(EntityAttribute::Armor, Modifier::add("voidmc:plate", 1.0)),
+            )
+            .id();
+        let zombie_id = app.world().get::<MinecraftEntityId>(zombie).unwrap().0;
+        let attributes = app.world().get::<Attributes>(zombie).unwrap();
+        assert_eq!(attributes.kind(), EntityKind::Zombie);
+        assert_eq!(
+            attributes
+                .get(EntityAttribute::MovementSpeed)
+                .unwrap()
+                .base(),
+            ZOMBIE_SPEED
+        );
+        assert_eq!(
+            attributes.get(EntityAttribute::MaxHealth).unwrap().base(),
+            40.0
+        );
+        assert_eq!(attributes.get(EntityAttribute::Armor).unwrap().base(), 2.0);
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![(
+                1,
+                zombie_id,
+                vec![
+                    (
+                        EntityAttribute::Armor.id(),
+                        2.0,
+                        vec![("voidmc:plate".to_string(), 1.0, 0)]
+                    ),
+                    plain(EntityAttribute::MaxHealth, 40.0),
+                    (
+                        EntityAttribute::MovementSpeed.id(),
+                        ZOMBIE_SPEED,
+                        vec![("voidmc:boost".to_string(), 1.0, 2)]
+                    ),
+                ]
+            )]
+        );
+
+        app.world_mut()
+            .get_mut::<Attributes>(zombie)
+            .unwrap()
+            .reset(EntityAttribute::MovementSpeed);
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![(
+                1,
+                zombie_id,
+                vec![plain(EntityAttribute::MovementSpeed, ZOMBIE_SPEED)]
+            )]
+        );
     }
 
     #[test]
@@ -585,7 +774,7 @@ mod tests {
                 2,
                 101,
                 vec![
-                    plain(EntityAttribute::MovementSpeed, 0.7),
+                    plain(EntityAttribute::MovementSpeed, PLAYER_SPEED),
                     plain(EntityAttribute::Scale, 1.0)
                 ]
             )]
@@ -606,7 +795,7 @@ mod tests {
         );
 
         app.world_mut().entity_mut(me).remove::<Attributes>();
-        let default_speed = plain(EntityAttribute::MovementSpeed, 0.7);
+        let default_speed = plain(EntityAttribute::MovementSpeed, PLAYER_SPEED);
         assert_eq!(
             drain(&rx),
             vec![

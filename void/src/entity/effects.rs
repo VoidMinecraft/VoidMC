@@ -3,6 +3,9 @@
 //! down and sends only the changes. Vanilla routing: effect packets go to the
 //! entity's own client and to its player passengers; other viewers learn about
 //! visible effects through entity metadata (particles, glowing, invisibility).
+//! The particle and ambience metadata are `LivingEntity` indices: the
+//! component only projects them on living kinds (`EntityKind::is_living`)
+//! and warns otherwise.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -19,9 +22,10 @@ use voidmc_protocol::clientbound::{
 
 pub use voidmc_data::v26_1_2::{Effect, EffectCategory};
 
-use super::metadata::{EntityMetadata, sync_entity_metadata};
+use super::EntityKind;
+use super::metadata::{EntityMetadata, project_flags, sync_entity_metadata};
 use super::passengers::Passengers;
-use crate::components::{ClientId, MinecraftEntityId, PlayerReady};
+use crate::components::{ClientId, EntityType, MinecraftEntityId, PlayerReady};
 use crate::players::Players;
 use crate::schedule::VoidSystems;
 
@@ -39,7 +43,7 @@ impl EffectDuration {
     }
 
     pub const fn seconds(seconds: u32) -> Self {
-        Self::Ticks(seconds * 20)
+        Self::Ticks(seconds.saturating_mul(20))
     }
 
     fn wire(self) -> i32 {
@@ -289,7 +293,11 @@ impl StatusEffects {
             .filter(|(_, instance)| instance.show_particles)
             .map(|(effect, instance)| instance.particle(*effect))
             .collect();
-        let ambient = self.effects.values().all(|instance| instance.ambient);
+        let ambient = self
+            .effects
+            .values()
+            .filter(|instance| instance.show_particles)
+            .all(|instance| instance.ambient);
         meta.set(
             living_entity_index::EFFECT_PARTICLES,
             Value::Particles(particles),
@@ -322,9 +330,16 @@ pub(super) fn register(app: &mut App) {
         PostUpdate,
         (sync_status_effects, project_effects_metadata)
             .chain()
+            .before(project_flags)
             .before(sync_entity_metadata)
             .in_set(VoidSystems::EntityMetadataSync),
     );
+}
+
+fn is_living(entity_type: Option<&EntityType>) -> bool {
+    entity_type
+        .and_then(|t| EntityKind::from_id(t.0))
+        .is_some_and(EntityKind::is_living)
 }
 
 fn update_packet(
@@ -389,18 +404,21 @@ fn sync_status_effects(
                 .collect();
             for effect in removed {
                 if state.sent.remove(&effect) {
-                    players.send_to(kept.iter().copied(), remove_packet(id.0, effect));
+                    players.send_to(
+                        state.recipients.iter().copied(),
+                        remove_packet(id.0, effect),
+                    );
                 }
             }
             for effect in dirty {
                 let Some(instance) = effects.get(effect) else {
                     continue;
                 };
-                let blend = state.sent.insert(effect);
-                players.send_to(
-                    kept.iter().copied(),
-                    update_packet(id.0, effect, instance, blend),
-                );
+                let added = state.sent.insert(effect);
+                for recipient in &kept {
+                    let blend = added && *recipient == entity;
+                    players.send(*recipient, update_packet(id.0, effect, instance, blend));
+                }
             }
         }
 
@@ -422,10 +440,25 @@ fn sync_status_effects(
 }
 
 fn project_effects_metadata(
-    mut entities: Query<(&StatusEffects, &mut EntityMetadata), Changed<StatusEffects>>,
+    mut entities: Query<
+        (
+            Entity,
+            &StatusEffects,
+            &mut EntityMetadata,
+            Option<&EntityType>,
+        ),
+        Changed<StatusEffects>,
+    >,
 ) {
-    for (effects, mut meta) in entities.iter_mut() {
-        effects.write_metadata(&mut meta);
+    for (entity, effects, mut meta, entity_type) in entities.iter_mut() {
+        if is_living(entity_type) {
+            effects.write_metadata(&mut meta);
+        } else {
+            tracing::warn!(
+                ?entity,
+                "StatusEffects on a non-living entity kind: effect metadata not sent"
+            );
+        }
     }
 }
 
@@ -436,9 +469,10 @@ fn remove_from_recipients(
         &MinecraftEntityId,
         &mut StatusEffectsState,
         Option<&mut EntityMetadata>,
+        Option<&EntityType>,
     )>,
 ) {
-    let Ok((id, mut state, meta)) = entities.get_mut(event.entity) else {
+    let Ok((id, mut state, meta, entity_type)) = entities.get_mut(event.entity) else {
         return;
     };
     for effect in &state.sent {
@@ -449,7 +483,9 @@ fn remove_from_recipients(
     }
     state.sent.clear();
     state.recipients.clear();
-    if let Some(mut meta) = meta {
+    if let Some(mut meta) = meta
+        && is_living(entity_type)
+    {
         StatusEffects::clear_metadata(&mut meta);
     }
 }
@@ -607,6 +643,10 @@ mod tests {
             .ambient();
         let invisibility = effects.get(Effect::Invisibility).unwrap();
         assert_eq!(invisibility.duration, EffectDuration::Ticks(100));
+        assert_eq!(
+            EffectDuration::seconds(u32::MAX),
+            EffectDuration::Ticks(u32::MAX)
+        );
         assert!(invisibility.ambient && !invisibility.show_particles && invisibility.show_icon);
         assert!(effects.invisible());
 
@@ -766,7 +806,8 @@ mod tests {
             .add(Effect::Strength, 0, EffectDuration::Infinite);
         app.update();
         let sent = drain(&rx);
-        assert!(sent.contains(&update(1, horse_id, Effect::Strength, 0, -1, VISIBLE_BLEND)));
+        assert!(sent.contains(&update(1, horse_id, Effect::Strength, 0, -1, VISIBLE)));
+        assert!(!sent.contains(&update(1, horse_id, Effect::Strength, 0, -1, VISIBLE_BLEND)));
 
         app.world_mut()
             .get_mut::<Passengers>(horse)
@@ -776,6 +817,168 @@ mod tests {
         let sent = drain(&rx);
         assert!(sent.contains(&remove(1, horse_id, Effect::Speed)));
         assert!(sent.contains(&remove(1, horse_id, Effect::Strength)));
+    }
+
+    #[test]
+    fn dismounting_the_tick_an_effect_expires_still_removes_it_from_the_rider() {
+        let (mut app, rx) = test_app();
+        let rider = player(&mut app, 1);
+        let horse = EntityBuilder::new(EntityKind::Horse)
+            .spawn_in(app.world_mut())
+            .insert(
+                StatusEffects::new()
+                    .with(Effect::Speed, 0, EffectDuration::ticks(2))
+                    .with(Effect::Strength, 0, EffectDuration::Infinite),
+            )
+            .insert(Passengers::new([rider]))
+            .id();
+        let horse_id = app.world().get::<MinecraftEntityId>(horse).unwrap().0;
+        app.update();
+        let sent = drain(&rx);
+        assert!(sent.contains(&update(1, horse_id, Effect::Speed, 0, 2, VISIBLE)));
+        assert!(sent.contains(&update(1, horse_id, Effect::Strength, 0, -1, VISIBLE)));
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut()
+            .get_mut::<Passengers>(horse)
+            .unwrap()
+            .remove(rider);
+        app.world_mut()
+            .get_mut::<StatusEffects>(horse)
+            .unwrap()
+            .remove(Effect::Strength);
+        app.update();
+        let sent = drain(&rx);
+        assert!(sent.contains(&remove(1, horse_id, Effect::Speed)));
+        assert!(sent.contains(&remove(1, horse_id, Effect::Strength)));
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(horse)
+                .unwrap()
+                .has(Effect::Speed)
+        );
+    }
+
+    #[test]
+    fn blend_only_goes_to_the_entity_itself_on_add() {
+        let (mut app, rx) = test_app();
+        let me = player(&mut app, 1);
+        let rider = player(&mut app, 2);
+        app.world_mut()
+            .entity_mut(me)
+            .insert((StatusEffects::new(), Passengers::new([rider])));
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut().get_mut::<StatusEffects>(me).unwrap().add(
+            Effect::Speed,
+            0,
+            EffectDuration::Infinite,
+        );
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                update(1, 101, Effect::Speed, 0, -1, VISIBLE_BLEND),
+                update(2, 101, Effect::Speed, 0, -1, VISIBLE),
+            ]
+        );
+
+        app.world_mut().get_mut::<StatusEffects>(me).unwrap().add(
+            Effect::Speed,
+            1,
+            EffectDuration::Infinite,
+        );
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                update(1, 101, Effect::Speed, 1, -1, VISIBLE),
+                update(2, 101, Effect::Speed, 1, -1, VISIBLE),
+            ]
+        );
+    }
+
+    #[test]
+    fn ambience_only_counts_visible_effects() {
+        let mut effects = StatusEffects::new()
+            .with_instance(
+                Effect::Speed,
+                EffectInstance::new(0, EffectDuration::Infinite).hide_particles(),
+            )
+            .with_instance(
+                Effect::Haste,
+                EffectInstance::new(0, EffectDuration::Infinite).ambient(),
+            );
+        let mut meta = EntityMetadata::default();
+        effects.write_metadata(&mut meta);
+        assert_eq!(
+            meta.get(living_entity_index::EFFECT_AMBIENCE),
+            Some(&Value::Boolean(true))
+        );
+        effects.add(Effect::Speed, 0, EffectDuration::Infinite);
+        effects.write_metadata(&mut meta);
+        assert_eq!(
+            meta.get(living_entity_index::EFFECT_AMBIENCE),
+            Some(&Value::Boolean(false))
+        );
+        effects.clear();
+        effects.write_metadata(&mut meta);
+        assert_eq!(
+            meta.get(living_entity_index::EFFECT_AMBIENCE),
+            Some(&Value::Boolean(true))
+        );
+    }
+
+    #[test]
+    fn glowing_expiry_clears_the_flags_byte_in_the_same_tick() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .insert(StatusEffects::new().with(Effect::Glowing, 0, EffectDuration::ticks(2)))
+            .id();
+        let zombie_id = app.world().get::<MinecraftEntityId>(zombie).unwrap().0;
+        app.update();
+        let meta = metadata_of(&drain(&rx), zombie_id);
+        assert!(meta.contains(&(entity_index::FLAGS, Value::Byte(entity_flag::GLOWING as i8))));
+        app.update();
+        assert!(drain(&rx).is_empty());
+        app.update();
+        let meta = metadata_of(&drain(&rx), zombie_id);
+        assert!(meta.contains(&(entity_index::FLAGS, Value::Byte(0))));
+        assert!(
+            !app.world()
+                .get::<StatusEffects>(zombie)
+                .unwrap()
+                .has(Effect::Glowing)
+        );
+    }
+
+    #[test]
+    fn non_living_kinds_never_get_living_metadata() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let boat = EntityBuilder::new(EntityKind::OakBoat)
+            .spawn_in(app.world_mut())
+            .insert(StatusEffects::new().with(Effect::Glowing, 0, EffectDuration::Infinite))
+            .id();
+        let boat_id = app.world().get::<MinecraftEntityId>(boat).unwrap().0;
+        app.update();
+        let meta = metadata_of(&drain(&rx), boat_id);
+        assert_eq!(
+            meta,
+            vec![(entity_index::FLAGS, Value::Byte(entity_flag::GLOWING as i8))]
+        );
+        let stored = app.world().get::<EntityMetadata>(boat).unwrap();
+        assert_eq!(stored.get(living_entity_index::EFFECT_PARTICLES), None);
+        assert_eq!(stored.get(living_entity_index::EFFECT_AMBIENCE), None);
+
+        app.world_mut().entity_mut(boat).remove::<StatusEffects>();
+        app.update();
+        let meta = metadata_of(&drain(&rx), boat_id);
+        assert_eq!(meta, vec![(entity_index::FLAGS, Value::Byte(0))]);
     }
 
     fn metadata_of(sent: &[Sent], entity_id: i32) -> Vec<(u8, Value)> {

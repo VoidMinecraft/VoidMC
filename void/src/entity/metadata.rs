@@ -522,7 +522,7 @@ type FlagSources<'a> = (
     Option<&'a StatusEffects>,
 );
 
-fn project_flags(
+pub(super) fn project_flags(
     mut entities: Query<
         (FlagSources, &mut EntityMetadata),
         Or<(Added<Invisible>, Added<Glowing>, Changed<StatusEffects>)>,

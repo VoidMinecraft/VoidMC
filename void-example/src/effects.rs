@@ -110,7 +110,13 @@ fn handle_speed(ctx: &mut CommandContext) {
                 Modifier::multiply_total(SPEED_MODIFIER, factor - 1.0),
             );
         }
-        attributes.value(EntityAttribute::MovementSpeed)
+        (
+            attributes.value(EntityAttribute::MovementSpeed),
+            attributes.default_base(EntityAttribute::MovementSpeed),
+        )
     });
-    ctx.reply(&format!("Movement speed is now {value:.3} ({factor}x)."));
+    ctx.reply(&format!(
+        "Movement speed is now {:.3} ({factor}x the vanilla {:.3}).",
+        value.0, value.1
+    ));
 }

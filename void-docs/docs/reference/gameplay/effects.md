@@ -11,9 +11,11 @@ Effect and attribute ids are the generated `Effect` and `EntityAttribute`
 enums (`voidmc::Effect::Speed`, `voidmc::EntityAttribute::MovementSpeed`), backed by
 the `minecraft:mob_effect` and `minecraft:attribute` registries of the data
 crate; `.name()`, `.id()`, `Effect::from_name("minecraft:speed")` and
-`EntityAttribute::ALL` are available. `Effect::color()` / `category()` and
-`EntityAttribute::default_value()` / `range()` / `is_client_syncable()` carry
-the vanilla table.
+`EntityAttribute::ALL` are available. `Effect::color()` / `category()` /
+`particle()` and `EntityAttribute::default_value()` / `range()` /
+`is_client_syncable()` carry the vanilla tables, and
+`EntityKind::default_attribute(attribute)` / `EntityKind::is_living()` the
+per-kind `DefaultAttributes` supplier.
 
 ## Status effects
 
@@ -79,11 +81,20 @@ The routing follows vanilla:
   the removals.
 - **Other viewers** never get effect packets. Visible effects reach them
   through entity metadata: `show_particles` adds the effect's particle (its
-  vanilla colour, or `minecraft:trial_omen` / `raid_omen`) to the living-entity
-  particle list and the ambience flag, and `Effect::Glowing` /
-  `Effect::Invisibility` set the entity flags exactly like the `Glowing` /
-  `Invisible` marker components do. Players have no `EntityMetadata`, so a
-  player's effects are not shown to other players.
+  vanilla colour, or the custom particle of `trial_omen`, `raid_omen`,
+  `wind_charged`, `weaving`, `oozing`, `infested`) to the living-entity
+  particle list and the ambience flag (`true` when every effect that shows
+  particles is ambient), and `Effect::Glowing` / `Effect::Invisibility` set the
+  entity flags exactly like the `Glowing` / `Invisible` marker components do.
+  Players have no `EntityMetadata`, so a player's effects are not shown to
+  other players.
+- The particle list and ambience flag are `LivingEntity` metadata: they are
+  only projected for kinds with `EntityKind::is_living()`; a `StatusEffects`
+  on a boat, item or display entity logs a warning and only the glowing /
+  invisible flags apply.
+- The `blend` flag (smooth fog / darkness transition) is set on the entity's
+  own client when an effect is first added, never on passengers or updates,
+  as vanilla does.
 
 Only the changed effect is sent: bumping an amplifier is one packet, expiry is
 one removal, an unchanged component sends nothing.
@@ -109,6 +120,32 @@ overrides it, `modifier(..)` stacks a modifier on top (on the vanilla default
 base if none was set). Modifier ids are resource locations and unique per
 attribute: adding one with an existing id replaces it.
 
+### Defaults are per entity kind
+
+The default is the one vanilla's `AttributeSupplier` gives that *kind*
+(`EntityKind::default_attribute`), not the attribute registry's: a player's
+`MovementSpeed` is `0.1`, a zombie's `0.23`, a horse's `0.225`, while the
+registry default is `0.7`. A client keeps the last snapshot it received, so
+this is the base every reset must send back.
+
+- `Attributes::new()` (and `Default`) assumes a **player**
+  (`Attributes::for_player()`).
+- `Attributes::for_kind(kind)` seeds from that kind; only needed to read
+  `value()` before the component is inserted, because inserting any
+  `Attributes` on an entity spawned with `EntityBuilder` re-seeds it to the
+  entity's kind: bases you set explicitly are kept, bases that were still the
+  default move to the kind's default. `kind()` and `default_base(attribute)`
+  read them back.
+
+```rust
+let mut speed = Attributes::new();
+speed.add_modifier(EntityAttribute::MovementSpeed, Modifier::multiply_total("demo:boost", 1.0));
+speed.value(EntityAttribute::MovementSpeed); // 0.2 on a player, 0.46 once inserted on a zombie
+```
+
+Vanilla's `0.23F`-style float literals are widened to `f64` the way Java does
+(`0.2300000041723251`), so the bytes match a Paper server.
+
 | `Modifier` | Wire operation | Effect on the value |
 |---|---|---|
 | `Modifier::add(id, amount)` | `AddValue` | `base + amount` |
@@ -119,7 +156,7 @@ attribute: adding one with an existing id replaces it.
 
 On a live component: `set_base`, `add_modifier`, `remove_modifier(attribute,
 id)`, `clear_modifiers`, `reset(attribute)` (drops every override and sends the
-vanilla default back), and the readers `get`, `has`, `iter`, `value(attribute)`
+kind's default back), and the readers `get`, `has`, `iter`, `value(attribute)`
 — the final number the client computes, clamped to the attribute's range.
 
 ### Who receives what
@@ -137,12 +174,12 @@ waypoint ranges) stay in the component for your own logic and `value()`.
 - A viewer that starts seeing a tracked entity, and a player joining while
   another player has attributes, receive the full syncable set.
 - A player who stops seeing another player, `reset(attribute)`, and removing
-  the component all send the vanilla default so the client does not keep a
-  stale value.
+  the component all send the kind's vanilla default so the client does not
+  keep a stale value.
 
 ## Example commands
 
 `void-example` ships `/effect <name|clear> [seconds] [amplifier] [--hidden]
 [--ambient]` (`seconds` 0 removes that effect, omitted means infinite) and
-`/speed <factor>` (a `multiply_total` modifier on movement speed; `1.0`
-removes it).
+`/speed <factor>` (a `multiply_total` modifier on the player's vanilla
+`0.1` movement speed; `1.0` removes it).
