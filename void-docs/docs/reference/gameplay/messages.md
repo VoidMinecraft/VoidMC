@@ -75,12 +75,14 @@ recipient** with a `DecoderException`. The variants are `Black`, `DarkBlue`,
 `DarkGreen`, `DarkAqua`, `DarkRed`, `DarkPurple`, `Gold`, `Gray`, `DarkGray`,
 `Blue`, `Green`, `Aqua`, `Red`, `LightPurple`, `Yellow`, `White` and
 `Rgb(u32)`; `TextColor::rgb(value)` masks to 24 bits and serialises as
-`#rrggbb`. `TextColor::parse("dark_red")` / `parse("#ff8800")` turns user
-input into a colour (`None` when the client would reject it), and
-`Display` gives the wire name back.
+`#rrggbb`. `TextColor::parse` accepts the 16 vanilla names and `#rrggbb`
+(`parse("dark_red")` / `parse("#ff8800")`), returning `None` when the client
+would reject the input, and `Display` gives the wire name back.
 
-Text longer than the NBT string limit (65 535 bytes) is cut on a character
-boundary and a warning is logged, rather than sent truncated mid-character.
+Text longer than the NBT string limit (65 535 modified-UTF-8 bytes, where
+`\0` costs 2 bytes and characters outside the BMP cost 6) is cut on a
+character boundary and a warning is logged, rather than sent truncated
+mid-character.
 
 The legacy string entry points `commands::system_chat(text, color)` and
 `commands::text_to_nbt(text, color)` keep their signatures: an invalid colour

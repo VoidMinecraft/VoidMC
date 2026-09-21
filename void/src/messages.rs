@@ -107,12 +107,9 @@ impl TextColor {
 
 impl fmt::Display for TextColor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.name() {
-            Some(name) => f.write_str(name),
-            None => match self {
-                TextColor::Rgb(value) => write!(f, "#{:06x}", value & 0xFF_FFFF),
-                _ => unreachable!(),
-            },
+        match *self {
+            TextColor::Rgb(value) => write!(f, "#{:06x}", value & 0xFF_FFFF),
+            named => f.write_str(named.name().unwrap_or_default()),
         }
     }
 }
@@ -277,13 +274,26 @@ pub fn text_component(text: &str, color: TextColor) -> Nbt {
     }
 }
 
-fn truncate_text(text: &str) -> &str {
-    if text.len() <= MAX_TEXT_BYTES {
-        return text;
+fn modified_utf8_width(c: char) -> usize {
+    match c {
+        '\0' => 2,
+        c if c as u32 >= 0x1_0000 => 6,
+        c => c.len_utf8(),
     }
-    let mut end = MAX_TEXT_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
+}
+
+fn truncate_text(text: &str) -> &str {
+    let mut encoded = 0;
+    let mut end = text.len();
+    for (index, c) in text.char_indices() {
+        encoded += modified_utf8_width(c);
+        if encoded > MAX_TEXT_BYTES {
+            end = index;
+            break;
+        }
+    }
+    if end == text.len() {
+        return text;
     }
     warn!(
         bytes = text.len(),
@@ -524,6 +534,28 @@ mod tests {
         assert_eq!(TextColor::parse_or_white("#12345"), TextColor::Rgb(0x12345));
     }
 
+    fn wire_text_round_trips(packet: &SystemChat) -> (usize, String) {
+        let mut bytes = Vec::new();
+        packet.encode(&mut bytes);
+        let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
+        let opts = ussr_nbt::ReadOpts {
+            name: false,
+            ..ussr_nbt::ReadOpts::new()
+        };
+        let decoded = Nbt::read_with_opts(&mut &bytes[..], opts).expect("wire NBT decodes");
+        let text = decoded
+            .compound
+            .tags
+            .iter()
+            .find(|(name, _)| name.to_string() == "text")
+            .map(|(_, tag)| match tag {
+                Tag::String(value) => value.to_string(),
+                other => panic!("unexpected tag {other:?}"),
+            })
+            .expect("text field");
+        (len, text)
+    }
+
     #[test]
     fn oversized_text_is_cut_on_a_char_boundary_below_the_nbt_limit() {
         let text = "é".repeat(40000);
@@ -532,17 +564,39 @@ mod tests {
         assert_eq!(sent.len(), MAX_TEXT_BYTES - 1);
         assert!(sent.chars().all(|c| c == 'é'));
 
-        let mut bytes = Vec::new();
-        packet.encode(&mut bytes);
-        let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
+        let (len, decoded) = wire_text_round_trips(&packet);
         assert_eq!(len, MAX_TEXT_BYTES - 1);
-        assert!(std::str::from_utf8(&bytes[10..10 + len]).is_ok());
+        assert_eq!(decoded, sent);
 
         let exact = "a".repeat(MAX_TEXT_BYTES);
         assert_eq!(
             field(&system_chat_packet(&exact, TextColor::White), "text").len(),
             MAX_TEXT_BYTES
         );
+    }
+
+    #[test]
+    fn oversized_text_is_cut_on_the_modified_utf8_width() {
+        for text in ["😀".repeat(11000), "a\0".repeat(30000)] {
+            let packet = system_chat_packet(&text, TextColor::White);
+            let sent = field(&packet, "text");
+            assert!(sent.len() < text.len());
+            assert!(text.starts_with(&sent));
+            assert!(sent.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
+
+            let (len, decoded) = wire_text_round_trips(&packet);
+            assert!(len <= MAX_TEXT_BYTES);
+            assert_eq!(decoded, sent);
+        }
+
+        let emoji = "😀".repeat(MAX_TEXT_BYTES / 6);
+        assert_eq!(
+            field(&system_chat_packet(&emoji, TextColor::White), "text").len(),
+            emoji.len()
+        );
+        let (len, decoded) = wire_text_round_trips(&system_chat_packet(&emoji, TextColor::White));
+        assert_eq!(len, MAX_TEXT_BYTES / 6 * 6);
+        assert_eq!(decoded, emoji);
     }
 
     #[test]
