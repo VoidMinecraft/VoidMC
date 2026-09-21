@@ -9,6 +9,7 @@ use crate::vehicle::Pilot;
 
 pub const TITLE: &str = "Alpine Rush";
 pub const RANK_LINES: usize = 5;
+pub const RANK_HYSTERESIS: f64 = 0.002;
 pub const NO_TIME: &str = "--:--.-";
 const PROGRESS_WIDTH: usize = 10;
 
@@ -187,7 +188,10 @@ pub fn standings(
                     Some(time) => (Row::Finished(pilot.0, time), time as f64),
                     None => (
                         Row::Racing(pilot.0, lap_of(kart, race.laps)),
-                        -kart.progress(&map),
+                        match race.phase {
+                            Phase::Countdown => slot_of(&race, pilot.0),
+                            _ => -kart.progress(&map),
+                        },
                     ),
                 });
             }
@@ -197,6 +201,7 @@ pub fn standings(
                     .cmp(&racing(&b.0))
                     .then_with(|| a.1.total_cmp(&b.1))
             });
+            settle(&mut scratch, &standings.rows);
         }
         Layout::Idle | Layout::Building => {
             for index in 0..race.results.len() {
@@ -217,6 +222,35 @@ pub fn standings(
 
 fn lap_of(kart: &Kart, laps: usize) -> usize {
     ((kart.next_gate - 1) / GATES + 1).min(laps)
+}
+
+fn slot_of(race: &Race, player: Entity) -> f64 {
+    race.roster
+        .iter()
+        .position(|held| *held == player)
+        .map_or(f64::MAX, |slot| slot as f64)
+}
+
+fn settle(scratch: &mut [(Row, f64)], previous: &[Row]) {
+    let rank = |row: Row| {
+        previous
+            .iter()
+            .position(|held| held.player() == row.player())
+    };
+    for start in 1..scratch.len() {
+        let mut at = start;
+        while at > 0 {
+            let (above, below) = (scratch[at - 1], scratch[at]);
+            let close = matches!((above.0, below.0), (Row::Racing(..), Row::Racing(..)))
+                && (above.1 - below.1).abs() < RANK_HYSTERESIS;
+            let held = matches!((rank(above.0), rank(below.0)), (Some(a), Some(b)) if b < a);
+            if !(close && held) {
+                break;
+            }
+            scratch.swap(at - 1, at);
+            at -= 1;
+        }
+    }
 }
 
 fn view(
@@ -407,7 +441,7 @@ impl Lines<'_, '_, '_, '_> {
 }
 
 fn fill(
-    sidebar: &mut Sidebar,
+    sidebar: &mut Mut<Sidebar>,
     handles: &mut Handles,
     next: &View,
     previous: Option<&View>,
@@ -489,10 +523,12 @@ fn fill(
         }
         let mut last = handles.rows.last().copied().unwrap_or(anchor);
         for (index, (text, color)) in rows.into_iter().enumerate() {
-            let widget = Widget::text(text).color(color);
+            let widget = Widget::from(Widget::text(text).color(color));
             match handles.rows.get(index) {
                 Some(id) => {
-                    sidebar.set(*id, widget);
+                    if sidebar.get(*id) != Some(&widget) {
+                        sidebar.set(*id, widget);
+                    }
                 }
                 None => {
                     if let Some(id) = sidebar.insert_after(last, widget) {
@@ -508,6 +544,8 @@ fn fill(
 #[cfg(test)]
 mod tests {
     use std::f64::consts::TAU;
+
+    use bevy_ecs::change_detection::Tick;
 
     use super::*;
     use crate::race::tests::{Harness, Out};
@@ -833,6 +871,141 @@ mod tests {
         advance(&mut h, b, 4);
         h.tick();
         assert_eq!(h.app.world().resource::<Standings>().version, version + 1);
+        assert_eq!(board_packets(&h.drain(), 1), 0);
+    }
+
+    fn place(h: &mut Harness, player: Entity, lap: f64) {
+        let map = h.app.world().resource::<Track>().clone();
+        let (x, y, z) = map.point(lap * TAU, 0.0);
+        let mut kart = h.kart_mut(player);
+        (kart.x, kart.y, kart.z) = (x, y, z);
+    }
+
+    fn progress(h: &Harness, player: Entity) -> f64 {
+        h.kart(player).progress(h.app.world().resource::<Track>())
+    }
+
+    fn rows(h: &Harness) -> Vec<Row> {
+        h.app.world().resource::<Standings>().rows.clone()
+    }
+
+    fn version(h: &Harness) -> u64 {
+        h.app.world().resource::<Standings>().version
+    }
+
+    fn board_changed_since(h: &mut Harness, player: Entity, since: Tick) -> bool {
+        let now = h.world().change_tick();
+        h.world()
+            .query::<Ref<Sidebar>>()
+            .get(h.app.world(), player)
+            .unwrap()
+            .last_changed()
+            .is_newer_than(since, now)
+    }
+
+    #[test]
+    fn two_karts_within_the_hysteresis_band_keep_their_previous_order() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.tick();
+        h.shortcut_to_racing(a, &[]);
+        let start = version(&h);
+        assert_eq!(rows(&h), vec![Row::Racing(a, 1), Row::Racing(b, 1)]);
+        place(&mut h, a, 0.1);
+        place(&mut h, b, 0.1 + RANK_HYSTERESIS / 2.0);
+        h.tick();
+        let gap = progress(&h, b) - progress(&h, a);
+        assert!(gap > 0.0 && gap < RANK_HYSTERESIS, "{gap}");
+        assert_eq!(rows(&h), vec![Row::Racing(a, 1), Row::Racing(b, 1)]);
+        assert_eq!(version(&h), start);
+        assert_eq!(board_packets(&h.drain(), 1), 0);
+        place(&mut h, b, 0.1 + RANK_HYSTERESIS * 2.0);
+        h.tick();
+        assert!(progress(&h, b) - progress(&h, a) > RANK_HYSTERESIS);
+        assert_eq!(rows(&h), vec![Row::Racing(b, 1), Row::Racing(a, 1)]);
+        assert_eq!(version(&h), start + 1);
+        assert_eq!(
+            lines(&h.drain(), 1),
+            vec![
+                ("line02".to_string(), "Position: 2/2".to_string()),
+                ("line05".to_string(), "1. Pilot2 T1".to_string()),
+                ("line06".to_string(), "2. Pilot1 T1".to_string()),
+            ]
+        );
+        place(&mut h, b, 0.1 - RANK_HYSTERESIS / 2.0);
+        h.tick();
+        let gap = progress(&h, a) - progress(&h, b);
+        assert!(gap > 0.0 && gap < RANK_HYSTERESIS, "{gap}");
+        assert_eq!(rows(&h), vec![Row::Racing(b, 1), Row::Racing(a, 1)]);
+        assert_eq!(version(&h), start + 1);
+        assert_eq!(board_packets(&h.drain(), 1), 0);
+        place(&mut h, b, 0.1 - RANK_HYSTERESIS * 2.0);
+        h.tick();
+        assert_eq!(rows(&h), vec![Row::Racing(a, 1), Row::Racing(b, 1)]);
+        assert_eq!(version(&h), start + 2);
+        assert_eq!(board_packets(&h.drain(), 1), 3);
+    }
+
+    #[test]
+    fn a_finished_kart_leaves_the_hysteresis_band() {
+        let mut h = Harness::new(42);
+        let a = h.connect(1);
+        let b = h.connect(2);
+        h.tick();
+        h.shortcut_to_racing(a, &[]);
+        let start = version(&h);
+        place(&mut h, a, 0.1);
+        place(&mut h, b, 0.1 + RANK_HYSTERESIS / 2.0);
+        h.tick();
+        assert_eq!(rows(&h), vec![Row::Racing(a, 1), Row::Racing(b, 1)]);
+        h.kart_mut(b).finished = Some(7);
+        h.tick();
+        assert_eq!(rows(&h), vec![Row::Finished(b, 7), Row::Racing(a, 1)]);
+        assert_eq!(version(&h), start + 1);
+    }
+
+    #[test]
+    fn the_countdown_grid_is_ranked_by_roster_slot() {
+        let mut h = Harness::new(42);
+        let pilots: Vec<Entity> = (1..=4).map(|id| h.connect(id)).collect();
+        h.tick();
+        h.shortcut_to_countdown(pilots[0], &[]);
+        h.tick();
+        let ordered: Vec<Row> = pilots.iter().map(|p| Row::Racing(*p, 1)).collect();
+        assert_eq!(rows(&h), ordered);
+        for (slot, player) in pilots.iter().enumerate() {
+            let map = h.app.world().resource::<Track>().clone();
+            h.kart_mut(*player).grid(&map, 3 - slot);
+        }
+        h.tick();
+        assert_eq!(rows(&h), ordered);
+        let tick = h.race().tick;
+        h.race_mut().start = tick;
+        h.tick();
+        assert_eq!(h.race().phase, Phase::Racing);
+        assert_eq!(rows(&h), ordered);
+    }
+
+    #[test]
+    fn a_swap_below_the_visible_rows_leaves_the_boards_untouched() {
+        let mut h = Harness::new(42);
+        let pilots: Vec<Entity> = (1..=7).map(|id| h.connect(id)).collect();
+        h.tick();
+        h.shortcut_to_racing(pilots[0], &[]);
+        for (index, player) in pilots.iter().enumerate() {
+            place(&mut h, *player, 0.5 - index as f64 * 0.01);
+        }
+        h.tick();
+        h.drain();
+        let start = version(&h);
+        let since = h.world().change_tick();
+        place(&mut h, pilots[6], 0.5 - 0.05 + RANK_HYSTERESIS * 2.0);
+        h.tick();
+        assert_eq!(version(&h), start + 1);
+        assert_eq!(rows(&h)[5], Row::Racing(pilots[6], 1));
+        assert!(!board_changed_since(&mut h, pilots[0], since));
+        assert!(board_changed_since(&mut h, pilots[5], since));
         assert_eq!(board_packets(&h.drain(), 1), 0);
     }
 

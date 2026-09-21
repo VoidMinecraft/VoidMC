@@ -229,12 +229,19 @@ vers la porte suivante comprise). Il est calculé une fois par tick pour tout le
 tours, pas de distances, si bien que sa **version** ne change que lorsque l'ordre, un
 tour ou une arrivée change — deux karts qui se dépassent produisent une seule
 réécriture chez chacun, deux karts qui roulent sans se dépasser n'en produisent aucune.
+Deux karts roue dans roue gardent leur ordre précédent tant que leurs progressions
+diffèrent de moins de `RANK_HYSTERESIS` (0,002 tour) : un duel au coude à coude ne
+fait pas clignoter le classement. Pendant le compte à rebours, l'ordre est celui des
+places sur la grille (slot du roster), déterministe et conservé au départ jusqu'au
+premier vrai écart.
 
 **Poussé sur changement, strictement.** Le panneau ne compare que des valeurs
 quantifiées (`View` : disposition, seed, manche, tour, position, secondes du chrono,
 pourcentage, meilleur tour, record, version du classement) avec ce qu'il a déjà
 affiché ; rien n'est formaté ni écrit tant qu'elles sont égales, et seul le widget
-dont la valeur a changé est réécrit. Le moteur n'envoie ensuite que les lignes dont le
+dont la valeur a changé est réécrit — une ligne de classement identique à celle déjà
+en place n'est pas réécrite non plus, si bien qu'un dépassement hors des cinq lignes
+visibles ne marque même pas le composant `Sidebar` comme modifié. Le moteur n'envoie ensuite que les lignes dont le
 texte diffère : en régime établi un pilote reçoit **une ligne par seconde** (le chrono),
 plus une réécriture immédiate à chaque changement de tour, de rang ou de meilleur
 tour. Un tick sans changement n'émet aucun paquet.
