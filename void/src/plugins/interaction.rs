@@ -66,7 +66,7 @@ fn handle_set_held_item(event: On<PacketEvent<SetHeldItem>>, mut commands: Comma
 fn handle_close_container(event: On<PacketEvent<CloseContainer>>, mut commands: Commands) {
     commands.trigger(PlayerCloseContainerEvent {
         entity: event.entity,
-        window_id: event.packet.window_id,
+        container_id: event.packet.container_id,
     })
 }
 

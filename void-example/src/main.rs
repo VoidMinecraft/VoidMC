@@ -1,7 +1,6 @@
 use std::env;
 
 use bevy_app::Update;
-use bevy_ecs::prelude::Commands;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_flame::FlameLayer;
 use tracing_subscriber::prelude::*;
@@ -9,7 +8,6 @@ use voidmc::commands::system_chat;
 use voidmc::components::PlayerName;
 use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
 use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
-use voidmc::plugins::inventory::InventoryDirty;
 use voidmc::{
     CommandBuilder, CommandRegistry, Inventory, ItemStack, On, Players, Query, ServerConfigBuilder,
     VoidServer, register_default_commands,
@@ -233,13 +231,8 @@ impl ItemBehavior for WandBehavior {
     }
 }
 
-/// Gives each joining player a few stacks to build with, then flags the
-/// inventory for re-sync.
-fn give_starter_kit(
-    event: On<PlayerReadyEvent>,
-    mut inventories: Query<&mut Inventory>,
-    mut commands: Commands,
-) {
+/// Gives each joining player a few stacks to build with.
+fn give_starter_kit(event: On<PlayerReadyEvent>, mut inventories: Query<&mut Inventory>) {
     let Ok(mut inventory) = inventories.get_mut(event.entity) else {
         return;
     };
@@ -255,7 +248,6 @@ fn give_starter_kit(
             inventory.give(stack);
         }
     }
-    commands.entity(event.entity).insert(InventoryDirty);
 }
 
 /// Demo of the packet-send API: tell everyone else who just joined.

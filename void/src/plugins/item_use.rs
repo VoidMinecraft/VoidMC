@@ -1,6 +1,6 @@
 //! Item-use plugin: turns player right-clicks and block breaks into queued actions
-//! processed by the exclusive item-behaviour drain system, tracks the selected
-//! hotbar slot, and applies creative-mode slot changes.
+//! processed by the exclusive item-behaviour drain system, and applies
+//! creative-mode slot changes.
 //!
 //! This replaces the old hardcoded `HotbarBlocks` placement: what a right-click
 //! does is now driven by the [`ItemStack`] the player is actually holding and the
@@ -10,10 +10,10 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use voidmc_protocol::serverbound::SetCreativeModeSlot;
 
-use crate::components::{ClientId, HotbarSlot};
+use crate::components::ClientId;
 use crate::config::ServerConfigResource;
 use crate::events::{
-    PlayerChangeSlotEvent, PlayerFinishDiggingEvent, PlayerStartDiggingEvent, PlayerUseItemEvent,
+    PlayerFinishDiggingEvent, PlayerStartDiggingEvent, PlayerUseItemEvent,
     PlayerUseItemOnBlockEvent,
 };
 use crate::inventory::Inventory;
@@ -36,7 +36,6 @@ impl Plugin for ItemUsePlugin {
             .add_observer(queue_creative_break)
             .add_observer(queue_break)
             .add_observer(handle_creative_slot)
-            .add_observer(track_selected_slot)
             .add_systems(
                 Update,
                 drain_item_use_queue.in_set(VoidSystems::ItemUseDrain),
@@ -138,17 +137,6 @@ fn handle_creative_slot(
     }
     if let Ok(mut inv) = inventories.get_mut(event.entity) {
         inv.set(slot as usize, ItemStack::from_slot(&event.packet.item));
-    }
-}
-
-/// Keeps the selected hotbar slot in sync on both `HotbarSlot` and `Inventory`.
-fn track_selected_slot(
-    event: On<PlayerChangeSlotEvent>,
-    mut players: Query<(&mut HotbarSlot, &mut Inventory)>,
-) {
-    if let Ok((mut hotbar, mut inv)) = players.get_mut(event.entity) {
-        hotbar.0 = event.slot;
-        inv.set_selected_hotbar(event.slot.clamp(0, 8) as u8);
     }
 }
 

@@ -18,6 +18,7 @@ use crate::entity::{EntityBuilder, EntityKind};
 use crate::events::{EntityDespawnEvent, ItemDropEvent, PlayerDropItemEvent};
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
+use crate::players::Players;
 use crate::plugins::inventory::InventoryDirty;
 use crate::schedule::VoidSystems;
 use crate::world::DimensionId;
@@ -125,7 +126,6 @@ fn on_player_drop_item(
         dropper: event.entity,
         stack: dropped,
     });
-    commands.entity(event.entity).insert(InventoryDirty);
 }
 
 fn tick_pickup_delay(mut delays: Query<&mut PickupDelay>) {
@@ -140,7 +140,7 @@ fn tick_pickup_delay(mut delays: Query<&mut PickupDelay>) {
 #[instrument(name = "item_pickup", level = "info", skip(commands, players, items))]
 fn pickup_items(
     mut commands: Commands,
-    mut players: Query<(Entity, &Position, &PlayerDimension, &mut Inventory), With<PlayerReady>>,
+    mut players: Query<(&Position, &PlayerDimension, &mut Inventory), With<PlayerReady>>,
     mut items: Query<
         (
             Entity,
@@ -156,7 +156,7 @@ fn pickup_items(
         if delay.is_some_and(|d| d.0 > 0) || item.stack.is_empty() {
             continue;
         }
-        for (player, player_pos, player_dim, mut inventory) in players.iter_mut() {
+        for (player_pos, player_dim, mut inventory) in players.iter_mut() {
             if player_dim.0 != item_dim.0 {
                 continue;
             }
@@ -168,7 +168,6 @@ fn pickup_items(
             }
 
             let leftover = inventory.give(item.stack.clone());
-            commands.entity(player).insert(InventoryDirty);
             if leftover.is_empty() {
                 commands.trigger(EntityDespawnEvent {
                     entity: item_entity,

@@ -18,7 +18,6 @@ use super::parser::{
 use super::{Command, CommandBuilder, CommandContext, CommandRegistry};
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
-use crate::plugins::inventory::InventoryDirty;
 
 /// Registers all default commands except those listed in `exclude`.
 pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str]) {
@@ -86,13 +85,11 @@ fn handle_give(ctx: &mut CommandContext) {
 
     let entity = ctx.entity;
     let leftover = ctx.with_world_mut(|world| {
-        let left = world
+        world
             .get_mut::<Inventory>(entity)
             .map(|mut inv| inv.give(stack))
             .map(|left| left.count)
-            .unwrap_or(count);
-        world.entity_mut(entity).insert(InventoryDirty);
-        left
+            .unwrap_or(count)
     });
 
     if leftover == 0 {
@@ -118,7 +115,6 @@ fn handle_clear(ctx: &mut CommandContext) {
         if let Some(mut inv) = world.get_mut::<Inventory>(entity) {
             inv.clear();
         }
-        world.entity_mut(entity).insert(InventoryDirty);
     });
     ctx.reply("Inventory cleared");
 }

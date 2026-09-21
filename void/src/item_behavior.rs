@@ -35,7 +35,6 @@ use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 use crate::components::PlayerDimension;
 use crate::inventory::Inventory;
 use crate::item::{ItemId, ItemStack};
-use crate::plugins::inventory::InventoryDirty;
 use crate::world::mutation::send_ack;
 use crate::world::{BlockMutation, mutate_block, offset_position};
 
@@ -108,7 +107,7 @@ impl ItemUseContext<'_> {
         .is_some()
     }
 
-    /// Removes `n` from the held stack (server-authoritative) and resyncs.
+    /// Removes `n` from the held stack (server-authoritative).
     pub fn consume(&mut self, n: u8) {
         if let Some(mut inv) = self.world.get_mut::<Inventory>(self.player) {
             let idx = Inventory::hotbar_slot_index(inv.selected_hotbar());
@@ -125,15 +124,13 @@ impl ItemUseContext<'_> {
                 );
             }
         }
-        self.mark_inventory_dirty();
     }
 
-    /// Gives the player an item stack (stacking) and resyncs.
+    /// Gives the player an item stack (stacking).
     pub fn give(&mut self, stack: ItemStack) {
         if let Some(mut inv) = self.world.get_mut::<Inventory>(self.player) {
             inv.give(stack);
         }
-        self.mark_inventory_dirty();
     }
 
     /// Sends a chat message to the acting player.
@@ -149,10 +146,6 @@ impl ItemUseContext<'_> {
     /// Mutable world access for advanced behaviours.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         f(self.world)
-    }
-
-    fn mark_inventory_dirty(&mut self) {
-        self.world.entity_mut(self.player).insert(InventoryDirty);
     }
 }
 
@@ -196,7 +189,6 @@ impl BlockBreakContext<'_> {
         if let Some(mut inv) = self.world.get_mut::<Inventory>(self.player) {
             inv.give(stack);
         }
-        self.world.entity_mut(self.player).insert(InventoryDirty);
     }
 
     /// Sends a chat message to the breaking player.
