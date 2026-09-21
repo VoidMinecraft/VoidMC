@@ -148,8 +148,8 @@ impl ClientSocket {
             ClientWriter {
                 stream: BufWriter::new(writer),
                 limits: self.limits,
-                body: Vec::new(),
                 frame: Vec::new(),
+                header: Vec::with_capacity(FRAME_HEADER_BYTES),
             },
         )
     }
@@ -231,32 +231,46 @@ impl ClientReader {
     }
 }
 
+const FRAME_HEADER_BYTES: usize = 5;
+const FRAME_BUFFER_RETAINED_BYTES: usize = 64 * 1024;
+
 pub struct ClientWriter {
     stream: BufWriter<OwnedWriteHalf>,
     limits: FrameLimits,
-    body: Vec<u8>,
     frame: Vec<u8>,
+    header: Vec<u8>,
 }
 
 impl ClientWriter {
     pub async fn send<T: Encode>(&mut self, packet: &T) -> Result<(), SocketError> {
-        self.body.clear();
-        packet.encode(&mut self.body);
-        if self.body.len() > self.limits.max_outbound_frame_bytes {
+        self.frame.clear();
+        self.frame.resize(FRAME_HEADER_BYTES, 0);
+        packet.encode(&mut self.frame);
+        let body_len = self.frame.len() - FRAME_HEADER_BYTES;
+        let result = self.write_frame(body_len).await;
+        if self.frame.capacity() > FRAME_BUFFER_RETAINED_BYTES {
+            self.frame.clear();
+            self.frame.shrink_to(FRAME_BUFFER_RETAINED_BYTES);
+        }
+        result
+    }
+
+    async fn write_frame(&mut self, body_len: usize) -> Result<(), SocketError> {
+        if body_len > self.limits.max_outbound_frame_bytes {
             return Err(FrameError::FrameTooLarge {
-                requested: self.body.len(),
+                requested: body_len,
                 limit: self.limits.max_outbound_frame_bytes,
             }
             .into());
         }
-        let len =
-            i32::try_from(self.body.len()).map_err(|_| FrameError::OutboundLengthOverflow {
-                requested: self.body.len(),
-            })?;
-        self.frame.clear();
-        VarI32(len).encode(&mut self.frame);
-        self.frame.extend_from_slice(&self.body);
-        self.stream.write_all(&self.frame).await?;
+        let len = i32::try_from(body_len).map_err(|_| FrameError::OutboundLengthOverflow {
+            requested: body_len,
+        })?;
+        self.header.clear();
+        VarI32(len).encode(&mut self.header);
+        let start = FRAME_HEADER_BYTES - self.header.len();
+        self.frame[start..FRAME_HEADER_BYTES].copy_from_slice(&self.header);
+        self.stream.write_all(&self.frame[start..]).await?;
         Ok(())
     }
 
@@ -465,7 +479,17 @@ mod tests {
         let (socket, mut peer) = connected(FrameLimits::default()).await;
         let (_, mut writer) = socket.into_split();
 
-        let payloads: [Vec<u8>; 4] = [vec![1, 2, 3], vec![], vec![7; 200], vec![42]];
+        let payloads: [Vec<u8>; 9] = [
+            vec![1, 2, 3],
+            vec![],
+            vec![7; 200],
+            vec![42],
+            vec![9; 8 * 1024],
+            vec![5; 8 * 1024 - 100],
+            vec![8; 200],
+            vec![3; 100_000],
+            vec![6],
+        ];
 
         let mut expected = Vec::new();
         for payload in &payloads {
@@ -478,6 +502,48 @@ mod tests {
         writer.flush().await.unwrap();
         drop(writer);
 
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn frame_buffer_is_released_after_an_oversized_frame() {
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (_, mut writer) = socket.into_split();
+
+        let large = vec![1; 4 * FRAME_BUFFER_RETAINED_BYTES];
+        writer.send(&Bytes(large.clone())).await.unwrap();
+        assert!(writer.frame.capacity() <= FRAME_BUFFER_RETAINED_BYTES);
+
+        writer.send(&Bytes(vec![2, 3])).await.unwrap();
+        writer.flush().await.unwrap();
+        drop(writer);
+
+        let mut expected = frame_bytes(&large);
+        expected.extend_from_slice(&frame_bytes(&[2, 3]));
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn rejected_frame_leaves_later_frames_intact() {
+        let limits = FrameLimits {
+            max_outbound_frame_bytes: 4,
+            ..FrameLimits::default()
+        };
+        let (socket, mut peer) = connected(limits).await;
+        let (_, mut writer) = socket.into_split();
+
+        writer.send(&Bytes(vec![1, 2])).await.unwrap();
+        writer.send(&Bytes(vec![0; 5])).await.unwrap_err();
+        writer.send(&Bytes(vec![3, 4, 5, 6])).await.unwrap();
+        writer.flush().await.unwrap();
+        drop(writer);
+
+        let mut expected = frame_bytes(&[1, 2]);
+        expected.extend_from_slice(&frame_bytes(&[3, 4, 5, 6]));
         let mut received = Vec::new();
         peer.read_to_end(&mut received).await.unwrap();
         assert_eq!(received, expected);

@@ -151,7 +151,8 @@ OutgoingPacket { client_id, packet }
   v
 Client::run()                   -- Network thread
   |
-  +- ClientWriter::send()       -- Single serialized writer future
+  +- ClientWriter::send()       -- Single serialized writer future, buffered
+  +- ClientWriter::flush()      -- Once per drained batch
   |
   v
 Client (TCP)
@@ -162,3 +163,13 @@ Client (TCP)
 alive for the connection lifetime. Outbound readiness therefore cannot cancel
 an inbound frame after part of its length prefix or body has been consumed, and
 only the writer half can write, so partially written frames cannot interleave.
+
+`ClientWriter::send` frames the packet into one reusable buffer (length prefix
+and body in a single `write_all`) and hands it to a `BufWriter`; nothing
+reaches the socket until `ClientWriter::flush` is called. The writer loop
+drains every packet already queued on the client's channels into the same
+batch, then flushes once, so a tick's worth of packets leaves as a single
+write. A caller that drives `ClientWriter` directly must call `flush` itself:
+`send` alone never sends. If a packet is rejected mid-batch (for example
+`FrameTooLarge`), the frames accepted before it are flushed before the error
+is propagated.
