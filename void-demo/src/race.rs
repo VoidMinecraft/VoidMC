@@ -1345,6 +1345,14 @@ pub(crate) mod tests {
                         z: p.z,
                         yaw: p.yaw,
                     },
+                    ClientboundPacket::Play(PlayPacket::EntityPositionSync(p)) => Out::Teleport {
+                        client: out.client_id,
+                        id: p.entity_id,
+                        x: p.x,
+                        y: p.y,
+                        z: p.z,
+                        yaw: p.yaw,
+                    },
                     ClientboundPacket::Play(PlayPacket::SetHeadRotation(p)) => {
                         Out::HeadRotation(out.client_id, p.entity_id)
                     }
