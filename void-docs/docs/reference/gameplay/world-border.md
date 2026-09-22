@@ -42,8 +42,9 @@ fn start_round(mut commands: Commands) {
 The builder methods (`.center()`, `.diameter()`, `.warning_blocks()`,
 `.warning_time()`, `.portal_teleport_boundary()`, `.audience()`,
 `.viewers([..])`) set the same fields. Diameters are clamped to the vanilla
-range (NaN becomes the default). Durations are sent to the client in ticks
-(50 ms); anything finer is truncated.
+range (NaN becomes the default); centre coordinates are clamped to
+`±29_999_984` (NaN becomes `0.0`). Durations are sent to the client in ticks
+(50 ms), rounded up to the next tick.
 
 ## Updating a border
 
@@ -74,7 +75,8 @@ the deadline, so a player who joins the audience mid-way receives an
 Initialize World Border with the interpolated current diameter and the
 remaining time. `current_diameter()`, `target_diameter()` and
 `is_transitioning()` read that state back; calling `set_diameter` or a new
-`shrink_to` cancels the running transition.
+`shrink_to` cancels the running transition, and `shrink_to` towards the
+diameter viewers already see is a plain `set_diameter`.
 
 ## Audience
 
@@ -83,6 +85,10 @@ ready player sees it: players joining later receive the full state on their
 first ready tick. Any other `Audience` narrows it; changing the audience sends
 the full state to newcomers and resets players who no longer qualify to the
 vanilla border.
+
+The client rebuilds its world border whenever it changes dimension, so a
+future Respawn / dimension-change implementation must clear the affected
+players from every `WorldBorderState` so the next sync re-initializes them.
 
 One border per player at a time: if several `WorldBorder` entities include the
 same player, the client keeps whichever packet arrived last. Use

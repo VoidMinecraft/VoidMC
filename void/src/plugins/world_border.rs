@@ -20,6 +20,7 @@ use crate::schedule::VoidSystems;
 
 pub const DEFAULT_DIAMETER: f64 = 59_999_968.0;
 pub const DEFAULT_PORTAL_TELEPORT_BOUNDARY: u32 = 29_999_984;
+pub const MAX_CENTER_COORDINATE: f64 = 29_999_984.0;
 pub const DEFAULT_WARNING_BLOCKS: u32 = 5;
 pub const DEFAULT_WARNING_TIME: Duration = Duration::from_secs(15);
 
@@ -138,8 +139,8 @@ impl WorldBorder {
     }
 
     pub fn set_center(&mut self, x: f64, z: f64) {
-        self.center_x = x;
-        self.center_z = z;
+        self.center_x = sanitize_center(x);
+        self.center_z = sanitize_center(z);
     }
 
     /// Jumps to `diameter` immediately, cancelling any running transition.
@@ -157,8 +158,13 @@ impl WorldBorder {
             return;
         }
         let now = Instant::now();
+        let from = self.size.at(now);
+        if from == to {
+            self.size = Size::Fixed(to);
+            return;
+        }
         self.size = Size::Lerp {
-            from: self.size.at(now),
+            from,
             to,
             started: now,
             duration,
@@ -179,9 +185,10 @@ impl WorldBorder {
     }
 
     fn snapshot(&self) -> Snapshot {
+        let (center_x, center_z) = self.sanitized_center();
         Snapshot {
-            center_x: self.center_x,
-            center_z: self.center_z,
+            center_x,
+            center_z,
             size: self.size,
             warning_blocks: self.warning_blocks,
             warning_time: self.warning_time,
@@ -189,10 +196,18 @@ impl WorldBorder {
         }
     }
 
+    fn sanitized_center(&self) -> (f64, f64) {
+        (
+            sanitize_center(self.center_x),
+            sanitize_center(self.center_z),
+        )
+    }
+
     fn initialize(&self, now: Instant) -> ClientboundPacket {
+        let (center_x, center_z) = self.sanitized_center();
         PlayPacket::InitializeBorder(InitializeBorder {
-            center_x: self.center_x,
-            center_z: self.center_z,
+            center_x,
+            center_z,
             old_diameter: self.size.at(now),
             new_diameter: self.size.target(),
             lerp_ticks: ticks_i64(self.size.remaining(now)),
@@ -208,14 +223,10 @@ impl WorldBorder {
             return vec![self.initialize(now)];
         }
         let mut packets = Vec::new();
-        if self.center_x != sent.center_x || self.center_z != sent.center_z {
-            packets.push(
-                PlayPacket::SetBorderCenter(SetBorderCenter {
-                    center_x: self.center_x,
-                    center_z: self.center_z,
-                })
-                .into(),
-            );
+        let (center_x, center_z) = self.sanitized_center();
+        if center_x != sent.center_x || center_z != sent.center_z {
+            packets
+                .push(PlayPacket::SetBorderCenter(SetBorderCenter { center_x, center_z }).into());
         }
         if self.size != sent.size {
             packets.push(match self.size {
@@ -258,12 +269,24 @@ fn sanitize(diameter: f64) -> f64 {
     }
 }
 
+fn sanitize_center(coordinate: f64) -> f64 {
+    if coordinate.is_nan() {
+        0.0
+    } else {
+        coordinate.clamp(-MAX_CENTER_COORDINATE, MAX_CENTER_COORDINATE)
+    }
+}
+
+fn ticks_u128(duration: Duration) -> u128 {
+    duration.as_millis().div_ceil(TICK.as_millis())
+}
+
 fn ticks(duration: Duration) -> u32 {
-    (duration.as_millis() / TICK.as_millis()).min(u32::MAX as u128) as u32
+    ticks_u128(duration).min(u32::MAX as u128) as u32
 }
 
 fn ticks_i64(duration: Duration) -> i64 {
-    (duration.as_millis() / TICK.as_millis()).min(i64::MAX as u128) as i64
+    ticks_u128(duration).min(i64::MAX as u128) as i64
 }
 
 fn varint_u32(value: u32) -> i32 {
@@ -308,6 +331,9 @@ impl Plugin for WorldBorderPlugin {
 }
 
 fn sync_world_borders(players: Players, mut borders: Query<(&WorldBorder, &mut WorldBorderState)>) {
+    if borders.is_empty() {
+        return;
+    }
     let ready = players.ready();
     let now = Instant::now();
     for (border, mut state) in borders.iter_mut() {
@@ -493,6 +519,65 @@ mod tests {
     }
 
     #[test]
+    fn center_is_sanitized_and_a_nan_center_stays_quiet() {
+        let border = WorldBorder::new().center(f64::NAN, 1e9);
+        assert_eq!(border.center_x, 0.0);
+        assert_eq!(border.center_z, MAX_CENTER_COORDINATE);
+        assert_eq!(
+            WorldBorder::new().center(-1e9, f64::NEG_INFINITY).center_x,
+            -MAX_CENTER_COORDINATE
+        );
+
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let border = app.world_mut().spawn(demo_border()).id();
+        app.update();
+        drain(&rx);
+
+        {
+            let mut border = app.world_mut().get_mut::<WorldBorder>(border).unwrap();
+            border.center_x = f64::NAN;
+            border.center_z = 40_000_000.0;
+        }
+        app.update();
+        let PlayPacket::SetBorderCenter(center) = only(drain(&rx), 1) else {
+            panic!("expected SetBorderCenter");
+        };
+        assert_eq!(
+            center,
+            SetBorderCenter {
+                center_x: 0.0,
+                center_z: MAX_CENTER_COORDINATE
+            }
+        );
+        app.update();
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn durations_round_up_to_the_next_tick() {
+        assert_eq!(ticks(Duration::ZERO), 0);
+        assert_eq!(ticks(Duration::from_millis(49)), 1);
+        assert_eq!(ticks(Duration::from_millis(50)), 1);
+        assert_eq!(ticks(Duration::from_millis(51)), 2);
+        assert_eq!(ticks_i64(Duration::from_millis(119_999)), 2400);
+        assert_eq!(ticks_i64(Duration::from_secs(120)), 2400);
+    }
+
+    #[test]
+    fn shrink_to_the_current_diameter_is_a_fixed_size() {
+        let mut border = demo_border();
+        border.shrink_to(512.0, Duration::from_secs(120));
+        assert!(!border.is_transitioning());
+        assert_eq!(border.size, Size::Fixed(512.0));
+        assert_eq!(border.target_diameter(), 512.0);
+
+        border.shrink_to(64.0, Duration::from_secs(120));
+        assert!(border.is_transitioning());
+    }
+
+    #[test]
     fn lerp_interpolates_linearly_and_settles_on_target() {
         let started = Instant::now();
         let size = Size::Lerp {
@@ -597,11 +682,7 @@ mod tests {
         };
         assert_eq!(lerp.old_diameter, 256.0);
         assert_eq!(lerp.new_diameter, 64.0);
-        assert!(
-            (2380..=2400).contains(&lerp.lerp_ticks),
-            "{}",
-            lerp.lerp_ticks
-        );
+        assert_eq!(lerp.lerp_ticks, 2400);
 
         app.update();
         app.update();
@@ -647,11 +728,7 @@ mod tests {
             "{}",
             init.old_diameter
         );
-        assert!(
-            (1180..=1200).contains(&init.lerp_ticks),
-            "{}",
-            init.lerp_ticks
-        );
+        assert_eq!(init.lerp_ticks, 1200);
         assert_eq!(init.warning_blocks, 8);
 
         let border = app.world().get::<WorldBorder>(border).unwrap();
