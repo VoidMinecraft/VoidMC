@@ -20,7 +20,7 @@ pub use metadata::{
     Glowing, Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt,
     NoGravity, Silent, TextAlignment, TextDisplay,
 };
-pub use passengers::Passengers;
+pub use passengers::{Mount, Passengers};
 pub use voidmc_data::v26_1_2::EntityKind;
 
 use crate::components::{

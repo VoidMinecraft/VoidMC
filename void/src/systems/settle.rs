@@ -22,7 +22,7 @@ pub fn settle_recent_spawns(
     mut query: Query<
         (
             &mut Position,
-            &mut PreviousPosition,
+            &PreviousPosition,
             &MovementConfig,
             &EntityDimension,
             &mut VerticalVelocity,
@@ -34,7 +34,7 @@ pub fn settle_recent_spawns(
 ) {
     const MAX_SCAN: i32 = 64;
 
-    for (mut pos, mut prev_pos, movement, dimension, mut velocity, mut grounded, mut marker) in
+    for (mut pos, prev_pos, movement, dimension, mut velocity, mut grounded, mut marker) in
         query.iter_mut()
     {
         if marker.0 == 0 {
@@ -70,7 +70,6 @@ pub fn settle_recent_spawns(
 
                     if fall_distance > 0.1 {
                         pos.y = ground_y;
-                        prev_pos.y = ground_y;
                         velocity.0 = 0.0;
                         grounded.0 = true;
                         marker.0 = 0;
@@ -79,5 +78,89 @@ pub fn settle_recent_spawns(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use bevy_app::{App, PostUpdate, Update};
+    use bevy_ecs::schedule::IntoScheduleConfigs;
+    use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData, blocks};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
+
+    use super::*;
+    use crate::components::{ClientId, EntityViewers, PlayerReady};
+    use crate::entity::{EntityBuilder, EntityKind};
+    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
+    use crate::world::{ChunkPos, DimensionId};
+
+    #[test]
+    fn ground_snap_reaches_existing_viewers() {
+        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
+        let mut app = App::new();
+        app.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        })
+        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .insert_resource(ChunkIndex::default())
+        .add_systems(Update, settle_recent_spawns)
+        .add_systems(
+            PostUpdate,
+            (broadcast_entity_movement, update_previous_entity_positions).chain(),
+        );
+
+        let viewer = app.world_mut().spawn((ClientId(1), PlayerReady)).id();
+        let entity = EntityBuilder::new(EntityKind::Zombie)
+            .at(0.5, 70.0, 0.5)
+            .gravity(true)
+            .spawn_in(app.world_mut())
+            .insert(EntityViewers {
+                players: HashSet::from([viewer]),
+                chunk: None,
+            })
+            .id();
+        app.update();
+        assert!(outgoing_rx.try_iter().next().is_none());
+
+        let mut chunk = ChunkData::new(
+            (0..24).map(|_| ChunkSection::empty()).collect(),
+            ChunkHeightmaps::empty(),
+            LightData::empty(),
+        );
+        chunk.set_block(0, 63, 0, blocks::STONE);
+        let chunk_pos = ChunkPos::new(0, 0);
+        let chunk_entity = app
+            .world_mut()
+            .spawn((ChunkPosition(chunk_pos), chunk))
+            .id();
+        app.world_mut()
+            .resource_mut::<ChunkIndex>()
+            .0
+            .insert((DimensionId::Overworld, chunk_pos), chunk_entity);
+        app.update();
+
+        assert_eq!(app.world().get::<Position>(entity).unwrap().y, 64.0);
+        let out = outgoing_rx.recv().unwrap();
+        assert_eq!(out.client_id, 1);
+        let ClientboundPacket::Play(PlayPacket::UpdateEntityPosition(moved)) = out.packet else {
+            panic!(
+                "expected the snap to reach the viewer, got {:?}",
+                out.packet
+            );
+        };
+        assert_eq!(
+            (moved.delta_x, moved.delta_y, moved.delta_z),
+            (0, -24576, 0)
+        );
+        assert_eq!(app.world().get::<PreviousPosition>(entity).unwrap().y, 64.0);
     }
 }

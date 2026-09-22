@@ -183,8 +183,8 @@ fn movement_packet(
             );
         }
 
-        return clientbound::ClientboundPacket::Play(clientbound::PlayPacket::TeleportEntity(
-            clientbound::TeleportEntity {
+        return clientbound::ClientboundPacket::Play(clientbound::PlayPacket::EntityPositionSync(
+            clientbound::EntityPositionSync {
                 entity_id,
                 x: position.x,
                 y: position.y,
@@ -194,7 +194,6 @@ fn movement_packet(
                 vz: velocity.z,
                 yaw: rotation.yaw,
                 pitch: rotation.pitch,
-                relatives: clientbound::TeleportFlags::empty(),
                 on_ground,
             },
         ));
@@ -358,5 +357,48 @@ mod tests {
         assert_eq!(packet.velocity.z, -0.5);
         assert_eq!(packet.yaw, 64);
         assert_eq!(packet.pitch, 32);
+    }
+
+    #[test]
+    fn oversized_delta_resyncs_with_entity_position_sync() {
+        let packet = movement_packet(
+            42,
+            &Position {
+                x: 20.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            &PreviousPosition {
+                x: 0.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            &Rotation {
+                yaw: 90.0,
+                pitch: 45.0,
+            },
+            &Velocity {
+                x: 0.5,
+                y: 0.0,
+                z: 0.0,
+            },
+            true,
+            true,
+            false,
+        );
+
+        let clientbound::ClientboundPacket::Play(clientbound::PlayPacket::EntityPositionSync(
+            packet,
+        )) = packet
+        else {
+            panic!("expected EntityPositionSync packet");
+        };
+
+        assert_eq!(
+            (packet.entity_id, packet.x, packet.y, packet.z),
+            (42, 20.0, 2.0, 3.0)
+        );
+        assert_eq!((packet.vx, packet.yaw, packet.pitch), (0.5, 90.0, 45.0));
+        assert!(packet.on_ground);
     }
 }

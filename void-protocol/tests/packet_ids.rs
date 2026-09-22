@@ -103,6 +103,7 @@ const SPECS: &[EnumSpec] = &[
             ("SetContainerSlot", "minecraft:container_set_slot"),
             ("SetCooldown", "minecraft:cooldown"),
             ("Disconnect", "minecraft:disconnect"),
+            ("EntityPositionSync", "minecraft:entity_position_sync"),
             ("UnloadChunk", "minecraft:forget_level_chunk"),
             ("GameEvent", "minecraft:game_event"),
             ("KeepAlive", "minecraft:keep_alive"),

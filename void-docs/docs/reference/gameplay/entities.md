@@ -158,8 +158,18 @@ world.entity_mut(pig).insert(Passengers::new([chicken]));
 
 `Passengers` on the vehicle sends `SetPassengers` to the vehicle's viewers when
 it changes and to players who start seeing the vehicle. A passenger that
-despawns is pruned automatically. Passengers and vehicle should sit in the same
-chunk so viewers know both.
+despawns — a spawned entity or a player that disconnects — or that loses
+`SpawnedEntity` is pruned automatically, and the list is re-sent. Passengers
+and vehicle should sit in the same chunk so viewers know both.
+
+Every listed passenger carries a read-only `Mount(Entity)` pointing at its
+vehicle, maintained in `PostUpdate` (`VoidSystems::EntityMetadataSync`, before
+`PlayerBroadcast`): it is added when the entity enters a `Passengers` list,
+retargeted when another vehicle lists it, and removed when it leaves the list or
+the vehicle despawns. Query `Has<Mount>` / `With<Mount>` to know whether an
+entity is riding without scanning every `Passengers` list; player movement
+broadcast uses it to send rotation-only packets while mounted
+(see [players](./players#riding-a-vehicle)).
 
 ## Example commands
 

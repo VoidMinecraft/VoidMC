@@ -8,6 +8,7 @@ mod command_suggestions_response;
 pub mod commands;
 mod disconnect;
 pub mod entity_metadata;
+mod entity_position_sync;
 mod game_event;
 mod keep_alive;
 mod level_particles;
@@ -49,6 +50,7 @@ pub use disconnect::*;
 pub use entity_metadata::{
     Billboard, DisplayTransform, ItemDisplayContext, MAX_TELEPORT_TICKS, pack_brightness,
 };
+pub use entity_position_sync::*;
 pub use game_event::*;
 pub use keep_alive::*;
 pub use level_particles::*;
@@ -104,6 +106,8 @@ pub enum PlayPacket {
     SetCooldown(SetCooldown),
     #[codec(packet_id = 0x20)]
     Disconnect(Disconnect),
+    #[codec(packet_id = 0x23)]
+    EntityPositionSync(EntityPositionSync),
     #[codec(packet_id = 0x25)]
     UnloadChunk(UnloadChunk),
     #[codec(packet_id = 0x26)]
