@@ -23,6 +23,7 @@ mod menu;
 mod particle;
 mod sign;
 mod sound;
+mod tab_list;
 mod title;
 mod world_border;
 
@@ -111,6 +112,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(environment::time_command());
             registry.register(environment::weather_command());
             registry.register(title::title_command());
+            registry.register(tab_list::tablist_command());
+            registry.register(tab_list::nick_command());
             environment::spawn_environment(app.world_mut());
 
             // Observe block-breaking events

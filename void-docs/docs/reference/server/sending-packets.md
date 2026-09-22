@@ -112,6 +112,7 @@ top of it with the same `Audience` / `viewers` vocabulary:
 | Status effects, attributes | [`StatusEffects` / `Attributes` components](../gameplay/effects.md) |
 | World border | [`WorldBorder` component](../gameplay/world-border.md) |
 | Time of day and weather | [`WorldTime` / `Weather` components](../gameplay/time-and-weather.md) |
+| Tab list | [`TabList` / `TabEntry` components](../gameplay/tab-list.md) |
 
 ### Failure handling
 
@@ -174,6 +175,7 @@ inside one schedule.
 | `WorldBorderSync` | `PostUpdate` | World border initialize / update / reset packets (see [World Border](../gameplay/world-border.md)). |
 | `WorldTimeSync` | `PostUpdate` | Advances world clocks; Set Time packets on change and every 20 ticks while running (see [Time & Weather](../gameplay/time-and-weather.md)). |
 | `WeatherSync` | `PostUpdate` | Weather Game Event packets on change and per transition tick (see [Time & Weather](../gameplay/time-and-weather.md)). |
+| `TabListSync` | `PostUpdate` | Tab list header/footer and changed player entry actions (see [Tab List](../gameplay/tab-list.md)). |
 | `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
 | `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |
 

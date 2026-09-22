@@ -9,6 +9,7 @@ use crate::components::{
 };
 use crate::entity::{EntityBuilder, EntityKind};
 use crate::messages::TextColor;
+use crate::plugins::tab_list::TabEntry;
 use crate::world::DimensionId;
 use voidmc_data::{Version, is_summonable_entity_type};
 
@@ -224,6 +225,12 @@ fn handle_gamemode(ctx: &mut CommandContext) {
             value: mode.id() as f32,
         },
     );
+    let player = ctx.entity;
+    ctx.with_world_mut(|world| {
+        if let Some(mut entry) = world.get_mut::<TabEntry>(player) {
+            entry.game_mode = Some(mode as u8);
+        }
+    });
 
     ctx.reply(&format!("Game mode set to {} ({})", mode.name(), mode.id()));
 }
