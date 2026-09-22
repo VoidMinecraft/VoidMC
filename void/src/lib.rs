@@ -28,6 +28,8 @@ mod server;
 mod server_status;
 pub mod sounds;
 pub mod systems;
+pub mod titles;
+pub mod toasts;
 pub(crate) mod window;
 pub mod world;
 
@@ -47,10 +49,12 @@ pub use commands::{
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use entity::{
-    Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityBuilder,
-    EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing, Hidden,
-    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
-    Passengers, Silent, TextAlignment, TextDisplay,
+    AttributeInstance, Attributes, Billboard, BlockDisplay, CustomName, Display, DisplayTransform,
+    Effect, EffectCategory, EffectDuration, EffectInstance, EndCrystal, EntityAttribute,
+    EntityBuilder, EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent,
+    Glowing, Hidden, Invisible, ItemDisplay, ItemDisplayContext, MetadataSource,
+    MetadataSourceAppExt, Modifier, ModifierOperation, Mount, NoGravity, Passengers, Silent,
+    StatusEffects, TextAlignment, TextDisplay,
 };
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
@@ -77,10 +81,17 @@ pub use plugins::sidebar::{
 };
 pub use plugins::tab_list::{TabEntry, TabEntryState, TabList, TabListState};
 pub use plugins::teleport::{Teleport, TeleportOutcome};
+pub use plugins::weather::{Weather, WeatherKind, WeatherState};
+pub use plugins::world_border::{WorldBorder, WorldBorderState};
+pub use plugins::world_time::{
+    GameTime, TICKS_PER_DAY, TIME_SYNC_INTERVAL, WorldClock, WorldTime, WorldTimeState,
+};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
 pub use sounds::{Sound, SoundPosition, SoundSource, SoundStop, Sounds, WorldSounds};
+pub use titles::{ClearTitlesRequest, TitleRequest, Titles, WorldTitles};
+pub use toasts::{ToastFrame, ToastRequest, Toasts, WorldToasts};
 pub use ussr_nbt::owned::Tag;
 pub use voidmc_codec::{DecodeLimits, LimitKind};
 pub use voidmc_net::socket::FrameLimits;

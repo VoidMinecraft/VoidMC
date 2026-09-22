@@ -3,6 +3,8 @@
 //! and despawning is the only removal API — a `RemoveEntities` packet always
 //! follows, so clients never keep ghosts.
 
+pub mod attributes;
+pub mod effects;
 pub mod metadata;
 pub mod passengers;
 pub mod visibility_index;
@@ -15,12 +17,19 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::EntityCommands;
 use voidmc_protocol::clientbound;
 
+pub use attributes::{
+    AttributeInstance, Attributes, AttributesState, EntityAttribute, Modifier, ModifierOperation,
+};
+pub use effects::{
+    Effect, EffectCategory, EffectDuration, EffectInstance, EffectSlot, StatusEffects,
+    StatusEffectsState,
+};
 pub use metadata::{
     Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityMetadata,
     Glowing, Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt,
     NoGravity, Silent, TextAlignment, TextDisplay,
 };
-pub use passengers::Passengers;
+pub use passengers::{Mount, Passengers};
 pub use voidmc_data::v26_1_2::EntityKind;
 
 use crate::components::{
@@ -268,6 +277,8 @@ impl Plugin for EntityPlugin {
         visibility_index::register(app);
         metadata::register(app);
         passengers::register(app);
+        effects::register(app);
+        attributes::register(app);
     }
 }
 

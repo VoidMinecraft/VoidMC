@@ -18,6 +18,10 @@ pub mod sidebar;
 pub mod status;
 pub mod tab_list;
 pub mod teleport;
+pub(crate) mod viewers;
+pub mod weather;
+pub mod world_border;
+pub mod world_time;
 
 pub struct DefaultPlugins;
 
@@ -39,6 +43,9 @@ impl Plugin for DefaultPlugins {
             (
                 scoreboard::ScoreboardPlugin,
                 sidebar::SidebarPlugin,
+                world_border::WorldBorderPlugin,
+                world_time::WorldTimePlugin,
+                weather::WeatherPlugin,
                 tab_list::TabListPlugin,
             ),
             crate::entity::EntityPlugin,

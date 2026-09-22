@@ -29,7 +29,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Position from the previous tick (used for delta encoding) |
 | `Rotation { yaw, pitch }` | `f32` angles | Current look direction |
-| `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game |
+| `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
 | `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
 
@@ -74,7 +74,10 @@ to ready players by `systems::entities`.
 | `EntityViewers` | Player set | Players currently receiving this entity's packets; maintained by the visibility tracker |
 | `EntityMetadata` | Indexed values | Synched entity data with dirty tracking; typed components (`CustomName`, `Glowing`, `Display`, ...) project into it |
 | `Passengers(Vec<Entity>)` | Riders | Entities riding this one; changes send `SetPassengers` to viewers |
+| `Mount(Entity)` | Vehicle | Read-only back-reference on each passenger, mirrored from `Passengers`; removed on dismount or vehicle despawn |
 | `Hidden` | (marker) | Hides the entity from every player without despawning it: `RemoveEntities` on insert, the normal spawn path on remove |
+| `StatusEffects` | Effect map | Server-timed status effects; diffs go to the entity's own client and player passengers, visible effects project into `EntityMetadata` (see [Effects & Attributes](../gameplay/effects.md)) |
+| `Attributes` | Attribute map | Base values and modifiers; changed client-syncable attributes go to the own client and viewers |
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |
 | `Rotation { yaw, pitch }` | `f32` angles | Current body/look rotation |

@@ -36,6 +36,11 @@
   },
   {
     "type": "file",
+    "name": "effects",
+    "label": "Effects & Attributes"
+  },
+  {
+    "type": "file",
     "name": "tab-list",
     "label": "Tab List"
   },
@@ -43,6 +48,11 @@
     "type": "file",
     "name": "sounds",
     "label": "Sounds"
+  },
+  {
+    "type": "file",
+    "name": "time-and-weather",
+    "label": "Time & Weather"
   },
   {
     "type": "file",
@@ -61,6 +71,16 @@
   },
   {
     "type": "file",
+    "name": "titles",
+    "label": "Titles"
+  },
+  {
+    "type": "file",
+    "name": "toasts",
+    "label": "Toasts"
+  },
+  {
+    "type": "file",
     "name": "block-entities",
     "label": "Block Entities"
   },
@@ -73,6 +93,11 @@
     "type": "file",
     "name": "world",
     "label": "World & Chunks"
+  },
+  {
+    "type": "file",
+    "name": "world-border",
+    "label": "World Border"
   },
   {
     "type": "file",
