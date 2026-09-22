@@ -41,9 +41,16 @@ commit_parsers = [
 protect_breaking_commits = true
 sort_commits = "oldest"
 
-# Per-crate overrides — example-only crate is non-publish
+# Per-crate overrides — example and demo crates are non-publish
 [[package]]
 name = "voidmc-example"
+publish = false
+release = false
+git_release_enable = false
+git_tag_enable = false
+
+[[package]]
+name = "voidmc-demo"
 publish = false
 release = false
 git_release_enable = false
