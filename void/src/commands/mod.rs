@@ -543,11 +543,15 @@ impl CommandRegistry {
         let cmd = self.commands.get(self.resolve(name)?)?;
 
         let tokens: Vec<&str> = rest.split_whitespace().collect();
-        let (partial, completed) = if rest.ends_with(' ') || tokens.is_empty() {
+        let (partial, completed) = if rest.ends_with(char::is_whitespace) || tokens.is_empty() {
             ("", tokens.as_slice())
         } else {
             (tokens[tokens.len() - 1], &tokens[..tokens.len() - 1])
         };
+        let partial_start = text
+            .rfind(partial)
+            .filter(|&index| text.is_char_boundary(index))
+            .unwrap_or(text.len());
 
         let mut matches = if partial.starts_with('-') && !cmd.flag_definitions.is_empty() {
             flag_completions(&cmd.flag_definitions, partial)
@@ -570,7 +574,7 @@ impl CommandRegistry {
         matches.retain(|candidate| seen.insert(candidate.clone()));
 
         Some(Completion {
-            start: text[..text.len() - partial.len()].encode_utf16().count(),
+            start: text[..partial_start].encode_utf16().count(),
             length: partial.encode_utf16().count(),
             matches,
         })
@@ -1167,6 +1171,54 @@ mod tests {
         let astral = registry.complete("/team 😀 r", &world).unwrap();
         assert_eq!(astral.start, 9);
         assert_eq!(astral.length, 1);
+
+        let tab = registry.complete("/team É\t", &world).unwrap();
+        assert_eq!(tab.start, 8);
+        assert_eq!(tab.length, 0);
+
+        let nbsp = registry.complete("/team É\u{a0}", &world).unwrap();
+        assert_eq!(nbsp.start, 8);
+        assert_eq!(nbsp.length, 0);
+
+        let after_tab = registry.complete("/team É\tbl", &world).unwrap();
+        assert_eq!(after_tab.start, 8);
+        assert_eq!(after_tab.length, 2);
+        assert_eq!(after_tab.matches, vec!["blue".to_string()]);
+    }
+
+    #[test]
+    fn completion_never_panics_on_random_unicode() {
+        let registry = registry_with([team_command()]);
+        let world = player_world();
+        let alphabet: Vec<char> = "/ \t\u{a0}\u{2003}\n-@bltÉé😀漢\u{301}\u{200b}\u{feff}"
+            .chars()
+            .collect();
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+
+        for i in 0..500 {
+            let len = (next() % 12) as usize;
+            let body: String = (0..len)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect();
+            let text = if i % 2 == 0 {
+                format!("/team {body}")
+            } else {
+                body
+            };
+            let utf16_len = text.encode_utf16().count();
+            if let Some(completion) = registry.complete(&text, &world) {
+                assert!(
+                    completion.start + completion.length <= utf16_len,
+                    "range out of bounds for {text:?}"
+                );
+            }
+        }
     }
 
     #[test]
