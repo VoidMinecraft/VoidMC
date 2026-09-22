@@ -22,6 +22,7 @@ mod menu;
 mod particle;
 mod sign;
 mod sound;
+mod world_border;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -104,6 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(menu::menu_command());
             registry.register(effects::effect_command());
             registry.register(effects::speed_command());
+            registry.register(world_border::border_command());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);

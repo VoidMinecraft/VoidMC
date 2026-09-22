@@ -44,6 +44,8 @@ pub enum VoidSystems {
     AbilitiesSync,
     /// `Update`, after `CommandDrain`: advances in-flight [`crate::Teleport`]s.
     TeleportBarrier,
+    /// `PostUpdate`: world border initialize/update/reset packets.
+    WorldBorderSync,
     /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
     StatusSnapshot,
     /// `PostUpdate`: TPS tracking (only with `metrics_debug`).

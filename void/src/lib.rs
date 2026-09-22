@@ -72,6 +72,7 @@ pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
 pub use plugins::teleport::{Teleport, TeleportOutcome};
+pub use plugins::world_border::{WorldBorder, WorldBorderState};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;

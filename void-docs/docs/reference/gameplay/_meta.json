@@ -66,6 +66,11 @@
   },
   {
     "type": "file",
+    "name": "world-border",
+    "label": "World Border"
+  },
+  {
+    "type": "file",
     "name": "registry",
     "label": "Registry System"
   }
