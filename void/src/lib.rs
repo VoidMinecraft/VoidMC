@@ -49,10 +49,12 @@ pub use commands::{
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use entity::{
-    Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityBuilder,
-    EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing,
-    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
-    Passengers, Silent, TextAlignment, TextDisplay,
+    AttributeInstance, Attributes, Billboard, BlockDisplay, CustomName, Display, DisplayTransform,
+    Effect, EffectCategory, EffectDuration, EffectInstance, EndCrystal, EntityAttribute,
+    EntityBuilder, EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent,
+    Glowing, Hidden, Invisible, ItemDisplay, ItemDisplayContext, MetadataSource,
+    MetadataSourceAppExt, Modifier, ModifierOperation, Mount, NoGravity, Passengers, Silent,
+    StatusEffects, TextAlignment, TextDisplay,
 };
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
@@ -67,7 +69,23 @@ pub use menu::{
 pub use messages::{MessageRequest, Messages, TextColor, WorldMessages};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
+pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
+pub use plugins::scoreboard::{
+    CollisionRule, DisplaySlot, NameTagVisibility, Objective, ObjectiveState, RenderType, Score,
+    ScoreFormat, Team, TeamColor, TeamState,
+};
+pub use plugins::sidebar::{
+    Labeled, MAX_LINE_CHARS, MAX_SIDEBAR_LINES, Ornament, Progress, Ranking, Sidebar, SidebarState,
+    Text, Timer, Widget, WidgetId,
+};
+pub use plugins::tab_list::{TabEntry, TabEntryState, TabList, TabListState};
+pub use plugins::teleport::{Teleport, TeleportOutcome};
+pub use plugins::weather::{Weather, WeatherKind, WeatherState};
+pub use plugins::world_border::{WorldBorder, WorldBorderState};
+pub use plugins::world_time::{
+    GameTime, TICKS_PER_DAY, TIME_SYNC_INTERVAL, WorldClock, WorldTime, WorldTimeState,
+};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;

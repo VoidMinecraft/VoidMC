@@ -16,13 +16,19 @@ use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 mod biome;
 mod boss_bar;
 mod circle;
+mod effects;
 mod entities;
+mod environment;
 mod menu;
 mod particle;
+mod scoreboard;
+mod sidebar;
 mod sign;
 mod sound;
+mod tab_list;
 mod title;
 mod toast;
+mod world_border;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -103,13 +109,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
+            registry.register(scoreboard::team_command());
+            registry.register(effects::effect_command());
+            registry.register(effects::speed_command());
+            registry.register(world_border::border_command());
+            registry.register(environment::time_command());
+            registry.register(environment::weather_command());
             registry.register(title::title_command());
             registry.register(toast::toast_command());
+            registry.register(tab_list::tablist_command());
+            registry.register(tab_list::nick_command());
+            environment::spawn_environment(app.world_mut());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);
             app.add_observer(boss_bar::despawn_bossbar_on_quit);
-            app.add_systems(Update, (circle::circle_system, entities::shield_system));
+            app.world_mut().spawn(sidebar::altitude_board());
+            app.add_systems(
+                Update,
+                (
+                    circle::circle_system,
+                    entities::shield_system,
+                    sidebar::altitude_system,
+                ),
+            );
         })
         .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",

@@ -25,6 +25,7 @@ rand = "0.8"
 
 [dev-dependencies]
 criterion = "0.7"
+log = "0.4"
 
 [[bench]]
 name = "channel_handoff"

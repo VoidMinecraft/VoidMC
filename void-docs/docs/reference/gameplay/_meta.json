@@ -26,8 +26,33 @@
   },
   {
     "type": "file",
+    "name": "scoreboard",
+    "label": "Scoreboard"
+  },
+  {
+    "type": "file",
+    "name": "sidebar",
+    "label": "Sidebar"
+  },
+  {
+    "type": "file",
+    "name": "effects",
+    "label": "Effects & Attributes"
+  },
+  {
+    "type": "file",
+    "name": "tab-list",
+    "label": "Tab List"
+  },
+  {
+    "type": "file",
     "name": "sounds",
     "label": "Sounds"
+  },
+  {
+    "type": "file",
+    "name": "time-and-weather",
+    "label": "Time & Weather"
   },
   {
     "type": "file",
@@ -68,6 +93,11 @@
     "type": "file",
     "name": "world",
     "label": "World & Chunks"
+  },
+  {
+    "type": "file",
+    "name": "world-border",
+    "label": "World Border"
   },
   {
     "type": "file",
