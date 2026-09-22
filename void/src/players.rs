@@ -151,6 +151,10 @@ impl Audience {
         Audience::Custom(Arc::new(predicate))
     }
 
+    pub fn except(self, entity: Entity) -> Self {
+        Audience::custom(move |recipient| recipient.entity != entity && self.includes(recipient))
+    }
+
     pub fn includes(&self, recipient: &Recipient) -> bool {
         match self {
             Audience::All => true,
@@ -674,6 +678,10 @@ mod tests {
             Audience::custom(|r| r.client_id() == 3)
                 .resolve(players.ready())
                 .send(keep_alive(4));
+            Audience::InDimension(DimensionId::End)
+                .except(first)
+                .resolve(players.ready())
+                .send(keep_alive(5));
             assert!(Audience::default().includes(players.ready().iter().next().unwrap()));
         });
         app.update();
@@ -682,7 +690,16 @@ mod tests {
         sent.sort();
         assert_eq!(
             sent,
-            vec![(1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (3, 1), (3, 4)]
+            vec![
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (2, 1),
+                (2, 2),
+                (2, 5),
+                (3, 1),
+                (3, 4)
+            ]
         );
     }
 

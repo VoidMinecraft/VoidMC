@@ -23,6 +23,7 @@ mod menu;
 mod particle;
 mod sign;
 mod sound;
+mod title;
 mod world_border;
 
 struct LogGuards {
@@ -109,6 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(world_border::border_command());
             registry.register(environment::time_command());
             registry.register(environment::weather_command());
+            registry.register(title::title_command());
             environment::spawn_environment(app.world_mut());
 
             // Observe block-breaking events

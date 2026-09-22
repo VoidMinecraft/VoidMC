@@ -21,3 +21,8 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2.3"
 tracing-flame = "0.2.0"
 uuid = { version = "1.16.0", features = ["v4"] }
+
+[dev-dependencies]
+voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
+flume = "0.12.0"
+ussr-nbt = "0.2.1"

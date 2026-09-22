@@ -3,6 +3,7 @@ mod block_entity_data;
 mod block_update;
 mod boss_event;
 pub mod chunk;
+mod clear_titles;
 mod close_container;
 mod command_suggestions_response;
 pub mod commands;
@@ -29,7 +30,10 @@ mod set_entity_motion;
 mod set_head_rotation;
 mod set_held_slot;
 mod set_passengers;
+mod set_subtitle_text;
 mod set_time;
+mod set_title_text;
+mod set_titles_animation;
 mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
@@ -48,6 +52,7 @@ pub use block_entity_data::*;
 pub use block_update::*;
 pub use boss_event::*;
 pub use chunk::*;
+pub use clear_titles::*;
 pub use close_container::*;
 pub use command_suggestions_response::*;
 pub use commands::*;
@@ -76,7 +81,10 @@ pub use set_entity_motion::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
 pub use set_passengers::*;
+pub use set_subtitle_text::*;
 pub use set_time::*;
+pub use set_title_text::*;
+pub use set_titles_animation::*;
 pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
@@ -106,6 +114,8 @@ pub enum PlayPacket {
     BossEvent(BossEvent),
     #[codec(packet_id = 0x0D)]
     ChunksBiomes(ChunksBiomes),
+    #[codec(packet_id = 0x0E)]
+    ClearTitles(ClearTitles),
     #[codec(packet_id = 0x11)]
     CloseContainer(CloseContainer),
     #[codec(packet_id = 0x12)]
@@ -168,8 +178,14 @@ pub enum PlayPacket {
     SetEntityMotion(SetEntityMotion),
     #[codec(packet_id = 0x69)]
     SetHeldSlot(SetHeldSlot),
+    #[codec(packet_id = 0x70)]
+    SetSubtitleText(SetSubtitleText),
     #[codec(packet_id = 0x71)]
     SetTime(SetTime),
+    #[codec(packet_id = 0x72)]
+    SetTitleText(SetTitleText),
+    #[codec(packet_id = 0x73)]
+    SetTitlesAnimation(SetTitlesAnimation),
     #[codec(packet_id = 0x74)]
     EntitySoundEffect(EntitySoundEffect),
     #[codec(packet_id = 0x75)]

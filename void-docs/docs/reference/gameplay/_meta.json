@@ -56,6 +56,11 @@
   },
   {
     "type": "file",
+    "name": "titles",
+    "label": "Titles"
+  },
+  {
+    "type": "file",
     "name": "block-entities",
     "label": "Block Entities"
   },
