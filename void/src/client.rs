@@ -176,21 +176,32 @@ impl Client {
                 Outbound::Game(packet)
             };
 
-            Self::write_outbound(writer, first).await?;
-
-            // Coalesce every packet already queued for this tick into the same
-            // buffered batch, preserving per-channel FIFO order, then flush once.
-            while let Ok(packet) = outgoing_rx.try_recv() {
-                Self::write_outbound(writer, Outbound::Game(packet)).await?;
+            let batch = Self::write_batch(writer, first, outgoing_rx, status_open, status_rx);
+            if let Err(error) = batch.await {
+                let _ = writer.flush().await;
+                return Err(error);
             }
-            if status_open {
-                while let Ok(packet) = status_rx.try_recv() {
-                    Self::write_outbound(writer, Outbound::Status(packet)).await?;
-                }
-            }
-
             writer.flush().await?;
         }
+    }
+
+    async fn write_batch(
+        writer: &mut ClientWriter,
+        first: Outbound,
+        outgoing_rx: &Receiver<OutgoingPacket>,
+        status_open: bool,
+        status_rx: &Receiver<clientbound::StatusPacket>,
+    ) -> Result<(), SocketError> {
+        Self::write_outbound(writer, first).await?;
+        while let Ok(packet) = outgoing_rx.try_recv() {
+            Self::write_outbound(writer, Outbound::Game(packet)).await?;
+        }
+        if status_open {
+            while let Ok(packet) = status_rx.try_recv() {
+                Self::write_outbound(writer, Outbound::Status(packet)).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn write_outbound(
@@ -225,7 +236,7 @@ mod tests {
         net::TcpStream,
     };
     use voidmc_codec::{Decode, Encode, VarI32};
-    use voidmc_net::socket::ServerSocket;
+    use voidmc_net::socket::{FrameError, FrameLimits, ServerSocket};
     use voidmc_protocol::PROTOCOL_VERSION;
 
     use super::*;
@@ -407,6 +418,57 @@ mod tests {
 
         drop(peer);
         assert!(client.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn frames_accepted_before_an_encode_error_still_reach_the_wire() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut peer = TcpStream::connect(address).await.unwrap();
+        let limits = FrameLimits {
+            max_outbound_frame_bytes: 16,
+            ..FrameLimits::default()
+        };
+        let socket = ServerSocket::new(listener, limits).accept().await.unwrap();
+        let (incoming_tx, _incoming_rx) = flume::unbounded();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded();
+
+        send_ping(&outgoing_tx, 1);
+        send_ping(&outgoing_tx, 2);
+        send_ping(&outgoing_tx, 3);
+        outgoing_tx
+            .send(OutgoingPacket {
+                client_id: 7,
+                packet: clientbound::ClientboundPacket::Status(
+                    clientbound::StatusPacket::StatusResponse(
+                        ServerStatusSnapshot::new(&ServerConfig::default()).response(),
+                    ),
+                ),
+            })
+            .unwrap();
+        send_ping(&outgoing_tx, 4);
+
+        let client = Client::new(7, socket, incoming_tx, outgoing_rx, None).run();
+        let result = tokio::time::timeout(Duration::from_secs(1), client)
+            .await
+            .expect("writer loop should stop at the rejected frame");
+        assert!(matches!(
+            result,
+            Err(SocketError::Frame(FrameError::FrameTooLarge {
+                limit: 16,
+                ..
+            }))
+        ));
+
+        let mut expected = Vec::new();
+        for timestamp in 1..=3 {
+            expected.extend(encode_frame(&clientbound::StatusPacket::PingResponse(
+                clientbound::PingResponse { timestamp },
+            )));
+        }
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, expected);
     }
 
     fn send_ping(outgoing_tx: &Sender<OutgoingPacket>, timestamp: i64) {

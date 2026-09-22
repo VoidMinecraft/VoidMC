@@ -252,9 +252,9 @@ pub fn ingest_network_packets(world: &mut World) {
 
     for incoming_packet in packets {
         let Some(client_entity) = client_entity(world, incoming_packet.client_id) else {
-            tracing::error!(
+            tracing::debug!(
                 client_id = incoming_packet.client_id,
-                "Dropping packet from a client the network thread never announced"
+                "Dropping packet from a client whose connection already ended"
             );
             continue;
         };
@@ -301,24 +301,22 @@ pub fn ingest_network_packets(world: &mut World) {
             .resource_mut::<ClientToEntityMap>()
             .0
             .remove(&disc_client_id);
+        if let Some(entity) = entity {
+            // Trigger quit event (observer will broadcast to other players)
+            let is_ready = world.get::<PlayerReady>(entity).is_some();
+            if is_ready {
+                world.trigger(PlayerQuitEvent {
+                    client_id: disc_client_id,
+                    entity,
+                });
+                world.flush();
+            }
+
+            world.despawn(entity);
+        }
         world
             .resource_mut::<ClientSenders>()
             .detach(disc_client_id, entity);
-        let Some(entity) = entity else {
-            continue;
-        };
-
-        // Trigger quit event (observer will broadcast to other players)
-        let is_ready = world.get::<PlayerReady>(entity).is_some();
-        if is_ready {
-            world.trigger(PlayerQuitEvent {
-                client_id: disc_client_id,
-                entity,
-            });
-            world.flush();
-        }
-
-        world.despawn(entity);
     }
 }
 
@@ -609,6 +607,8 @@ mod tests {
 
     use super::*;
     use crate::components::PlayerName;
+    use crate::players::Players;
+    use std::sync::{Arc, Mutex};
 
     struct Harness {
         app: App,
@@ -616,12 +616,78 @@ mod tests {
         connected_tx: Sender<ClientConnected>,
         disconnect_tx: Sender<u32>,
         _kick_rx: Receiver<u32>,
-        _outgoing_rx: Receiver<OutgoingPacket>,
+        outgoing_rx: Option<Receiver<OutgoingPacket>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+
+    impl LogCapture {
+        fn errors(&self) -> Vec<String> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(level, _)| *level == tracing::Level::ERROR)
+                .map(|(_, message)| message.clone())
+                .collect()
+        }
+
+        fn contains(&self, level: tracing::Level, needle: &str) -> bool {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(l, message)| *l == level && message.contains(needle))
+        }
+    }
+
+    struct MessageVisitor(String);
+
+    impl tracing::field::Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl tracing::Subscriber for LogCapture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.0
+                .lock()
+                .unwrap()
+                .push((*event.metadata().level(), visitor.0));
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    fn captured(run: impl FnOnce()) -> LogCapture {
+        let capture = LogCapture::default();
+        tracing::subscriber::with_default(capture.clone(), run);
+        capture
     }
 
     fn harness() -> Harness {
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
-        let (outgoing_tx, _outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
         let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
         let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
         let (connected_tx, connected_rx) = flume::unbounded::<ClientConnected>();
@@ -640,7 +706,7 @@ mod tests {
             connected_tx,
             disconnect_tx,
             _kick_rx,
-            _outgoing_rx,
+            outgoing_rx: Some(outgoing_rx),
         }
     }
 
@@ -783,6 +849,84 @@ mod tests {
         assert!(!h.senders().contains(entity));
         assert_eq!(h.senders().active_len(), 0);
         assert!(rx.is_disconnected());
+    }
+
+    #[test]
+    fn packet_arriving_after_disconnect_is_dropped_quietly() {
+        let mut h = harness();
+        let rx = h.connect(1);
+        h.packet(1);
+        h.app.update();
+        let entity = h.entity_of(1).unwrap();
+
+        drop(rx);
+        h.disconnect_tx.send(1).unwrap();
+        h.app.update();
+        assert!(h.app.world().get_entity(entity).is_err());
+
+        h.packet(1);
+        let logs = captured(|| h.app.update());
+
+        assert!(h.entity_of(1).is_none());
+        assert!(!h.senders().is_pending(1));
+        assert_eq!(h.senders().active_len(), 0);
+        assert_eq!(
+            h.app
+                .world_mut()
+                .query::<&ClientId>()
+                .iter(h.app.world())
+                .count(),
+            0
+        );
+        assert_eq!(logs.errors(), Vec::<String>::new());
+        assert!(logs.contains(
+            tracing::Level::DEBUG,
+            "Dropping packet from a client whose connection already ended"
+        ));
+    }
+
+    #[derive(Resource, Default)]
+    struct QuitSends(Vec<(Entity, bool)>);
+
+    #[test]
+    fn quit_observer_can_send_to_the_quitting_player_without_error() {
+        let mut h = harness();
+        h.outgoing_rx.take();
+        h.app.init_resource::<QuitSends>().add_observer(
+            |event: On<PlayerQuitEvent>,
+             players: Players,
+             senders: Res<ClientSenders>,
+             mut sends: ResMut<QuitSends>| {
+                sends.0.push((event.entity, senders.contains(event.entity)));
+                players.send(
+                    event.entity,
+                    voidmc_protocol::clientbound::Disconnect {
+                        reason: crate::commands::text_to_nbt("bye", "red"),
+                    },
+                );
+            },
+        );
+        let rx = h.connect(1);
+        h.packet(1);
+        h.app.update();
+        let entity = h.entity_of(1).unwrap();
+        h.app
+            .world_mut()
+            .entity_mut(entity)
+            .insert((PlayerReady, PlayerName("quitter".to_string())));
+
+        drop(rx);
+        h.disconnect_tx.send(1).unwrap();
+        let logs = captured(|| h.app.update());
+
+        assert_eq!(
+            h.app.world().resource::<QuitSends>().0,
+            vec![(entity, true)]
+        );
+        assert!(h.app.world().get_entity(entity).is_err());
+        assert!(!h.senders().contains(entity));
+        assert_eq!(logs.errors(), Vec::<String>::new());
+        assert!(logs.contains(tracing::Level::DEBUG, "Client connection already closed"));
     }
 
     #[test]

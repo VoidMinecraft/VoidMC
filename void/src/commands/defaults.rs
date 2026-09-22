@@ -13,11 +13,12 @@ use crate::world::DimensionId;
 use voidmc_data::{Version, is_summonable_entity_type};
 
 use super::parser::{
-    DoubleArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, StringArg,
+    GameMode, GameModeArg, GreedyStringArg, IntegerArg, ItemArg, PlayerArg, StringArg,
     SummonableEntityArg, Vec3Arg,
 };
 use super::{Command, CommandBuilder, CommandContext, CommandRegistry};
 use crate::inventory::Inventory;
+use crate::item::ItemId;
 use crate::item::ItemStack;
 
 /// Registers all default commands except those listed in `exclude`.
@@ -76,13 +77,10 @@ pub fn give_command() -> Command {
 }
 
 fn handle_give(ctx: &mut CommandContext) {
-    let item_name = ctx.get::<String>("item").unwrap().clone();
+    let item = *ctx.get::<ItemId>("item").unwrap();
+    let item_name = item.name().unwrap_or("unknown").to_string();
     let count = ctx.get::<i32>("count").copied().unwrap_or(1).clamp(1, 64) as u8;
-
-    let Some(stack) = ItemStack::of(&item_name, count) else {
-        ctx.reply_error(&format!("Unknown item: {item_name}"));
-        return;
-    };
+    let stack = ItemStack::new(item, count);
 
     let entity = ctx.entity;
     let leftover = ctx.with_world_mut(|world| {
@@ -132,7 +130,7 @@ pub fn gamemode_command() -> Command {
     CommandBuilder::new("gamemode")
         .description("Change game mode")
         .alias("gm")
-        .arg("mode", IntegerArg::new(0, 3))
+        .arg("mode", Arc::new(GameModeArg))
         .handler(handle_gamemode)
         .build()
 }
@@ -140,7 +138,7 @@ pub fn gamemode_command() -> Command {
 pub fn kick_command() -> Command {
     CommandBuilder::new("kick")
         .description("Kick a player")
-        .arg("player", Arc::new(GameProfileArg))
+        .arg("player", Arc::new(PlayerArg))
         .arg_variadic("reason", Arc::new(GreedyStringArg))
         .handler(handle_kick)
         .build()
@@ -217,63 +215,43 @@ fn handle_help(ctx: &mut CommandContext) {
 }
 
 fn handle_gamemode(ctx: &mut CommandContext) {
-    let mode = *ctx.get::<i32>("mode").unwrap();
+    let mode = *ctx.get::<GameMode>("mode").unwrap();
 
-    let mode_name = match mode {
-        0 => "Survival",
-        1 => "Creative",
-        2 => "Adventure",
-        3 => "Spectator",
-        _ => "Unknown",
-    };
-
-    // Send GameEvent to change gamemode
     ctx.players().send(
         ctx.entity,
         voidmc_protocol::clientbound::GameEvent {
             event: voidmc_protocol::clientbound::GameEventType::ChangeGameMode,
-            value: mode as f32,
+            value: mode.id() as f32,
         },
     );
 
-    ctx.reply(&format!("Game mode set to {} ({})", mode_name, mode));
+    ctx.reply(&format!("Game mode set to {} ({})", mode.name(), mode.id()));
 }
 
-fn find_ready_player(ctx: &mut CommandContext, name: &str) -> Option<Entity> {
-    ctx.with_world_mut(|world| {
+fn name_of(ctx: &CommandContext, player: Entity) -> String {
+    ctx.with_world(|world| {
         world
-            .query_filtered::<(Entity, &PlayerName), With<PlayerReady>>()
-            .iter(world)
-            .find(|(_, player_name)| player_name.0.eq_ignore_ascii_case(name))
-            .map(|(entity, _)| entity)
+            .get::<PlayerName>(player)
+            .map(|name| name.0.clone())
+            .unwrap_or_else(|| format!("{player:?}"))
     })
 }
 
 fn handle_kick(ctx: &mut CommandContext) {
-    let target_name = ctx.get::<String>("player").unwrap().clone();
+    let target = *ctx.get::<Entity>("player").unwrap();
+    let target_name = name_of(ctx, target);
     let reason = ctx
         .get::<String>("reason")
         .cloned()
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
-    // Find the target player
-    let target = find_ready_player(ctx, &target_name);
+    let reason_nbt = crate::messages::text_component(&reason, TextColor::Red);
+    ctx.players().send(
+        target,
+        voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
+    );
 
-    match target {
-        Some(target) => {
-            // Send Disconnect packet
-            let reason_nbt = crate::messages::text_component(&reason, TextColor::Red);
-            ctx.players().send(
-                target,
-                voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
-            );
-
-            ctx.reply(&format!("Kicked {} (reason: {})", target_name, reason));
-        }
-        None => {
-            ctx.reply_error(&format!("Player '{}' not found", target_name));
-        }
-    }
+    ctx.reply(&format!("Kicked {} (reason: {})", target_name, reason));
 }
 
 fn handle_ping(ctx: &mut CommandContext) {
@@ -296,9 +274,7 @@ fn handle_plugins(ctx: &mut CommandContext) {
 pub fn tp_command() -> Command {
     CommandBuilder::new("tp")
         .description("Teleport to coordinates")
-        .arg("x", DoubleArg::unbounded())
-        .arg("y", DoubleArg::unbounded())
-        .arg("z", DoubleArg::unbounded())
+        .arg("position", Arc::new(Vec3Arg))
         .handler(handle_tp)
         .build()
 }
@@ -315,36 +291,27 @@ pub fn tell_command() -> Command {
     CommandBuilder::new("tell")
         .description("Send a private message to a player")
         .alias("msg")
-        .arg("player", Arc::new(GameProfileArg))
+        .arg("player", Arc::new(PlayerArg))
         .arg_variadic_required("message", Arc::new(GreedyStringArg))
         .handler(handle_tell)
         .build()
 }
 
 fn handle_tell(ctx: &mut CommandContext) {
-    let target_name = ctx.get::<String>("player").unwrap().clone();
+    let target = *ctx.get::<Entity>("player").unwrap();
+    let target_name = name_of(ctx, target);
     let message = ctx.get::<String>("message").unwrap().clone();
     let sender_name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
 
-    // Find the target player
-    let target = find_ready_player(ctx, &target_name);
-
-    match target {
-        Some(target) => {
-            ctx.with_world(|world| {
-                super::send_system_chat(
-                    world,
-                    target,
-                    &format!("{} whispers to you: {}", sender_name, message),
-                    TextColor::Gray,
-                );
-            });
-            ctx.reply(&format!("You whisper to {}: {}", target_name, message));
-        }
-        None => {
-            ctx.reply_error(&format!("Player '{}' not found", target_name));
-        }
-    }
+    ctx.with_world(|world| {
+        super::send_system_chat(
+            world,
+            target,
+            &format!("{} whispers to you: {}", sender_name, message),
+            TextColor::Gray,
+        );
+    });
+    ctx.reply(&format!("You whisper to {}: {}", target_name, message));
 }
 
 fn handle_broadcast(ctx: &mut CommandContext) {
@@ -378,9 +345,7 @@ fn handle_list(ctx: &mut CommandContext) {
 }
 
 fn handle_tp(ctx: &mut CommandContext) {
-    let x = *ctx.get::<f64>("x").unwrap();
-    let y = *ctx.get::<f64>("y").unwrap();
-    let z = *ctx.get::<f64>("z").unwrap();
+    let [x, y, z] = *ctx.get::<[f64; 3]>("position").unwrap();
     let entity = ctx.entity;
 
     // Read current rotation to preserve yaw/pitch
@@ -555,6 +520,7 @@ mod tests {
         ClientId, EntityCollider, EntityType, MovementConfig, PreviousPosition, SpawnedEntity,
     };
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     fn command_world() -> (World, Entity, Receiver<OutgoingPacket>) {
         let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
@@ -572,12 +538,21 @@ mod tests {
 
         let mut registry = CommandRegistry::new();
         registry.register(summon_command());
+        registry.register(tp_command());
+        registry.register(gamemode_command());
+        registry.register(kick_command());
+        registry.register(tell_command());
         world.insert_resource(registry);
 
         let player = world
             .spawn((
                 ClientId(7),
                 PlayerReady,
+                PlayerName("Alice".into()),
+                TeleportState {
+                    next_id: 1,
+                    pending_id: None,
+                },
                 Position {
                     x: 12.0,
                     y: 64.0,
@@ -745,6 +720,122 @@ mod tests {
 
         assert!(spawned_entities(&mut world).is_empty());
         assert_eq!(outgoing_rx.try_iter().count(), 1);
+    }
+
+    fn args(tokens: &[&str]) -> Vec<String> {
+        tokens.iter().map(|token| token.to_string()).collect()
+    }
+
+    #[test]
+    fn tp_resolves_relative_and_local_coordinates_against_executor() {
+        let (mut world, player, outgoing_rx) = command_world();
+
+        dispatch_command(&mut world, 7, player, "tp", args(&["~1", "~", "~-2"]));
+        let position = *world.get::<Position>(player).unwrap();
+        assert_eq!((position.x, position.y, position.z), (13.0, 64.0, -10.0));
+
+        dispatch_command(&mut world, 7, player, "tp", args(&["^", "^", "^2"]));
+        let position = *world.get::<Position>(player).unwrap();
+        assert!((position.x - 13.0).abs() < 1e-4);
+        assert!((position.y - 64.0).abs() < 1e-4);
+        assert!((position.z + 8.0).abs() < 1e-4);
+
+        let sync_packets = outgoing_rx
+            .try_iter()
+            .filter(|packet| {
+                matches!(
+                    packet.packet,
+                    ClientboundPacket::Play(PlayPacket::SynchronizePlayerPosition(_))
+                )
+            })
+            .count();
+        assert_eq!(sync_packets, 2);
+    }
+
+    #[test]
+    fn tp_rejects_partial_and_mixed_coordinates() {
+        let (mut world, player, outgoing_rx) = command_world();
+
+        dispatch_command(&mut world, 7, player, "tp", args(&["1", "2"]));
+        dispatch_command(&mut world, 7, player, "tp", args(&["^1", "~", "3"]));
+
+        let position = *world.get::<Position>(player).unwrap();
+        assert_eq!((position.x, position.y, position.z), (12.0, 64.0, -8.0));
+        let chat_packets = outgoing_rx
+            .try_iter()
+            .filter(|packet| {
+                matches!(
+                    packet.packet,
+                    ClientboundPacket::Play(PlayPacket::SystemChat(_))
+                )
+            })
+            .count();
+        assert_eq!(chat_packets, 4);
+    }
+
+    #[test]
+    fn gamemode_accepts_vanilla_names_and_legacy_ids() {
+        let (mut world, player, outgoing_rx) = command_world();
+
+        dispatch_command(&mut world, 7, player, "gamemode", args(&["spectator"]));
+        dispatch_command(&mut world, 7, player, "gm", args(&["1"]));
+        dispatch_command(&mut world, 7, player, "gamemode", args(&["hardcore"]));
+
+        let values: Vec<f32> = outgoing_rx
+            .try_iter()
+            .filter_map(|packet| match packet.packet {
+                ClientboundPacket::Play(PlayPacket::GameEvent(event)) => Some(event.value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values, vec![3.0, 1.0]);
+    }
+
+    #[test]
+    fn kick_and_tell_resolve_player_selectors() {
+        let (mut world, player, outgoing_rx) = command_world();
+        let bob = world
+            .spawn((
+                ClientId(8),
+                PlayerReady,
+                PlayerName("Bob".into()),
+                Position {
+                    x: 20.0,
+                    y: 64.0,
+                    z: -8.0,
+                },
+            ))
+            .id();
+
+        dispatch_command(&mut world, 7, player, "tell", args(&["bob", "hi"]));
+        dispatch_command(&mut world, 7, player, "kick", args(&["Carol"]));
+        dispatch_command(&mut world, 7, player, "kick", args(&["@a"]));
+
+        let mut disconnects = 0;
+        let mut chats_to_bob = 0;
+        let mut chats_to_alice = 0;
+        for packet in outgoing_rx.try_iter() {
+            match (packet.client_id, &packet.packet) {
+                (8, ClientboundPacket::Play(PlayPacket::SystemChat(_))) => chats_to_bob += 1,
+                (7, ClientboundPacket::Play(PlayPacket::SystemChat(_))) => chats_to_alice += 1,
+                (_, ClientboundPacket::Play(PlayPacket::Disconnect(_))) => disconnects += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(chats_to_bob, 1);
+        assert_eq!(chats_to_alice, 5);
+        assert_eq!(disconnects, 0);
+
+        dispatch_command(&mut world, 7, player, "kick", args(&["@p"]));
+        let kicked: Vec<u32> = outgoing_rx
+            .try_iter()
+            .filter_map(|packet| match packet.packet {
+                ClientboundPacket::Play(PlayPacket::Disconnect(_)) => Some(packet.client_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kicked, vec![7]);
+        assert!(world.entities().contains(bob));
     }
 
     #[test]
