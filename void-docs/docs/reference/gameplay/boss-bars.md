@@ -33,7 +33,8 @@ The builder methods (`.title()`, `.progress()`, `.color()`, `.division()`,
 `.flags()`, `.darken_screen()`, `.boss_music()`, `.world_fog()`, `.audience()`,
 `.viewers([..])`) set the same fields. `progress` is clamped to `0.0..=1.0` on
 the wire whether you go through `set_progress` or assign the field (NaN counts
-as `0.0`).
+as `0.0`). `title` is cut to the NBT string limit the same way as
+[messages](messages.md#text-length) before it reaches the wire.
 
 ## Updating a bar
 

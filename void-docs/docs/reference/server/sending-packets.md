@@ -116,7 +116,7 @@ Nothing is silently dropped. Each failure is logged once, with the entity and cl
 | Entity no longer exists (player left this tick) | `debug` |
 | Entity exists but has no `ClientId` | `warn` |
 | Client's outbound queue full (client not draining) | `warn`, once per client; the client is kicked |
-| Client's connection already closed (disconnect not yet ingested) | `debug` |
+| Client's connection already closed (disconnect not yet ingested, or sent from a `PlayerQuitEvent` observer) | `debug` |
 | Client entity has no outbound channel and the fallback channel is closed | `error`, once per process |
 
 ### Parameter conflicts
@@ -134,6 +134,13 @@ tick. A client that cannot drain its queue is disconnected rather than having
 packets dropped. `NetworkChannels.outgoing` is only a fallback for client
 entities with no direct sender (tests use it as their packet sink); prefer
 `Players`.
+
+`NetworkChannels.kick` aborts the client's connection immediately: whatever is
+still queued for that client is dropped, including a `Disconnect` packet sent
+just before. It exists for stalled clients (the queue-full case above), not
+for a graceful kick with a reason. To kick a player with a reason, send a
+`Disconnect` packet and let the client close the connection, as the `/kick`
+command does.
 
 ## System sets
 
