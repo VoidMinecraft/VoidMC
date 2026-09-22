@@ -172,6 +172,7 @@ inside one schedule.
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
+| `SidebarSync` | `PostUpdate`, before `ScoreboardSync` | Renders changed sidebars into their objective (see [Sidebar](../gameplay/sidebar.md)). |
 | `ScoreboardSync` | `PostUpdate` | Objective, score and team packets for changed scoreboards (see [Scoreboard](../gameplay/scoreboard.md)). |
 | `AbilitiesSync` | `PostUpdate` | Player Abilities packets for changed `PlayerAbilities`. |
 | `WorldBorderSync` | `PostUpdate` | World border initialize / update / reset packets (see [World Border](../gameplay/world-border.md)). |

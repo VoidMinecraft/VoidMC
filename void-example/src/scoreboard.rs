@@ -1,39 +1,11 @@
-use bevy_ecs::prelude::{Component, Entity, Query, With};
-use voidmc::components::{PlayerName, PlayerReady, Position};
+use bevy_ecs::prelude::{Component, Entity, With};
 use voidmc::{
-    CollisionRule, Command, CommandBuilder, CommandContext, NameTagVisibility, Objective,
-    ScoreFormat, StringArg, Team, TextColor,
+    CollisionRule, Command, CommandBuilder, CommandContext, NameTagVisibility, StringArg, Team,
+    TextColor,
 };
 
 #[derive(Component)]
-pub(super) struct AltitudeBoard;
-
-#[derive(Component)]
 pub(super) struct DemoTeam;
-
-pub(super) fn altitude_board() -> impl bevy_ecs::bundle::Bundle {
-    (
-        Objective::sidebar("altitude")
-            .title("Altitude")
-            .color(TextColor::Gold)
-            .format(ScoreFormat::Styled(TextColor::Aqua)),
-        AltitudeBoard,
-    )
-}
-
-pub(super) fn altitude_system(
-    players: Query<(&PlayerName, &Position), With<PlayerReady>>,
-    mut boards: Query<&mut Objective, With<AltitudeBoard>>,
-) {
-    for (name, position) in &players {
-        let altitude = position.y.floor() as i32;
-        for mut board in &mut boards {
-            if board.get(&name.0) != Some(altitude) {
-                board.set(&name.0, altitude);
-            }
-        }
-    }
-}
 
 pub(super) fn team_command() -> Command {
     CommandBuilder::new("team")

@@ -14,6 +14,7 @@ pub mod login;
 pub mod movement;
 pub mod play;
 pub mod scoreboard;
+pub mod sidebar;
 pub mod status;
 pub mod tab_list;
 pub mod teleport;
@@ -40,11 +41,12 @@ impl Plugin for DefaultPlugins {
             item_drops::ItemDropsPlugin,
             boss_bar::BossBarPlugin,
             (
+                scoreboard::ScoreboardPlugin,
+                sidebar::SidebarPlugin,
                 world_border::WorldBorderPlugin,
                 world_time::WorldTimePlugin,
                 weather::WeatherPlugin,
                 tab_list::TabListPlugin,
-                scoreboard::ScoreboardPlugin,
             ),
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,

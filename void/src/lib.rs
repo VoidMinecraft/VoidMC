@@ -76,6 +76,10 @@ pub use plugins::scoreboard::{
     CollisionRule, DisplaySlot, NameTagVisibility, Objective, ObjectiveState, RenderType, Score,
     ScoreFormat, Team, TeamColor, TeamState,
 };
+pub use plugins::sidebar::{
+    Labeled, MAX_LINE_CHARS, MAX_SIDEBAR_LINES, Ornament, Progress, Ranking, Sidebar, SidebarState,
+    Text, Timer, Widget, WidgetId,
+};
 pub use plugins::tab_list::{TabEntry, TabEntryState, TabList, TabListState};
 pub use plugins::teleport::{Teleport, TeleportOutcome};
 pub use plugins::weather::{Weather, WeatherKind, WeatherState};
