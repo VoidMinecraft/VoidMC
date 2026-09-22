@@ -1,6 +1,7 @@
 use ussr_nbt::owned::Nbt;
 use voidmc_codec::{Decode, DecodeError, Decoder, Encode, LimitKind, VarI32, VarI64};
 
+use crate::clientbound::Particle;
 use crate::slot::Slot;
 use crate::types::BlockPosition;
 
@@ -17,6 +18,7 @@ pub mod serializer {
     pub const BOOLEAN: i32 = 8;
     pub const OPTIONAL_BLOCK_POS: i32 = 11;
     pub const BLOCK_STATE: i32 = 14;
+    pub const PARTICLES: i32 = 17;
     pub const OPTIONAL_UNSIGNED_INT: i32 = 19;
     pub const POSE: i32 = 20;
     pub const VECTOR3: i32 = 39;
@@ -36,6 +38,7 @@ pub enum EntityMetadataValue {
     Boolean(bool),
     OptionalBlockPos(Option<BlockPosition>),
     BlockState(i32),
+    Particles(Vec<Particle>),
     /// `None` on the wire is 0; `Some(n)` is `n + 1`.
     OptionalUnsignedInt(Option<u32>),
     Pose(i32),
@@ -58,6 +61,7 @@ impl EntityMetadataValue {
             Self::Boolean(_) => serializer::BOOLEAN,
             Self::OptionalBlockPos(_) => serializer::OPTIONAL_BLOCK_POS,
             Self::BlockState(_) => serializer::BLOCK_STATE,
+            Self::Particles(_) => serializer::PARTICLES,
             Self::OptionalUnsignedInt(_) => serializer::OPTIONAL_UNSIGNED_INT,
             Self::Pose(_) => serializer::POSE,
             Self::Vector3(_) => serializer::VECTOR3,
@@ -79,6 +83,7 @@ impl EntityMetadataValue {
             Self::ItemStack(slot) => slot.encode(buf),
             Self::Boolean(value) => value.encode(buf),
             Self::OptionalBlockPos(value) => value.encode(buf),
+            Self::Particles(value) => value.encode(buf),
             Self::OptionalUnsignedInt(value) => {
                 VarI32(value.map_or(0, |v| v.wrapping_add(1) as i32)).encode(buf)
             }
@@ -112,6 +117,7 @@ impl EntityMetadataValue {
                 Self::OptionalBlockPos(decoder.decode::<Option<BlockPosition>>()?)
             }
             serializer::BLOCK_STATE => Self::BlockState(decoder.decode::<VarI32>()?.0),
+            serializer::PARTICLES => Self::Particles(decoder.decode::<Vec<Particle>>()?),
             serializer::OPTIONAL_UNSIGNED_INT => {
                 let raw = decoder.decode::<VarI32>()?.0;
                 Self::OptionalUnsignedInt((raw != 0).then(|| (raw as u32).wrapping_sub(1)))
@@ -222,7 +228,8 @@ mod tests {
     use ussr_nbt::owned::Tag;
 
     use super::*;
-    use crate::clientbound::entity_metadata::end_crystal_index;
+    use crate::clientbound::ParticleColor;
+    use crate::clientbound::entity_metadata::{end_crystal_index, living_entity_index};
 
     fn roundtrip(packet: &SetEntityData) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -267,6 +274,16 @@ mod tests {
                 11,
             ),
             (V::BlockState(9), 14),
+            (V::Particles(vec![]), 17),
+            (
+                V::Particles(vec![
+                    Particle::Flame,
+                    Particle::EntityEffect {
+                        color: ParticleColor(0x7F00_FF00),
+                    },
+                ]),
+                17,
+            ),
             (V::OptionalUnsignedInt(None), 19),
             (V::OptionalUnsignedInt(Some(0)), 19),
             (V::Pose(6), 20),
@@ -308,6 +325,43 @@ mod tests {
         assert_eq!(
             buf,
             [45, 8, 11, 1, 0, 0, 0, 0x40, 0, 0, 0x30, 0x02, 9, 8, 0, 0xFF]
+        );
+        roundtrip(&packet);
+    }
+
+    #[test]
+    fn exact_bytes_for_living_entity_effect_indices() {
+        use EntityMetadataValue as V;
+        let entity_effect =
+            voidmc_data::particle_type_id(voidmc_data::Version::V26_1_2, "minecraft:entity_effect")
+                .unwrap() as u8;
+        let packet = SetEntityData::new(9)
+            .with(
+                living_entity_index::EFFECT_PARTICLES,
+                V::Particles(vec![Particle::EntityEffect {
+                    color: ParticleColor(0xFF33_EEFF_u32 as i32),
+                }]),
+            )
+            .with(living_entity_index::EFFECT_AMBIENCE, V::Boolean(true));
+        let mut buf = Vec::new();
+        packet.encode(&mut buf);
+        assert_eq!(
+            buf,
+            [
+                9,
+                10,
+                17,
+                1,
+                entity_effect,
+                0xFF,
+                0x33,
+                0xEE,
+                0xFF,
+                11,
+                8,
+                1,
+                0xFF
+            ]
         );
         roundtrip(&packet);
     }

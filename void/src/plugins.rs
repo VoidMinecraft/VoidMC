@@ -1,5 +1,6 @@
 use bevy_app::Plugin;
 
+pub mod abilities;
 pub mod block_entity;
 pub mod boss_bar;
 pub mod chat;
@@ -13,6 +14,7 @@ pub mod login;
 pub mod movement;
 pub mod play;
 pub mod status;
+pub mod teleport;
 pub mod world_border;
 
 pub struct DefaultPlugins;
@@ -36,6 +38,7 @@ impl Plugin for DefaultPlugins {
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,
         ));
+        app.add_plugins((abilities::AbilitiesPlugin, teleport::TeleportPlugin));
     }
 }
 

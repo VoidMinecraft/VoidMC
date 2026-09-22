@@ -105,6 +105,7 @@ top of it with the same `Audience` / `viewers` vocabulary:
 | Particles | [`Particles` / `WorldParticles`](../gameplay/particles.md) |
 | Sounds | [`Sounds` / `WorldSounds`](../gameplay/sounds.md) |
 | Boss bars | [`BossBar` component](../gameplay/boss-bars.md) |
+| Status effects, attributes | [`StatusEffects` / `Attributes` components](../gameplay/effects.md) |
 | World border | [`WorldBorder` component](../gameplay/world-border.md) |
 
 ### Failure handling
@@ -116,7 +117,7 @@ Nothing is silently dropped. Each failure is logged once, with the entity and cl
 | Entity no longer exists (player left this tick) | `debug` |
 | Entity exists but has no `ClientId` | `warn` |
 | Client's outbound queue full (client not draining) | `warn`, once per client; the client is kicked |
-| Client's connection already closed (disconnect not yet ingested) | `debug` |
+| Client's connection already closed (disconnect not yet ingested, or sent from a `PlayerQuitEvent` observer) | `debug` |
 | Client entity has no outbound channel and the fallback channel is closed | `error`, once per process |
 
 ### Parameter conflicts
@@ -135,6 +136,13 @@ packets dropped. `NetworkChannels.outgoing` is only a fallback for client
 entities with no direct sender (tests use it as their packet sink); prefer
 `Players`.
 
+`NetworkChannels.kick` aborts the client's connection immediately: whatever is
+still queued for that client is dropped, including a `Disconnect` packet sent
+just before. It exists for stalled clients (the queue-full case above), not
+for a graceful kick with a reason. To kick a player with a reason, send a
+`Disconnect` packet and let the client close the connection, as the `/kick`
+command does.
+
 ## System sets
 
 `voidmc::VoidSystems` names every framework phase so user systems can be
@@ -148,6 +156,7 @@ inside one schedule.
 | `ItemUseDrain` | `Update` | Run `ItemBehavior` handlers for queued uses/breaks. |
 | `MenuClickDrain` | `Update` | Fire `MenuClickEvent` and menu `on_click` handlers (see [Menus](../gameplay/menus.md)). |
 | `KeepAlive` | `Update` | Send `KeepAlive`. After `CommandDrain`. |
+| `TeleportBarrier` | `Update` | Advance in-flight `Teleport`s (ping fence, position sync, release). After `CommandDrain`. |
 | `EntitySimulation` | `Update` | Settle spawns, wander, physics. After `KeepAlive`. |
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
 | `EntityBroadcast` | `PostUpdate` | Spawn / movement / motion / metadata packets for non-player entities. |
@@ -156,6 +165,7 @@ inside one schedule.
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
+| `AbilitiesSync` | `PostUpdate` | Player Abilities packets for changed `PlayerAbilities`. |
 | `WorldBorderSync` | `PostUpdate` | World border initialize / update / reset packets (see [World Border](../gameplay/world-border.md)). |
 | `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
 | `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |
