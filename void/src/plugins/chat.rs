@@ -2,8 +2,8 @@ use bevy_app::{App, Plugin};
 use bevy_ecs::{
     entity::Entity,
     observer::On,
-    query::With,
-    system::{Commands, Query, Res, ResMut},
+    system::{Commands, Query, ResMut},
+    world::World,
 };
 use voidmc_protocol::serverbound::{
     ChatCommand, ChatMessage, CommandSuggestionsRequest, SignedChatCommand,
@@ -12,7 +12,7 @@ use voidmc_protocol::serverbound::{
 use crate::{
     CommandRegistry,
     commands::{CommandEnqueueSequence, CommandQueue, enqueue_command},
-    components::{PlayerName, PlayerReady},
+    components::PlayerName,
     events::{ChatCommandEvent, ChatMessageEvent},
     messages::Messages,
     network::PacketEvent,
@@ -142,68 +142,23 @@ fn handle_chat_message(
 
 fn handle_command_suggestions(
     event: On<PacketEvent<CommandSuggestionsRequest>>,
-    command_registry: Res<CommandRegistry>,
-    ready_players: Query<&PlayerName, With<PlayerReady>>,
+    world: &World,
     players: Players,
 ) {
-    // text is e.g. "/kick dan" — split into command + partial arg
-    let without_slash = event
-        .packet
-        .text
-        .strip_prefix('/')
-        .unwrap_or(&event.packet.text);
-    let parts: Vec<&str> = without_slash.splitn(2, ' ').collect();
-    let command_name = parts[0];
-
-    // Verify the command exists
-    if command_registry.resolve(command_name).is_none() {
+    let Some(completion) = world
+        .resource::<CommandRegistry>()
+        .complete(&event.packet.text, world)
+    else {
         return;
-    }
-
-    // Extract partial token being typed
-    let arg_text = parts.get(1).copied().unwrap_or("");
-    let completing_new = event.packet.text.ends_with(' ');
-    let partial = if completing_new || arg_text.is_empty() {
-        ""
-    } else {
-        arg_text.split_whitespace().last().unwrap_or("")
     };
 
-    let partial_lower = partial.to_lowercase();
-
-    // Collect online player names matching the partial input
-    let mut names: Vec<String> = ready_players
-        .iter()
-        .map(|n| n.0.clone())
-        .filter(|name| name.to_lowercase().starts_with(&partial_lower))
-        .collect();
-
-    // For commands that accept entity types, also suggest all known entity type names.
-    let canonical = command_registry
-        .resolve(command_name)
-        .unwrap_or(command_name);
-    if command_registry.accepts_entity_type_arg(canonical) {
-        names.extend(
-            voidmc_data::entity_type_names(voidmc_data::Version::V26_1_2)
-                .iter()
-                .filter(|&&n| n.to_lowercase().starts_with(&partial_lower))
-                .map(|&n| n.to_string()),
-        );
-    }
-
-    // Calculate start position: position of the partial token in the original text
-    let start = if partial.is_empty() {
-        event.packet.text.len() as i32
-    } else {
-        (event.packet.text.len() - partial.len()) as i32
-    };
-
-    let response = voidmc_protocol::clientbound::CommandSuggestionsResponse {
-        transaction_id: event.packet.transaction_id,
-        start,
-        length: partial.len() as i32,
-        matches: names,
-    };
-
-    players.send(event.entity, response);
+    players.send(
+        event.entity,
+        voidmc_protocol::clientbound::CommandSuggestionsResponse {
+            transaction_id: event.packet.transaction_id,
+            start: completion.start as i32,
+            length: completion.length as i32,
+            matches: completion.matches,
+        },
+    );
 }

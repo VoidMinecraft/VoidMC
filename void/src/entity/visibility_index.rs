@@ -52,7 +52,7 @@ impl ChunkViewerIndex {
 /// Keys a player currently contributes to [`ChunkViewerIndex`]: the mirror we
 /// diff against when its chunks or dimension change, and unwind on leave.
 #[derive(Component, Default)]
-pub(crate) struct IndexedChunks {
+pub struct IndexedChunks {
     dimension: Option<DimensionId>,
     chunks: HashSet<ChunkPos>,
 }
@@ -100,14 +100,17 @@ fn reconcile(
     current: &HashSet<ChunkPos>,
     mirror: &mut IndexedChunks,
 ) {
+    let mut changed = false;
     if mirror.dimension == Some(dimension) {
         for chunk in mirror.chunks.difference(current) {
             index.remove((dimension, *chunk), player);
             dirty.mark((dimension, *chunk));
+            changed = true;
         }
         for chunk in current.difference(&mirror.chunks) {
             index.insert((dimension, *chunk), player);
             dirty.mark((dimension, *chunk));
+            changed = true;
         }
     } else {
         if let Some(old) = mirror.dimension {
@@ -120,16 +123,20 @@ fn reconcile(
             index.insert((dimension, *chunk), player);
             dirty.mark((dimension, *chunk));
         }
+        changed = true;
     }
 
     mirror.dimension = Some(dimension);
-    if mirror.chunks != *current {
+    if changed {
         mirror.chunks.clone_from(current);
     }
 }
 
 /// Reacts to the exact change signals the tracker used to poll, so the index
-/// reflects the same loaded-chunk state the tracker would have scanned.
+/// reflects the same loaded-chunk state the tracker would have scanned. The
+/// mirror is required by `PlayerReady`, so it is always present and written in
+/// the same step as the index: a player can never be indexed without the keys
+/// `on_player_leave` needs to unwind it.
 fn maintain_chunk_viewer_index(
     mut index: ResMut<ChunkViewerIndex>,
     mut dirty: ResMut<DirtyChunks>,
@@ -138,7 +145,7 @@ fn maintain_chunk_viewer_index(
             Entity,
             &PlayerDimension,
             Option<&LoadedChunks>,
-            Option<&mut IndexedChunks>,
+            &mut IndexedChunks,
         ),
         (
             With<PlayerReady>,
@@ -149,33 +156,18 @@ fn maintain_chunk_viewer_index(
             )>,
         ),
     >,
-    mut commands: Commands,
 ) {
     let empty = HashSet::new();
-    for (player, dimension, loaded, mirror) in players.iter_mut() {
+    for (player, dimension, loaded, mut mirror) in players.iter_mut() {
         let current = loaded.map(|l| &l.0).unwrap_or(&empty);
-        match mirror {
-            Some(mut mirror) => reconcile(
-                &mut index,
-                &mut dirty,
-                player,
-                dimension.0,
-                current,
-                &mut mirror,
-            ),
-            None => {
-                let mut fresh = IndexedChunks::default();
-                reconcile(
-                    &mut index,
-                    &mut dirty,
-                    player,
-                    dimension.0,
-                    current,
-                    &mut fresh,
-                );
-                commands.entity(player).insert(fresh);
-            }
-        }
+        reconcile(
+            &mut index,
+            &mut dirty,
+            player,
+            dimension.0,
+            current,
+            &mut mirror,
+        );
     }
 }
 
