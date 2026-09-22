@@ -105,6 +105,7 @@ top of it with the same `Audience` / `viewers` vocabulary:
 | Particles | [`Particles` / `WorldParticles`](../gameplay/particles.md) |
 | Sounds | [`Sounds` / `WorldSounds`](../gameplay/sounds.md) |
 | Boss bars | [`BossBar` component](../gameplay/boss-bars.md) |
+| Status effects, attributes | [`StatusEffects` / `Attributes` components](../gameplay/effects.md) |
 
 ### Failure handling
 

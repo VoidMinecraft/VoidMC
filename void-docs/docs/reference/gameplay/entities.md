@@ -194,6 +194,11 @@ broadcast uses it to send rotation-only packets while mounted
 (see [players](./players#riding-a-vehicle)). Hiding the vehicle with `Hidden`
 does not hide its passengers.
 
+## Effects and attributes
+
+`StatusEffects` and `Attributes` attach to spawned entities and players alike;
+see [Effects & Attributes](./effects.md).
+
 ## Example commands
 
 `void-example` ships `/spawn [entity] [--name <text>] [--glow] [--invisible] [--float]`

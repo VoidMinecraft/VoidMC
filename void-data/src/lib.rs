@@ -512,6 +512,136 @@ mod tests {
     }
 
     #[test]
+    fn effect_enum_matches_registry_and_paper_table() {
+        use v26_1_2::{Effect, EffectCategory};
+        let registry = protocol_registry(Version::V26_1_2, "minecraft:mob_effect").unwrap();
+        assert_eq!(Effect::ALL.len(), registry.len());
+        for effect in Effect::ALL {
+            assert_eq!(
+                protocol_registry_index(Version::V26_1_2, "minecraft:mob_effect", effect.name()),
+                Some(effect.id())
+            );
+            assert_eq!(Effect::from_id(effect.id()), Some(*effect));
+            assert_eq!(Effect::from_name(effect.name()), Some(*effect));
+        }
+        assert_eq!(Effect::Speed.id(), 0);
+        assert_eq!(Effect::Speed.color(), 3402751);
+        assert_eq!(Effect::Speed.category(), EffectCategory::Beneficial);
+        assert_eq!(Effect::Slowness.category(), EffectCategory::Harmful);
+        assert_eq!(Effect::Glowing.category(), EffectCategory::Neutral);
+        assert_eq!(Effect::Glowing.color(), 9740385);
+        assert_eq!(Effect::Speed.particle(), None);
+        assert_eq!(Effect::TrialOmen.particle(), Some("minecraft:trial_omen"));
+        assert_eq!(Effect::RaidOmen.particle(), Some("minecraft:raid_omen"));
+        assert_eq!(Effect::WindCharged.particle(), Some("minecraft:small_gust"));
+        assert_eq!(Effect::Weaving.particle(), Some("minecraft:item_cobweb"));
+        assert_eq!(Effect::Oozing.particle(), Some("minecraft:item_slime"));
+        assert_eq!(Effect::Infested.particle(), Some("minecraft:infested"));
+        assert_eq!(
+            Effect::ALL
+                .iter()
+                .filter(|e| e.particle().is_some())
+                .count(),
+            6
+        );
+        for effect in Effect::ALL {
+            if let Some(particle) = effect.particle() {
+                assert!(
+                    protocol_registry_index(Version::V26_1_2, "minecraft:particle_type", particle)
+                        .is_some(),
+                    "{particle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn entity_attribute_enum_matches_registry_and_paper_table() {
+        use v26_1_2::EntityAttribute;
+        let registry = protocol_registry(Version::V26_1_2, "minecraft:attribute").unwrap();
+        assert_eq!(EntityAttribute::ALL.len(), registry.len());
+        for attribute in EntityAttribute::ALL {
+            assert_eq!(
+                protocol_registry_index(Version::V26_1_2, "minecraft:attribute", attribute.name()),
+                Some(attribute.id())
+            );
+            let (min, max) = attribute.range();
+            assert!(min <= attribute.default_value() && attribute.default_value() <= max);
+        }
+        assert_eq!(EntityAttribute::MovementSpeed.default_value(), 0.7);
+        assert_eq!(
+            EntityAttribute::JumpStrength.default_value(),
+            f64::from(0.42f32)
+        );
+        assert_eq!(EntityAttribute::MaxHealth.range(), (1.0, 1024.0));
+        assert_eq!(EntityAttribute::Scale.range(), (0.0625, 16.0));
+        assert!(EntityAttribute::MovementSpeed.is_client_syncable());
+        assert!(EntityAttribute::Scale.is_client_syncable());
+        assert!(EntityAttribute::Gravity.is_client_syncable());
+        assert!(!EntityAttribute::AttackDamage.is_client_syncable());
+        assert!(!EntityAttribute::FollowRange.is_client_syncable());
+        assert!(!EntityAttribute::WaypointTransmitRange.is_client_syncable());
+        assert_eq!(
+            EntityAttribute::ALL
+                .iter()
+                .filter(|a| a.is_client_syncable())
+                .count(),
+            27
+        );
+    }
+
+    #[test]
+    fn entity_default_attributes_follow_paper_suppliers() {
+        use v26_1_2::{EntityAttribute, EntityKind};
+        assert_eq!(
+            EntityKind::Player.default_attribute(EntityAttribute::MovementSpeed),
+            f64::from(0.1f32)
+        );
+        assert_eq!(
+            EntityKind::Player.default_attribute(EntityAttribute::AttackDamage),
+            1.0
+        );
+        assert_eq!(
+            EntityKind::Player.default_attribute(EntityAttribute::MaxHealth),
+            20.0
+        );
+        assert_eq!(
+            EntityKind::Zombie.default_attribute(EntityAttribute::MovementSpeed),
+            f64::from(0.23f32)
+        );
+        assert_eq!(
+            EntityKind::Zombie.default_attribute(EntityAttribute::FollowRange),
+            35.0
+        );
+        assert_eq!(
+            EntityKind::Mule.default_attribute(EntityAttribute::MovementSpeed),
+            f64::from(0.175f32)
+        );
+        assert_eq!(
+            EntityKind::CaveSpider.default_attribute(EntityAttribute::MaxHealth),
+            12.0
+        );
+        assert_eq!(
+            EntityKind::OakBoat.default_attribute(EntityAttribute::MovementSpeed),
+            0.7
+        );
+        assert!(EntityKind::Player.is_living());
+        assert!(EntityKind::Zombie.is_living());
+        assert!(EntityKind::ArmorStand.is_living());
+        assert!(!EntityKind::OakBoat.is_living());
+        assert!(!EntityKind::Item.is_living());
+        assert!(!EntityKind::TextDisplay.is_living());
+        assert_eq!(EntityKind::ALL.iter().filter(|k| k.is_living()).count(), 92);
+        for kind in EntityKind::ALL {
+            for attribute in EntityAttribute::ALL {
+                let (min, max) = attribute.range();
+                let value = kind.default_attribute(*attribute);
+                assert!(min <= value && value <= max, "{kind:?} {attribute:?}");
+            }
+        }
+    }
+
+    #[test]
     fn item_ids_resolve_both_directions() {
         assert_eq!(item_id(Version::V26_1_2, "minecraft:air"), Some(0));
         assert_eq!(item_id(Version::V26_1_2, "minecraft:stone"), Some(1));
