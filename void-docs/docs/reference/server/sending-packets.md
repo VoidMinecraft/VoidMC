@@ -148,6 +148,7 @@ inside one schedule.
 | `ItemUseDrain` | `Update` | Run `ItemBehavior` handlers for queued uses/breaks. |
 | `MenuClickDrain` | `Update` | Fire `MenuClickEvent` and menu `on_click` handlers (see [Menus](../gameplay/menus.md)). |
 | `KeepAlive` | `Update` | Send `KeepAlive`. After `CommandDrain`. |
+| `TeleportBarrier` | `Update` | Advance in-flight `Teleport`s (ping fence, position sync, release). After `CommandDrain`. |
 | `EntitySimulation` | `Update` | Settle spawns, wander, physics. After `KeepAlive`. |
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
 | `EntityBroadcast` | `PostUpdate` | Spawn / movement / motion / metadata packets for non-player entities. |
@@ -156,6 +157,7 @@ inside one schedule.
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
+| `AbilitiesSync` | `PostUpdate` | Player Abilities packets for changed `PlayerAbilities`. |
 | `StatusSnapshot` | `PostUpdate` | Refresh the status-response snapshot read by the network thread. |
 | `Metrics` | `PostUpdate` | TPS tracking (only when `metrics_debug` is on). |
 

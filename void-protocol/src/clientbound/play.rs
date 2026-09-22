@@ -8,12 +8,14 @@ mod command_suggestions_response;
 pub mod commands;
 mod disconnect;
 pub mod entity_metadata;
+mod entity_position_sync;
 mod game_event;
 mod keep_alive;
 mod level_particles;
 mod login;
 mod open_screen;
 mod ping;
+mod player_abilities;
 mod player_info_remove;
 mod player_info_update;
 mod remove_entities;
@@ -51,12 +53,14 @@ pub use disconnect::*;
 pub use entity_metadata::{
     Billboard, DisplayTransform, ItemDisplayContext, MAX_TELEPORT_TICKS, pack_brightness,
 };
+pub use entity_position_sync::*;
 pub use game_event::*;
 pub use keep_alive::*;
 pub use level_particles::*;
 pub use login::*;
 pub use open_screen::*;
 pub use ping::*;
+pub use player_abilities::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
 pub use remove_entities::*;
@@ -108,6 +112,8 @@ pub enum PlayPacket {
     SetCooldown(SetCooldown),
     #[codec(packet_id = 0x20)]
     Disconnect(Disconnect),
+    #[codec(packet_id = 0x23)]
+    EntityPositionSync(EntityPositionSync),
     #[codec(packet_id = 0x25)]
     UnloadChunk(UnloadChunk),
     #[codec(packet_id = 0x26)]
@@ -128,6 +134,8 @@ pub enum PlayPacket {
     OpenScreen(OpenScreen),
     #[codec(packet_id = 0x3D)]
     Ping(Ping),
+    #[codec(packet_id = 0x40)]
+    PlayerAbilities(PlayerAbilities),
     #[codec(packet_id = 0x48)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
     #[codec(packet_id = 0x4E)]
