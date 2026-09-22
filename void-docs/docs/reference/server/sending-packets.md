@@ -109,6 +109,7 @@ top of it with the same `Audience` / `viewers` vocabulary:
 | Particles | [`Particles` / `WorldParticles`](../gameplay/particles.md) |
 | Sounds | [`Sounds` / `WorldSounds`](../gameplay/sounds.md) |
 | Boss bars | [`BossBar` component](../gameplay/boss-bars.md) |
+| Scoreboards | [`Objective` / `Team` components](../gameplay/scoreboard.md) |
 | Status effects, attributes | [`StatusEffects` / `Attributes` components](../gameplay/effects.md) |
 | World border | [`WorldBorder` component](../gameplay/world-border.md) |
 | Time of day and weather | [`WorldTime` / `Weather` components](../gameplay/time-and-weather.md) |
@@ -171,6 +172,7 @@ inside one schedule.
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |
 | `BossBarSync` | `PostUpdate` | Boss bar add / update / remove packets (see [Boss Bars](../gameplay/boss-bars.md)). |
+| `ScoreboardSync` | `PostUpdate` | Objective, score and team packets for changed scoreboards (see [Scoreboard](../gameplay/scoreboard.md)). |
 | `AbilitiesSync` | `PostUpdate` | Player Abilities packets for changed `PlayerAbilities`. |
 | `WorldBorderSync` | `PostUpdate` | World border initialize / update / reset packets (see [World Border](../gameplay/world-border.md)). |
 | `WorldTimeSync` | `PostUpdate` | Advances world clocks; Set Time packets on change and every 20 ticks while running (see [Time & Weather](../gameplay/time-and-weather.md)). |

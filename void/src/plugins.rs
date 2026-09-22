@@ -13,6 +13,7 @@ pub mod item_use;
 pub mod login;
 pub mod movement;
 pub mod play;
+pub mod scoreboard;
 pub mod status;
 pub mod tab_list;
 pub mod teleport;
@@ -43,6 +44,7 @@ impl Plugin for DefaultPlugins {
                 world_time::WorldTimePlugin,
                 weather::WeatherPlugin,
                 tab_list::TabListPlugin,
+                scoreboard::ScoreboardPlugin,
             ),
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,

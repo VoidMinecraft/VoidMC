@@ -26,6 +26,11 @@
   },
   {
     "type": "file",
+    "name": "scoreboard",
+    "label": "Scoreboard"
+  },
+  {
+    "type": "file",
     "name": "effects",
     "label": "Effects & Attributes"
   },

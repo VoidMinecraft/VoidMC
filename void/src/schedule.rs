@@ -40,6 +40,8 @@ pub enum VoidSystems {
     InventorySync,
     /// `PostUpdate`: boss bar add/update/remove packets.
     BossBarSync,
+    /// `PostUpdate`: objective, score and team packets for changed scoreboards.
+    ScoreboardSync,
     /// `PostUpdate`: Player Abilities packets for changed `PlayerAbilities`.
     AbilitiesSync,
     /// `Update`, after `CommandDrain`: advances in-flight [`crate::Teleport`]s.
