@@ -137,6 +137,35 @@ impl Sound {
             Event::Custom(sound_id) => Some(inline(sound_id)),
         }
     }
+
+    fn effect_at(&self, event: SoundEvent, position: SoundPosition) -> SoundEffect {
+        SoundEffect {
+            sound: event,
+            source: self.source,
+            x: SoundEffect::fixed_point(position.x),
+            y: SoundEffect::fixed_point(position.y),
+            z: SoundEffect::fixed_point(position.z),
+            volume: self.volume,
+            pitch: self.pitch,
+            seed: self.seed,
+        }
+    }
+
+    /// The effect packet for a placed sound, or one placed at `fallback` when
+    /// the sound has no position of its own.
+    pub(crate) fn packet_at(&self, fallback: SoundPosition) -> Option<ClientboundPacket> {
+        let Some(event) = self.event() else {
+            if let Event::Named(name) = &self.event {
+                unknown_sound(name);
+            }
+            return None;
+        };
+        let position = match self.emitter {
+            Emitter::At(position) => position,
+            _ => fallback,
+        };
+        Some(self.effect_at(event, position).into())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -264,17 +293,7 @@ fn play_with(
             return false;
         }
         Emitter::At(position) => (
-            SoundEffect {
-                sound: event,
-                source: sound.source,
-                x: SoundEffect::fixed_point(position.x),
-                y: SoundEffect::fixed_point(position.y),
-                z: SoundEffect::fixed_point(position.z),
-                volume: sound.volume,
-                pitch: sound.pitch,
-                seed: sound.seed,
-            }
-            .into(),
+            sound.effect_at(event, position).into(),
             chunk_audience(position, sound.dimension),
         ),
         Emitter::Entity(entity) => {

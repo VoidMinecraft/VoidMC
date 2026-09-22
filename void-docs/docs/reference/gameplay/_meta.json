@@ -51,6 +51,11 @@
   },
   {
     "type": "file",
+    "name": "toasts",
+    "label": "Toasts"
+  },
+  {
+    "type": "file",
     "name": "block-entities",
     "label": "Block Entities"
   },

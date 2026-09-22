@@ -96,6 +96,6 @@ logs a `warn!` and falls back to white instead of kicking the client. Prefer
 `Messages` / `WorldMessages` in new code.
 
 `CommandContext::reply`, `reply_error` and `broadcast` are shorthands over
-`WorldMessages`. On-screen titles have their own request type, see
-[titles](titles.md). For a packet that is not a system message, use
+`WorldMessages`. On-screen titles and advancement popups have their own
+request types, see [titles](titles.md) and [toasts](toasts.md). For a packet that is not a system message, use
 [`Players`](../server/sending-packets.md) directly.

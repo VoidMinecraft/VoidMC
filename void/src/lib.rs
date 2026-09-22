@@ -29,6 +29,7 @@ mod server_status;
 pub mod sounds;
 pub mod systems;
 pub mod titles;
+pub mod toasts;
 pub(crate) mod window;
 pub mod world;
 
@@ -72,6 +73,7 @@ pub use schedule::VoidSystems;
 pub use server::Server;
 pub use sounds::{Sound, SoundPosition, SoundSource, SoundStop, Sounds, WorldSounds};
 pub use titles::{ClearTitlesRequest, TitleRequest, Titles, WorldTitles};
+pub use toasts::{ToastFrame, ToastRequest, Toasts, WorldToasts};
 pub use ussr_nbt::owned::Tag;
 pub use voidmc_codec::{DecodeLimits, LimitKind};
 pub use voidmc_net::socket::FrameLimits;

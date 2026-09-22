@@ -49,6 +49,7 @@ manual_into_clientbound!(
         Commands,
         CommandSuggestionsResponse,
         SetPassengers,
+        UpdateAdvancements,
     }
 );
 
