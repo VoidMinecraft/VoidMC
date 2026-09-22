@@ -11,7 +11,7 @@ use voidmc_protocol::serverbound::{
 };
 
 use crate::{
-    components::{Position, Rotation, TeleportState},
+    components::{Position, Rotation, ServerControlledPosition, TeleportState},
     entity::Mount,
     events::{PlayerMoveEvent, PlayerRotateEvent, PlayerToggleFlyEvent},
     network::PacketEvent,
@@ -52,7 +52,9 @@ fn handle_confirm_teleportation(
 }
 
 fn apply_position(world: &World, commands: &mut Commands, entity: Entity, new: Position) {
-    if world.get::<Mount>(entity).is_some() {
+    if world.get::<Mount>(entity).is_some()
+        || world.get::<ServerControlledPosition>(entity).is_some()
+    {
         return;
     }
     commands.queue(move |world: &mut World| {
@@ -320,5 +322,71 @@ mod tests {
         assert_eq!(app.world().resource::<Moves>().0, 2);
         assert_eq!(app.world().resource::<LastMove>().0, Some((1.0, 2.0)));
         assert_eq!(app.world().get::<Position>(walker).unwrap().x, 2.0);
+    }
+
+    fn move_to(app: &mut App, entity: Entity, x: f64, z: f64) {
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: SetPlayerPos {
+                x,
+                y: 80.0,
+                z,
+                flags: 0,
+            },
+        });
+        app.world_mut().flush();
+    }
+
+    #[test]
+    fn server_controlled_position_ignores_client_movement_but_keeps_look() {
+        let mut app = App::new();
+        app.add_plugins(MovementPlugin);
+        let entity = app
+            .world_mut()
+            .spawn((
+                Position {
+                    x: 1.0,
+                    y: 80.0,
+                    z: 2.0,
+                },
+                ServerControlledPosition,
+            ))
+            .id();
+
+        move_to(&mut app, entity, 999.0, 999.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 1.0);
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: SetPlayerPosAndRot {
+                x: 999.0,
+                y: 0.0,
+                z: 999.0,
+                yaw: 45.0,
+                pitch: 15.0,
+                flags: 0,
+            },
+        });
+        app.world_mut().flush();
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 1.0);
+        assert_eq!(app.world().get::<Rotation>(entity).unwrap().yaw, 45.0);
+
+        app.world_mut()
+            .entity_mut(entity)
+            .remove::<ServerControlledPosition>();
+        move_to(&mut app, entity, 3.0, 2.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 3.0);
+    }
+
+    #[test]
+    fn free_player_movement_is_unchanged() {
+        let mut app = App::new();
+        app.add_plugins(MovementPlugin);
+        let entity = app.world_mut().spawn(Position::default()).id();
+        move_to(&mut app, entity, 5.0, -5.0);
+        let position = app.world().get::<Position>(entity).unwrap();
+        assert_eq!((position.x, position.y, position.z), (5.0, 80.0, -5.0));
     }
 }

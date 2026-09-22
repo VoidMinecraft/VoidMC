@@ -15,6 +15,7 @@ mod level_particles;
 mod login;
 mod open_screen;
 mod ping;
+mod player_abilities;
 mod player_info_remove;
 mod player_info_update;
 mod remove_entities;
@@ -56,6 +57,7 @@ pub use level_particles::*;
 pub use login::*;
 pub use open_screen::*;
 pub use ping::*;
+pub use player_abilities::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
 pub use remove_entities::*;
@@ -126,6 +128,8 @@ pub enum PlayPacket {
     OpenScreen(OpenScreen),
     #[codec(packet_id = 0x3D)]
     Ping(Ping),
+    #[codec(packet_id = 0x40)]
+    PlayerAbilities(PlayerAbilities),
     #[codec(packet_id = 0x48)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
     #[codec(packet_id = 0x53)]
