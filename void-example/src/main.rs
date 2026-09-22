@@ -17,12 +17,14 @@ use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 mod biome;
 mod boss_bar;
 mod circle;
+mod effects;
 mod entities;
 mod environment;
 mod menu;
 mod particle;
 mod sign;
 mod sound;
+mod world_border;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -103,6 +105,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
+            registry.register(effects::effect_command());
+            registry.register(effects::speed_command());
+            registry.register(world_border::border_command());
             registry.register(environment::time_command());
             registry.register(environment::weather_command());
             environment::spawn_environment(app.world_mut());

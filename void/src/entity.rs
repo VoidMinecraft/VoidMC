@@ -3,6 +3,8 @@
 //! and despawning is the only removal API — a `RemoveEntities` packet always
 //! follows, so clients never keep ghosts.
 
+pub mod attributes;
+pub mod effects;
 pub mod metadata;
 pub mod passengers;
 pub mod visibility_index;
@@ -15,12 +17,19 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::system::EntityCommands;
 use voidmc_protocol::clientbound;
 
+pub use attributes::{
+    AttributeInstance, Attributes, AttributesState, EntityAttribute, Modifier, ModifierOperation,
+};
+pub use effects::{
+    Effect, EffectCategory, EffectDuration, EffectInstance, EffectSlot, StatusEffects,
+    StatusEffectsState,
+};
 pub use metadata::{
     Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityMetadata,
     Glowing, Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt,
     NoGravity, Silent, TextAlignment, TextDisplay,
 };
-pub use passengers::Passengers;
+pub use passengers::{Mount, Passengers};
 pub use voidmc_data::v26_1_2::EntityKind;
 
 use crate::components::{
@@ -244,12 +253,23 @@ pub struct EntityHiddenEvent {
     pub viewer: Entity,
 }
 
+/// Hides a tracked entity from every player without despawning it. Inserting
+/// it sends `RemoveEntities` to the current viewers and empties
+/// [`EntityViewers`], so no movement, metadata or passenger packet goes out
+/// while it is present; removing it re-runs the normal spawn path for every
+/// player in range (`SpawnEntity`, full metadata, passengers). Passengers are
+/// separate entities and stay visible unless hidden themselves.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct Hidden;
+
 pub struct EntityPlugin;
 
 impl Plugin for EntityPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(on_despawn_event)
             .add_observer(remove_from_clients)
+            .add_observer(on_hidden_inserted)
+            .add_observer(on_hidden_removed)
             .add_systems(
                 PostUpdate,
                 track_entity_visibility.in_set(VoidSystems::EntityVisibility),
@@ -257,6 +277,8 @@ impl Plugin for EntityPlugin {
         visibility_index::register(app);
         metadata::register(app);
         passengers::register(app);
+        effects::register(app);
+        attributes::register(app);
     }
 }
 
@@ -288,6 +310,28 @@ fn remove_from_clients(
     }
 }
 
+fn on_hidden_inserted(
+    event: On<bevy_ecs::lifecycle::Insert, Hidden>,
+    mut dirty: ResMut<DirtyChunks>,
+    entities: Query<&EntityViewers>,
+) {
+    mark_tracked_chunk(event.entity, &mut dirty, &entities);
+}
+
+fn on_hidden_removed(
+    event: On<Remove, Hidden>,
+    mut dirty: ResMut<DirtyChunks>,
+    entities: Query<&EntityViewers>,
+) {
+    mark_tracked_chunk(event.entity, &mut dirty, &entities);
+}
+
+fn mark_tracked_chunk(entity: Entity, dirty: &mut DirtyChunks, entities: &Query<&EntityViewers>) {
+    if let Some(key) = entities.get(entity).ok().and_then(|v| v.chunk) {
+        dirty.mark(key);
+    }
+}
+
 pub(crate) fn chunk_of(position: &Position) -> ChunkPos {
     ChunkPos::from_block(position.x, position.z)
 }
@@ -308,12 +352,13 @@ pub fn track_entity_visibility(
             &Velocity,
             &EntityDimension,
             &mut EntityViewers,
+            Has<Hidden>,
         ),
         With<SpawnedEntity>,
     >,
 ) {
     let empty = HashSet::new();
-    for (entity, id, uuid, kind, position, rotation, velocity, dimension, mut viewers) in
+    for (entity, id, uuid, kind, position, rotation, velocity, dimension, mut viewers, hidden) in
         entities.iter_mut()
     {
         let key = (dimension.0, chunk_of(position));
@@ -323,7 +368,11 @@ pub fn track_entity_visibility(
         }
         viewers.chunk = Some(key);
 
-        let desired = index.viewers(key).unwrap_or(&empty);
+        let desired = if hidden {
+            &empty
+        } else {
+            index.viewers(key).unwrap_or(&empty)
+        };
         if *desired == viewers.players {
             continue;
         }
@@ -414,6 +463,8 @@ mod tests {
         Spawn(u32, i32),
         Remove(u32, i32),
         Move(u32, i32),
+        Metadata(u32, i32),
+        Passengers(u32, i32),
     }
 
     fn drain(rx: &Receiver<OutgoingPacket>) -> Vec<Sent> {
@@ -429,6 +480,12 @@ mod tests {
                 }
                 ClientboundPacket::Play(PlayPacket::UpdateEntityPosition(p)) => {
                     Sent::Move(out.client_id, p.entity_id)
+                }
+                ClientboundPacket::Play(PlayPacket::SetEntityData(p)) => {
+                    Sent::Metadata(out.client_id, p.entity_id)
+                }
+                ClientboundPacket::ManualPlay(ManualPlayPacket::SetPassengers(p)) => {
+                    Sent::Passengers(out.client_id, p.entity_id)
                 }
                 other => panic!("unexpected packet {other:?}"),
             })
@@ -842,6 +899,218 @@ mod tests {
         app.update();
         app.world_mut().despawn(zombie);
         assert_eq!(app.world().resource::<Seen>().0, vec![id]);
+    }
+
+    fn broadcast_app() -> (App, Receiver<OutgoingPacket>) {
+        use bevy_app::PostUpdate;
+
+        use crate::systems::entities::{
+            broadcast_entity_movement, update_previous_entity_positions,
+        };
+
+        let (mut app, rx) = test_app();
+        app.configure_sets(
+            PostUpdate,
+            (
+                VoidSystems::EntityBroadcast,
+                VoidSystems::EntityMetadataSync,
+                VoidSystems::EntityVisibility,
+            )
+                .chain(),
+        )
+        .add_systems(
+            PostUpdate,
+            (broadcast_entity_movement, update_previous_entity_positions)
+                .chain()
+                .in_set(VoidSystems::EntityBroadcast),
+        );
+        (app, rx)
+    }
+
+    fn viewer_set(app: &App, entity: Entity) -> HashSet<Entity> {
+        app.world()
+            .get::<EntityViewers>(entity)
+            .unwrap()
+            .iter()
+            .collect()
+    }
+
+    #[test]
+    fn hiding_removes_the_entity_from_every_viewer_and_silences_movement() {
+        let (mut app, rx) = broadcast_app();
+        let _a = player(&mut app, 1, &[(0, 0)]);
+        let _b = player(&mut app, 2, &[(0, 0)]);
+        let pig = EntityBuilder::new(EntityKind::Pig)
+            .at(8.0, 64.0, 8.0)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, pig);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id), Sent::Spawn(2, id)]);
+
+        app.world_mut().entity_mut(pig).insert(Hidden);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Remove(1, id), Sent::Remove(2, id)]);
+        assert!(viewer_set(&app, pig).is_empty());
+
+        app.world_mut().get_mut::<Position>(pig).unwrap().x = 9.0;
+        app.world_mut().entity_mut(pig).insert(Glowing);
+        app.update();
+        assert!(drain(&rx).is_empty());
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn showing_replays_the_spawn_path_with_metadata_and_passengers() {
+        let (mut app, rx) = broadcast_app();
+        let near = player(&mut app, 1, &[(0, 0)]);
+        let _far = player(&mut app, 2, &[(9, 9)]);
+        let chicken = EntityBuilder::new(EntityKind::Chicken)
+            .at(8.0, 64.0, 8.0)
+            .spawn_in(app.world_mut())
+            .id();
+        let pig = EntityBuilder::new(EntityKind::Pig)
+            .at(8.0, 64.0, 8.0)
+            .with_bundle((Glowing, Passengers::new([chicken]), Hidden))
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, pig);
+        let chicken_id = network_id(&app, chicken);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, chicken_id)]);
+        assert!(viewer_set(&app, pig).is_empty());
+
+        app.world_mut().entity_mut(pig).remove::<Hidden>();
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::Spawn(1, id),
+                Sent::Metadata(1, id),
+                Sent::Passengers(1, id)
+            ]
+        );
+        assert_eq!(viewer_set(&app, pig), HashSet::from([near]));
+
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn hidden_entity_is_never_spawned_for_a_late_joiner() {
+        let (mut app, rx) = test_app();
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .at(1.0, 64.0, 1.0)
+            .with(Hidden)
+            .spawn_in(app.world_mut())
+            .id();
+        app.update();
+        let joiner = app
+            .world_mut()
+            .spawn((ClientId(9), PlayerDimension(DimensionId::Overworld)))
+            .id();
+        app.update();
+        app.world_mut().entity_mut(joiner).insert((
+            PlayerReady,
+            LoadedChunks(HashSet::from([ChunkPos::new(0, 0)])),
+        ));
+        app.update();
+        assert!(drain(&rx).is_empty());
+
+        app.world_mut()
+            .get_mut::<LoadedChunks>(joiner)
+            .unwrap()
+            .0
+            .clear();
+        app.update();
+        app.world_mut()
+            .get_mut::<LoadedChunks>(joiner)
+            .unwrap()
+            .0
+            .insert(ChunkPos::new(0, 0));
+        app.update();
+        assert!(drain(&rx).is_empty());
+        assert!(viewer_set(&app, zombie).is_empty());
+    }
+
+    #[test]
+    fn hidden_entity_crossing_chunks_and_dimensions_emits_nothing() {
+        let (mut app, rx) = broadcast_app();
+        let _left = player(&mut app, 1, &[(0, 0)]);
+        let _right = player(&mut app, 2, &[(1, 0)]);
+        let pig = EntityBuilder::new(EntityKind::Pig)
+            .at(8.0, 64.0, 8.0)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, pig);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+
+        app.world_mut().entity_mut(pig).insert(Hidden);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Remove(1, id)]);
+
+        app.world_mut().get_mut::<Position>(pig).unwrap().x = 20.0;
+        app.update();
+        assert!(drain(&rx).is_empty());
+        app.world_mut().get_mut::<EntityDimension>(pig).unwrap().0 = DimensionId::Nether;
+        app.update();
+        assert!(drain(&rx).is_empty());
+        assert!(viewer_set(&app, pig).is_empty());
+
+        app.world_mut().get_mut::<EntityDimension>(pig).unwrap().0 = DimensionId::Overworld;
+        app.world_mut().entity_mut(pig).remove::<Hidden>();
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(2, id)]);
+    }
+
+    #[test]
+    fn hide_and_show_in_the_same_tick_is_silent() {
+        let (mut app, rx) = test_app();
+        let _viewer = player(&mut app, 1, &[(0, 0)]);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, zombie);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+
+        app.world_mut().entity_mut(zombie).insert(Hidden);
+        app.world_mut().entity_mut(zombie).remove::<Hidden>();
+        app.update();
+        assert!(drain(&rx).is_empty());
+        assert_eq!(viewer_set(&app, zombie).len(), 1);
+
+        app.world_mut().entity_mut(zombie).remove::<Hidden>();
+        app.world_mut().entity_mut(zombie).insert(Hidden);
+        app.world_mut().entity_mut(zombie).remove::<Hidden>();
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn hidden_events_fire_for_hide_and_shown_events_for_show() {
+        #[derive(Resource, Default)]
+        struct Log(Vec<&'static str>);
+
+        let (mut app, _rx) = test_app();
+        app.init_resource::<Log>()
+            .add_observer(|_: On<EntityShownEvent>, mut log: ResMut<Log>| log.0.push("shown"))
+            .add_observer(|_: On<EntityHiddenEvent>, mut log: ResMut<Log>| log.0.push("hidden"));
+        let _viewer = player(&mut app, 1, &[(0, 0)]);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .id();
+        app.update();
+        app.world_mut().entity_mut(zombie).insert(Hidden);
+        app.update();
+        app.world_mut().entity_mut(zombie).remove::<Hidden>();
+        app.update();
+        assert_eq!(
+            app.world().resource::<Log>().0,
+            vec!["shown", "hidden", "shown"]
+        );
     }
 
     #[test]

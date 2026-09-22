@@ -110,7 +110,7 @@ pub struct TypeAttrs {
 
 #[derive(Default)]
 pub struct VariantAttrs {
-    pub packet_id: Option<u8>,
+    pub packet_id: Option<i32>,
 }
 
 pub fn parse_field_attrs(attrs: &[Attribute]) -> Result<FieldAttrs> {

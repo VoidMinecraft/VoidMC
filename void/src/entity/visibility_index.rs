@@ -73,7 +73,7 @@ impl DirtyChunks {
         self.keys.clear();
     }
 
-    fn mark(&mut self, key: ChunkKey) {
+    pub(crate) fn mark(&mut self, key: ChunkKey) {
         self.keys.insert(key);
     }
 }

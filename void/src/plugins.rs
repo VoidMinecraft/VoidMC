@@ -1,5 +1,6 @@
 use bevy_app::Plugin;
 
+pub mod abilities;
 pub mod block_entity;
 pub mod boss_bar;
 pub mod chat;
@@ -13,8 +14,10 @@ pub mod login;
 pub mod movement;
 pub mod play;
 pub mod status;
+pub mod teleport;
 pub(crate) mod viewers;
 pub mod weather;
+pub mod world_border;
 pub mod world_time;
 
 pub struct DefaultPlugins;
@@ -34,10 +37,15 @@ impl Plugin for DefaultPlugins {
             inventory::InventoryPlugin,
             item_drops::ItemDropsPlugin,
             boss_bar::BossBarPlugin,
-            (world_time::WorldTimePlugin, weather::WeatherPlugin),
+            (
+                world_border::WorldBorderPlugin,
+                world_time::WorldTimePlugin,
+                weather::WeatherPlugin,
+            ),
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,
         ));
+        app.add_plugins((abilities::AbilitiesPlugin, teleport::TeleportPlugin));
     }
 }
 

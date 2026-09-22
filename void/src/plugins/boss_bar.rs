@@ -206,6 +206,9 @@ impl Plugin for BossBarPlugin {
 }
 
 fn sync_boss_bars(players: Players, mut bars: Query<(&BossBar, &mut BossBarState)>) {
+    if bars.is_empty() {
+        return;
+    }
     let ready = players.ready();
     for (bar, mut state) in bars.iter_mut() {
         let desired = desired_viewers(&ready, &bar.audience, &state.viewers, &HashSet::new());
