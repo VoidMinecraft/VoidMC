@@ -218,7 +218,7 @@ fn velocity_to_lp_vec3(velocity: &Velocity) -> LpVec3 {
 }
 
 pub(crate) fn relative_delta(current: f64, previous: f64) -> Option<i16> {
-    let delta = ((current - previous) * RELATIVE_MOVE_SCALE).round();
+    let delta = (current * RELATIVE_MOVE_SCALE).round() - (previous * RELATIVE_MOVE_SCALE).round();
     if delta < i16::MIN as f64 || delta > i16::MAX as f64 {
         None
     } else {
@@ -238,6 +238,76 @@ mod tests {
     fn relative_delta_uses_protocol_scale() {
         assert_eq!(relative_delta(1.25, 1.0), Some(1024));
         assert_eq!(relative_delta(-1.0, 1.0), Some(-8192));
+    }
+
+    #[test]
+    fn relative_delta_matches_vec_delta_codec_rounding() {
+        let previous = 10.0;
+        let current = previous + 0.3;
+        let expected = (current * 4096.0_f64).round() - (previous * 4096.0_f64).round();
+        assert_eq!(relative_delta(current, previous), Some(expected as i16));
+        assert_eq!(relative_delta(0.000_1, 0.0), Some(0));
+        assert_eq!(relative_delta(0.000_2, 0.000_1), Some(1));
+    }
+
+    #[test]
+    fn relative_delta_accumulates_without_drift() {
+        let start = 100.25;
+        let mut previous = start;
+        let mut client_fixed = (start * 4096.0_f64).round() as i64;
+        for tick in 1..=300 {
+            let current = start + 0.3 * tick as f64;
+            let delta = relative_delta(current, previous).expect("delta within i16 range");
+            client_fixed += i64::from(delta);
+            previous = current;
+        }
+        let final_position = start + 0.3 * 300.0;
+        assert_eq!(client_fixed, (final_position * 4096.0_f64).round() as i64);
+        assert_eq!(
+            client_fixed - (start * 4096.0_f64).round() as i64,
+            (final_position * 4096.0_f64).round() as i64 - (start * 4096.0_f64).round() as i64
+        );
+    }
+
+    #[test]
+    fn movement_packet_encodes_fixed_point_deltas() {
+        use voidmc_codec::Encode;
+
+        let packet = movement_packet(
+            7,
+            &Position {
+                x: 0.4,
+                y: 64.0,
+                z: -3.8,
+            },
+            &PreviousPosition {
+                x: 0.1,
+                y: 64.0,
+                z: -3.5,
+            },
+            &Rotation {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            &Velocity {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            true,
+            true,
+            false,
+        );
+
+        let clientbound::ClientboundPacket::Play(play_packet) = packet else {
+            panic!("expected Play packet");
+        };
+        let mut bytes = Vec::new();
+        play_packet.encode(&mut bytes);
+        assert_eq!(
+            bytes,
+            [0x35, 0x07, 0x04, 0xCC, 0x00, 0x00, 0xFB, 0x33, 0x01]
+        );
     }
 
     #[test]
