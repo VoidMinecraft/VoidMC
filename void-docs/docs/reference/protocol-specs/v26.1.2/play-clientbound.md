@@ -810,7 +810,7 @@ UPDATE_PROPERTIES body: `Flags` (Unsigned Byte) as in ADD.
 | Field | Type | Notes |
 |-------|------|-------|
 | Entity Id | [VarInt](./data-types#varint) | Target entity. |
-| Delta X | [Short](./data-types#short) | `(currentX*4096) - (prevX*4096)`. |
+| Delta X | [Short](./data-types#short) | `round(currentX*4096) - round(prevX*4096)`. |
 | Delta Y | [Short](./data-types#short) | Same for Y. |
 | Delta Z | [Short](./data-types#short) | Same for Z. |
 | On Ground | [Bool](./data-types#bool) | Whether the entity touches the ground. |
