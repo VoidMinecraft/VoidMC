@@ -29,7 +29,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Position from the previous tick (used for delta encoding) |
 | `Rotation { yaw, pitch }` | `f32` angles | Current look direction |
-| `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game |
+| `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
 | `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
 
@@ -38,6 +38,9 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | Component | Fields | Description |
 |---|---|---|
 | `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms |
+| `ServerControlledPosition` | Marker | Server owns the position; client movement packets update `Rotation` only |
+| `Teleport { x, y, z, .. }` | Destination + options | Teleport with loading barrier; removed once the client confirms, times out or it is cancelled (see [Players](../gameplay/players.md#teleportation)) |
+| `PlayerAbilities { flying, allow_flight, .. }` | Flags + speeds | Opt-in; changes are sent as Player Abilities packets |
 
 ### Keep-Alive
 
@@ -52,6 +55,8 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `CurrentChunkPos(ChunkPos)` | Chunk column | The chunk the player is currently standing in |
 | `EffectiveViewDistance(i32)` | Distance | The capped view distance used for chunk streaming |
 | `LoadedChunks(HashSet<ChunkPos>)` | Loaded set | Chunks currently sent to this player |
+| `ChunkSendBudget(usize)` | Per tick | Optional cap on chunk packets per tick (at least 1); absent means unlimited |
+| `ChunkStreamBacklog` | Unsent tail | Set by `stream_chunks` while chunks in range remain unsent; carries them nearest-first so a stationary player is drained without recomputing the range |
 
 ### Non-Player Entities
 
@@ -69,6 +74,7 @@ to ready players by `systems::entities`.
 | `EntityViewers` | Player set | Players currently receiving this entity's packets; maintained by the visibility tracker |
 | `EntityMetadata` | Indexed values | Synched entity data with dirty tracking; typed components (`CustomName`, `Glowing`, `Display`, ...) project into it |
 | `Passengers(Vec<Entity>)` | Riders | Entities riding this one; changes send `SetPassengers` to viewers |
+| `Mount(Entity)` | Vehicle | Read-only back-reference on each passenger, mirrored from `Passengers`; removed on dismount or vehicle despawn |
 | `Hidden` | (marker) | Hides the entity from every player without despawning it: `RemoveEntities` on insert, the normal spawn path on remove |
 | `Position { x, y, z }` | `f64` coords | Current world position |
 | `PreviousPosition { x, y, z }` | `f64` coords | Last synced position, used for relative movement packets |

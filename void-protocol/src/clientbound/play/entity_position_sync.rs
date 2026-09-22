@@ -1,9 +1,7 @@
 use voidmc_codec::{Decode, Encode};
 
-use super::TeleportFlags;
-
 #[derive(Debug, Clone, Encode, Decode)]
-pub struct TeleportEntity {
+pub struct EntityPositionSync {
     #[codec(varint32)]
     pub entity_id: i32,
     pub x: f64,
@@ -14,7 +12,6 @@ pub struct TeleportEntity {
     pub vz: f64,
     pub yaw: f32,
     pub pitch: f32,
-    pub relatives: TeleportFlags,
     pub on_ground: bool,
 }
 
@@ -24,9 +21,9 @@ mod tests {
     use crate::clientbound::PlayPacket;
 
     #[test]
-    fn matches_paper_position_move_rotation_relatives_int_and_on_ground() {
+    fn matches_paper_id_position_move_rotation_and_on_ground() {
         let mut bytes = Vec::new();
-        PlayPacket::TeleportEntity(TeleportEntity {
+        PlayPacket::EntityPositionSync(EntityPositionSync {
             entity_id: 300,
             x: 1.5,
             y: -2.0,
@@ -36,19 +33,17 @@ mod tests {
             vz: -0.25,
             yaw: 90.0,
             pitch: -45.0,
-            relatives: TeleportFlags::RelativeX | TeleportFlags::RelativeYaw,
             on_ground: true,
         })
         .encode(&mut bytes);
-        let mut expected = vec![0x7D, 0xAC, 0x02];
+        let mut expected = vec![0x23, 0xAC, 0x02];
         for value in [1.5f64, -2.0, 3.25, 0.5, 0.0, -0.25] {
             expected.extend_from_slice(&value.to_be_bytes());
         }
         expected.extend_from_slice(&90.0f32.to_be_bytes());
         expected.extend_from_slice(&(-45.0f32).to_be_bytes());
-        expected.extend_from_slice(&0x0009u32.to_be_bytes());
         expected.push(1);
         assert_eq!(bytes, expected);
-        assert_eq!(bytes.len(), 3 + 6 * 8 + 2 * 4 + 4 + 1);
+        assert_eq!(bytes.len(), 3 + 6 * 8 + 2 * 4 + 1);
     }
 }

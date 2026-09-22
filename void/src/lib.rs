@@ -49,8 +49,8 @@ pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnP
 pub use entity::{
     Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityBuilder,
     EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing, Hidden,
-    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, NoGravity,
-    Passengers, Silent, TextAlignment, TextDisplay,
+    Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, Mount,
+    NoGravity, Passengers, Silent, TextAlignment, TextDisplay,
 };
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
@@ -65,7 +65,9 @@ pub use menu::{
 pub use messages::{MessageRequest, Messages, WorldMessages};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
+pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
+pub use plugins::teleport::{Teleport, TeleportOutcome};
 pub use registry::{RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;

@@ -76,6 +76,7 @@ player. None of them derive `Clone` or `Debug`.
 | `PlayerSneakEvent` | `entity`, `sneaking` | Sneak started/stopped. |
 | `PlayerSprintEvent` | `entity`, `sprinting` | Sprint started/stopped. |
 | `PlayerToggleFlyEvent` | `entity`, `flying` | Client toggled flight. |
+| `PlayerTeleportEvent` | `entity`, `outcome` | A `Teleport` left the player: `Confirmed`, `TimedOut` or `Cancelled` (see [Players](../gameplay/players.md#teleportation)). |
 
 ### Chat and commands
 
