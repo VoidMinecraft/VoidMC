@@ -895,7 +895,6 @@ mod tests {
             HashSet::from([left])
         );
 
-        // Cross into the right player's chunk (x >= 16 -> chunk (1, 0)).
         app.world_mut().get_mut::<Position>(pig).unwrap().x = 20.0;
         app.update();
         assert_eq!(drain(&rx), vec![Sent::Spawn(2, id), Sent::Remove(1, id)]);
@@ -949,7 +948,6 @@ mod tests {
             HashSet::from([leaver, stayer])
         );
 
-        // Despawning fires the leave observer, purging the player synchronously.
         app.world_mut().despawn(leaver);
         assert_eq!(
             index_viewers(&app, DimensionId::Overworld, (0, 0)),
@@ -958,5 +956,167 @@ mod tests {
 
         app.world_mut().despawn(stayer);
         assert!(index_viewers(&app, DimensionId::Overworld, (0, 0)).is_empty());
+    }
+
+    #[test]
+    fn player_despawned_before_the_tracker_on_its_first_ready_tick_leaves_no_ghost() {
+        use bevy_app::PostUpdate;
+
+        let (mut app, rx) = test_app();
+        app.add_systems(
+            PostUpdate,
+            (|ready: Query<Entity, Added<PlayerReady>>, mut commands: Commands| {
+                for player in &ready {
+                    commands.entity(player).despawn();
+                }
+            })
+            .after(VoidSystems::ChunkStreaming)
+            .before(VoidSystems::EntityVisibility),
+        );
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .id();
+        let player = player(&mut app, 1, &[(0, 0)]);
+        app.update();
+        app.update();
+
+        assert!(app.world().get_entity(player).is_err());
+        assert!(
+            app.world()
+                .resource::<ChunkViewerIndex>()
+                .viewers((DimensionId::Overworld, ChunkPos::new(0, 0)))
+                .is_none()
+        );
+        assert!(app.world().get::<EntityViewers>(zombie).unwrap().is_empty());
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn unready_player_gets_remove_and_re_ready_gets_spawn_again() {
+        let (mut app, rx) = test_app();
+        let viewer = player(&mut app, 1, &[(0, 0)]);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, zombie);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+
+        app.world_mut().entity_mut(viewer).remove::<PlayerReady>();
+        assert!(index_viewers(&app, DimensionId::Overworld, (0, 0)).is_empty());
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Remove(1, id)]);
+        assert!(app.world().get::<EntityViewers>(zombie).unwrap().is_empty());
+
+        app.world_mut().entity_mut(viewer).insert(PlayerReady);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (0, 0)),
+            HashSet::from([viewer])
+        );
+    }
+
+    #[test]
+    fn loaded_chunks_inserted_after_player_ready_are_indexed() {
+        let (mut app, rx) = test_app();
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, zombie);
+        let joiner = app
+            .world_mut()
+            .spawn((
+                ClientId(1),
+                PlayerReady,
+                PlayerDimension(DimensionId::Overworld),
+            ))
+            .id();
+        app.update();
+        assert!(drain(&rx).is_empty());
+        assert!(index_viewers(&app, DimensionId::Overworld, (0, 0)).is_empty());
+
+        app.world_mut()
+            .entity_mut(joiner)
+            .insert(LoadedChunks(HashSet::from([ChunkPos::new(0, 0)])));
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (0, 0)),
+            HashSet::from([joiner])
+        );
+    }
+
+    #[test]
+    fn entity_crossing_into_a_chunk_unloaded_the_same_tick_gets_a_single_remove() {
+        let (mut app, rx) = test_app();
+        let viewer = player(&mut app, 1, &[(0, 0), (1, 0)]);
+        let pig = EntityBuilder::new(EntityKind::Pig)
+            .at(8.0, 64.0, 8.0)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, pig);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
+
+        app.world_mut().get_mut::<Position>(pig).unwrap().x = 20.0;
+        app.world_mut()
+            .get_mut::<LoadedChunks>(viewer)
+            .unwrap()
+            .0
+            .remove(&ChunkPos::new(1, 0));
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Remove(1, id)]);
+        assert!(app.world().get::<EntityViewers>(pig).unwrap().is_empty());
+
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn player_despawned_after_the_tracker_ran_is_cleaned_next_tick() {
+        use bevy_app::Last;
+
+        #[derive(Component)]
+        struct Leaving;
+
+        let (mut app, rx) = test_app();
+        app.add_systems(
+            Last,
+            |leaving: Query<Entity, With<Leaving>>, mut commands: Commands| {
+                for player in &leaving {
+                    commands.entity(player).despawn();
+                }
+            },
+        );
+        let leaver = player(&mut app, 1, &[(0, 0)]);
+        let stayer = player(&mut app, 2, &[(0, 0)]);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .id();
+        let id = network_id(&app, zombie);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Spawn(1, id), Sent::Spawn(2, id)]);
+
+        app.world_mut().entity_mut(leaver).insert(Leaving);
+        app.update();
+        assert!(app.world().get_entity(leaver).is_err());
+        assert_eq!(
+            index_viewers(&app, DimensionId::Overworld, (0, 0)),
+            HashSet::from([stayer])
+        );
+        assert!(
+            app.world()
+                .get::<EntityViewers>(zombie)
+                .unwrap()
+                .contains(leaver)
+        );
+
+        app.update();
+        assert!(drain(&rx).is_empty());
+        let viewers = app.world().get::<EntityViewers>(zombie).unwrap();
+        assert!(!viewers.contains(leaver));
+        assert!(viewers.contains(stayer));
+        assert_eq!(viewers.len(), 1);
     }
 }

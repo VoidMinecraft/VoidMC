@@ -38,12 +38,14 @@ pub use commands::defaults::{
     say_command, stop_command, summon_command, tell_command, tp_command,
 };
 pub use commands::parser::{
-    BoolArg, DoubleArg, FloatArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, LongArg,
-    ResourceLocationArg, StringArg, SummonableEntityArg, Vec3Arg,
+    BlockArg, BlockPosArg, BoolArg, ColorArg, DimensionArg, DoubleArg, EntityArg, EnumArg,
+    FloatArg, GameMode, GameModeArg, GameProfileArg, GreedyStringArg, IntegerArg, ItemArg, LongArg,
+    MessageArg, ParseContext, PlayerArg, PlayerSelector, PlayersArg, ResourceLocationArg,
+    StringArg, SummonableEntityArg, TimeArg, UuidArg, Vec3Arg,
 };
 pub use commands::plugin::CommandSystems;
 pub use commands::{
-    ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, ParseError,
+    ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, Completion, ParseError,
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use entity::{
@@ -62,7 +64,7 @@ pub use menu::{
     ContainerIds, ContainerInput, Menu, MenuClickContext, MenuClickEvent, MenuCloseReason,
     MenuClosedEvent, MenuSlot, MenuType, Menus, OpenMenu, WorldMenus,
 };
-pub use messages::{MessageRequest, Messages, WorldMessages};
+pub use messages::{MessageRequest, Messages, TextColor, WorldMessages};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
