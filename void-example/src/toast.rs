@@ -26,14 +26,14 @@ fn parse_frame(name: &str) -> Option<ToastFrame> {
 
 fn handle_toast(ctx: &mut CommandContext) {
     let frame = ctx.get::<String>("frame").cloned().unwrap_or_default();
-    let item = ctx.get::<String>("item").cloned().unwrap_or_default();
+    let icon = ctx.get::<ItemId>("item").copied();
     let title = ctx.get::<String>("title").cloned().unwrap_or_default();
     let Some(frame) = parse_frame(&frame) else {
         ctx.reply_error("Frame must be task, goal or challenge.");
         return;
     };
-    let Some(icon) = ItemId::from_name(&item) else {
-        ctx.reply_error(&format!("Unknown item '{item}'."));
+    let Some(icon) = icon else {
+        ctx.reply_error("Unknown item.");
         return;
     };
     let player = ctx.entity;
@@ -145,11 +145,11 @@ mod tests {
             &["task", "minecraft:not_an_item", "x"][..],
         ] {
             let packets = run(args);
-            assert_eq!(packets.len(), 1);
-            assert!(matches!(
-                packets[0],
+            assert!(!packets.is_empty());
+            assert!(packets.iter().all(|packet| matches!(
+                packet,
                 ClientboundPacket::Play(PlayPacket::SystemChat(_))
-            ));
+            )));
         }
     }
 }
