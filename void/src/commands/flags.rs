@@ -14,6 +14,19 @@ pub struct FlagDefinition {
     pub value_parser: Option<Arc<dyn ArgParser>>,
 }
 
+impl FlagDefinition {
+    pub fn matches_token(&self, token: &str) -> bool {
+        if let Some(long) = token.strip_prefix("--") {
+            return long == self.long;
+        }
+        let mut short = token.strip_prefix('-').unwrap_or_default().chars();
+        match (short.next(), short.next(), self.short) {
+            (Some(c), None, Some(expected)) => c == expected,
+            _ => false,
+        }
+    }
+}
+
 /// Parsed flag values extracted from command tokens.
 pub struct FlagSet {
     bool_flags: HashMap<String, bool>,

@@ -1,8 +1,10 @@
+pub mod coordinates;
 pub mod defaults;
 pub mod error;
 pub mod flags;
 pub mod parser;
 pub mod plugin;
+pub mod selector;
 
 use std::any::Any;
 use std::collections::{HashMap, VecDeque};
@@ -11,13 +13,13 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::commands::{CommandNode, Commands, Parser, StringType};
 
-use crate::components::{PlayerName, Position};
+use crate::components::PlayerName;
 use crate::messages::WorldMessages;
 use crate::players::WorldPlayers;
 
 pub use error::ParseError;
 pub use flags::{FlagDefinition, FlagSet};
-pub use parser::ArgParser;
+pub use parser::{ArgParser, ParseContext};
 
 // ---------------------------------------------------------------------------
 // Argument & flag definitions
@@ -408,6 +410,69 @@ fn append_flag_branches(
     }
 }
 
+/// Suggestions for the token starting at byte `start` of the chat line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub start: usize,
+    pub length: usize,
+    pub matches: Vec<String>,
+}
+
+fn flag_completions(definitions: &[FlagDefinition], partial: &str) -> Vec<String> {
+    definitions
+        .iter()
+        .flat_map(|definition| {
+            std::iter::once(format!("--{}", definition.long))
+                .chain(definition.short.map(|short| format!("-{short}")))
+        })
+        .filter(|flag| flag.starts_with(partial))
+        .collect()
+}
+
+fn positional_count(tokens: &[&str], definitions: &[FlagDefinition]) -> usize {
+    let mut count = 0;
+    let mut index = 0;
+    let mut flags_allowed = true;
+    while index < tokens.len() {
+        let token = tokens[index];
+        index += 1;
+        if flags_allowed && token == "--" {
+            flags_allowed = false;
+            continue;
+        }
+        let flag = flags_allowed
+            .then(|| {
+                definitions
+                    .iter()
+                    .find(|definition| definition.matches_token(token))
+            })
+            .flatten();
+        match flag {
+            Some(definition) => {
+                if definition.takes_value {
+                    index += 1;
+                }
+            }
+            None => count += 1,
+        }
+    }
+    count
+}
+
+fn argument_at(arguments: &[ArgumentDefinition], positional: usize) -> Option<&ArgumentDefinition> {
+    let mut offset = 0;
+    for arg in arguments {
+        if arg.variadic {
+            return Some(arg);
+        }
+        offset += arg.parser.token_count();
+        if positional < offset {
+            return Some(arg);
+        }
+    }
+    None
+}
+
 /// ECS Resource holding all registered commands.
 #[derive(Resource)]
 pub struct CommandRegistry {
@@ -454,6 +519,48 @@ impl CommandRegistry {
         self.commands
             .get(canonical_name)
             .is_some_and(|cmd| cmd.suggest_entity_types)
+    }
+
+    /// Server-side tab-completion for a `minecraft:ask_server` request
+    /// carrying the full chat line (`/tp @`), or `None` when the line does
+    /// not name a registered command with at least one argument typed.
+    pub fn complete(&self, text: &str, world: &World) -> Option<Completion> {
+        let line = text.strip_prefix('/').unwrap_or(text);
+        let (name, rest) = line.split_once(' ')?;
+        let cmd = self.commands.get(self.resolve(name)?)?;
+
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        let (partial, completed) = if rest.ends_with(' ') || tokens.is_empty() {
+            ("", tokens.as_slice())
+        } else {
+            (tokens[tokens.len() - 1], &tokens[..tokens.len() - 1])
+        };
+
+        let mut matches = if partial.starts_with('-') && !cmd.flag_definitions.is_empty() {
+            flag_completions(&cmd.flag_definitions, partial)
+        } else {
+            let positional = positional_count(completed, &cmd.flag_definitions);
+            let mut matches = argument_at(&cmd.arguments, positional)
+                .map(|arg| arg.parser.suggestions(partial, world))
+                .unwrap_or_default();
+            if cmd.suggest_entity_types {
+                matches.extend(
+                    voidmc_data::entity_type_names(voidmc_data::Version::V26_1_2)
+                        .into_iter()
+                        .filter(|entity_type| parser::starts_with_ignore_case(entity_type, partial))
+                        .map(str::to_string),
+                );
+            }
+            matches
+        };
+        let mut seen = std::collections::HashSet::new();
+        matches.retain(|candidate| seen.insert(candidate.clone()));
+
+        Some(Completion {
+            start: text.len() - partial.len(),
+            length: partial.len(),
+            matches,
+        })
     }
 
     /// Resolve a command name (or alias) to its canonical name.
@@ -700,6 +807,7 @@ fn auto_usage(name: &str, arguments: &[ArgumentDefinition], flags: &[FlagDefinit
 fn parse_positional(
     tokens: &[String],
     definitions: &[(String, Arc<dyn ArgParser>, bool, bool)], // (name, parser, required, variadic)
+    ctx: &ParseContext<'_>,
 ) -> Result<HashMap<String, Box<dyn Any + Send + Sync>>, Vec<ParseError>> {
     let mut parsed = HashMap::new();
     let mut errors = Vec::new();
@@ -710,7 +818,7 @@ fn parse_positional(
             // Consume all remaining tokens, joined by spaces
             if token_idx < tokens.len() {
                 let remaining = tokens[token_idx..].join(" ");
-                match parser.parse(&remaining) {
+                match parser.parse_in(&remaining, ctx) {
                     Ok(val) => {
                         parsed.insert(name.clone(), val);
                     }
@@ -733,7 +841,7 @@ fn parse_positional(
         } else if token_idx < tokens.len() {
             let end = (token_idx + parser.token_count()).min(tokens.len());
             let input = tokens[token_idx..end].join(" ");
-            match parser.parse(&input) {
+            match parser.parse_in(&input, ctx) {
                 Ok(val) => {
                     parsed.insert(name.clone(), val);
                 }
@@ -876,56 +984,16 @@ pub fn dispatch_command(
                 return;
             }
 
-            // Positional argument parsing with support for relative coordinates (`~`).
-            // Resolve `double` and `vec3` tokens relative to the executor's Position.
-            let resolved_positional = {
-                let mut tokens = positional.clone();
-                let mut token_idx = 0;
-                for (arg_name, parser, _required, variadic) in &res.arguments {
-                    if token_idx >= tokens.len() {
-                        break;
-                    }
+            let parsed = parse_positional(
+                &positional,
+                &res.arguments,
+                &ParseContext {
+                    world,
+                    executor: entity,
+                },
+            );
 
-                    let consumed = if *variadic {
-                        tokens.len() - token_idx
-                    } else {
-                        parser.token_count().min(tokens.len() - token_idx)
-                    };
-
-                    if let Some(pos_comp) = world.get::<Position>(entity) {
-                        let bases: Vec<f64> = match parser.type_name() {
-                            "double" => vec![match arg_name.as_str() {
-                                "x" => pos_comp.x,
-                                "y" => pos_comp.y,
-                                "z" => pos_comp.z,
-                                _ => pos_comp.x,
-                            }],
-                            "vec3" => vec![pos_comp.x, pos_comp.y, pos_comp.z],
-                            _ => Vec::new(),
-                        };
-
-                        for (offset, base) in bases.into_iter().take(consumed).enumerate() {
-                            let token = &tokens[token_idx + offset];
-                            let Some(relative) = token.strip_prefix('~') else {
-                                continue;
-                            };
-                            let delta = if relative.is_empty() {
-                                0.0
-                            } else if let Ok(value) = relative.parse::<f64>() {
-                                value
-                            } else {
-                                continue;
-                            };
-                            tokens[token_idx + offset] = (base + delta).to_string();
-                        }
-                    }
-
-                    token_idx += consumed;
-                }
-                tokens
-            };
-
-            match parse_positional(&resolved_positional, &res.arguments) {
+            match parsed {
                 Ok(parsed_args) => {
                     let mut ctx = CommandContext {
                         world,
@@ -954,7 +1022,180 @@ pub fn dispatch_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::defaults::summon_command;
+    use crate::commands::defaults::{gamemode_command, summon_command, tp_command};
+    use crate::commands::parser::{EnumArg, GameProfileArg, StringArg, TimeArg};
+    use crate::components::{PlayerName, PlayerReady};
+    use voidmc_codec::Encode;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Team {
+        Red,
+        Blue,
+    }
+
+    fn team_command() -> Command {
+        CommandBuilder::new("team")
+            .alias("t")
+            .arg("player", Arc::new(GameProfileArg))
+            .arg(
+                "team",
+                EnumArg::new([("red", Team::Red), ("blue", Team::Blue)]),
+            )
+            .arg_optional("for", TimeArg::non_negative())
+            .flag("silent", Some('s'), "No announcement")
+            .flag_value("reason", Some('r'), "Why", StringArg::single_word())
+            .handler(|_| {})
+            .build()
+    }
+
+    fn registry_with(commands: impl IntoIterator<Item = Command>) -> CommandRegistry {
+        let mut registry = CommandRegistry::new();
+        for command in commands {
+            registry.register(command);
+        }
+        registry
+    }
+
+    fn player_world() -> World {
+        let mut world = World::new();
+        world.spawn((PlayerName("Alice".into()), PlayerReady));
+        world.spawn((PlayerName("Bob".into()), PlayerReady));
+        world
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    fn encoded_argument_node(tree: &Commands, name: &str) -> Vec<u8> {
+        let node = tree
+            .nodes
+            .iter()
+            .find(|node| node.node_type == 2 && node.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("missing argument node {name}"));
+        let single = Commands {
+            nodes: vec![node.clone()],
+            root_index: 0,
+        };
+        let mut buf = Vec::new();
+        single.encode(&mut buf);
+        buf[1..buf.len() - 1].to_vec()
+    }
+
+    #[test]
+    fn completion_routes_ask_server_to_the_argument_parser() {
+        let registry = registry_with([team_command()]);
+        let world = player_world();
+
+        let players = registry.complete("/team ", &world).unwrap();
+        assert_eq!(players.start, 6);
+        assert_eq!(players.length, 0);
+        assert_eq!(
+            players.matches,
+            vec!["Alice".to_string(), "Bob".to_string()]
+        );
+
+        let partial = registry.complete("/t bo", &world).unwrap();
+        assert_eq!(
+            partial,
+            Completion {
+                start: 3,
+                length: 2,
+                matches: vec!["Bob".to_string()],
+            }
+        );
+
+        let teams = registry.complete("/team Bob b", &world).unwrap();
+        assert_eq!(teams.start, 10);
+        assert_eq!(teams.matches, vec!["blue".to_string()]);
+
+        let time = registry.complete("/team Bob red 1", &world).unwrap();
+        assert!(time.matches.is_empty());
+        assert_eq!(time.start, 14);
+    }
+
+    #[test]
+    fn completion_skips_flags_and_their_values_when_counting_positionals() {
+        let registry = registry_with([team_command()]);
+        let world = player_world();
+
+        let teams = registry
+            .complete("/team --silent -r why Bob r", &world)
+            .unwrap();
+        assert_eq!(teams.matches, vec!["red".to_string()]);
+
+        let flags = registry.complete("/team Bob red --", &world).unwrap();
+        assert_eq!(
+            flags.matches,
+            vec!["--silent".to_string(), "--reason".to_string()]
+        );
+        let short = registry.complete("/team Bob red -s", &world).unwrap();
+        assert_eq!(short.matches, vec!["-s".to_string()]);
+
+        let after_stop = registry.complete("/team -- Bob r", &world).unwrap();
+        assert_eq!(after_stop.matches, vec!["red".to_string()]);
+    }
+
+    #[test]
+    fn completion_ignores_unknown_commands_and_bare_names() {
+        let registry = registry_with([team_command()]);
+        let world = player_world();
+        assert!(registry.complete("/nope ", &world).is_none());
+        assert!(registry.complete("/tea", &world).is_none());
+        assert!(registry.complete("/team", &world).is_none());
+    }
+
+    #[test]
+    fn completion_keeps_legacy_entity_type_suggestions() {
+        let command = CommandBuilder::new("ride")
+            .suggest_entity_types()
+            .arg("what", StringArg::single_word())
+            .handler(|_| {})
+            .build();
+        let registry = registry_with([command]);
+        let world = World::new();
+        let completion = registry.complete("/ride minecraft:pi", &world).unwrap();
+        assert!(completion.matches.contains(&"minecraft:pig".to_string()));
+        assert!(
+            completion
+                .matches
+                .iter()
+                .all(|m| m.starts_with("minecraft:pi"))
+        );
+    }
+
+    #[test]
+    fn command_tree_nodes_encode_vanilla_parser_ids_and_properties() {
+        let registry = registry_with([tp_command(), gamemode_command(), team_command()]);
+        let tree = registry.build_command_tree();
+
+        let mut position = vec![0x02 | 0x04, 0, 8];
+        position.extend(b"position");
+        position.push(10);
+        assert_eq!(encoded_argument_node(&tree, "position"), position);
+
+        let mut mode = vec![0x02 | 0x04, 0, 4];
+        mode.extend(b"mode");
+        mode.push(42);
+        assert_eq!(encoded_argument_node(&tree, "mode"), mode);
+
+        let player = encoded_argument_node(&tree, "player");
+        assert_eq!(player[0], 0x02 | 0x10);
+        assert!(contains(&player, b"playerminecraft:ask_server"));
+
+        let team = encoded_argument_node(&tree, "team");
+        assert!(contains(&team, b"team minecraft:ask_server"));
+
+        let time = encoded_argument_node(&tree, "for");
+        assert!(contains(&time, b"for+    "));
+        assert_eq!(time[0] & 0x10, 0);
+
+        let mut buf = Vec::new();
+        tree.encode(&mut buf);
+        assert_eq!(buf[0] as usize, tree.nodes.len());
+    }
 
     fn child_named(tree: &Commands, parent_index: i32, name: &str) -> i32 {
         tree.nodes[parent_index as usize]

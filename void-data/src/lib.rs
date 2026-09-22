@@ -189,6 +189,28 @@ pub fn item_names(version: Version) -> Vec<&'static str> {
     table.iter().map(|(n, _)| *n).collect()
 }
 
+/// Returns the default block-state id for a full block id like
+/// `"minecraft:stone"`, or `None` if the name is not in the `minecraft:block`
+/// registry for `version`.
+pub fn block_default_state(version: Version, name: &str) -> Option<i32> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::blocks::BLOCK_IDS,
+    };
+    table
+        .binary_search_by(|(n, _)| (*n).cmp(name))
+        .ok()
+        .map(|i| table[i].1)
+}
+
+/// Returns every block id name (e.g. `"minecraft:stone"`) for `version`,
+/// sorted by name.
+pub fn block_names(version: Version) -> Vec<&'static str> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::blocks::BLOCK_IDS,
+    };
+    table.iter().map(|(n, _)| *n).collect()
+}
+
 /// Returns the maximum stack size for an item id (defaults to 64 for the vast
 /// majority of items; tools/armor are 1, a handful of items are 16).
 pub fn item_max_stack(version: Version, item_id: i32) -> u8 {
@@ -531,6 +553,26 @@ mod tests {
         // A non-block item (a tool) has no block state.
         let sword = item_id(Version::V26_1_2, "minecraft:diamond_sword").unwrap();
         assert_eq!(item_default_block_state(Version::V26_1_2, sword), None);
+    }
+
+    #[test]
+    fn block_names_resolve_to_default_states() {
+        let v = Version::V26_1_2;
+        assert_eq!(
+            block_default_state(v, "minecraft:stone"),
+            Some(v26_1_2::blocks::STONE)
+        );
+        assert_eq!(
+            block_default_state(v, "minecraft:water"),
+            Some(v26_1_2::blocks::WATER)
+        );
+        assert_eq!(block_default_state(v, "minecraft:not_a_block"), None);
+        assert_eq!(block_default_state(v, "stone"), None);
+
+        let names = block_names(v);
+        assert!(names.windows(2).all(|w| w[0] < w[1]));
+        assert!(names.contains(&"minecraft:air"));
+        assert_eq!(names.len(), v26_1_2::blocks::BLOCK_IDS.len());
     }
 
     #[test]
