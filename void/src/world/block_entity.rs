@@ -12,6 +12,7 @@ use voidmc_protocol::types::BlockPosition;
 pub use voidmc_protocol::BlockEntityKind;
 
 use super::{ChunkData, ChunkIndex, ChunkPos, DimensionId};
+use crate::messages::truncate_text;
 
 const VERSION: Version = Version::V26_1_2;
 
@@ -113,7 +114,10 @@ impl SignSide {
                 (
                     "messages".into(),
                     Tag::List(List::String(
-                        self.lines.iter().map(|line| line.as_str().into()).collect(),
+                        self.lines
+                            .iter()
+                            .map(|line| truncate_text(line).into())
+                            .collect(),
                     )),
                 ),
                 ("color".into(), Tag::String(self.color.name().into())),
@@ -614,6 +618,15 @@ mod tests {
             BlockEntity::from(Sign::new().hanging()).kind(),
             BlockEntityKind::hanging_sign()
         );
+    }
+
+    #[test]
+    fn oversized_sign_line_round_trips_below_the_nbt_limit() {
+        let text = "😀".repeat(11000);
+        let sign: BlockEntity = Sign::new()
+            .front(SignSide::lines([text.as_str(), "", "", ""]))
+            .into();
+        crate::messages::assert_guarded(&sign.to_nbt(), &text);
     }
 
     #[test]

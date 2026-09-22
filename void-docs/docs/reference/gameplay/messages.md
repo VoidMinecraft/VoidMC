@@ -79,10 +79,15 @@ recipient** with a `DecoderException`. The variants are `Black`, `DarkBlue`,
 (`parse("dark_red")` / `parse("#ff8800")`), returning `None` when the client
 would reject the input, and `Display` gives the wire name back.
 
+## Text length
+
 Text longer than the NBT string limit (65 535 modified-UTF-8 bytes, where
 `\0` costs 2 bytes and characters outside the BMP cost 6) is cut on a
 character boundary and a warning is logged, rather than sent truncated
-mid-character.
+mid-character. `messages::text_component(text, color)` and
+`messages::plain_text_component(text)` build a guarded component for any
+other packet; menu titles, boss bar titles, custom names and text displays go
+through the same guard.
 
 The legacy string entry points `commands::system_chat(text, color)` and
 `commands::text_to_nbt(text, color)` keep their signatures: an invalid colour
