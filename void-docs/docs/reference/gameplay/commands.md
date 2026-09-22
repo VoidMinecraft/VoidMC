@@ -36,7 +36,7 @@ Client presses Enter
        ▼
   dispatch_command()  in  void/src/commands/mod.rs
   ├── resolves name/alias in CommandRegistry
-  ├── flags::extract_flags() — peels off --flags / -f tokens
+  ├── flags::extract_flags() — peels off --flags / -f tokens, values parsed with parse_in()
   ├── parse_positional()     — calls ArgParser::parse_in() per argument
   │   │                        (executor context: `~`/`^` coordinates, `@s`/`@p` selectors)
   │   └── on error → sends red usage message, returns early
@@ -197,7 +197,8 @@ against Paper.
   all three coordinates must be local, mixing is rejected.
 
 `BlockPosArg` floors the resolved position. Absolute integers are **not**
-centred (`/tp 10 64 10` goes to `10.0, 64.0, 10.0`, unlike vanilla's `10.5`).
+centred (`/tp 10 64 10` goes to `10.0, 64.0, 10.0`, where vanilla centres x
+and z to `10.5, 64.0, 10.5`).
 
 ```rust
 CommandBuilder::new("setblock")
@@ -300,7 +301,8 @@ impl ArgParser for WarpArg {
 Flags are parsed in a pre-pass before positional arguments:
 
 - `--flag` — Boolean flag (sets to `true`)
-- `--flag value` — Value flag (parsed with the flag's `ArgParser`)
+- `--flag value` — Single-token value flag (parsed with the flag's
+  `ArgParser::parse_in`, so `PlayerArg` selectors like `@s` work as flag values)
 - `-f` — Short boolean flag
 - `-f value` — Short value flag (must be standalone, not combined)
 - `--` — Stop flag parsing; everything after is positional

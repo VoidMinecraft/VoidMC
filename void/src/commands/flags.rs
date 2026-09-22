@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::error::ParseError;
-use super::parser::ArgParser;
+use super::parser::{ArgParser, ParseContext};
 
 /// Definition of a CLI-style flag for a command.
 pub struct FlagDefinition {
@@ -50,6 +50,31 @@ impl FlagSet {
     pub fn get_value<T: 'static>(&self, name: &str) -> Option<&T> {
         self.value_flags.get(name)?.downcast_ref::<T>()
     }
+
+    fn insert_value(
+        &mut self,
+        def: &FlagDefinition,
+        value: &str,
+        ctx: &ParseContext<'_>,
+        errors: &mut Vec<ParseError>,
+    ) {
+        let Some(parser) = &def.value_parser else {
+            self.value_flags
+                .insert(def.long.clone(), Box::new(value.to_string()));
+            return;
+        };
+        match parser.parse_in(value, ctx) {
+            Ok(val) => {
+                self.value_flags.insert(def.long.clone(), val);
+            }
+            Err(detail) => errors.push(ParseError::InvalidValue {
+                name: def.long.clone(),
+                value: value.to_string(),
+                expected: parser.type_name().to_string(),
+                detail: Some(detail),
+            }),
+        }
+    }
 }
 
 /// Pre-pass that separates flags from positional tokens.
@@ -63,6 +88,7 @@ impl FlagSet {
 pub fn extract_flags(
     tokens: &[String],
     definitions: &[FlagDefinition],
+    ctx: &ParseContext<'_>,
 ) -> (Vec<String>, FlagSet, Vec<ParseError>) {
     let mut positional = Vec::new();
     let mut flags = FlagSet::new();
@@ -91,25 +117,7 @@ pub fn extract_flags(
                     if i + 1 < tokens.len() {
                         i += 1;
                         let value_str = &tokens[i];
-                        if let Some(ref parser) = def.value_parser {
-                            match parser.parse(value_str) {
-                                Ok(val) => {
-                                    flags.value_flags.insert(def.long.clone(), val);
-                                }
-                                Err(detail) => {
-                                    errors.push(ParseError::InvalidValue {
-                                        name: def.long.clone(),
-                                        value: value_str.clone(),
-                                        expected: parser.type_name().to_string(),
-                                        detail: Some(detail),
-                                    });
-                                }
-                            }
-                        } else {
-                            flags
-                                .value_flags
-                                .insert(def.long.clone(), Box::new(value_str.clone()));
-                        }
+                        flags.insert_value(def, value_str, ctx, &mut errors);
                     } else {
                         errors.push(ParseError::FlagMissingValue {
                             flag: def.long.clone(),
@@ -135,25 +143,7 @@ pub fn extract_flags(
                             if short_chars.len() == 1 && i + 1 < tokens.len() {
                                 i += 1;
                                 let value_str = &tokens[i];
-                                if let Some(ref parser) = def.value_parser {
-                                    match parser.parse(value_str) {
-                                        Ok(val) => {
-                                            flags.value_flags.insert(def.long.clone(), val);
-                                        }
-                                        Err(detail) => {
-                                            errors.push(ParseError::InvalidValue {
-                                                name: def.long.clone(),
-                                                value: value_str.clone(),
-                                                expected: parser.type_name().to_string(),
-                                                detail: Some(detail),
-                                            });
-                                        }
-                                    }
-                                } else {
-                                    flags
-                                        .value_flags
-                                        .insert(def.long.clone(), Box::new(value_str.clone()));
-                                }
+                                flags.insert_value(def, value_str, ctx, &mut errors);
                             } else if short_chars.len() == 1 {
                                 errors.push(ParseError::FlagMissingValue {
                                     flag: def.long.clone(),

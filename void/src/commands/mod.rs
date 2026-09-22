@@ -453,10 +453,23 @@ fn positional_count(tokens: &[&str], definitions: &[FlagDefinition]) -> usize {
                     index += 1;
                 }
             }
+            None if flags_allowed && is_combined_short_flags(token, definitions) => {}
             None => count += 1,
         }
     }
     count
+}
+
+fn is_combined_short_flags(token: &str, definitions: &[FlagDefinition]) -> bool {
+    let Some(shorts) = token.strip_prefix('-') else {
+        return false;
+    };
+    shorts.len() > 1
+        && shorts.chars().all(|c| {
+            definitions
+                .iter()
+                .any(|definition| definition.short == Some(c) && !definition.takes_value)
+        })
 }
 
 fn argument_at(arguments: &[ArgumentDefinition], positional: usize) -> Option<&ArgumentDefinition> {
@@ -557,8 +570,8 @@ impl CommandRegistry {
         matches.retain(|candidate| seen.insert(candidate.clone()));
 
         Some(Completion {
-            start: text.len() - partial.len(),
-            length: partial.len(),
+            start: text[..text.len() - partial.len()].encode_utf16().count(),
+            length: partial.encode_utf16().count(),
             matches,
         })
     }
@@ -867,7 +880,10 @@ fn parse_positional(
     let has_variadic = definitions.iter().any(|(_, _, _, v)| *v);
     if !has_variadic && token_idx < tokens.len() {
         errors.push(ParseError::TooManyArguments {
-            expected: definitions.len(),
+            expected: definitions
+                .iter()
+                .map(|(_, parser, _, _)| parser.token_count())
+                .sum(),
             got: tokens.len(),
         });
     }
@@ -972,9 +988,12 @@ pub fn dispatch_command(
     // Step 2: registry borrow is dropped — we now have full &mut World
     match resolved {
         Resolved::Found(res) => {
-            // Flag extraction pre-pass
+            let ctx = ParseContext {
+                world,
+                executor: entity,
+            };
             let (positional, flags, flag_errors) =
-                flags::extract_flags(&args, &res.flag_definitions);
+                flags::extract_flags(&args, &res.flag_definitions, &ctx);
 
             if !flag_errors.is_empty() {
                 for err in &flag_errors {
@@ -984,14 +1003,7 @@ pub fn dispatch_command(
                 return;
             }
 
-            let parsed = parse_positional(
-                &positional,
-                &res.arguments,
-                &ParseContext {
-                    world,
-                    executor: entity,
-                },
-            );
+            let parsed = parse_positional(&positional, &res.arguments, &ctx);
 
             match parsed {
                 Ok(parsed_args) => {
@@ -1023,7 +1035,7 @@ pub fn dispatch_command(
 mod tests {
     use super::*;
     use crate::commands::defaults::{gamemode_command, summon_command, tp_command};
-    use crate::commands::parser::{EnumArg, GameProfileArg, StringArg, TimeArg};
+    use crate::commands::parser::{EnumArg, GameProfileArg, PlayerArg, StringArg, TimeArg};
     use crate::components::{PlayerName, PlayerReady};
     use voidmc_codec::Encode;
 
@@ -1136,6 +1148,131 @@ mod tests {
 
         let after_stop = registry.complete("/team -- Bob r", &world).unwrap();
         assert_eq!(after_stop.matches, vec!["red".to_string()]);
+    }
+
+    #[test]
+    fn completion_range_is_in_utf16_code_units() {
+        let registry = registry_with([team_command()]);
+        let world = player_world();
+
+        let after_accent = registry.complete("/team Émile ", &world).unwrap();
+        assert_eq!(after_accent.start, 12);
+        assert_eq!(after_accent.length, 0);
+
+        let partial = registry.complete("/team Émile bl", &world).unwrap();
+        assert_eq!(partial.start, 12);
+        assert_eq!(partial.length, 2);
+        assert_eq!(partial.matches, vec!["blue".to_string()]);
+
+        let astral = registry.complete("/team 😀 r", &world).unwrap();
+        assert_eq!(astral.start, 9);
+        assert_eq!(astral.length, 1);
+    }
+
+    #[test]
+    fn completion_treats_combined_bool_short_flags_as_flags() {
+        let command = CommandBuilder::new("summon")
+            .arg(
+                "team",
+                EnumArg::new([("red", Team::Red), ("blue", Team::Blue)]),
+            )
+            .flag("wet", Some('w'), "")
+            .flag("glowing", Some('g'), "")
+            .flag_value("reason", Some('r'), "", StringArg::single_word())
+            .handler(|_| {})
+            .build();
+        let registry = registry_with([command]);
+        let world = World::new();
+
+        let combined = registry.complete("/summon -wg r", &world).unwrap();
+        assert_eq!(combined.matches, vec!["red".to_string()]);
+
+        let with_value_flag = registry.complete("/summon -wr r", &world).unwrap();
+        assert!(with_value_flag.matches.is_empty());
+
+        let unknown = registry.complete("/summon -wx r", &world).unwrap();
+        assert!(unknown.matches.is_empty());
+
+        let after_stop = registry.complete("/summon -- -wg r", &world).unwrap();
+        assert!(after_stop.matches.is_empty());
+    }
+
+    #[test]
+    fn flag_values_parse_with_executor_context() {
+        let mut world = player_world();
+        let executor = world.spawn((PlayerName("Carol".into()), PlayerReady)).id();
+        let bob = world
+            .query::<(Entity, &PlayerName)>()
+            .iter(&world)
+            .find(|(_, name)| name.0 == "Bob")
+            .map(|(entity, _)| entity)
+            .unwrap();
+        let command = CommandBuilder::new("warp")
+            .flag_value("to", Some('t'), "", Arc::new(PlayerArg))
+            .flag_value("from", None, "", Arc::new(PlayerArg))
+            .handler(|_| {})
+            .build();
+        let ctx = ParseContext {
+            world: &world,
+            executor,
+        };
+
+        let args: Vec<String> = ["-t", "bob", "--from", "@s"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let (positional, flags, errors) =
+            flags::extract_flags(&args, &command.flag_definitions, &ctx);
+        assert!(
+            errors.is_empty(),
+            "{}",
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        assert!(positional.is_empty());
+        assert_eq!(flags.get_value::<Entity>("to"), Some(&bob));
+        assert_eq!(flags.get_value::<Entity>("from"), Some(&executor));
+
+        let args: Vec<String> = ["--to", "nobody"].into_iter().map(String::from).collect();
+        let (_, _, errors) = flags::extract_flags(&args, &command.flag_definitions, &ctx);
+        assert!(matches!(
+            errors.as_slice(),
+            [ParseError::InvalidValue { name, .. }] if name == "to"
+        ));
+    }
+
+    #[test]
+    fn too_many_arguments_counts_tokens_on_both_sides() {
+        let world = World::new();
+        let ctx = ParseContext {
+            world: &world,
+            executor: Entity::PLACEHOLDER,
+        };
+        let definitions: Vec<_> = tp_command()
+            .arguments
+            .iter()
+            .map(|a| {
+                (
+                    a.name.clone(),
+                    Arc::clone(&a.parser),
+                    a.required,
+                    a.variadic,
+                )
+            })
+            .collect();
+        let tokens: Vec<String> = ["1", "2", "3", "4"].into_iter().map(String::from).collect();
+
+        let errors = parse_positional(&tokens, &definitions, &ctx).unwrap_err();
+        assert!(matches!(
+            errors.as_slice(),
+            [ParseError::TooManyArguments {
+                expected: 3,
+                got: 4
+            }]
+        ));
     }
 
     #[test]

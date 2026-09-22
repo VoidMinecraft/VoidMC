@@ -202,15 +202,6 @@ pub fn block_default_state(version: Version, name: &str) -> Option<i32> {
         .map(|i| table[i].1)
 }
 
-/// Returns every block id name (e.g. `"minecraft:stone"`) for `version`,
-/// sorted by name.
-pub fn block_names(version: Version) -> Vec<&'static str> {
-    let table = match version {
-        Version::V26_1_2 => v26_1_2::blocks::BLOCK_IDS,
-    };
-    table.iter().map(|(n, _)| *n).collect()
-}
-
 /// Returns the maximum stack size for an item id (defaults to 64 for the vast
 /// majority of items; tools/armor are 1, a handful of items are 16).
 pub fn item_max_stack(version: Version, item_id: i32) -> u8 {
@@ -569,10 +560,8 @@ mod tests {
         assert_eq!(block_default_state(v, "minecraft:not_a_block"), None);
         assert_eq!(block_default_state(v, "stone"), None);
 
-        let names = block_names(v);
-        assert!(names.windows(2).all(|w| w[0] < w[1]));
-        assert!(names.contains(&"minecraft:air"));
-        assert_eq!(names.len(), v26_1_2::blocks::BLOCK_IDS.len());
+        let table = v26_1_2::blocks::BLOCK_IDS;
+        assert!(table.windows(2).all(|w| w[0].0 < w[1].0));
     }
 
     #[test]
