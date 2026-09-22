@@ -551,6 +551,21 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
             def.rust_const, def.default_state_id
         );
     }
+    let mut blocks_by_name: Vec<&BlockDef> = defs.iter().collect();
+    blocks_by_name.sort_by(|a, b| a.full_name.cmp(&b.full_name));
+    let _ = writeln!(
+        out,
+        "        /// `(block_id_name, default_state_id)` sorted by name for binary search."
+    );
+    let _ = writeln!(out, "        pub static BLOCK_IDS: &[(&str, i32)] = &[");
+    for def in blocks_by_name {
+        let _ = writeln!(
+            out,
+            "            ({:?}, {}),",
+            def.full_name, def.default_state_id
+        );
+    }
+    let _ = writeln!(out, "        ];");
     let _ = writeln!(out, "    }}");
 
     // ---- state module: typed structs per stateful block
