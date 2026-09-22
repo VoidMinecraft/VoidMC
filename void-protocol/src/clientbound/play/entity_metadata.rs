@@ -1,4 +1,4 @@
-//! Synched-data indices from Paper 26.1.2 (`Entity`, `EndCrystal`, `Display`
+//! Synched-data indices from Paper 26.1.2 (`Entity`, `LivingEntity`, `EndCrystal`, `Display`
 //! and its subclasses), in `defineId` order.
 
 use super::{EntityMetadataEntry, EntityMetadataValue as Value};
@@ -22,6 +22,16 @@ pub mod entity_flag {
     pub const INVISIBLE: u8 = 1 << 5;
     pub const GLOWING: u8 = 1 << 6;
     pub const FALL_FLYING: u8 = 1 << 7;
+}
+
+pub mod living_entity_index {
+    pub const LIVING_FLAGS: u8 = 8;
+    pub const HEALTH: u8 = 9;
+    pub const EFFECT_PARTICLES: u8 = 10;
+    pub const EFFECT_AMBIENCE: u8 = 11;
+    pub const ARROW_COUNT: u8 = 12;
+    pub const STINGER_COUNT: u8 = 13;
+    pub const SLEEPING_POS: u8 = 14;
 }
 
 pub mod item_entity_index {

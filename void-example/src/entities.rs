@@ -5,7 +5,7 @@ use voidmc::components::{PlayerDimension, Position};
 use voidmc::world::DimensionId;
 use voidmc::{
     BlockDisplay, Command, CommandBuilder, CommandContext, CustomName, Display, DisplayTransform,
-    EntityBuilder, EntityKind, Glowing, GreedyStringArg, Invisible, ItemDisplay, ItemStack,
+    EntityBuilder, EntityKind, Glowing, GreedyStringArg, Hidden, Invisible, ItemDisplay, ItemStack,
     NoGravity, Passengers, StringArg, SummonableEntityArg, TextAlignment, TextDisplay,
 };
 use voidmc_data::v26_1_2::blocks;
@@ -85,7 +85,7 @@ fn handle_spawn(ctx: &mut CommandContext) {
 
 pub(super) fn display_command() -> Command {
     CommandBuilder::new("display")
-        .description("Example command: block/item/text display entities (shield, sign, orbit)")
+        .description("Example command: block/item/text display entities (shield, sign, ride, hide)")
         .arg("mode", StringArg::single_word())
         .arg_optional("text", Arc::new(GreedyStringArg))
         .handler(handle_display)
@@ -172,18 +172,29 @@ fn handle_display(ctx: &mut CommandContext) {
                 world.entity_mut(pig).insert(Passengers::new([chicken]));
                 "A chicken now rides a pig."
             }
-            "clear" => {
-                let owned: Vec<Entity> = world
-                    .query::<(Entity, &DemoDisplay)>()
-                    .iter(world)
-                    .filter_map(|(e, d)| (d.owner == executor).then_some(e))
-                    .collect();
+            "hide" => {
+                let owned = owned_displays(world, executor);
+                let hide = owned.iter().any(|e| world.get::<Hidden>(*e).is_none());
                 for entity in owned {
+                    if hide {
+                        world.entity_mut(entity).insert(Hidden);
+                    } else {
+                        world.entity_mut(entity).remove::<Hidden>();
+                    }
+                }
+                if hide {
+                    "Your displays are hidden. /display hide shows them again."
+                } else {
+                    "Your displays are visible again."
+                }
+            }
+            "clear" => {
+                for entity in owned_displays(world, executor) {
                     world.despawn(entity);
                 }
                 "Your displays are gone."
             }
-            _ => "Usage: /display <shield|sign|item|ride|clear> [text]",
+            _ => "Usage: /display <shield|sign|item|ride|hide|clear> [text]",
         }
     });
     ctx.reply(reply);
@@ -226,6 +237,14 @@ fn shield_transform(angle_deg: f32) -> DisplayTransform {
         )
         .uniform_scale(0.5)
         .left_rotation([0.0, half.sin(), 0.0, half.cos()])
+}
+
+fn owned_displays(world: &mut bevy_ecs::prelude::World, executor: Entity) -> Vec<Entity> {
+    world
+        .query::<(Entity, &DemoDisplay)>()
+        .iter(world)
+        .filter_map(|(e, d)| (d.owner == executor).then_some(e))
+        .collect()
 }
 
 fn origin(world: &bevy_ecs::prelude::World, executor: Entity) -> (Position, DimensionId) {

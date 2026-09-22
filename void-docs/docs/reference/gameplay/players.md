@@ -109,7 +109,7 @@ let delta_z = relative_delta(pos.z, prev_pos.z);
 
 An `i16` delta only covers about ±8 blocks. If any axis moved further than that
 in a single tick, `relative_delta` returns `None` and the update is sent as an
-absolute `TeleportEntity` instead of a saturated delta.
+absolute `EntityPositionSync` instead of a saturated delta.
 
 ### Rotation Encoding
 
@@ -124,15 +124,88 @@ let pitch = (rotation.pitch / 360.0 * 256.0) as u8;
 
 For each player with changed `Position` or `Rotation`:
 1. `UpdateEntityPositionAndRotation` — Combined position delta + rotation, or
-   `TeleportEntity` (absolute position, zero velocity) when the move exceeds the
-   ~8 block delta range
+   `EntityPositionSync` (absolute position, zero velocity) when the move exceeds
+   the ~8 block delta range
 2. `SetHeadRotation` — Head yaw (for smooth head turning)
 
 The `update_previous_positions` system runs after broadcasting to sync `PreviousPosition` with current `Position`.
 
+### Riding a vehicle
+
+A player listed in some entity's `Passengers` carries a `Mount(Entity)`
+component (see [Passengers](./entities#passengers)). A riding client keeps
+sending `SetPlayerPos`/`SetPlayerPosAndRot` every tick with a meaningless
+position (`y = -999`); like vanilla, the movement handlers ignore the position
+of a mounted player — `Position` is left to whatever positions the vehicle
+seats and no `PlayerMoveEvent` fires — and apply only the rotation
+(`Rotation` + `PlayerRotateEvent`). `Rotation` is written only when it actually
+differs from the current value, so `Changed<Rotation>` means a real turn.
+
+While mounted, the client derives the rider's position from the vehicle, so
+`broadcast_position` sends only `UpdateEntityRotation` + `SetHeadRotation` when
+`Rotation` changes and nothing when only `Position` changes; `PreviousPosition`
+keeps following `Position` so the rider can still be written every tick for
+chunk streaming. On the tick `Mount` disappears the rider is resynced with one
+absolute `EntityPositionSync` + `SetHeadRotation` — the packet that resets the
+client's delta base, unlike `TeleportEntity` — after which delta encoding
+resumes. Moving a rider from one `Passengers` list to another in the same tick
+keeps `Mount` and triggers no resync.
+
 ## Teleportation
 
-Server-initiated teleportation (e.g., `/tp` command) works through:
+### `Teleport` (with loading barrier)
+
+Insert a `Teleport` on a player and the framework runs the whole handshake:
+
+```rust
+commands.entity(player).insert(Teleport::to(120.0, 70.0, -40.0).facing(90.0, 0.0));
+```
+
+While the component is present:
+
+1. `ServerControlledPosition` is inserted (client movement packets no longer
+   update `Position`) and `Position` jumps to the destination so chunk
+   streaming starts there immediately.
+2. A `ChunkSendBudget` (default `Teleport::DEFAULT_CHUNK_BUDGET` = 2 per tick)
+   throttles the destination chunks; `.chunk_budget(n)` / `.unthrottled()`
+   override it.
+3. Once every chunk within `preload_radius` (default 2) of the destination has
+   been sent, a play `Ping` fences the stream; the matching `Pong` proves the
+   client has processed them.
+4. `SynchronizePlayerPosition` is sent with a fresh `TeleportState` id as soon
+   as that `Pong` arrives.
+5. `ConfirmTeleportation` clears the id; the `Teleport` is removed, control and
+   the previous budget are restored and `PlayerTeleportEvent { outcome:
+   Confirmed }` fires.
+
+A client that never answers is released after `timeout_ticks` (default 600 =
+30 s) with `TeleportOutcome::TimedOut`; the position sync is still sent so it
+lands at the destination whenever it catches up. Removing the component
+yourself yields `TeleportOutcome::Cancelled`. If the player already carried
+`ServerControlledPosition` before the teleport (a vehicle seat, say) it is kept.
+A player who disconnects mid-teleport gets no `PlayerTeleportEvent` at all: the
+event is only ever delivered for a live entity.
+
+`.in_dimension(DimensionId::Nether)` is server-side only. It updates
+`PlayerDimension`, unloads every chunk and restreams the destination from that
+dimension's generator — the client's dimension environment (sky, fog, ambient
+light, world height) does **not** change because `void-protocol` has no
+`Respawn` packet yet. Use it for same-environment worlds (e.g. two overworld
+maps); a visible Nether/End switch has to wait for `Respawn`.
+
+The barrier advances in `Update` (`VoidSystems::TeleportBarrier`, after
+`CommandDrain`).
+
+### `ServerControlledPosition`
+
+A marker: while present the server owns the player's position. `SetPlayerPos`
+is ignored and `SetPlayerPosAndRot` updates `Rotation` only (the
+`PlayerRotateEvent` still fires, `PlayerMoveEvent` does not). Whoever inserts
+it must keep the client in sync — `Teleport` does this for you.
+
+### Raw handshake
+
+The `/tp` command shows the underlying steps:
 
 1. **Update `TeleportState`**: Increment `next_id`, set `pending_id` to the new ID
 2. **Update `Position`**: Set the entity's position to target coordinates
@@ -140,6 +213,30 @@ Server-initiated teleportation (e.g., `/tp` command) works through:
 4. **Client confirms**: `ConfirmTeleportation` packet clears `pending_id`
 
 While `pending_id` is `Some`, the server knows a teleportation is in-flight and the client has not yet acknowledged it.
+
+## Abilities and Flight
+
+`PlayerAbilities` is an opt-in component; insert or mutate it and the client
+receives the matching Player Abilities packet in `PostUpdate`
+(`VoidSystems::AbilitiesSync`):
+
+```rust
+commands
+    .entity(player)
+    .insert(PlayerAbilities::new().flying(true).flying_speed(0.1));
+```
+
+| Builder | Effect |
+|---|---|
+| `allow_flight(bool)` | Player may toggle flight; `false` also stops flying |
+| `flying(bool)` | Start/stop flying; `true` also allows flight |
+| `invulnerable(bool)`, `instant_build(bool)` | The remaining protocol flags |
+| `flying_speed(f32)`, `walking_speed(f32)` | Defaults `0.05` and `0.1` |
+
+When the client toggles flight itself, `flying` is updated in place without a
+round trip. If flight is not allowed the component is left with
+`flying = false` and re-sent, which puts the client back on the ground.
+`PlayerToggleFlyEvent` fires either way.
 
 ## Chat Messages
 
