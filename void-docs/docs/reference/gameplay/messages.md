@@ -62,6 +62,7 @@ yet; `message(joining, "x").viewers([joining]).send()` sends nothing.
 |---|---|---|
 | `color(TextColor)` | `TextColor::White` | One of the 16 vanilla colours or `TextColor::rgb(0xrrggbb)`. |
 | `audience(Audience)` / `viewers(entities)` | see above | **Replaces** the target: the `player` given to `message`/`action_bar` is discarded and delivery becomes ready-only, exactly as for `broadcast`. |
+| `except(entity)` | — | Narrows the current audience (`Audience::All` for a single-player request) so `entity` is skipped: `broadcast("x").except(sender)`. |
 | `send()` | — | Consumes the request and sends it. |
 
 `packet()` returns the `SystemChat` that `send()` would send, for tests.
@@ -97,5 +98,6 @@ logs a `warn!` and falls back to white instead of kicking the client. Prefer
 `Messages` / `WorldMessages` in new code.
 
 `CommandContext::reply`, `reply_error` and `broadcast` are shorthands over
-`WorldMessages`. For a packet that is not a system message, use
+`WorldMessages`. On-screen titles have their own request type, see
+[titles](titles.md). For a packet that is not a system message, use
 [`Players`](../server/sending-packets.md) directly.

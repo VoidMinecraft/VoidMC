@@ -142,10 +142,7 @@ fn handle_finish_configuration(
             next_id: 1,
             pending_id: Some(0),
         },
-        KeepAliveState {
-            last_sent_id: 0,
-            awaiting_response: false,
-        },
+        KeepAliveState::default(),
         CurrentChunkPos(spawn_chunk),
         EffectiveViewDistance(config.initial_chunk_radius),
         LoadedChunks(HashSet::new()),

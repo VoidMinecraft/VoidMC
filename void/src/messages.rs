@@ -211,9 +211,19 @@ impl<'a> Sink<'a> {
     }
 }
 
-enum Target {
+pub(crate) enum Target {
     Player(Entity),
     Audience(Audience),
+}
+
+impl Target {
+    pub(crate) fn except(self, entity: Entity) -> Self {
+        let audience = match self {
+            Target::Audience(audience) => audience,
+            Target::Player(_) => Audience::All,
+        };
+        Target::Audience(audience.except(entity))
+    }
 }
 
 #[must_use = "a message request does nothing until `.send()`"]
@@ -251,6 +261,13 @@ impl<'a> MessageRequest<'a> {
 
     pub fn viewers(self, players: impl IntoIterator<Item = Entity>) -> Self {
         self.audience(Audience::explicit(players))
+    }
+
+    /// Narrows the current audience (`Audience::All` for a single-player
+    /// request) so `entity` is skipped.
+    pub fn except(mut self, entity: Entity) -> Self {
+        self.target = self.target.except(entity);
+        self
     }
 
     pub fn packet(&self) -> SystemChat {
@@ -527,15 +544,21 @@ mod tests {
                 .audience(Audience::InDimension(DimensionId::Nether))
                 .send();
             messages.message(overworld, "party").viewers([end]).send();
+            messages.broadcast("not you").except(overworld).send();
+            messages.message(end, "everyone but end").except(end).send();
             let _abandoned = messages.broadcast("never sent");
         });
         app.update();
 
         let sent = drain(&rx);
-        assert_eq!(sent.len(), 2);
+        assert_eq!(sent.len(), 6);
         assert_eq!(sent[0].0, 2);
         assert_eq!(sent[1].0, 3);
         assert_eq!(field(&sent[1].1, "text"), "party");
+        assert_eq!(client_ids(&sent[2..4]), HashSet::from([2, 3]));
+        assert_eq!(field(&sent[2].1, "text"), "not you");
+        assert_eq!(client_ids(&sent[4..]), HashSet::from([1, 2]));
+        assert_eq!(field(&sent[4].1, "text"), "everyone but end");
     }
 
     #[test]
