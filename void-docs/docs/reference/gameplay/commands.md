@@ -36,8 +36,9 @@ Client presses Enter
        ▼
   dispatch_command()  in  void/src/commands/mod.rs
   ├── resolves name/alias in CommandRegistry
-  ├── flags::extract_flags() — peels off --flags / -f tokens
-  ├── parse_positional()     — calls ArgParser::parse() per argument
+  ├── flags::extract_flags() — peels off --flags / -f tokens, values parsed with parse_in()
+  ├── parse_positional()     — calls ArgParser::parse_in() per argument
+  │   │                        (executor context: `~`/`^` coordinates, `@s`/`@p` selectors)
   │   └── on error → sends red usage message, returns early
   └── calls handler(&mut CommandContext)
        │
@@ -65,6 +66,7 @@ A third path exists: if the client types a command that is **not in its local co
 | `CommandBuilder`  | `commands/mod.rs`    | Fluent API to define and register commands           |
 | `CommandContext`  | `commands/mod.rs`    | Passed to every handler — ECS world access + helpers |
 | `ArgParser`       | `commands/parser.rs` | Trait: parse one string token into a typed value     |
+| `ParseContext`    | `commands/parser.rs` | Executor entity + world handed to `parse_in`         |
 | `CommandQueue`    | `commands/mod.rs`    | ECS resource — FIFO queue of pending commands        |
 | `PacketEvent<T>`  | `network.rs`         | Bevy ECS event wrapping a decoded serverbound packet |
 
@@ -145,64 +147,151 @@ pub struct CommandContext<'a> {
 | `player_name()`         | `Option<String>` | Get the sender's player name                     |
 | `is_operator()`         | `bool`           | Check if the sender has the `Operator` component |
 
-## Argument Parsers
+## Argument Types
 
-Built-in parsers that implement the `ArgParser` trait:
+Every argument is an `Arc<dyn ArgParser>`. Each parser declares the vanilla
+Brigadier parser the client should use (so the client validates and colours
+the token locally), how many whitespace tokens it consumes, and the typed value
+the handler reads back with `ctx.get::<T>(name)`.
 
-| Parser | Parsed Type | Protocol Hint | Description |
+| Parser | `ctx.get::<T>` | Client parser | Accepts |
 |---|---|---|---|
-| `StringArg::single_word()` | `String` | `SingleWord` | Single whitespace-delimited word |
-| `StringArg::quotable()` | `String` | `QuotablePhrase` | Quoted or single word |
-| `StringArg::greedy()` | `String` | `GreedyPhrase` | All remaining input |
-| `IntegerArg::new(min, max)` | `i32` | `Integer { min, max }` | Bounded integer |
-| `IntegerArg::unbounded()` | `i32` | `Integer` | Unbounded integer |
-| `LongArg::new(min, max)` | `i64` | `Long { min, max }` | Bounded long integer |
-| `LongArg::unbounded()` | `i64` | `Long` | Unbounded long |
-| `FloatArg::new(min, max)` | `f32` | `Float { min, max }` | Bounded float |
-| `FloatArg::unbounded()` | `f32` | `Float` | Unbounded float |
-| `DoubleArg::new(min, max)` | `f64` | `Double { min, max }` | Bounded double |
-| `DoubleArg::unbounded()` | `f64` | `Double` | Unbounded double |
-| `Vec3Arg` | `[f64; 3]` | `Vec3` | Three-dimensional `x y z` coordinates |
-| `BoolArg` | `bool` | `Bool` | Accepts `true/false/yes/no/1/0` |
-| `GreedyStringArg` | `String` | `GreedyPhrase` | All remaining input as text |
-| `GameProfileArg` | `String` | `GameProfile` | Player name with tab-completion (`minecraft:ask_server`) |
-| `EntityArg::single_player()` | `String` | `Entity { single, players_only }` | Entity selector |
-| `ResourceLocationArg` | `String` | `ResourceLocation` | Namespaced identifier such as `minecraft:zombie` |
-| `SummonableEntityArg` | `String` | `ResourceLocation` | Entity identifier with client suggestions from `minecraft:summonable_entities` |
-| `MessageArg` | `String` | `Message` | Chat message argument |
+| `StringArg::single_word()` | `String` | `brigadier:string` (single word) | One word |
+| `StringArg::quotable()` | `String` | `brigadier:string` (quotable) | One word or a quoted phrase |
+| `StringArg::greedy()` / `GreedyStringArg` | `String` | `brigadier:string` (greedy) | The rest of the line |
+| `BoolArg` | `bool` | `brigadier:bool` | `true/false/yes/no/1/0` |
+| `IntegerArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i32` | `brigadier:integer` + bounds | Bounded integer |
+| `LongArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i64` | `brigadier:long` + bounds | Bounded long |
+| `FloatArg::new(min, max)` / `::min(min)` / `::unbounded()` | `f32` | `brigadier:float` + bounds | Bounded float |
+| `DoubleArg::new(min, max)` / `::min(min)` / `::unbounded()` | `f64` | `brigadier:double` + bounds | Bounded double |
+| `Vec3Arg` | `[f64; 3]` | `minecraft:vec3` | `x y z` with `~` and `^` forms (3 tokens) |
+| `BlockPosArg` | `[i32; 3]` | `minecraft:block_pos` | Integer `x y z` with `~` and `^` forms (3 tokens) |
+| `PlayerArg` | `Entity` | `minecraft:entity` (single, players) | `@s`, `@p`, `@r` or a player name |
+| `PlayersArg` | `Vec<Entity>` | `minecraft:entity` (players) | `@a`, `@s`, `@p`, `@r` or a player name |
+| `GameProfileArg` | `String` | `minecraft:game_profile` | A player name, completed from the server |
+| `EntityArg` | `String` | `minecraft:entity` | Raw selector text, not resolved |
+| `ItemArg` | `ItemId` | `minecraft:item_stack` | `minecraft:stone` or `stone` |
+| `BlockArg` | `i32` (default block-state id) | `minecraft:block_state` | `minecraft:stone` or `stone` |
+| `ColorArg` | `String` | `minecraft:color` | One of the 16 vanilla colour names or `reset` |
+| `GameModeArg` | `GameMode` | `minecraft:gamemode` | `survival`, `creative`, `adventure`, `spectator` or `0`-`3` |
+| `DimensionArg` | `DimensionId` | `minecraft:dimension` | `minecraft:overworld`, `the_nether`, `the_end` |
+| `TimeArg::new(min)` / `::non_negative()` | `i32` ticks | `minecraft:time` + min | `20`, `20t`, `1.5s`, `2d` |
+| `UuidArg` | `uuid::Uuid` | `minecraft:uuid` | Hyphenated or plain hex UUID |
+| `EnumArg::new([(name, value), ..])` | `T` | `brigadier:string` + `ask_server` | One of the declared names |
+| `ResourceLocationArg` | `String` | `minecraft:resource_location` | `namespace:path` |
+| `SummonableEntityArg` | `String` | `minecraft:resource_location` + `summonable_entities` | Entity type id |
+| `MessageArg` | `String` | `minecraft:message` | Chat message |
+
+Parser ids and property encodings follow the 26.1.2
+`minecraft:command_argument_type` registry; a wrong id disconnects the client
+on join, so `voidmc_protocol::clientbound::commands::Parser` is byte-tested
+against Paper.
+
+### Coordinates
+
+`Vec3Arg` and `BlockPosArg` resolve against the executor when the handler runs:
+
+- `10 64 -3` — absolute (`BlockPosArg` requires integers here);
+- `~ ~1 ~-2` — relative to the executor's `Position`;
+- `^ ^ ^2` — local to the executor's look direction (`left up forward`);
+  all three coordinates must be local, mixing is rejected.
+
+`BlockPosArg` floors the resolved position. Absolute integers are **not**
+centred (`/tp 10 64 10` goes to `10.0, 64.0, 10.0`, where vanilla centres x
+and z to `10.5, 64.0, 10.5`).
+
+```rust
+CommandBuilder::new("setblock")
+    .arg("pos", Arc::new(BlockPosArg))
+    .arg("block", Arc::new(BlockArg))
+    .handler(|ctx| {
+        let [x, y, z] = *ctx.get::<[i32; 3]>("pos").unwrap();
+        let state = *ctx.get::<i32>("block").unwrap();
+        ctx.reply(&format!("{state} at {x} {y} {z}"));
+    })
+```
+
+### Player selectors
+
+`PlayerArg` / `PlayersArg` parse the selector and resolve it to ready player
+entities before the handler runs, so a missing player is a parse error with
+the usual red message and usage line:
+
+| Selector | `PlayerArg` | `PlayersArg` |
+|---|---|---|
+| `Name` (case-insensitive) | that player | `[that player]` |
+| `@s` | the executor | `[executor]` |
+| `@p` | nearest ready player to the executor (including itself) | `[nearest]` |
+| `@r` | a random ready player | `[random]` |
+| `@a` | rejected (several players) | every ready player |
+
+Selector arguments (`@a[distance=..3]`) and `@e` are not supported.
+
+```rust
+CommandBuilder::new("heal")
+    .arg("targets", Arc::new(PlayersArg))
+    .handler(|ctx| {
+        let targets = ctx.get::<Vec<Entity>>("targets").unwrap().clone();
+        ctx.reply(&format!("Healed {} player(s)", targets.len()));
+    })
+```
+
+### Enumerations
+
+`EnumArg` maps a fixed set of names to values of any `Clone + Send + Sync`
+type. The usage line shows the variants (`<team:red|blue>`) and the client asks
+the server for completions:
+
+```rust
+#[derive(Clone, Copy)]
+enum Team { Red, Blue }
+
+CommandBuilder::new("team")
+    .arg("team", EnumArg::new([("red", Team::Red), ("blue", Team::Blue)]))
+    .handler(|ctx| {
+        let team = *ctx.get::<Team>("team").unwrap();
+        // ...
+    })
+```
 
 ## Custom ArgParser
 
-Implement the `ArgParser` trait to create custom argument types:
+Implement the `ArgParser` trait to create custom argument types. Override
+`parse_in` instead of `parse` when the value depends on the executor, and
+return `minecraft:ask_server` from `suggestions_type` to have the client ask
+the server for completions (`suggestions` then runs with the partial token):
 
 ```rust
 use std::any::Any;
-use voidmc::ArgParser;
-use voidmc_protocol::clientbound::commands::Parser;
+use voidmc::{ArgParser, ParseContext};
+use voidmc_protocol::clientbound::commands::{Parser, StringType};
 
-pub struct ColorArg;
+pub struct WarpArg;
 
-impl ArgParser for ColorArg {
-    fn type_name(&self) -> &str { "color" }
+impl ArgParser for WarpArg {
+    fn type_name(&self) -> &str { "warp" }
 
     fn parse(&self, input: &str) -> Result<Box<dyn Any + Send + Sync>, String> {
         match input {
-            "red" | "green" | "blue" | "white" => Ok(Box::new(input.to_string())),
-            _ => Err(format!("'{}' is not a valid color", input)),
+            "spawn" | "arena" => Ok(Box::new(input.to_string())),
+            _ => Err(format!("'{}' is not a known warp", input)),
         }
     }
 
     fn protocol_parser(&self) -> Option<Parser> {
-        Some(Parser::String(voidmc_protocol::clientbound::commands::StringType::SingleWord))
+        Some(Parser::String(StringType::SingleWord))
     }
 
-    // Optional: provide tab-completion suggestions
     fn suggestions(&self, partial: &str, _world: &bevy_ecs::world::World) -> Vec<String> {
-        ["red", "green", "blue", "white"]
+        ["spawn", "arena"]
             .iter()
             .filter(|c| c.starts_with(partial))
             .map(|c| c.to_string())
             .collect()
+    }
+
+    fn suggestions_type(&self) -> Option<&str> {
+        Some("minecraft:ask_server")
     }
 }
 ```
@@ -212,7 +301,8 @@ impl ArgParser for ColorArg {
 Flags are parsed in a pre-pass before positional arguments:
 
 - `--flag` — Boolean flag (sets to `true`)
-- `--flag value` — Value flag (parsed with the flag's `ArgParser`)
+- `--flag value` — Single-token value flag (parsed with the flag's
+  `ArgParser::parse_in`, so `PlayerArg` selectors like `@s` work as flag values)
 - `-f` — Short boolean flag
 - `-f value` — Short value flag (must be standalone, not combined)
 - `--` — Stop flag parsing; everything after is positional
@@ -245,13 +335,13 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | Command | Aliases | Description | Arguments |
 |---|---|---|---|
 | `/help` | | List commands or show command details | `[command:string]` |
-| `/gamemode` | `/gm` | Change game mode | `<mode:integer(0..3)>` |
-| `/kick` | | Kick a player | `<player:player> [reason:text]...` |
+| `/gamemode` | `/gm` | Change game mode | `<mode:gamemode>` |
+| `/kick` | | Kick a player | `<player:player> [reason:text]...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/ping` | | Pong! | (none) |
 | `/plugins` | `/pl` | List loaded plugins | (none) |
-| `/tp` | | Teleport to coordinates | `<x:double> <y:double> <z:double>` |
+| `/tp` | | Teleport to coordinates | `<position:vec3>` (`~` and `^` forms) |
 | `/broadcast` | | Broadcast to all players | `<message:text>...` |
-| `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` |
+| `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/list` | | Show online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
 | `/summon` | | Spawn a non-player entity | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]` |
@@ -317,9 +407,16 @@ stay local to `void-example`.
 The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to clients during the configuration phase. This provides:
 
 - Command name completion (typing `/` shows all commands)
-- Argument type hints (integers, strings, players, etc.)
+- Client-side validation and completion for every vanilla parser in the table
+  above (numbers with bounds, coordinates, selectors, items, blocks, colours,
+  game modes, dimensions, times, UUIDs)
 - Long and short flag suggestions after the command's required arguments
-- Player name suggestions for `GameProfileArg` arguments (via `minecraft:ask_server`)
+- Server-side completion through `minecraft:ask_server`: the client sends
+  `CommandSuggestionsRequest` with the whole line, `CommandRegistry::complete`
+  finds the argument under the cursor (skipping flags and their values) and
+  calls its parser's `suggestions`, and the reply is a
+  `CommandSuggestionsResponse` covering just the partial token. `GameProfileArg`
+  (ready player names) and `EnumArg` (variant names) use it out of the box.
 - Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
 - Alias support (aliases appear as separate entries pointing to the same argument chain)
 
