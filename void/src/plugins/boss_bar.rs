@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
-use ussr_nbt::owned::{Nbt, Tag};
+use ussr_nbt::owned::Nbt;
 use uuid::Uuid;
 use voidmc_protocol::clientbound::{BossEvent, BossEventAction};
 
@@ -97,10 +97,7 @@ impl BossBar {
     }
 
     fn title_nbt(&self) -> Nbt {
-        Nbt {
-            name: "".into(),
-            compound: vec![("text".into(), Tag::String(self.title.as_str().into()))].into(),
-        }
+        crate::messages::plain_text_component(&self.title)
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -271,6 +268,12 @@ mod tests {
     use crate::components::{ClientId, PlayerDimension, PlayerReady};
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
     use crate::world::DimensionId;
+
+    #[test]
+    fn oversized_title_round_trips_below_the_nbt_limit() {
+        let text = "😀".repeat(11000);
+        crate::messages::assert_guarded(&BossBar::new(text.clone()).title_nbt(), &text);
+    }
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();

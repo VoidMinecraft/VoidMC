@@ -296,8 +296,14 @@ impl Players<'_, '_> {
         packet: impl Into<ClientboundPacket>,
     ) {
         let packet = packet.into();
+        let mut pending: Option<Entity> = None;
         for entity in entities {
-            self.send(entity, packet.clone());
+            if let Some(previous) = pending.replace(entity) {
+                self.send(previous, packet.clone());
+            }
+        }
+        if let Some(last) = pending {
+            self.send(last, packet);
         }
     }
 
@@ -366,8 +372,14 @@ impl<'w> WorldPlayers<'w> {
         packet: impl Into<ClientboundPacket>,
     ) {
         let packet = packet.into();
+        let mut pending: Option<Entity> = None;
         for entity in entities {
-            self.send(entity, packet.clone());
+            if let Some(previous) = pending.replace(entity) {
+                self.send(previous, packet.clone());
+            }
+        }
+        if let Some(last) = pending {
+            self.send(last, packet);
         }
     }
 
@@ -704,6 +716,28 @@ mod tests {
         app.insert_resource(ClientSenders::new(connected_rx));
         app.insert_non_send_resource(_connected_tx);
         kick_rx
+    }
+
+    #[test]
+    fn send_to_delivers_once_per_recipient_for_any_list_length() {
+        let (mut app, rx) = test_app();
+        let a = app.world_mut().spawn(ClientId(1)).id();
+        let b = app.world_mut().spawn(ClientId(2)).id();
+        let c = app.world_mut().spawn(ClientId(3)).id();
+        app.add_systems(Update, move |players: Players| {
+            players.send_to([], keep_alive(0));
+            players.send_to([a], keep_alive(1));
+            players.send_to([a, b, c], keep_alive(2));
+        });
+        app.update();
+        WorldPlayers::new(app.world()).send_to([], keep_alive(0));
+        WorldPlayers::new(app.world()).send_to([c], keep_alive(3));
+        WorldPlayers::new(app.world()).send_to([b, a], keep_alive(4));
+
+        assert_eq!(
+            drain(&rx),
+            vec![(1, 1), (1, 2), (2, 2), (3, 2), (3, 3), (2, 4), (1, 4)]
+        );
     }
 
     #[test]

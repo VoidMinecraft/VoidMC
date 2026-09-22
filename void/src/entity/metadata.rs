@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy_app::{App, PostUpdate};
 use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
-use ussr_nbt::owned::{Nbt, Tag};
+use ussr_nbt::owned::Nbt;
 use voidmc_protocol::clientbound::entity_metadata::{
     display_index, end_crystal_index, entity_flag, entity_index, item_entity_index,
     text_display_flag,
@@ -82,10 +82,7 @@ impl EntityMetadata {
 }
 
 pub fn text_component(text: &str) -> Nbt {
-    Nbt {
-        name: "".into(),
-        compound: vec![("text".into(), Tag::String(text.into()))].into(),
-    }
+    crate::messages::plain_text_component(text)
 }
 
 pub trait MetadataSource: Component {
@@ -691,6 +688,12 @@ mod tests {
     use crate::entity::{EntityBuilder, EntityKind, EntityPlugin};
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
     use crate::world::{ChunkPos, DimensionId};
+
+    #[test]
+    fn oversized_custom_name_round_trips_below_the_nbt_limit() {
+        let text = "😀".repeat(11000);
+        crate::messages::assert_guarded(&text_component(&text), &text);
+    }
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
