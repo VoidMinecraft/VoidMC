@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::{Component, World};
 use voidmc::{
-    Command, CommandBuilder, CommandContext, IntegerArg, StringArg, TICKS_PER_DAY, Weather,
-    WeatherKind, WorldTime,
+    Command, CommandBuilder, CommandContext, GameTime, IntegerArg, StringArg, TICKS_PER_DAY,
+    Weather, WeatherKind, WorldTime,
 };
 
 #[derive(Component)]
@@ -35,6 +35,7 @@ fn handle_time(ctx: &mut CommandContext) {
     let action = ctx.get::<String>("action").cloned().unwrap_or_default();
     let value = ctx.get::<String>("value").cloned();
     let outcome = ctx.with_world_mut(|world| {
+        let game_time = world.resource::<GameTime>().0;
         let mut query =
             world.query_filtered::<&mut WorldTime, bevy_ecs::prelude::With<WorldEnvironment>>();
         let Ok(mut time) = query.single_mut(world) else {
@@ -70,7 +71,7 @@ fn handle_time(ctx: &mut CommandContext) {
                 Ok("Time resumed.".to_string())
             }
             "query" => Ok(format!(
-                "Day {} at {} ({}), age {}.",
+                "Day {} at {} ({}), game time {}.",
                 time.time_of_day.div_euclid(TICKS_PER_DAY),
                 time.day_time(),
                 if time.is_frozen() {
@@ -78,7 +79,7 @@ fn handle_time(ctx: &mut CommandContext) {
                 } else {
                     "running"
                 },
-                time.age
+                game_time
             )),
             _ => Err("Usage: /time <set|add|freeze|resume|query> [value]".to_string()),
         }

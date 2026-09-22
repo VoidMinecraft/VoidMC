@@ -24,22 +24,27 @@ fn setup(mut commands: Commands) {
 
 | Field | Type | Default |
 |---|---|---|
-| `age` | `i64` — the level's game time, always advancing | `0` |
 | `time_of_day` | `i64` — unbounded, like vanilla; `day_time()` gives `0..24000` | `0` |
-| `frozen` | `bool` — pauses `time_of_day` (not `age`) | `false` |
+| `frozen` | `bool` — pauses `time_of_day` | `false` |
 | `clock` | `WorldClock` (`Overworld`, `End`) — which synced world clock the packet addresses | `Overworld` |
 | `audience` | [`Audience`](../server/sending-packets.md#audiences) | `Audience::All` |
 
-Builders: `.age()`, `.time_of_day()`, `.frozen()`, `.clock()`, `.audience()`,
+Builders: `.time_of_day()`, `.frozen()`, `.clock()`, `.audience()`,
 `.viewers([..])`. Mutators: `set(ticks)`, `add(ticks)`, `freeze()`,
 `resume()`, `is_frozen()`, `day_time()`. Assigning the fields directly works
 too.
 
+The game time of every packet comes from the `GameTime` resource — one
+server-wide tick counter the plugin advances every tick — so a client moving
+between clocks (a personal override over the world clock) keeps one monotonic
+timeline for animation phases. Read it with `Res<GameTime>`; setting it is
+allowed but not detected as a change, the next Set Time packet carries it.
+
 ### What gets sent
 
-The server clock advances `time_of_day` by one each tick unless frozen, and
-`age` every tick. The natural advance bypasses change detection, so
-`Changed<WorldTime>` only fires on your own edits.
+The server clock advances `time_of_day` by one each tick unless frozen. The
+natural advance bypasses change detection, so `Changed<WorldTime>` only fires
+on your own edits.
 
 A Set Time packet (game time + one `ClockNetworkState` for `clock`: total
 ticks, partial tick `0`, rate `1.0` running / `0.0` frozen) goes out:
@@ -56,7 +61,9 @@ component removal, is sent the same time with rate `1.0` so the client clock
 runs again. Leaving a running clock sends nothing.
 
 `WorldClock::registry_id()` resolves `minecraft:overworld` / `minecraft:the_end`
-through the synced `minecraft:world_clock` registry shipped by `voidmc_data`.
+through the `minecraft:world_clock` registry of `voidmc_data`, not through
+the `RegistryDataStore` actually sent to clients: if you edit the store's
+`minecraft:world_clock` entries the holder ids no longer match, as with biomes.
 Overworld-type dimensions read the overworld clock, the End reads its own.
 
 ## Weather
@@ -95,9 +102,11 @@ Weather is Game Event packets: Begin Raining (1) / End Raining (2) when the
 raining flag (`kind != Clear`) flips, Rain Level Change (7) and Thunder Level
 Change (8) with the float level. Per tick, viewers receive only the events
 whose value changed; on a flag flip both levels are resent, as vanilla does.
-With a `transition`, each level moves by `1 / transition` per tick and each
-step is one packet, so a vanilla-like fade of 100 ticks costs 100 small
-packets per viewer.
+With a `transition`, each level moves linearly from where it was to its target
+over exactly `transition` ticks (an elapsed-tick counter, no float drift) and
+each step is one packet, so a vanilla-like fade of 100 ticks costs exactly 100
+small packets per viewer, the last one landing on the target. Changing `kind`
+mid-transition restarts the ramp from the current on-wire levels.
 
 A viewer joining the audience always receives the full state — the flag event
 and both levels, even for clear weather — so it lands on this component's
@@ -105,18 +114,30 @@ state whatever it was shown before. A viewer leaving the audience, or losing
 the component to a despawn or removal, is reset to clear (End Raining, both
 levels `0`) when the last synced state was not already clear.
 
-## Precedence: last synced wins
+## Precedence: explicit viewers win
 
 Several components may cover the same player: a per-dimension clock plus a
 personal one with `.viewers([player])`, world rain plus a personal clear sky.
-The client keeps whatever it received last. To make that predictable:
+A component with an explicit audience (`Audience::Explicit`, i.e.
+`.viewers([..])`) claims its ready members: every non-explicit component
+(`All`, `InDimension`, `Custom`) leaves them out of its viewers for as long as
+the override covers them. A running world clock therefore never touches a
+player who has a personal frozen clock, and changing or ramping the world
+weather never reaches a player with a personal sky. Spawn order does not
+matter.
 
-- spawn the override after the world-level component, or accept that the
-  same-tick order follows query order;
-- when an override goes away (despawn, removal, or the player leaving its
-  audience), the other components that cover the player forget them and
-  re-send their full state on the next tick, so the world-level state
-  reapplies without any resync code on your side.
+- On hand-over to an override the world-level component sends nothing; the
+  override sends its full state.
+- When the override goes away (despawn, removal, the player leaving its
+  explicit set or going not-ready), it sends its usual reset (rate `1.0` for
+  a frozen clock, End + levels `0` for weather), and the world-level component
+  sees the player as newly joined and re-sends its full state, on the same
+  tick when the audience changed and on the next tick after a despawn. No
+  resync code on your side.
+- Among components of the same kind — two `All` clocks, or two explicit
+  overrides over the same player — the client keeps whatever it received
+  last (query order), and a component the player leaves makes the others
+  covering them re-send their full state on the next tick.
 
 ## Example commands
 

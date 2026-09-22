@@ -10,7 +10,7 @@ use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::{GameEvent, GameEventType};
 
-use super::viewers::desired_viewers;
+use super::viewers::{claimed, desired_viewers};
 use crate::players::{Audience, Players};
 use crate::schedule::VoidSystems;
 
@@ -131,14 +131,6 @@ impl Weather {
     pub fn is_raining(&self) -> bool {
         self.kind.raining()
     }
-
-    fn step(&self) -> f32 {
-        if self.transition == 0 {
-            1.0
-        } else {
-            1.0 / self.transition as f32
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -149,13 +141,24 @@ struct Levels {
 }
 
 impl Levels {
-    fn approach(self, weather: &Weather) -> Self {
-        let (rain, thunder) = weather.kind.levels();
-        let step = weather.step();
+    fn of(kind: WeatherKind) -> Self {
+        let (rain, thunder) = kind.levels();
         Self {
-            raining: weather.kind.raining(),
-            rain: approach(self.rain, rain, step),
-            thunder: approach(self.thunder, thunder, step),
+            raining: kind.raining(),
+            rain,
+            thunder,
+        }
+    }
+
+    fn towards(self, target: Self, elapsed: u32, transition: u32) -> Self {
+        if elapsed >= transition {
+            return target;
+        }
+        let t = elapsed as f32 / transition as f32;
+        Self {
+            raining: target.raining,
+            rain: self.rain + (target.rain - self.rain) * t,
+            thunder: self.thunder + (target.thunder - self.thunder) * t,
         }
     }
 
@@ -206,22 +209,28 @@ impl Levels {
     }
 }
 
-fn approach(current: f32, target: f32, step: f32) -> f32 {
-    let delta = target - current;
-    if delta.abs() <= step {
-        target
-    } else {
-        current + step.copysign(delta)
-    }
-}
-
 #[derive(Component, Debug, Default)]
 pub struct WeatherState {
     sent: Option<Levels>,
+    target: Levels,
+    from: Levels,
+    elapsed: u32,
     viewers: HashSet<Entity>,
 }
 
 impl WeatherState {
+    fn next(&mut self, weather: &Weather) -> Levels {
+        let current = self.sent.unwrap_or_default();
+        let target = Levels::of(weather.kind);
+        if self.sent.is_none() || target != self.target {
+            self.target = target;
+            self.from = current;
+            self.elapsed = 0;
+        }
+        self.elapsed = self.elapsed.saturating_add(1).min(weather.transition);
+        self.from.towards(target, self.elapsed, weather.transition)
+    }
+
     pub fn viewers(&self) -> impl Iterator<Item = Entity> + '_ {
         self.viewers.iter().copied()
     }
@@ -245,47 +254,63 @@ impl Plugin for WeatherPlugin {
 
 fn sync_weather(players: Players, mut weathers: Query<(&Weather, &mut WeatherState)>) {
     let ready = players.ready();
-    let mut released = Vec::new();
-    for (weather, mut state) in weathers.iter_mut() {
-        let current = state.sent.unwrap_or_default();
-        let next = current.approach(weather);
-        let desired = desired_viewers(&ready, &weather.audience, &state.viewers);
+    let claimed = claimed(
+        &ready,
+        weathers.iter().map(|(weather, _)| &weather.audience),
+    );
+    for explicit in [true, false] {
+        let mut released = Vec::new();
+        let pass = weathers
+            .iter_mut()
+            .filter(|(weather, _)| matches!(weather.audience, Audience::Explicit(_)) == explicit);
+        for (weather, mut state) in pass {
+            let current = state.sent.unwrap_or_default();
+            let next = state.next(weather);
+            let desired = desired_viewers(&ready, &weather.audience, &state.viewers, &claimed);
 
-        if let Some(desired) = &desired {
-            let reset = current.reset();
-            for gone in state.viewers.difference(desired) {
-                for event in &reset {
-                    players.send(*gone, event.clone());
-                }
-                released.push(*gone);
-            }
-        }
-
-        let events = current.diff_to(next);
-        if !events.is_empty() {
-            let kept = state
-                .viewers
-                .iter()
-                .copied()
-                .filter(|viewer| desired.as_ref().is_none_or(|d| d.contains(viewer)));
-            let kept: Vec<Entity> = kept.collect();
-            for event in events {
-                players.send_to(kept.iter().copied(), event);
-            }
-        }
-        state.sent = Some(next);
-
-        if let Some(desired) = desired {
-            let full = next.full();
-            for joined in desired.difference(&state.viewers) {
-                for event in &full {
-                    players.send(*joined, event.clone());
+            if let Some(desired) = &desired {
+                let reset = current.reset();
+                for gone in state.viewers.difference(desired) {
+                    if !explicit && claimed.contains(gone) {
+                        continue;
+                    }
+                    for event in &reset {
+                        players.send(*gone, event.clone());
+                    }
+                    released.push(*gone);
                 }
             }
-            state.viewers = desired;
+
+            let events = current.diff_to(next);
+            if !events.is_empty() {
+                let kept = state
+                    .viewers
+                    .iter()
+                    .copied()
+                    .filter(|viewer| desired.as_ref().is_none_or(|d| d.contains(viewer)));
+                let kept: Vec<Entity> = kept.collect();
+                for event in events {
+                    players.send_to(kept.iter().copied(), event);
+                }
+            }
+            state.sent = Some(next);
+
+            if let Some(desired) = desired {
+                let full = next.full();
+                for joined in desired.difference(&state.viewers) {
+                    for event in &full {
+                        players.send(*joined, event.clone());
+                    }
+                }
+                state.viewers = desired;
+            }
         }
+        let peers = weathers
+            .iter_mut()
+            .filter(|(weather, _)| matches!(weather.audience, Audience::Explicit(_)) == explicit)
+            .map(|(_, state)| state);
+        forget(&released, peers);
     }
-    forget(&released, weathers.iter_mut().map(|(_, state)| state));
 }
 
 fn forget<'a>(released: &[Entity], states: impl Iterator<Item = Mut<'a, WeatherState>>) {
@@ -428,9 +453,44 @@ mod tests {
             Audience::Explicit(_)
         ));
         assert_eq!(Weather::default().kind, WeatherKind::Clear);
-        assert_eq!(approach(0.0, 1.0, 0.25), 0.25);
-        assert_eq!(approach(0.9, 1.0, 0.25), 1.0);
-        assert_eq!(approach(1.0, 0.0, 0.25), 0.75);
+    }
+
+    #[test]
+    fn transition_of_n_ticks_sends_exactly_n_level_steps_ending_on_target() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let weather = app.world_mut().spawn(Weather::rain().transition(100)).id();
+        let mut levels = Vec::new();
+        for _ in 0..120 {
+            app.update();
+            levels.extend(drain(&rx).into_iter().filter_map(|sent| match sent {
+                Sent::Rain(1, level) => Some(level),
+                _ => None,
+            }));
+        }
+        assert_eq!(levels.len(), 100);
+        assert_eq!(*levels.last().unwrap(), 1.0);
+        assert!(levels.windows(2).all(|w| w[0] < w[1]), "{levels:?}");
+        assert_eq!(
+            app.world().get::<WeatherState>(weather).unwrap().levels(),
+            (1.0, 0.0)
+        );
+
+        app.world_mut()
+            .get_mut::<Weather>(weather)
+            .unwrap()
+            .set_clear();
+        let mut levels = Vec::new();
+        for _ in 0..120 {
+            app.update();
+            levels.extend(drain(&rx).into_iter().filter_map(|sent| match sent {
+                Sent::Rain(1, level) => Some(level),
+                _ => None,
+            }));
+        }
+        assert_eq!(levels.len(), 100);
+        assert_eq!(*levels.last().unwrap(), 0.0);
+        assert!(levels.windows(2).all(|w| w[0] > w[1]), "{levels:?}");
     }
 
     #[test]
@@ -617,6 +677,58 @@ mod tests {
         assert!(drain(&rx).is_empty());
         app.update();
         assert_eq!(drain(&rx), full(1, true, 1.0, 0.0));
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn personal_clear_sky_is_not_clobbered_by_changing_world_weather() {
+        let (mut app, rx) = test_app();
+        let vip = player(&mut app, 1);
+        player(&mut app, 2);
+        let world = app.world_mut().spawn(Weather::clear()).id();
+        app.update();
+        drain(&rx);
+
+        let personal = app.world_mut().spawn(Weather::clear().viewers([vip])).id();
+        app.update();
+        assert_eq!(drain(&rx), full(1, false, 0.0, 0.0));
+        assert!(
+            !app.world()
+                .get::<WeatherState>(world)
+                .unwrap()
+                .viewers
+                .contains(&vip)
+        );
+
+        app.world_mut()
+            .get_mut::<Weather>(world)
+            .unwrap()
+            .set_thunder();
+        app.world_mut()
+            .get_mut::<Weather>(world)
+            .unwrap()
+            .transition = 10;
+        let mut to_vip = Vec::new();
+        let mut to_other = 0;
+        for _ in 0..40 {
+            app.update();
+            for sent in drain(&rx) {
+                match sent {
+                    Sent::Begin(1) | Sent::End(1) | Sent::Rain(1, _) | Sent::Thunder(1, _) => {
+                        to_vip.push(sent)
+                    }
+                    _ => to_other += 1,
+                }
+            }
+        }
+        assert!(to_vip.is_empty(), "{to_vip:?}");
+        assert_eq!(to_other, 21);
+
+        app.world_mut().despawn(personal);
+        assert!(drain(&rx).is_empty());
+        app.update();
+        assert_eq!(drain(&rx), full(1, true, 1.0, 1.0));
         app.update();
         assert!(drain(&rx).is_empty());
     }

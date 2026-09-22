@@ -11,7 +11,7 @@ use bevy_ecs::prelude::*;
 use voidmc_data::Version;
 use voidmc_protocol::clientbound::{ClockUpdate, SetTime};
 
-use super::viewers::desired_viewers;
+use super::viewers::{claimed, desired_viewers};
 use crate::players::{Audience, Players};
 use crate::schedule::VoidSystems;
 
@@ -41,10 +41,14 @@ impl WorldClock {
     }
 }
 
+/// Ticks since the server started, sent as the game time of every Set Time
+/// packet so all clocks a client sees share one monotonic timeline.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GameTime(pub i64);
+
 #[derive(Component, Clone, Debug)]
 #[require(WorldTimeState)]
 pub struct WorldTime {
-    pub age: i64,
     pub time_of_day: i64,
     pub frozen: bool,
     pub clock: WorldClock,
@@ -60,17 +64,11 @@ impl Default for WorldTime {
 impl WorldTime {
     pub fn new() -> Self {
         Self {
-            age: 0,
             time_of_day: 0,
             frozen: false,
             clock: WorldClock::Overworld,
             audience: Audience::All,
         }
-    }
-
-    pub fn age(mut self, age: i64) -> Self {
-        self.age = age;
-        self
     }
 
     pub fn time_of_day(mut self, time_of_day: i64) -> Self {
@@ -121,9 +119,9 @@ impl WorldTime {
         self.time_of_day.rem_euclid(TICKS_PER_DAY)
     }
 
-    fn packet(&self, running: bool) -> SetTime {
+    fn packet(&self, game_time: GameTime, running: bool) -> SetTime {
         SetTime {
-            game_time: self.age,
+            game_time: game_time.0,
             clocks: vec![ClockUpdate {
                 clock: self.clock.registry_id(),
                 total_ticks: self.time_of_day,
@@ -158,67 +156,94 @@ pub struct WorldTimePlugin;
 
 impl Plugin for WorldTimePlugin {
     fn build(&self, app: &mut App) {
-        app.add_observer(release_on_remove).add_systems(
-            PostUpdate,
-            sync_world_time.in_set(VoidSystems::WorldTimeSync),
-        );
+        app.init_resource::<GameTime>()
+            .add_observer(release_on_remove)
+            .add_systems(
+                PostUpdate,
+                (sync_world_time, advance_game_time)
+                    .chain()
+                    .in_set(VoidSystems::WorldTimeSync),
+            );
     }
 }
 
-fn sync_world_time(players: Players, mut clocks: Query<(&mut WorldTime, &mut WorldTimeState)>) {
+fn sync_world_time(
+    players: Players,
+    game_time: Res<GameTime>,
+    mut clocks: Query<(&mut WorldTime, &mut WorldTimeState)>,
+) {
     let ready = players.ready();
-    let mut released = Vec::new();
-    for (mut time, mut state) in clocks.iter_mut() {
-        let changed = match &state.sent {
-            Some(sent) => {
-                time.time_of_day != state.expected
-                    || time.frozen != sent.frozen
-                    || time.clock != sent.clock
-            }
-            None => true,
-        };
-
-        let desired = desired_viewers(&ready, &time.audience, &state.viewers);
-        if let Some(desired) = &desired {
-            let was_frozen = state.sent.is_some_and(|sent| sent.frozen);
-            for gone in state.viewers.difference(desired) {
-                if was_frozen {
-                    players.send(*gone, time.packet(true));
+    let game_time = *game_time;
+    let claimed = claimed(&ready, clocks.iter().map(|(time, _)| &time.audience));
+    for explicit in [true, false] {
+        let mut released = Vec::new();
+        let pass = clocks
+            .iter_mut()
+            .filter(|(time, _)| matches!(time.audience, Audience::Explicit(_)) == explicit);
+        for (mut time, mut state) in pass {
+            let changed = match &state.sent {
+                Some(sent) => {
+                    time.time_of_day != state.expected
+                        || time.frozen != sent.frozen
+                        || time.clock != sent.clock
                 }
-                released.push(*gone);
+                None => true,
+            };
+
+            let desired = desired_viewers(&ready, &time.audience, &state.viewers, &claimed);
+            if let Some(desired) = &desired {
+                let was_frozen = state.sent.is_some_and(|sent| sent.frozen);
+                for gone in state.viewers.difference(desired) {
+                    if !explicit && claimed.contains(gone) {
+                        continue;
+                    }
+                    if was_frozen {
+                        players.send(*gone, time.packet(game_time, true));
+                    }
+                    released.push(*gone);
+                }
             }
-        }
 
-        state.since_send += 1;
-        let periodic = !time.frozen && state.since_send >= TIME_SYNC_INTERVAL;
-        if changed || periodic {
-            let targets = desired.as_ref().unwrap_or(&state.viewers);
-            players.send_to(targets.iter().copied(), time.packet(!time.frozen));
-            state.sent = Some(Sent {
-                frozen: time.frozen,
-                clock: time.clock,
-            });
-            state.since_send = 0;
-        } else if let Some(desired) = &desired {
-            for joined in desired.difference(&state.viewers) {
-                players.send(*joined, time.packet(!time.frozen));
-            }
-        }
-
-        if let Some(desired) = desired {
-            state.viewers = desired;
-        }
-
-        {
-            let time = time.bypass_change_detection();
-            time.age = time.age.wrapping_add(1);
             if !time.frozen {
-                time.time_of_day = time.time_of_day.wrapping_add(1);
+                state.since_send += 1;
             }
+            let periodic = !time.frozen && state.since_send >= TIME_SYNC_INTERVAL;
+            if changed || periodic {
+                let targets = desired.as_ref().unwrap_or(&state.viewers);
+                players.send_to(
+                    targets.iter().copied(),
+                    time.packet(game_time, !time.frozen),
+                );
+                state.sent = Some(Sent {
+                    frozen: time.frozen,
+                    clock: time.clock,
+                });
+                state.since_send = 0;
+            } else if let Some(desired) = &desired {
+                for joined in desired.difference(&state.viewers) {
+                    players.send(*joined, time.packet(game_time, !time.frozen));
+                }
+            }
+
+            if let Some(desired) = desired {
+                state.viewers = desired;
+            }
+
+            if !time.frozen {
+                time.bypass_change_detection().time_of_day = time.time_of_day.wrapping_add(1);
+            }
+            state.expected = time.time_of_day;
         }
-        state.expected = time.time_of_day;
+        let peers = clocks
+            .iter_mut()
+            .filter(|(time, _)| matches!(time.audience, Audience::Explicit(_)) == explicit)
+            .map(|(_, state)| state);
+        forget(&released, peers);
     }
-    forget(&released, clocks.iter_mut().map(|(_, state)| state));
+}
+
+fn advance_game_time(mut game_time: ResMut<GameTime>) {
+    game_time.0 = game_time.0.wrapping_add(1);
 }
 
 fn forget<'a>(released: &[Entity], states: impl Iterator<Item = Mut<'a, WorldTimeState>>) {
@@ -238,6 +263,7 @@ fn forget<'a>(released: &[Entity], states: impl Iterator<Item = Mut<'a, WorldTim
 fn release_on_remove(
     event: On<Remove, WorldTime>,
     players: Players,
+    game_time: Res<GameTime>,
     times: Query<&WorldTime>,
     mut states: Query<(Entity, &mut WorldTimeState)>,
 ) {
@@ -248,7 +274,7 @@ fn release_on_remove(
         if let (Some(sent), Ok(time)) = (state.sent, times.get(event.entity)) {
             if sent.frozen {
                 for viewer in state.viewers.iter() {
-                    players.send(*viewer, time.packet(true));
+                    players.send(*viewer, time.packet(*game_time, true));
                 }
             }
         }
@@ -338,11 +364,10 @@ mod tests {
 
     #[test]
     fn builder_and_clock_ids() {
-        let time = WorldTime::new().time_of_day(30_000).frozen().age(7);
+        let time = WorldTime::new().time_of_day(30_000).frozen();
         assert_eq!(time.time_of_day, 30_000);
         assert_eq!(time.day_time(), 6_000);
         assert!(time.is_frozen());
-        assert_eq!(time.age, 7);
         assert!(matches!(time.audience, Audience::All));
         assert!(matches!(
             WorldTime::new().viewers([Entity::PLACEHOLDER]).audience,
@@ -386,7 +411,7 @@ mod tests {
         assert_eq!(drain(&rx), vec![sent(1, 20, 6020, 1.0)]);
         let time = app.world().get::<WorldTime>(clock).unwrap();
         assert_eq!(time.time_of_day, 6021);
-        assert_eq!(time.age, 21);
+        assert_eq!(app.world().resource::<GameTime>().0, 21);
     }
 
     #[derive(Resource, Default)]
@@ -465,7 +490,7 @@ mod tests {
             app.world().get::<WorldTime>(clock).unwrap().time_of_day,
             101
         );
-        assert_eq!(app.world().get::<WorldTime>(clock).unwrap().age, 52);
+        assert_eq!(app.world().resource::<GameTime>().0, 52);
 
         app.world_mut()
             .get_mut::<WorldTime>(clock)
@@ -614,15 +639,150 @@ mod tests {
             )
             .id();
         app.update();
-        assert_eq!(drain(&rx), vec![sent(1, 0, 18000, 0.0)]);
+        assert_eq!(drain(&rx), vec![sent(1, 1, 18000, 0.0)]);
         app.update();
         assert!(drain(&rx).is_empty());
 
         app.world_mut().despawn(personal);
-        assert_eq!(drain(&rx), vec![sent(1, 2, 18000, 1.0)]);
+        assert_eq!(drain(&rx), vec![sent(1, 3, 18000, 1.0)]);
         app.update();
         assert_eq!(drain(&rx), vec![sent(1, 3, 1000, 0.0)]);
         app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn personal_frozen_clock_is_not_clobbered_by_the_running_world_clock() {
+        let (mut app, rx) = test_app();
+        let vip = player(&mut app, 1);
+        player(&mut app, 2);
+        let world = app
+            .world_mut()
+            .spawn(WorldTime::new().time_of_day(6000))
+            .id();
+        app.update();
+        drain(&rx);
+
+        let personal = app
+            .world_mut()
+            .spawn(WorldTime::new().time_of_day(18000).frozen().viewers([vip]))
+            .id();
+        app.update();
+        assert_eq!(drain(&rx), vec![sent(1, 1, 18000, 0.0)]);
+        assert!(
+            !app.world()
+                .get::<WorldTimeState>(world)
+                .unwrap()
+                .viewers
+                .contains(&vip)
+        );
+
+        let mut to_vip = Vec::new();
+        for _ in 0..40 {
+            app.update();
+            to_vip.extend(drain(&rx).into_iter().filter(|s| s.client == 1));
+        }
+        assert!(to_vip.is_empty(), "{to_vip:?}");
+
+        app.world_mut()
+            .get_mut::<WorldTime>(world)
+            .unwrap()
+            .set(12000);
+        app.update();
+        assert_eq!(drain(&rx), vec![sent(2, 42, 12000, 1.0)]);
+
+        app.world_mut().despawn(personal);
+        assert_eq!(drain(&rx), vec![sent(1, 43, 18000, 1.0)]);
+        app.update();
+        assert_eq!(drain(&rx), vec![sent(1, 43, 12001, 1.0)]);
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn override_spawned_before_the_world_clock_still_wins() {
+        let (mut app, rx) = test_app();
+        let vip = player(&mut app, 1);
+        player(&mut app, 2);
+        app.world_mut()
+            .spawn(WorldTime::new().time_of_day(18000).frozen().viewers([vip]));
+        app.update();
+        assert_eq!(drain(&rx), vec![sent(1, 0, 18000, 0.0)]);
+
+        app.world_mut().spawn(WorldTime::new().time_of_day(6000));
+        app.update();
+        assert_eq!(drain(&rx), vec![sent(2, 1, 6000, 1.0)]);
+        for _ in 0..40 {
+            app.update();
+            assert!(drain(&rx).iter().all(|s| s.client == 2));
+        }
+    }
+
+    #[test]
+    fn override_dropping_a_viewer_hands_them_back_after_its_reset() {
+        let (mut app, rx) = test_app();
+        let vip = player(&mut app, 1);
+        app.world_mut()
+            .spawn(WorldTime::new().time_of_day(6000).frozen());
+        let personal = app
+            .world_mut()
+            .spawn(WorldTime::new().time_of_day(18000).frozen().viewers([vip]))
+            .id();
+        app.update();
+        assert_eq!(drain(&rx), vec![sent(1, 0, 18000, 0.0)]);
+
+        app.world_mut()
+            .get_mut::<WorldTime>(personal)
+            .unwrap()
+            .audience = Audience::explicit([]);
+        app.update();
+        let out: Vec<_> = rx.try_iter().map(|out| out.packet).collect();
+        assert_eq!(out.len(), 2);
+        let ClientboundPacket::Play(PlayPacket::SetTime(first)) = &out[0] else {
+            panic!("unexpected packet");
+        };
+        let ClientboundPacket::Play(PlayPacket::SetTime(second)) = &out[1] else {
+            panic!("unexpected packet");
+        };
+        assert_eq!(
+            (first.clocks[0].total_ticks, first.clocks[0].rate),
+            (18000, 1.0)
+        );
+        assert_eq!(
+            (second.clocks[0].total_ticks, second.clocks[0].rate),
+            (6000, 0.0)
+        );
+        app.update();
+        assert!(drain(&rx).is_empty());
+    }
+
+    #[test]
+    fn frozen_clock_does_not_count_towards_the_periodic_resend() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let clock = app.world_mut().spawn(WorldTime::new()).id();
+        app.update();
+        drain(&rx);
+        for _ in 0..10 {
+            app.update();
+        }
+        app.world_mut()
+            .get_mut::<WorldTime>(clock)
+            .unwrap()
+            .freeze();
+        app.update();
+        drain(&rx);
+        assert_eq!(
+            app.world().get::<WorldTimeState>(clock).unwrap().since_send,
+            0
+        );
+        for _ in 0..100 {
+            app.update();
+        }
+        assert_eq!(
+            app.world().get::<WorldTimeState>(clock).unwrap().since_send,
+            0
+        );
         assert!(drain(&rx).is_empty());
     }
 
