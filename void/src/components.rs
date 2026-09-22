@@ -94,6 +94,28 @@ pub struct EffectiveViewDistance(pub i32);
 #[derive(Component)]
 pub struct LoadedChunks(pub HashSet<ChunkPos>);
 
+/// Set by chunk streaming when a pass could not send every chunk in range
+/// (send budget or generation cap); the player is revisited next tick even
+/// while stationary. Carries the unsent chunks nearest-first so a stationary
+/// player drains them without recomputing the range. Cleared once the range
+/// is fully streamed; an empty backlog forces a full recompute.
+#[derive(Component, Default)]
+pub struct ChunkStreamBacklog {
+    pub(crate) pending: Vec<ChunkPos>,
+}
+
+/// Caps how many chunk packets stream to this player per tick, cached chunks
+/// included; at least one is always sent. Absent means unlimited, which is the
+/// default for every player.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChunkSendBudget(pub usize);
+
+/// While present the server owns the player's position: client movement
+/// packets update `Rotation` only and never `Position`. Whoever inserts it is
+/// responsible for keeping the client in sync (see [`crate::Teleport`]).
+#[derive(Component)]
+pub struct ServerControlledPosition;
+
 /// The chunk column the player is currently standing in.
 #[derive(Component)]
 pub struct CurrentChunkPos(pub ChunkPos);

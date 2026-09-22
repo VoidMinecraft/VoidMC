@@ -115,7 +115,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                         let variant_attrs = parse_variant_attrs(&v.attrs)?;
 
                         let packet_id = match variant_attrs.packet_id {
-                            Some(id) => id as u32,
+                            Some(id) => id,
                             None => {
                                 return Err(Error::new_spanned(
                                 v,
@@ -128,7 +128,7 @@ pub fn derive_encode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                                 quote! {
                                     Self::#variant_name(inner) => {
-                                        (#packet_id as u8).encode(buf);
+                                        voidmc_codec::VarI32(#packet_id).encode(buf);
                                         inner.encode(buf);
                                     }
                                 }

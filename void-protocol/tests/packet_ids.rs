@@ -98,13 +98,16 @@ const SPECS: &[EnumSpec] = &[
             ("BlockUpdate", "minecraft:block_update"),
             ("BossEvent", "minecraft:boss_event"),
             ("ChunksBiomes", "minecraft:chunks_biomes"),
+            ("ClearTitles", "minecraft:clear_titles"),
             ("CloseContainer", "minecraft:container_close"),
             ("SetContainerContent", "minecraft:container_set_content"),
             ("SetContainerSlot", "minecraft:container_set_slot"),
             ("SetCooldown", "minecraft:cooldown"),
             ("Disconnect", "minecraft:disconnect"),
+            ("EntityPositionSync", "minecraft:entity_position_sync"),
             ("UnloadChunk", "minecraft:forget_level_chunk"),
             ("GameEvent", "minecraft:game_event"),
+            ("InitializeBorder", "minecraft:initialize_border"),
             ("KeepAlive", "minecraft:keep_alive"),
             ("LevelParticles", "minecraft:level_particles"),
             ("Login", "minecraft:login"),
@@ -116,16 +119,32 @@ const SPECS: &[EnumSpec] = &[
             ("UpdateEntityRotation", "minecraft:move_entity_rot"),
             ("OpenScreen", "minecraft:open_screen"),
             ("Ping", "minecraft:ping"),
+            ("PlayerAbilities", "minecraft:player_abilities"),
             ("SynchronizePlayerPosition", "minecraft:player_position"),
             ("SetHeadRotation", "minecraft:rotate_head"),
             ("EntitySoundEffect", "minecraft:sound_entity"),
             ("SoundEffect", "minecraft:sound"),
             ("StopSound", "minecraft:stop_sound"),
             ("SetEntityMotion", "minecraft:set_entity_motion"),
+            ("SetBorderCenter", "minecraft:set_border_center"),
+            ("SetBorderLerpSize", "minecraft:set_border_lerp_size"),
+            ("SetBorderSize", "minecraft:set_border_size"),
+            (
+                "SetBorderWarningDelay",
+                "minecraft:set_border_warning_delay",
+            ),
+            (
+                "SetBorderWarningDistance",
+                "minecraft:set_border_warning_distance",
+            ),
             ("SetCenterChunk", "minecraft:set_chunk_cache_center"),
             ("SetCursorItem", "minecraft:set_cursor_item"),
             ("SetEntityData", "minecraft:set_entity_data"),
             ("SetHeldSlot", "minecraft:set_held_slot"),
+            ("SetSubtitleText", "minecraft:set_subtitle_text"),
+            ("SetTime", "minecraft:set_time"),
+            ("SetTitleText", "minecraft:set_title_text"),
+            ("SetTitlesAnimation", "minecraft:set_titles_animation"),
             ("SystemChat", "minecraft:system_chat"),
             ("SetTabListHeaderFooter", "minecraft:tab_list"),
             ("TeleportEntity", "minecraft:teleport_entity"),
@@ -139,6 +158,9 @@ const SPECS: &[EnumSpec] = &[
                 "minecraft:command_suggestions",
             ),
             ("SetPassengers", "minecraft:set_passengers"),
+            ("RemoveMobEffect", "minecraft:remove_mob_effect"),
+            ("UpdateAttributes", "minecraft:update_attributes"),
+            ("UpdateMobEffect", "minecraft:update_mob_effect"),
         ],
     },
     EnumSpec {
@@ -180,7 +202,6 @@ const SPECS: &[EnumSpec] = &[
 struct Literal {
     variant: String,
     id: i32,
-    tagged: bool,
 }
 
 fn parse_int(text: &str) -> Option<i32> {
@@ -216,11 +237,7 @@ fn extract_literals(source: &str) -> Vec<Literal> {
                 .next()
                 .unwrap_or_default()
                 .to_string();
-            out.push(Literal {
-                variant,
-                id,
-                tagged: true,
-            });
+            out.push(Literal { variant, id });
             continue;
         }
 
@@ -247,11 +264,7 @@ fn extract_literals(source: &str) -> Vec<Literal> {
             });
             let id = parse_int(id_text)
                 .unwrap_or_else(|| panic!("manual packet id is not a literal: {next}"));
-            out.push(Literal {
-                variant,
-                id,
-                tagged: false,
-            });
+            out.push(Literal { variant, id });
         }
     }
     out
@@ -294,14 +307,6 @@ fn every_hand_written_packet_id_matches_mojang_report() {
                 failures.push(format!(
                     "{}: {} is written as {:#04x} but {}/{} {name} is {:#04x} in packets.json",
                     spec.file, lit.variant, lit.id, spec.state, spec.direction, expected
-                ));
-            }
-            // The derive writes the id as a single byte; a VarInt only fits
-            // one byte below 0x80.
-            if lit.tagged && lit.id >= 0x80 {
-                failures.push(format!(
-                    "{}: {} = {:#04x} needs a two-byte VarInt but the tagged-enum derive writes one byte",
-                    spec.file, lit.variant, lit.id
                 ));
             }
             checked += 1;

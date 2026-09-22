@@ -40,6 +40,16 @@ pub enum VoidSystems {
     InventorySync,
     /// `PostUpdate`: boss bar add/update/remove packets.
     BossBarSync,
+    /// `PostUpdate`: Player Abilities packets for changed `PlayerAbilities`.
+    AbilitiesSync,
+    /// `Update`, after `CommandDrain`: advances in-flight [`crate::Teleport`]s.
+    TeleportBarrier,
+    /// `PostUpdate`: world border initialize/update/reset packets.
+    WorldBorderSync,
+    /// `PostUpdate`: advances world clocks, Set Time packets on change and every 20 ticks while running.
+    WorldTimeSync,
+    /// `PostUpdate`: weather Game Event packets on change and per transition tick.
+    WeatherSync,
     /// `PostUpdate`: tab list header/footer and changed player entry actions.
     TabListSync,
     /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
