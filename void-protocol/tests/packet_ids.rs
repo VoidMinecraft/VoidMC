@@ -116,6 +116,7 @@ const SPECS: &[EnumSpec] = &[
             ("UpdateEntityRotation", "minecraft:move_entity_rot"),
             ("OpenScreen", "minecraft:open_screen"),
             ("Ping", "minecraft:ping"),
+            ("PlayerAbilities", "minecraft:player_abilities"),
             ("SynchronizePlayerPosition", "minecraft:player_position"),
             ("SetHeadRotation", "minecraft:rotate_head"),
             ("EntitySoundEffect", "minecraft:sound_entity"),
