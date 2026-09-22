@@ -84,6 +84,7 @@ pub struct ClientSettings {
 }
 
 #[derive(Component)]
+#[require(crate::entity::visibility_index::IndexedChunks)]
 pub struct PlayerReady;
 
 /// The effective (capped) view distance last used for chunk streaming.
