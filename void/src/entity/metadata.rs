@@ -23,6 +23,7 @@ pub use voidmc_protocol::clientbound::{
 use voidmc_protocol::types::BlockPosition;
 
 use super::EntityShownEvent;
+use super::effects::StatusEffects;
 use crate::components::{EntityViewers, ItemEntity, MinecraftEntityId, SpawnedEntity};
 use crate::item::ItemStack;
 use crate::players::Players;
@@ -497,51 +498,81 @@ impl MetadataSource for TextDisplay {
     }
 }
 
-fn flags_byte(invisible: bool, glowing: bool) -> i8 {
+fn flags_byte(
+    invisible: Option<&Invisible>,
+    glowing: Option<&Glowing>,
+    effects: Option<&StatusEffects>,
+) -> i8 {
     let mut flags = 0u8;
-    if invisible {
+    if invisible.is_some() || effects.is_some_and(StatusEffects::invisible) {
         flags |= entity_flag::INVISIBLE;
     }
-    if glowing {
+    if glowing.is_some() || effects.is_some_and(StatusEffects::glowing) {
         flags |= entity_flag::GLOWING;
     }
     flags as i8
 }
 
-fn project_flags(
+type FlagSources<'a> = (
+    Option<&'a Invisible>,
+    Option<&'a Glowing>,
+    Option<&'a StatusEffects>,
+);
+
+pub(super) fn project_flags(
     mut entities: Query<
-        (Option<&Invisible>, Option<&Glowing>, &mut EntityMetadata),
-        Or<(Added<Invisible>, Added<Glowing>)>,
+        (FlagSources, &mut EntityMetadata),
+        Or<(Added<Invisible>, Added<Glowing>, Changed<StatusEffects>)>,
     >,
 ) {
-    for (invisible, glowing, mut meta) in entities.iter_mut() {
+    for ((invisible, glowing, effects), mut meta) in entities.iter_mut() {
         meta.set(
             entity_index::FLAGS,
-            Value::Byte(flags_byte(invisible.is_some(), glowing.is_some())),
+            Value::Byte(flags_byte(invisible, glowing, effects)),
         );
     }
 }
 
 fn on_remove_invisible(
     event: On<Remove, Invisible>,
-    mut entities: Query<(Option<&Glowing>, &mut EntityMetadata)>,
+    mut entities: Query<(
+        Option<&Glowing>,
+        Option<&StatusEffects>,
+        &mut EntityMetadata,
+    )>,
 ) {
-    if let Ok((glowing, mut meta)) = entities.get_mut(event.entity) {
+    if let Ok((glowing, effects, mut meta)) = entities.get_mut(event.entity) {
         meta.set(
             entity_index::FLAGS,
-            Value::Byte(flags_byte(false, glowing.is_some())),
+            Value::Byte(flags_byte(None, glowing, effects)),
         );
     }
 }
 
 fn on_remove_glowing(
     event: On<Remove, Glowing>,
-    mut entities: Query<(Option<&Invisible>, &mut EntityMetadata)>,
+    mut entities: Query<(
+        Option<&Invisible>,
+        Option<&StatusEffects>,
+        &mut EntityMetadata,
+    )>,
 ) {
-    if let Ok((invisible, mut meta)) = entities.get_mut(event.entity) {
+    if let Ok((invisible, effects, mut meta)) = entities.get_mut(event.entity) {
         meta.set(
             entity_index::FLAGS,
-            Value::Byte(flags_byte(invisible.is_some(), false)),
+            Value::Byte(flags_byte(invisible, None, effects)),
+        );
+    }
+}
+
+fn on_remove_effects(
+    event: On<Remove, StatusEffects>,
+    mut entities: Query<(Option<&Invisible>, Option<&Glowing>, &mut EntityMetadata)>,
+) {
+    if let Ok((invisible, glowing, mut meta)) = entities.get_mut(event.entity) {
+        meta.set(
+            entity_index::FLAGS,
+            Value::Byte(flags_byte(invisible, glowing, None)),
         );
     }
 }
@@ -579,6 +610,7 @@ impl MetadataSourceAppExt for App {
 pub(super) fn register(app: &mut App) {
     app.add_observer(on_remove_invisible)
         .add_observer(on_remove_glowing)
+        .add_observer(on_remove_effects)
         .add_observer(send_full_metadata_on_shown)
         .add_systems(
             PostUpdate,
@@ -599,7 +631,7 @@ pub(super) fn register(app: &mut App) {
         .add_metadata_source::<TextDisplay>();
 }
 
-fn sync_entity_metadata(
+pub(super) fn sync_entity_metadata(
     players: Players,
     mut entities: Query<
         (&MinecraftEntityId, &EntityViewers, &mut EntityMetadata),
