@@ -50,7 +50,7 @@ pub use commands::{
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use entity::{
     Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityBuilder,
-    EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing,
+    EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent, Glowing, Hidden,
     Invisible, ItemDisplay, ItemDisplayContext, MetadataSource, MetadataSourceAppExt, Mount,
     NoGravity, Passengers, Silent, TextAlignment, TextDisplay,
 };
