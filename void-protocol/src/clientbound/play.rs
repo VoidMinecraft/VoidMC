@@ -47,6 +47,7 @@ mod synchronize_player_position;
 mod system_chat;
 mod teleport_entity;
 mod unload_chunk;
+mod update_advancements;
 mod update_attributes;
 mod update_entity_position;
 mod update_entity_position_and_rotation;
@@ -105,6 +106,7 @@ pub use synchronize_player_position::*;
 pub use system_chat::*;
 pub use teleport_entity::*;
 pub use unload_chunk::*;
+pub use update_advancements::*;
 pub use update_attributes::*;
 pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
@@ -239,6 +241,7 @@ pub enum ManualPlayPacket {
     Commands(Commands),
     CommandSuggestionsResponse(CommandSuggestionsResponse),
     SetPassengers(SetPassengers),
+    UpdateAdvancements(UpdateAdvancements),
 }
 
 impl Encode for ManualPlayPacket {
@@ -270,6 +273,10 @@ impl Encode for ManualPlayPacket {
             }
             ManualPlayPacket::SetPassengers(packet) => {
                 voidmc_codec::VarI32(0x6B).encode(buf);
+                packet.encode(buf);
+            }
+            ManualPlayPacket::UpdateAdvancements(packet) => {
+                voidmc_codec::VarI32(0x82).encode(buf);
                 packet.encode(buf);
             }
         }

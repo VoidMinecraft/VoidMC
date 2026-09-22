@@ -132,6 +132,12 @@ impl ItemStack {
     }
 }
 
+impl From<ItemId> for ItemStack {
+    fn from(item: ItemId) -> Self {
+        ItemStack::new(item, 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
