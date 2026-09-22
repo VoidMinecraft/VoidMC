@@ -46,6 +46,10 @@ pub enum VoidSystems {
     TeleportBarrier,
     /// `PostUpdate`: world border initialize/update/reset packets.
     WorldBorderSync,
+    /// `PostUpdate`: advances world clocks, Set Time packets on change and every 20 ticks while running.
+    WorldTimeSync,
+    /// `PostUpdate`: weather Game Event packets on change and per transition tick.
+    WeatherSync,
     /// `PostUpdate`: refreshes the status-response snapshot read by the network thread.
     StatusSnapshot,
     /// `PostUpdate`: TPS tracking (only with `metrics_debug`).

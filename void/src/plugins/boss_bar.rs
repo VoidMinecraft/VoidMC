@@ -14,6 +14,7 @@ use voidmc_protocol::clientbound::{BossEvent, BossEventAction};
 
 pub use voidmc_protocol::clientbound::{BossBarColor, BossBarDivision, BossBarFlags};
 
+use super::viewers::desired_viewers;
 use crate::players::{Audience, Players};
 use crate::schedule::VoidSystems;
 
@@ -207,18 +208,7 @@ fn sync_boss_bars(players: Players, mut bars: Query<(&BossBar, &mut BossBarState
     }
     let ready = players.ready();
     for (bar, mut state) in bars.iter_mut() {
-        let members = || {
-            ready
-                .iter()
-                .filter(|r| bar.audience.includes(r))
-                .map(|r| r.entity())
-        };
-        let mut count = 0;
-        let same_members = members().all(|entity| {
-            count += 1;
-            state.viewers.contains(&entity)
-        }) && count == state.viewers.len();
-        let desired: Option<HashSet<Entity>> = (!same_members).then(|| members().collect());
+        let desired = desired_viewers(&ready, &bar.audience, &state.viewers, &HashSet::new());
 
         if let Some(desired) = &desired {
             for gone in state.viewers.difference(desired) {

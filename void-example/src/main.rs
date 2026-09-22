@@ -18,6 +18,7 @@ mod boss_bar;
 mod circle;
 mod effects;
 mod entities;
+mod environment;
 mod menu;
 mod particle;
 mod sign;
@@ -106,6 +107,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(effects::effect_command());
             registry.register(effects::speed_command());
             registry.register(world_border::border_command());
+            registry.register(environment::time_command());
+            registry.register(environment::weather_command());
+            environment::spawn_environment(app.world_mut());
 
             // Observe block-breaking events
             app.add_observer(on_player_dig);

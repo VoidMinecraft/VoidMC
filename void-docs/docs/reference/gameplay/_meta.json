@@ -36,6 +36,11 @@
   },
   {
     "type": "file",
+    "name": "time-and-weather",
+    "label": "Time & Weather"
+  },
+  {
+    "type": "file",
     "name": "biomes",
     "label": "Biomes"
   },
