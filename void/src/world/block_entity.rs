@@ -539,7 +539,7 @@ mod tests {
 
     use super::*;
     use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use crate::plugins::block_entity::BlockEntityPlugin;
     use crate::schedule::VoidSystems;
     use crate::world::{ChunkDimension, ChunkDirty, ChunkPosition};
@@ -805,16 +805,12 @@ mod tests {
     struct Outgoing(Receiver<OutgoingPacket>);
 
     fn app() -> (App, Entity) {
-        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
         .insert_resource(Outgoing(outgoing_rx))
         .init_resource::<ChunkIndex>()

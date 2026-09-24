@@ -873,7 +873,7 @@ pub(crate) mod tests {
         ClientId, LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerName, PlayerReady,
         Position, Rotation, TeleportState,
     };
-    use voidmc::network::{IncomingPacket, NetworkChannels, OutgoingPacket, PacketEvent};
+    use voidmc::network::{NetworkChannels, OutgoingPacket, PacketEvent};
     use voidmc::plugins::abilities::AbilitiesPlugin;
     use voidmc::plugins::boss_bar::BossBarPlugin;
     use voidmc::plugins::movement::MovementPlugin;
@@ -1030,18 +1030,14 @@ pub(crate) mod tests {
 
     impl Harness {
         pub(crate) fn new(seed: u64) -> Self {
-            let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+            let (incoming_tx, incoming_rx) = flume::unbounded::<voidmc::network::ConnectionEvent>();
             let (outgoing_tx, rx) = flume::unbounded::<OutgoingPacket>();
-            let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-            let (kick_tx, kick_rx) = flume::unbounded::<u32>();
             let mut app = App::new();
             app.insert_resource(NetworkChannels {
-                incoming: incoming_rx,
+                events: incoming_rx,
                 outgoing: outgoing_tx,
-                disconnect: disconnect_rx,
-                kick: kick_tx,
             })
-            .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+            .insert_non_send_resource(incoming_tx)
             .init_resource::<ChunkIndex>()
             .configure_sets(
                 PostUpdate,

@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryEntityError;
@@ -14,8 +15,11 @@ use bevy_ecs::system::SystemParam;
 use flume::{Sender, TrySendError};
 use voidmc_protocol::clientbound::ClientboundPacket;
 
-use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
-use crate::network::{ClientSenders, NetworkChannels, OUTBOUND_QUEUE_CAPACITY, OutgoingPacket};
+use crate::components::{ClientId, ConnectionState, LoadedChunks, PlayerDimension, PlayerReady};
+use crate::network::{
+    ClientSenders, CloseRequest, DisconnectReason, NetworkChannels, OUTBOUND_QUEUE_CAPACITY,
+    OutgoingPacket,
+};
 use crate::world::{ChunkPos, DimensionId};
 
 static CHANNEL_CLOSED_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -191,7 +195,6 @@ impl fmt::Debug for Audience {
 struct Outbox<'a> {
     direct: Option<&'a ClientSenders>,
     fallback: &'a Sender<OutgoingPacket>,
-    kick: &'a Sender<u32>,
 }
 
 impl Outbox<'_> {
@@ -212,7 +215,7 @@ impl Outbox<'_> {
             return;
         };
 
-        if client.kicked() {
+        if client.is_closing() {
             return;
         }
         match client
@@ -221,14 +224,17 @@ impl Outbox<'_> {
         {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                if client.mark_kicked() {
+                if client.close(CloseRequest {
+                    reason: DisconnectReason::Overloaded,
+                    packet: None,
+                    deadline: Instant::now(),
+                }) {
                     tracing::warn!(
                         ?entity,
                         client_id,
                         capacity = OUTBOUND_QUEUE_CAPACITY,
                         "Outbound queue full; disconnecting client that cannot keep up"
                     );
-                    let _ = self.kick.send(client_id);
                 }
             }
             Err(TrySendError::Disconnected(_)) => {
@@ -277,7 +283,6 @@ impl Players<'_, '_> {
         Outbox {
             direct: self.senders.as_deref(),
             fallback: &self.channels.outgoing,
-            kick: &self.channels.kick,
         }
     }
 
@@ -359,7 +364,6 @@ impl<'w> WorldPlayers<'w> {
         Outbox {
             direct: self.world.get_resource::<ClientSenders>(),
             fallback: &channels.outgoing,
-            kick: &channels.kick,
         }
     }
 
@@ -368,6 +372,53 @@ impl<'w> WorldPlayers<'w> {
         if let Some(client_id) = resolve_client(self.world, entity) {
             self.outbox().deliver(entity, client_id, packet.into());
         }
+    }
+
+    /// Request an idempotent close, allowing queued packets and an optional
+    /// protocol disconnect packet to flush until the deadline.
+    pub fn disconnect(
+        &self,
+        entity: Entity,
+        reason: impl Into<String>,
+        packet: Option<ClientboundPacket>,
+        flush_for: Duration,
+    ) -> bool {
+        let Some(handle) = self
+            .world
+            .get_resource::<ClientSenders>()
+            .and_then(|senders| senders.get(entity))
+        else {
+            if let Some(packet) = packet {
+                self.send(entity, packet);
+            }
+            return false;
+        };
+        let packet = packet.filter(|packet| {
+            let Some(state) = self.world.get::<ConnectionState>(entity) else {
+                return true;
+            };
+            let valid = matches!(
+                (&state.0, packet),
+                (voidmc_protocol::State::Login, ClientboundPacket::Login(_))
+                    | (
+                        voidmc_protocol::State::Configuration,
+                        ClientboundPacket::Configuration(_)
+                    )
+                    | (voidmc_protocol::State::Play, ClientboundPacket::Play(_))
+            );
+            if !valid {
+                tracing::warn!(
+                    ?entity,
+                    "Ignoring disconnect packet for wrong protocol phase"
+                );
+            }
+            valid
+        });
+        handle.close(CloseRequest {
+            reason: DisconnectReason::Server(reason.into()),
+            packet,
+            deadline: Instant::now() + flush_for,
+        })
     }
 
     pub fn send_to(
@@ -435,21 +486,16 @@ mod tests {
     use voidmc_protocol::clientbound::{self, KeepAlive};
 
     use super::*;
-    use crate::network::IncomingPacket;
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
-        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         });
-        app.insert_non_send_resource((_incoming_tx, _disconnect_tx, _kick_rx));
+        app.insert_non_send_resource(_incoming_tx);
         (app, outgoing_rx)
     }
 
@@ -720,19 +766,26 @@ mod tests {
             .spawn((ClientId(client_id), PlayerReady))
             .id();
         let (tx, rx) = flume::bounded(capacity);
-        app.world_mut()
-            .resource_mut::<ClientSenders>()
-            .register(entity, tx);
+        let control = app.world().resource::<TestControl>().0.clone();
+        app.world_mut().resource_mut::<ClientSenders>().register(
+            entity,
+            crate::network::ConnectionHandle::new(
+                crate::network::ConnectionId(client_id),
+                tx,
+                control,
+            ),
+        );
         (entity, rx)
     }
 
-    fn with_registry(app: &mut App) -> Receiver<u32> {
-        let (_connected_tx, connected_rx) = flume::unbounded();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
-        app.world_mut().resource_mut::<NetworkChannels>().kick = kick_tx;
-        app.insert_resource(ClientSenders::new(connected_rx));
-        app.insert_non_send_resource(_connected_tx);
-        kick_rx
+    #[derive(Resource)]
+    struct TestControl(Sender<crate::network::ConnectionCommand>);
+
+    fn with_registry(app: &mut App) -> Receiver<crate::network::ConnectionCommand> {
+        let (control_tx, control_rx) = flume::unbounded();
+        app.insert_resource(TestControl(control_tx));
+        app.insert_resource(ClientSenders::default());
+        control_rx
     }
 
     #[test]
@@ -800,13 +853,18 @@ mod tests {
         app.update();
 
         assert_eq!(slow_rx.len(), 2);
-        assert_eq!(kick_rx.try_iter().collect::<Vec<_>>(), vec![1]);
+        let crate::network::ConnectionCommand::Close { id, request } = kick_rx.try_recv().unwrap()
+        else {
+            panic!("expected close request");
+        };
+        assert_eq!(id, crate::network::ConnectionId(1));
+        assert_eq!(request.reason, DisconnectReason::Overloaded);
         assert!(
             app.world()
                 .resource::<ClientSenders>()
                 .get(slow)
                 .unwrap()
-                .kicked()
+                .is_closing()
         );
         assert_eq!(drain(&slow_rx), vec![(1, 1), (1, 2)]);
         assert_eq!(drain(&fast_rx), vec![(2, 9)]);

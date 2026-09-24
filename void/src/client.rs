@@ -1,6 +1,9 @@
-use crate::network::{IncomingPacket, OutgoingPacket};
+use crate::network::{
+    CloseRequest, ConnectionEvent, DisconnectReason, IncomingPacket, OutgoingPacket,
+};
 use crate::server_status::ServerStatusSnapshot;
 use flume::{Receiver, Sender};
+use std::time::Instant;
 use voidmc_net::socket::{ClientSocket, ClientWriter, Packet, SocketError};
 use voidmc_protocol::{State, clientbound, serverbound};
 
@@ -24,8 +27,9 @@ enum Outbound {
 
 pub struct Client {
     socket: ClientSocket,
-    incoming_tx: Sender<IncomingPacket>,
+    events: Sender<ConnectionEvent>,
     outgoing_rx: Receiver<OutgoingPacket>,
+    close_rx: Receiver<CloseRequest>,
     client_id: u32,
     server_status: Option<ServerStatusSnapshot>,
     status_fast_path: StatusFastPath,
@@ -35,8 +39,9 @@ impl Client {
     pub fn new(
         id: u32,
         socket: ClientSocket,
-        incoming_tx: Sender<IncomingPacket>,
+        events: Sender<ConnectionEvent>,
         outgoing_rx: Receiver<OutgoingPacket>,
+        close_rx: Receiver<CloseRequest>,
         server_status: Option<ServerStatusSnapshot>,
     ) -> Self {
         let status_fast_path = if server_status.is_some() {
@@ -47,15 +52,16 @@ impl Client {
 
         Self {
             socket,
-            incoming_tx,
+            events,
             outgoing_rx,
+            close_rx,
             client_id: id,
             server_status,
             status_fast_path,
         }
     }
 
-    pub async fn run(self) -> Result<(), SocketError> {
+    pub async fn run(self) -> Result<DisconnectReason, SocketError> {
         let (mut reader, mut writer) = self.socket.into_split();
         let (status_tx, status_rx) = flume::unbounded();
         let mut status_fast_path = self.status_fast_path;
@@ -71,26 +77,27 @@ impl Client {
                 if let StatusAction::Consumed(response) = action {
                     if let Some(response) = response {
                         if status_tx.send(response).is_err() {
-                            return Ok(());
+                            return Ok(DisconnectReason::PeerClosed);
                         }
                     }
                     continue;
                 }
 
                 if self
-                    .incoming_tx
-                    .send(IncomingPacket {
+                    .events
+                    .send(ConnectionEvent::Packet(IncomingPacket {
                         client_id: self.client_id,
                         packet,
-                    })
+                    }))
                     .is_err()
                 {
-                    return Ok(());
+                    return Ok(DisconnectReason::PeerClosed);
                 }
             }
         };
 
-        let writer_loop = Self::write_loop(&mut writer, &self.outgoing_rx, &status_rx);
+        let writer_loop =
+            Self::write_loop(&mut writer, &self.outgoing_rx, &status_rx, &self.close_rx);
 
         tokio::select! {
             result = reader_loop => result,
@@ -148,14 +155,22 @@ impl Client {
         writer: &mut ClientWriter,
         outgoing_rx: &Receiver<OutgoingPacket>,
         status_rx: &Receiver<clientbound::StatusPacket>,
-    ) -> Result<(), SocketError> {
+        close_rx: &Receiver<CloseRequest>,
+    ) -> Result<DisconnectReason, SocketError> {
         let mut status_open = true;
         loop {
             let first = if status_open {
                 tokio::select! {
+                    biased;
+                    result = close_rx.recv_async() => {
+                        if let Ok(request) = result {
+                            return Self::finish_close(writer, outgoing_rx, request).await;
+                        }
+                        return Ok(DisconnectReason::PeerClosed);
+                    }
                     result = outgoing_rx.recv_async() => {
                         let Ok(packet) = result else {
-                            return Ok(());
+                            return Ok(DisconnectReason::PeerClosed);
                         };
                         Outbound::Game(packet)
                     }
@@ -170,10 +185,19 @@ impl Client {
                     }
                 }
             } else {
-                let Ok(packet) = outgoing_rx.recv_async().await else {
-                    return Ok(());
-                };
-                Outbound::Game(packet)
+                tokio::select! {
+                    biased;
+                    result = close_rx.recv_async() => {
+                        if let Ok(request) = result {
+                            return Self::finish_close(writer, outgoing_rx, request).await;
+                        }
+                        return Ok(DisconnectReason::PeerClosed);
+                    }
+                    result = outgoing_rx.recv_async() => {
+                        let Ok(packet) = result else { return Ok(DisconnectReason::PeerClosed); };
+                        Outbound::Game(packet)
+                    }
+                }
             };
 
             let batch = Self::write_batch(writer, first, outgoing_rx, status_open, status_rx);
@@ -182,6 +206,30 @@ impl Client {
                 return Err(error);
             }
             writer.flush().await?;
+        }
+    }
+
+    async fn finish_close(
+        writer: &mut ClientWriter,
+        outgoing_rx: &Receiver<OutgoingPacket>,
+        request: CloseRequest,
+    ) -> Result<DisconnectReason, SocketError> {
+        let deadline = tokio::time::Instant::from_std(request.deadline);
+        let write = async {
+            while let Ok(packet) = outgoing_rx.try_recv() {
+                Self::write_outbound(writer, Outbound::Game(packet)).await?;
+            }
+            if let Some(packet) = request.packet {
+                Self::write_packet(writer, packet).await?;
+            }
+            writer.flush().await
+        };
+        if Instant::now() >= request.deadline {
+            return Ok(request.reason);
+        }
+        match tokio::time::timeout_at(deadline, write).await {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) | Err(_) => Ok(request.reason),
         }
     }
 
@@ -210,18 +258,26 @@ impl Client {
     ) -> Result<(), SocketError> {
         match outbound {
             Outbound::Status(packet) => writer.send(&packet).await?,
-            Outbound::Game(outgoing_packet) => match outgoing_packet.packet {
-                clientbound::ClientboundPacket::Status(packet) => writer.send(&packet).await?,
-                clientbound::ClientboundPacket::Login(packet) => writer.send(&packet).await?,
-                clientbound::ClientboundPacket::Configuration(packet) => {
-                    writer.send(&packet).await?
-                }
-                clientbound::ClientboundPacket::ManualConfiguration(packet) => {
-                    writer.send(&packet).await?
-                }
-                clientbound::ClientboundPacket::Play(packet) => writer.send(&packet).await?,
-                clientbound::ClientboundPacket::ManualPlay(packet) => writer.send(&packet).await?,
-            },
+            Outbound::Game(outgoing_packet) => {
+                Self::write_packet(writer, outgoing_packet.packet).await?
+            }
+        }
+        Ok(())
+    }
+
+    async fn write_packet(
+        writer: &mut ClientWriter,
+        packet: clientbound::ClientboundPacket,
+    ) -> Result<(), SocketError> {
+        match packet {
+            clientbound::ClientboundPacket::Status(packet) => writer.send(&packet).await?,
+            clientbound::ClientboundPacket::Login(packet) => writer.send(&packet).await?,
+            clientbound::ClientboundPacket::Configuration(packet) => writer.send(&packet).await?,
+            clientbound::ClientboundPacket::ManualConfiguration(packet) => {
+                writer.send(&packet).await?
+            }
+            clientbound::ClientboundPacket::Play(packet) => writer.send(&packet).await?,
+            clientbound::ClientboundPacket::ManualPlay(packet) => writer.send(&packet).await?,
         }
         Ok(())
     }
@@ -303,6 +359,7 @@ mod tests {
         let (socket, mut peer) = connected_socket().await;
         let (incoming_tx, incoming_rx) = flume::unbounded();
         let (_outgoing_tx, outgoing_rx) = flume::unbounded();
+        let (_close_tx, close_rx) = flume::unbounded();
         let config = ServerConfig {
             max_players: 200,
             motd: "Immediate status".to_string(),
@@ -311,8 +368,9 @@ mod tests {
         let status = ServerStatusSnapshot::new(&config);
         status.update(config.max_players, 12, &config.motd);
 
-        let client =
-            tokio::spawn(Client::new(7, socket, incoming_tx, outgoing_rx, Some(status)).run());
+        let client = tokio::spawn(
+            Client::new(7, socket, incoming_tx, outgoing_rx, close_rx, Some(status)).run(),
+        );
 
         send_packet(&mut peer, &handshake(State::Status)).await;
         send_packet(
@@ -355,9 +413,11 @@ mod tests {
         let (socket, mut peer) = connected_socket().await;
         let (incoming_tx, incoming_rx) = flume::unbounded();
         let (_outgoing_tx, outgoing_rx) = flume::unbounded();
+        let (_close_tx, close_rx) = flume::unbounded();
         let status = ServerStatusSnapshot::new(&ServerConfig::default());
-        let client =
-            tokio::spawn(Client::new(7, socket, incoming_tx, outgoing_rx, Some(status)).run());
+        let client = tokio::spawn(
+            Client::new(7, socket, incoming_tx, outgoing_rx, close_rx, Some(status)).run(),
+        );
 
         send_packet(&mut peer, &handshake(State::Login)).await;
 
@@ -365,6 +425,9 @@ mod tests {
             .await
             .expect("login handshake should be forwarded")
             .unwrap();
+        let ConnectionEvent::Packet(incoming) = incoming else {
+            panic!("expected packet");
+        };
         let serverbound::HandshakePacket::Handshake(handshake) = incoming
             .packet
             .decode::<serverbound::HandshakePacket>()
@@ -380,7 +443,9 @@ mod tests {
         let (socket, mut peer) = connected_socket().await;
         let (incoming_tx, incoming_rx) = flume::unbounded();
         let (outgoing_tx, outgoing_rx) = flume::unbounded();
-        let client = tokio::spawn(Client::new(7, socket, incoming_tx, outgoing_rx, None).run());
+        let (_close_tx, close_rx) = flume::unbounded();
+        let client =
+            tokio::spawn(Client::new(7, socket, incoming_tx, outgoing_rx, close_rx, None).run());
 
         tokio::time::timeout(Duration::from_secs(5), async {
             for round in 0..16 {
@@ -409,6 +474,9 @@ mod tests {
                 }
 
                 let received = incoming_rx.recv_async().await.unwrap();
+                let ConnectionEvent::Packet(received) = received else {
+                    panic!("expected packet");
+                };
                 assert_eq!(received.client_id, 7);
                 assert_eq!(received.packet.decode::<String>().unwrap(), inbound);
             }
@@ -432,6 +500,7 @@ mod tests {
         let socket = ServerSocket::new(listener, limits).accept().await.unwrap();
         let (incoming_tx, _incoming_rx) = flume::unbounded();
         let (outgoing_tx, outgoing_rx) = flume::unbounded();
+        let (_close_tx, close_rx) = flume::unbounded();
 
         send_ping(&outgoing_tx, 1);
         send_ping(&outgoing_tx, 2);
@@ -448,7 +517,7 @@ mod tests {
             .unwrap();
         send_ping(&outgoing_tx, 4);
 
-        let client = Client::new(7, socket, incoming_tx, outgoing_rx, None).run();
+        let client = Client::new(7, socket, incoming_tx, outgoing_rx, close_rx, None).run();
         let result = tokio::time::timeout(Duration::from_secs(1), client)
             .await
             .expect("writer loop should stop at the rejected frame");

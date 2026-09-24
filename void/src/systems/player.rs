@@ -186,25 +186,21 @@ mod tests {
     use super::*;
     use crate::config::{ServerConfigBuilder, ServerConfigResource};
     use crate::messages::TextColor;
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use crate::plugins::tab_list::TabListPlugin;
 
     fn join_app() -> (App, Receiver<OutgoingPacket>) {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
         .insert_resource(ServerConfigResource::from(
             &ServerConfigBuilder::new().game_mode(2).build(),
         ))
-        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .insert_non_send_resource(incoming_tx)
         .add_plugins(TabListPlugin)
         .add_observer(on_player_ready)
         .add_observer(on_player_quit);
@@ -407,16 +403,12 @@ mod tests {
 
     #[test]
     fn player_spawn_wraps_negative_rotation() {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         });
         let receiver = app.world_mut().spawn(ClientId(7)).id();
 
@@ -451,6 +443,6 @@ mod tests {
         assert_eq!(spawn.head_yaw, 192);
         assert_eq!(spawn.pitch, 224);
 
-        drop((incoming_tx, disconnect_tx, kick_rx));
+        drop(incoming_tx);
     }
 }

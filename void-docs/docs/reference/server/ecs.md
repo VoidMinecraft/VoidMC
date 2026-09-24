@@ -107,7 +107,7 @@ Chunks are also ECS entities with these components:
 | `RegistryDataStore` | Minecraft registry data (see [Registry](/reference/gameplay/registry)) |
 | `ChunkIndex(HashMap<(DimensionId, ChunkPos), Entity>)` | Spatial index for O(1) chunk entity lookup |
 | `NetworkChannels` | Flume channel senders/receivers for network communication |
-| `ClientSenders` | Per-client bounded outbound senders, keyed by client entity |
+| `ClientSenders` | Per-client connection handles, keyed by client entity |
 | `ClientToEntityMap(HashMap<u32, Entity>)` | Maps network client IDs to ECS entities |
 | `CommandRegistry` | Registered commands (see [Commands](/reference/gameplay/commands)) |
 | `KeepAliveTicker` | Tick counter for keep-alive scheduling (default: 200 tick interval) |
@@ -116,13 +116,13 @@ Chunks are also ECS entities with these components:
 
 ### Client Entity Creation
 
-When the first packet arrives from a new client, `ingest_network_packets` spawns an entity with:
+When a `Connected` event arrives, `ingest_network_packets` spawns an entity with:
 - `Client` (marker)
 - `ClientId(id)`
 - `ConnectionState(Handshake)`
 
-and moves the client's outbound sender (announced by the network thread on
-accept) into `ClientSenders` under that entity, so every packet sent to the
+and stores the client's connection handle (announced by the network thread on
+accept) in `ClientSenders` under that entity, so every packet sent to the
 entity goes straight to its own queue.
 
 ### Component Insertion During Connection
@@ -138,12 +138,12 @@ As the client progresses through protocol states, handlers insert additional com
 ### Entity Despawn
 
 When a client disconnects:
-1. The network thread sends the client ID through the `disconnect` channel
-2. `ingest_network_packets` removes the client from `ClientToEntityMap` and drops its sender from `ClientSenders`
+1. The network thread emits `Disconnected { id, reason }` after the connection task ends
+2. `ingest_network_packets` removes the client from `ClientToEntityMap` and drops its handle from `ClientSenders`
 3. If the player was ready (`PlayerReady` present), a `PlayerQuitEvent` is triggered
 4. The entity is despawned with `world.despawn(entity)`
 
-A client whose outbound queue overflows is kicked by the network thread and
+A client whose outbound queue overflows receives an immediate close request and
 then follows exactly this path.
 
 ### Non-Player Entity Lifecycle

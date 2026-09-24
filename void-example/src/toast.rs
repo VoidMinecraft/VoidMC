@@ -57,7 +57,7 @@ mod tests {
     use voidmc::CommandRegistry;
     use voidmc::commands::dispatch_command;
     use voidmc::components::{ClientId, PlayerReady, Position};
-    use voidmc::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use voidmc::network::{NetworkChannels, OutgoingPacket};
     use voidmc_protocol::clientbound::{
         AdvancementFrame, ClientboundPacket, ManualPlayPacket, PlayPacket,
     };
@@ -65,17 +65,13 @@ mod tests {
     use super::toast_command;
 
     fn command_world() -> (World, Entity, Receiver<OutgoingPacket>) {
-        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<voidmc::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
 
         let mut world = World::new();
         world.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         });
 
         let mut registry = CommandRegistry::new();

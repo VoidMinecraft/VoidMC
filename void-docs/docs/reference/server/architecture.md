@@ -11,39 +11,44 @@ The two threads communicate exclusively through [flume](https://docs.rs/flume) c
 
 | Channel | Direction | Type | Purpose |
 |---|---|---|---|
-| `incoming` | Network -> Game | `IncomingPacket` | Raw packets received from clients |
-| `connected` | Network -> Game | `ClientConnected` | A new client's id and its own bounded outbound sender |
+| `events` | Network -> Game | `ConnectionEvent` | Ordered connection, packet, and disconnection events |
 | per-client outbound | Game -> Network | `OutgoingPacket` | One bounded queue per client, written to directly by the send path |
-| `disconnect` | Network -> Game | `u32` (client ID) | Client disconnection notifications |
-| `kick` | Game -> Network | `u32` (client ID) | Server-initiated kick requests |
+| `control` | Game -> Network | `ConnectionCommand` | Typed close and shutdown requests |
 
 ```
 +-----------------------------+       flume channels       +------------------------------+
 |       Network Thread        | <-- per-client outbound, -- |        Game Thread            |
-|   (Tokio multi-threaded)    |     kick                    |   (Bevy ECS tick loop)       |
-|                             | --> incoming, connected,    |                              |
-|  Server::run()              |     disconnect              |  App::run()                  |
+|   (Tokio multi-threaded)    |     control                 |   (Bevy ECS tick loop)       |
+|                             | --> ordered events           |                              |
+|  Server::run()              |                             |  App::run()                  |
 |   +- accept TCP connections |                             |   +- PreUpdate: ingest packets|
 |   +- spawn Client tasks     |                             |   +- Update: keep-alive       |
-|   +- handle kick requests   |                             |   +- PostUpdate: broadcast    |
+|   +- handle close requests  |                             |   +- PostUpdate: broadcast    |
 |                             |                             |   +- Observers: events        |
 +-----------------------------+                             +------------------------------+
 ```
 
 There is no global outgoing channel. On accept, the network thread creates a
 bounded outbound queue for the connection (`OUTBOUND_QUEUE_CAPACITY`, 16384
-packets) and announces its sender through `connected` before the client task
-starts, so the game thread always owns the sender before the first packet from
-that client arrives. `ClientSenders` keeps the senders keyed by client entity,
+packets) and announces a `ConnectionHandle` through `Connected` before the
+client task starts. The game thread creates the entity on `Connected`, before
+the first packet. `ClientSenders` keeps handles keyed by client entity,
 and `Players` / `WorldPlayers` push straight into the target client's queue
 with a non-blocking `try_send`.
 
 If a queue is full the client is not keeping up; the game thread never blocks
 and never drops individual packets (which would desync the client). Instead it
-sends the client id through `kick`, the network thread aborts that client's
-task (closing the socket even while its writer is stalled), the usual
-`disconnect` notification follows, and the entity is despawned like any other
-disconnect.
+requests an idempotent close with reason `Overloaded`. The network server gives
+the task until its close deadline, then aborts it if necessary. A final
+`Disconnected` event follows task completion and the entity is despawned.
+
+`Server` owns the listener, task set, ID allocator, and task handles. Each
+connection task owns its socket and reader/writer halves. Bevy owns protocol
+phase in `ConnectionState`; the status fast path remains an exception. The
+connection task retains the peer address for logging. The server reports one
+`Disconnected { reason }` event after joining a task, including task failures.
+IDs stop allocating at `u32::MAX` instead of wrapping. Whole-server runtime
+shutdown is covered separately by NET-014.
 
 ## Tick Loop
 
@@ -60,7 +65,7 @@ Each tick executes these schedules in order:
 | Schedule | Systems | Purpose |
 |---|---|---|
 | **Startup** | `init_world` | Pre-generate spawn area chunks |
-| **PreUpdate** | `ingest_network_packets` | Drain incoming channel, decode packets, dispatch to handlers |
+| **PreUpdate** | `ingest_network_packets` | Drain ordered lifecycle events, decode packets, dispatch to handlers |
 | **Update** | `send_keep_alive` | Periodic keep-alive packets |
 | **PostUpdate** | `broadcast_position`, `update_previous_positions`, `stream_chunks` | Sync player movement, load/unload chunks |
 
@@ -111,12 +116,12 @@ Client (TCP)
 ClientReader::receive()         -- Persistent network reader future
   |
   v
-IncomingPacket { client_id, raw_packet }
-  |                             -- flume channel
+ConnectionEvent::Packet(IncomingPacket { client_id, raw_packet })
+  |                             -- ordered flume lifecycle stream
   v
 ingest_network_packets()        -- Game thread (PreUpdate)
   |
-  +- Look up or spawn client Entity
+  +- Look up entity created by ConnectionEvent::Connected
   +- Read ConnectionState component
   +- Decode packet based on state
   |

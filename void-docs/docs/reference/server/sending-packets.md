@@ -137,18 +137,17 @@ streaming does this.
 ### Raw layer
 
 Every client has its own bounded outbound queue (`OUTBOUND_QUEUE_CAPACITY`)
-held in `ClientSenders`; sends are non-blocking `try_send`s and never stall the
+held by a `ConnectionHandle` in `ClientSenders`; sends are non-blocking `try_send`s and never stall the
 tick. A client that cannot drain its queue is disconnected rather than having
 packets dropped. `NetworkChannels.outgoing` is only a fallback for client
 entities with no direct sender (tests use it as their packet sink); prefer
 `Players`.
 
-`NetworkChannels.kick` aborts the client's connection immediately: whatever is
-still queued for that client is dropped, including a `Disconnect` packet sent
-just before. It exists for stalled clients (the queue-full case above), not
-for a graceful kick with a reason. To kick a player with a reason, send a
-`Disconnect` packet and let the client close the connection, as the `/kick`
-command does.
+An overflowing queue requests an idempotent close with reason `Overloaded`.
+`WorldPlayers::disconnect` can request a close with a reason, an optional
+protocol packet, and a flush deadline. `/kick` uses it to send the Play
+`Disconnect` packet and close the socket after the packet flushes. The server
+aborts a connection if it remains open past the deadline.
 
 ## System sets
 
@@ -158,7 +157,7 @@ inside one schedule.
 
 | Set | Schedule | What runs there |
 |---|---|---|
-| `NetworkIngest` | `PreUpdate` | Drain incoming channel, spawn client entities, decode + dispatch (`On<PacketEvent<T>>` observers), handle disconnects. |
+| `NetworkIngest` | `PreUpdate` | Drain ordered lifecycle events, create client entities, decode + dispatch packets, handle disconnects. |
 | `CommandDrain` | `Update` | Execute queued commands (`CommandSystems::DrainQueue` is inside it). |
 | `ItemUseDrain` | `Update` | Run `ItemBehavior` handlers for queued uses/breaks. |
 | `MenuClickDrain` | `Update` | Fire `MenuClickEvent` and menu `on_click` handlers (see [Menus](../gameplay/menus.md)). |

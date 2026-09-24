@@ -127,16 +127,9 @@ mod tests {
 
     fn test_world() -> (World, flume::Receiver<OutgoingPacket>) {
         let mut world = World::new();
-        let (_, incoming) = flume::unbounded();
+        let (_, events) = flume::unbounded();
         let (outgoing, receiver) = flume::unbounded();
-        let (_, disconnect) = flume::unbounded();
-        let (kick, _) = flume::unbounded();
-        world.insert_resource(NetworkChannels {
-            incoming,
-            outgoing,
-            disconnect,
-            kick,
-        });
+        world.insert_resource(NetworkChannels { events, outgoing });
         world.init_resource::<ChunkIndex>();
         (world, receiver)
     }

@@ -78,23 +78,19 @@ mod tests {
     use crate::{
         ServerConfig,
         components::ClientId,
-        network::{IncomingPacket, NetworkChannels, OutgoingPacket},
+        network::{NetworkChannels, OutgoingPacket},
     };
 
     #[test]
     fn status_request_counts_ready_players() {
         let mut app = App::new();
-        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
         let config = ServerConfig::default();
 
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
         .insert_resource(ServerConfigResource::from(&config))
         .add_plugins(StatusPlugin);

@@ -147,7 +147,7 @@ mod tests {
     use super::*;
     use crate::ServerConfig;
     use crate::components::{LoadedChunks, PlayerDimension, PlayerReady};
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use crate::plugins::interaction::InteractionPlugin;
     use crate::world::{ChunkData, ChunkIndex, ChunkPos, DimensionId};
     use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData};
@@ -250,15 +250,11 @@ mod tests {
     impl MultiplayerHarness {
         fn new() -> Self {
             let mut app = App::new();
-            let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+            let (_incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
             let (outgoing_tx, outgoing) = flume::unbounded::<OutgoingPacket>();
-            let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-            let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
             app.insert_resource(NetworkChannels {
-                incoming: incoming_rx,
+                events: incoming_rx,
                 outgoing: outgoing_tx,
-                disconnect: disconnect_rx,
-                kick: kick_tx,
             })
             .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
             .insert_resource(ChunkIndex::default())

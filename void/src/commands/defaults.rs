@@ -253,9 +253,11 @@ fn handle_kick(ctx: &mut CommandContext) {
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
     let reason_nbt = crate::messages::text_component(&reason, TextColor::Red);
-    ctx.players().send(
+    ctx.players().disconnect(
         target,
-        voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
+        reason.clone(),
+        Some(voidmc_protocol::clientbound::Disconnect { reason: reason_nbt }.into()),
+        std::time::Duration::from_secs(1),
     );
 
     ctx.reply(&format!("Kicked {} (reason: {})", target_name, reason));
@@ -526,21 +528,17 @@ mod tests {
     use crate::components::{
         ClientId, EntityCollider, EntityType, MovementConfig, PreviousPosition, SpawnedEntity,
     };
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     fn command_world() -> (World, Entity, Receiver<OutgoingPacket>) {
-        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
 
         let mut world = World::new();
         world.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         });
 
         let mut registry = CommandRegistry::new();
