@@ -180,7 +180,7 @@ fn prune_hidden_passenger(
 mod tests {
     use bevy_app::App;
     use flume::Receiver;
-    use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
     use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
@@ -223,7 +223,7 @@ mod tests {
     fn passengers(rx: &Receiver<OutgoingPacket>) -> Vec<(u32, i32, Vec<i32>)> {
         rx.try_iter()
             .filter_map(|out| match out.packet {
-                ClientboundPacket::ManualPlay(ManualPlayPacket::SetPassengers(p)) => {
+                ClientboundPacket::Play(PlayPacket::SetPassengers(p)) => {
                     Some((out.client_id, p.entity_id, p.passengers))
                 }
                 _ => None,

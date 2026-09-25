@@ -49,9 +49,9 @@ pub use swing_arm::*;
 pub use tick_end::*;
 pub use use_item::*;
 pub use use_item_on::*;
-use voidmc_codec::{Decode, Encode};
+use voidmc_codec::Decode;
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Decode)]
 #[codec(tagged)]
 pub enum PlayPacket {
     #[codec(packet_id = 0x00)]

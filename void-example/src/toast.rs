@@ -58,9 +58,7 @@ mod tests {
     use voidmc::commands::dispatch_command;
     use voidmc::components::{ClientId, PlayerReady, Position};
     use voidmc::network::{NetworkChannels, OutgoingPacket};
-    use voidmc_protocol::clientbound::{
-        AdvancementFrame, ClientboundPacket, ManualPlayPacket, PlayPacket,
-    };
+    use voidmc_protocol::clientbound::{AdvancementFrame, ClientboundPacket, PlayPacket};
 
     use super::toast_command;
 
@@ -107,8 +105,7 @@ mod tests {
     #[test]
     fn sends_add_remove_sound_then_reply() {
         let packets = run(&["challenge", "minecraft:gold_ingot", "New", "record!"]);
-        let ClientboundPacket::ManualPlay(ManualPlayPacket::UpdateAdvancements(add)) = &packets[0]
-        else {
+        let ClientboundPacket::Play(PlayPacket::UpdateAdvancements(add)) = &packets[0] else {
             panic!("expected the add packet, got {:?}", packets[0]);
         };
         let display = add.added[0].advancement.display.as_ref().unwrap();
@@ -117,9 +114,7 @@ mod tests {
             display.icon.item_id,
             voidmc::ItemId::from_name("minecraft:gold_ingot").unwrap().0
         );
-        let ClientboundPacket::ManualPlay(ManualPlayPacket::UpdateAdvancements(remove)) =
-            &packets[1]
-        else {
+        let ClientboundPacket::Play(PlayPacket::UpdateAdvancements(remove)) = &packets[1] else {
             panic!("expected the remove packet, got {:?}", packets[1]);
         };
         assert_eq!(remove.removed, vec![add.added[0].id.clone()]);

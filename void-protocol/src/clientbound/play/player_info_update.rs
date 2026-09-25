@@ -99,7 +99,7 @@ mod tests {
     use ussr_nbt::owned::Tag;
 
     use super::*;
-    use crate::clientbound::ManualPlayPacket;
+    use crate::clientbound::PlayPacket;
 
     fn uuid() -> Uuid {
         Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn manual_packet_id() {
         let mut buf = Vec::new();
-        ManualPlayPacket::PlayerInfoUpdate(PlayerInfoUpdate {
+        PlayPacket::PlayerInfoUpdate(PlayerInfoUpdate {
             actions: PlayerInfoActions::empty(),
             entries: Vec::new(),
         })

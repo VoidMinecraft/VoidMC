@@ -126,7 +126,7 @@ pub struct CriterionProgressEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clientbound::ManualPlayPacket;
+    use crate::clientbound::PlayPacket;
     use crate::clientbound::play::set_title_text::{text_nbt, text_nbt_bytes};
 
     fn utf(text: &str) -> Vec<u8> {
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn manual_packet_id() {
         let mut buf = Vec::new();
-        ManualPlayPacket::UpdateAdvancements(toast_packet()).encode(&mut buf);
+        PlayPacket::UpdateAdvancements(toast_packet()).encode(&mut buf);
         assert_eq!(buf[..2], [0x82, 0x01]);
         assert_eq!(&buf[2..], toast_bytes());
     }

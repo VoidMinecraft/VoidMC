@@ -220,7 +220,7 @@ pub fn stream_chunks(
 #[cfg(test)]
 mod tests {
     use bevy_app::{App, PostUpdate};
-    use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, ClientboundPacket, ManualPlayPacket};
+    use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, ClientboundPacket, PlayPacket};
 
     use super::*;
     use crate::WorldGenerator;
@@ -280,7 +280,7 @@ mod tests {
             .drain()
             .filter(|p| p.client_id == client)
             .filter_map(|p| match p.packet {
-                ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(chunk)) => {
+                ClientboundPacket::Play(PlayPacket::ChunkDataAndLight(chunk)) => {
                     Some(ChunkPos::new(chunk.chunk_x, chunk.chunk_z))
                 }
                 _ => None,

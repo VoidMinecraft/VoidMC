@@ -678,14 +678,14 @@ mod tests {
         expected.push(id("minecraft:electric_spark"));
         assert_eq!(bytes, expected);
 
-        let decoded = PlayPacket::decode(&mut bytes.as_slice()).unwrap();
+        let decoded = LevelParticles::decode(&mut &bytes[1..]).unwrap();
         assert!(matches!(
             decoded,
-            PlayPacket::LevelParticles(LevelParticles {
+            LevelParticles {
                 count: 8,
                 particle: Particle::ElectricSpark,
                 ..
-            })
+            }
         ));
     }
 

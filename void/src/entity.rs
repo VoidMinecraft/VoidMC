@@ -413,7 +413,7 @@ mod tests {
 
     use bevy_app::App;
     use flume::Receiver;
-    use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket, PlayPacket};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use bevy_ecs::system::RunSystemOnce;
 
@@ -470,7 +470,7 @@ mod tests {
                 ClientboundPacket::Play(PlayPacket::SpawnEntity(p)) => {
                     Sent::Spawn(out.client_id, p.entity_id)
                 }
-                ClientboundPacket::ManualPlay(ManualPlayPacket::RemoveEntities(p)) => {
+                ClientboundPacket::Play(PlayPacket::RemoveEntities(p)) => {
                     assert_eq!(p.entity_ids.len(), 1);
                     Sent::Remove(out.client_id, p.entity_ids[0])
                 }
@@ -480,7 +480,7 @@ mod tests {
                 ClientboundPacket::Play(PlayPacket::SetEntityData(p)) => {
                     Sent::Metadata(out.client_id, p.entity_id)
                 }
-                ClientboundPacket::ManualPlay(ManualPlayPacket::SetPassengers(p)) => {
+                ClientboundPacket::Play(PlayPacket::SetPassengers(p)) => {
                     Sent::Passengers(out.client_id, p.entity_id)
                 }
                 other => panic!("unexpected packet {other:?}"),

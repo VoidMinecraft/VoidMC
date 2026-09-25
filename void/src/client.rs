@@ -334,11 +334,7 @@ impl Client {
             clientbound::ClientboundPacket::Status(packet) => writer.send(&packet).await?,
             clientbound::ClientboundPacket::Login(packet) => writer.send(&packet).await?,
             clientbound::ClientboundPacket::Configuration(packet) => writer.send(&packet).await?,
-            clientbound::ClientboundPacket::ManualConfiguration(packet) => {
-                writer.send(&packet).await?
-            }
             clientbound::ClientboundPacket::Play(packet) => writer.send(&packet).await?,
-            clientbound::ClientboundPacket::ManualPlay(packet) => writer.send(&packet).await?,
         }
         Ok(())
     }

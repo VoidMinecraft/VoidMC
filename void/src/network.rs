@@ -289,9 +289,7 @@ fn encode_packet(packet: &voidmc_protocol::clientbound::ClientboundPacket) -> Ve
         ClientboundPacket::Status(value) => value.encode(&mut bytes),
         ClientboundPacket::Login(value) => value.encode(&mut bytes),
         ClientboundPacket::Configuration(value) => value.encode(&mut bytes),
-        ClientboundPacket::ManualConfiguration(value) => value.encode(&mut bytes),
         ClientboundPacket::Play(value) => value.encode(&mut bytes),
-        ClientboundPacket::ManualPlay(value) => value.encode(&mut bytes),
     }
     bytes
 }
@@ -1140,26 +1138,24 @@ mod tests {
     #[test]
     fn large_chunk_traffic_hits_byte_limit_before_packet_count() {
         use voidmc_protocol::clientbound::{
-            ChunkDataAndLight, ChunkHeightmaps, ClientboundPacket, ManualPlayPacket,
+            ChunkDataAndLight, ChunkHeightmaps, ClientboundPacket, PlayPacket,
         };
         let chunk = || {
             OutgoingPacket::new(
                 1,
-                ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(
-                    ChunkDataAndLight {
-                        chunk_x: 0,
-                        chunk_z: 0,
-                        heightmaps: ChunkHeightmaps::empty(),
-                        data: vec![0; 5 * 1024 * 1024],
-                        block_entities: vec![],
-                        sky_light_mask: vec![],
-                        block_light_mask: vec![],
-                        empty_sky_light_mask: vec![],
-                        empty_block_light_mask: vec![],
-                        sky_light_arrays: vec![],
-                        block_light_arrays: vec![],
-                    },
-                )),
+                ClientboundPacket::Play(PlayPacket::ChunkDataAndLight(ChunkDataAndLight {
+                    chunk_x: 0,
+                    chunk_z: 0,
+                    heightmaps: ChunkHeightmaps::empty(),
+                    data: vec![0; 5 * 1024 * 1024],
+                    block_entities: vec![],
+                    sky_light_mask: vec![],
+                    block_light_mask: vec![],
+                    empty_sky_light_mask: vec![],
+                    empty_block_light_mask: vec![],
+                    sky_light_arrays: vec![],
+                    block_light_arrays: vec![],
+                })),
             )
         };
         let (outgoing, receiver) = flume::bounded(OUTBOUND_QUEUE_CAPACITY);

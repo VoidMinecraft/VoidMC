@@ -5,6 +5,7 @@ pub use ping_response::*;
 pub use status_response::*;
 use voidmc_codec::{Decode, Encode};
 
+// The void client test helpers decode status replies through this enum.
 #[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Status)]
 pub enum StatusPacket {

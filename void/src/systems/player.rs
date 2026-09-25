@@ -181,7 +181,7 @@ fn send_player_spawn(
 mod tests {
     use bevy_app::{App, Update};
     use flume::Receiver;
-    use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket, PlayPacket};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
     use crate::config::{ServerConfigBuilder, ServerConfigResource};
@@ -252,7 +252,7 @@ mod tests {
     fn drain_in_order(rx: &Receiver<OutgoingPacket>) -> Vec<Sent> {
         rx.try_iter()
             .map(|out| match out.packet {
-                ClientboundPacket::ManualPlay(ManualPlayPacket::PlayerInfoUpdate(p)) => Sent::Info(
+                ClientboundPacket::Play(PlayPacket::PlayerInfoUpdate(p)) => Sent::Info(
                     out.client_id,
                     p.actions.bits(),
                     p.entries
@@ -269,13 +269,11 @@ mod tests {
                         })
                         .collect(),
                 ),
-                ClientboundPacket::ManualPlay(ManualPlayPacket::PlayerInfoRemove(p)) => {
-                    Sent::Remove(
-                        out.client_id,
-                        p.uuids.iter().map(|u| u.as_u128() as u32).collect(),
-                    )
-                }
-                ClientboundPacket::ManualPlay(ManualPlayPacket::RemoveEntities(p)) => {
+                ClientboundPacket::Play(PlayPacket::PlayerInfoRemove(p)) => Sent::Remove(
+                    out.client_id,
+                    p.uuids.iter().map(|u| u.as_u128() as u32).collect(),
+                ),
+                ClientboundPacket::Play(PlayPacket::RemoveEntities(p)) => {
                     Sent::Despawn(out.client_id, p.entity_ids)
                 }
                 ClientboundPacket::Play(PlayPacket::SpawnEntity(p)) => {
