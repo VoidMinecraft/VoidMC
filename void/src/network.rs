@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -16,9 +16,46 @@ use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
 use crate::schedule::VoidSystems;
 
+mod quota;
+pub use quota::Quota;
+use quota::Reservation;
+
+pub const MAX_CONNECTIONS: usize = 256;
+pub const INBOUND_QUEUE_CAPACITY: usize = 32;
+pub const INBOUND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+pub const GLOBAL_INBOUND_BYTES: usize = 64 * 1024 * 1024;
+pub const GLOBAL_OUTBOUND_BYTES: usize = 128 * 1024 * 1024;
+pub const OUTBOUND_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+pub const CLOSE_PACKET_BYTES: usize = 64 * 1024;
+pub const STAGED_EVENT_CAPACITY: usize = 16 * 1024;
+
 pub struct IncomingPacket {
     pub client_id: u32,
     pub packet: Packet,
+    _charge: Option<(Reservation, Reservation)>,
+}
+
+impl IncomingPacket {
+    pub fn new(client_id: u32, packet: Packet) -> Self {
+        Self {
+            client_id,
+            packet,
+            _charge: None,
+        }
+    }
+
+    pub(crate) fn charged(
+        client_id: u32,
+        packet: Packet,
+        local: Reservation,
+        global: Reservation,
+    ) -> Self {
+        Self {
+            client_id,
+            packet,
+            _charge: Some((local, global)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -50,6 +87,8 @@ pub enum ConnectionCommand {
 pub struct ConnectionHandle {
     pub id: ConnectionId,
     outgoing: Sender<OutgoingPacket>,
+    outbound_bytes: Arc<Quota>,
+    global_outbound: Arc<Quota>,
     control: Sender<ConnectionCommand>,
     closing: Arc<AtomicBool>,
 }
@@ -63,29 +102,85 @@ impl ConnectionHandle {
         Self {
             id,
             outgoing,
+            outbound_bytes: Quota::new(OUTBOUND_QUEUE_CAPACITY, OUTBOUND_QUEUE_BYTES),
+            global_outbound: Quota::new(
+                MAX_CONNECTIONS * OUTBOUND_QUEUE_CAPACITY,
+                GLOBAL_OUTBOUND_BYTES,
+            ),
             control,
             closing: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    #[cfg(test)]
     pub fn outgoing(&self) -> &Sender<OutgoingPacket> {
         &self.outgoing
+    }
+
+    pub(crate) fn with_global_quota(mut self, global: Arc<Quota>) -> Self {
+        self.global_outbound = global;
+        self
+    }
+
+    pub fn try_send(&self, packet: OutgoingPacket) -> Result<(), SendError> {
+        if self.is_closing() {
+            return Err(SendError::Closing);
+        }
+        let mut packet = packet;
+        let frame = encode_packet(&packet.packet);
+        let bytes = frame.len() - 5;
+        let local = self
+            .outbound_bytes
+            .reserve(bytes)
+            .ok_or(SendError::Overloaded)?;
+        let global = self
+            .global_outbound
+            .reserve(bytes)
+            .ok_or(SendError::Overloaded)?;
+        packet.encoded_frame = Some(frame);
+        self.outgoing
+            .try_send(packet.charged(local, global))
+            .map_err(|error| match error {
+                flume::TrySendError::Full(_) => SendError::Overloaded,
+                flume::TrySendError::Disconnected(_) => SendError::Disconnected,
+            })
+    }
+
+    pub fn outbound_high_water(&self) -> (usize, usize) {
+        self.outbound_bytes.high_water()
     }
     pub fn is_closing(&self) -> bool {
         self.closing.load(Ordering::Relaxed)
     }
 
     /// Only the first close request wins. A closed actor is also considered closed.
-    pub fn close(&self, request: CloseRequest) -> bool {
+    pub fn close(&self, mut request: CloseRequest) -> bool {
         if self.closing.swap(true, Ordering::Relaxed) {
             return false;
         }
-        self.control
-            .send(ConnectionCommand::Close {
+        if request
+            .packet
+            .as_ref()
+            .is_some_and(|packet| encoded_packet_len(packet) > CLOSE_PACKET_BYTES)
+        {
+            tracing::warn!(
+                client_id = self.id.0,
+                limit = CLOSE_PACKET_BYTES,
+                "Disconnect packet exceeds close control limit; closing without packet"
+            );
+            request.packet = None;
+        }
+        let sent = self
+            .control
+            .try_send(ConnectionCommand::Close {
                 id: self.id,
                 request: Box::new(request),
             })
-            .is_ok()
+            .is_ok();
+        if !sent {
+            self.closing.store(false, Ordering::Relaxed);
+        }
+        sent
     }
 }
 
@@ -98,9 +193,107 @@ pub enum ConnectionEvent {
     },
 }
 
+impl ConnectionEvent {
+    fn id(&self) -> u32 {
+        match self {
+            Self::Connected(handle) => handle.id.0,
+            Self::Packet(packet) => packet.client_id,
+            Self::Disconnected { id, .. } => id.0,
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct PendingEvents {
+    by_client: HashMap<u32, VecDeque<ConnectionEvent>>,
+    ready: VecDeque<u32>,
+    len: usize,
+}
+
+impl PendingEvents {
+    fn push(&mut self, event: ConnectionEvent) {
+        let id = event.id();
+        let queue = self.by_client.entry(id).or_default();
+        if queue.is_empty() {
+            self.ready.push_back(id);
+        }
+        queue.push_back(event);
+        self.len += 1;
+    }
+
+    fn pop(&mut self) -> Option<ConnectionEvent> {
+        let id = self.ready.pop_front()?;
+        let queue = self
+            .by_client
+            .get_mut(&id)
+            .expect("ready client has events");
+        let event = queue.pop_front().expect("ready queue is nonempty");
+        if queue.is_empty() {
+            self.by_client.remove(&id);
+        } else {
+            self.ready.push_back(id);
+        }
+        self.len -= 1;
+        Some(event)
+    }
+}
+
 pub struct OutgoingPacket {
     pub client_id: u32,
     pub packet: voidmc_protocol::clientbound::ClientboundPacket,
+    encoded_frame: Option<Vec<u8>>,
+    _charge: Option<(Reservation, Reservation)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendError {
+    Closing,
+    Overloaded,
+    Disconnected,
+}
+
+impl OutgoingPacket {
+    pub fn new(client_id: u32, packet: voidmc_protocol::clientbound::ClientboundPacket) -> Self {
+        Self {
+            client_id,
+            packet,
+            encoded_frame: None,
+            _charge: None,
+        }
+    }
+
+    fn charged(mut self, local: Reservation, global: Reservation) -> Self {
+        self._charge = Some((local, global));
+        self
+    }
+
+    #[cfg(test)]
+    fn encoded_len(&self) -> usize {
+        encoded_packet_len(&self.packet)
+    }
+
+    pub(crate) fn take_encoded_frame(&mut self) -> Option<Vec<u8>> {
+        self.encoded_frame.take()
+    }
+}
+
+fn encoded_packet_len(packet: &voidmc_protocol::clientbound::ClientboundPacket) -> usize {
+    encode_packet(packet).len() - 5
+}
+
+fn encode_packet(packet: &voidmc_protocol::clientbound::ClientboundPacket) -> Vec<u8> {
+    use voidmc_codec::Encode;
+    use voidmc_protocol::clientbound::ClientboundPacket;
+    let mut bytes = vec![0; 5];
+    match packet {
+        ClientboundPacket::Status(value) => value.encode(&mut bytes),
+        ClientboundPacket::Login(value) => value.encode(&mut bytes),
+        ClientboundPacket::Configuration(value) => value.encode(&mut bytes),
+        ClientboundPacket::ManualConfiguration(value) => value.encode(&mut bytes),
+        ClientboundPacket::Play(value) => value.encode(&mut bytes),
+        ClientboundPacket::ManualPlay(value) => value.encode(&mut bytes),
+    }
+    bytes
 }
 
 /// Packets queued for one client beyond this are a stalled connection, not a
@@ -130,6 +323,7 @@ impl Plugin for NetworkPlugin {
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
         .insert_resource(ClientSenders::default())
+        .init_resource::<PendingEvents>()
         .add_systems(
             PreUpdate,
             ingest_network_packets.in_set(VoidSystems::NetworkIngest),
@@ -180,67 +374,53 @@ impl ClientSenders {
 
 #[instrument(level = "info", skip(world))]
 pub fn ingest_network_packets(world: &mut World) {
-    // TODO: This batch-draining approach is simple but may lead to increased latency under high load.
-    // Batch-drain all packets from channel
     let (max_packets_per_tick, packet_budget_ms) = {
         let config = world.resource::<ServerConfigResource>();
         (config.max_packets_per_tick, config.packet_ingest_budget_ms)
     };
-    let packet_limit = if max_packets_per_tick == 0 {
-        None
-    } else {
-        Some(max_packets_per_tick)
-    };
-    let packet_budget = if packet_budget_ms == 0 {
-        None
-    } else {
-        Some(Duration::from_millis(packet_budget_ms))
-    };
+    assert!(
+        max_packets_per_tick > 0,
+        "max_packets_per_tick must be positive"
+    );
+    assert!(
+        packet_budget_ms > 0,
+        "packet_ingest_budget_ms must be positive"
+    );
+    let packet_limit = max_packets_per_tick;
+    let packet_budget = Duration::from_millis(packet_budget_ms);
     let start = Instant::now();
     let mut hit_limit = false;
     let mut hit_budget = false;
-    let mut backlog = 0usize;
-
-    let events: Vec<ConnectionEvent> =
-        world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
-            let mut events = Vec::new();
-            let mut packets = 0;
-            loop {
-                if packet_limit.is_some_and(|limit| packets >= limit) {
-                    hit_limit = true;
-                    break;
-                }
-                if packet_budget.is_some_and(|budget| start.elapsed() >= budget) {
-                    hit_budget = true;
-                    break;
-                }
-                match channels.events.try_recv() {
-                    Ok(event) => {
-                        packets += usize::from(matches!(event, ConnectionEvent::Packet(_)));
-                        events.push(event);
-                    }
-                    Err(_) => break,
-                }
-            }
-            if hit_limit || hit_budget {
-                backlog = channels.events.len();
-            }
-            events
-        });
-
-    if hit_limit || hit_budget {
-        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
-        tracing::warn!(
-            events_processed = events.len(),
-            backlog,
-            max_packets_per_tick,
-            packet_ingest_budget_ms = packet_budget_ms,
-            elapsed_ms,
-            "Packet ingest throttled"
-        );
+    let mut packets = 0;
+    let mut processed = 0;
+    // Stage a bounded slice so a quiet connection behind a flood joins this
+    // tick's rotation. Reservations remain held while events are staged.
+    for staged in 0..4096 {
+        if world.resource::<PendingEvents>().len >= STAGED_EVENT_CAPACITY {
+            break;
+        }
+        if staged > 0 && start.elapsed() >= packet_budget / 4 {
+            break;
+        }
+        let event = world.resource::<NetworkChannels>().events.try_recv();
+        let Ok(event) = event else { break };
+        world.resource_mut::<PendingEvents>().push(event);
     }
 
-    for event in events {
+    loop {
+        if packets >= packet_limit {
+            hit_limit = true;
+            break;
+        }
+        if processed > 0 && start.elapsed() >= packet_budget {
+            hit_budget = true;
+            break;
+        }
+        let Some(event) = world.resource_mut::<PendingEvents>().pop() else {
+            break;
+        };
+        processed += 1;
+        packets += usize::from(matches!(event, ConnectionEvent::Packet(_)));
         match event {
             ConnectionEvent::Connected(handle) => {
                 let id = handle.id.0;
@@ -298,6 +478,18 @@ pub fn ingest_network_packets(world: &mut World) {
                 world.resource_mut::<ClientSenders>().detach(entity);
             }
         }
+    }
+    let backlog =
+        world.resource::<PendingEvents>().len + world.resource::<NetworkChannels>().events.len();
+    if backlog > 0 && (hit_limit || hit_budget) {
+        tracing::warn!(
+            packets_processed = packets,
+            backlog,
+            max_packets_per_tick,
+            packet_ingest_budget_ms = packet_budget_ms,
+            elapsed_ms = start.elapsed().as_secs_f64() * 1000.0,
+            "Packet ingest throttled"
+        );
     }
 }
 
@@ -697,10 +889,10 @@ mod tests {
 
         fn packet(&self, client_id: u32) {
             self.events_tx
-                .send(ConnectionEvent::Packet(IncomingPacket {
+                .send(ConnectionEvent::Packet(IncomingPacket::new(
                     client_id,
-                    packet: handshake_packet(),
-                }))
+                    handshake_packet(),
+                )))
                 .unwrap();
         }
 
@@ -862,6 +1054,151 @@ mod tests {
         h.app.update();
         assert!(h.entity_of(7).is_none());
         assert_eq!(h.senders().active_len(), 0);
+    }
+
+    #[test]
+    fn flooder_does_not_delay_a_quiet_client_past_one_rotation() {
+        let mut h = harness();
+        h.app
+            .insert_resource(ServerConfigResource::from(&crate::ServerConfig {
+                max_packets_per_tick: 17,
+                packet_ingest_budget_ms: 100,
+                ..crate::ServerConfig::default()
+            }));
+        h.app.init_resource::<Handshakes>().add_observer(
+            |event: On<PacketEvent<serverbound::Handshake>>, mut seen: ResMut<Handshakes>| {
+                seen.0.push((event.client_id, event.entity));
+            },
+        );
+        let _flooder = h.connect(1);
+        for _ in 0..20 {
+            h.packet(1);
+        }
+        let _quiet: Vec<_> = (2..=17)
+            .map(|id| {
+                let rx = h.connect(id);
+                h.packet(id);
+                rx
+            })
+            .collect();
+        h.app.update();
+        let seen = &h.app.world().resource::<Handshakes>().0;
+        assert_eq!(seen.len(), 17);
+        assert_eq!(seen[0].0, 1);
+        assert_eq!(
+            seen[1..].iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            (2..=17).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dispatch_time_counts_against_ingest_budget() {
+        let mut h = harness();
+        h.app
+            .insert_resource(ServerConfigResource::from(&crate::ServerConfig {
+                max_packets_per_tick: 100,
+                packet_ingest_budget_ms: 1,
+                ..crate::ServerConfig::default()
+            }));
+        h.app.init_resource::<Handshakes>().add_observer(
+            |event: On<PacketEvent<serverbound::Handshake>>, mut seen: ResMut<Handshakes>| {
+                seen.0.push((event.client_id, event.entity));
+                std::thread::sleep(Duration::from_millis(5));
+            },
+        );
+        let _first = h.connect(1);
+        let _second = h.connect(2);
+        h.packet(1);
+        h.packet(2);
+        h.app.update();
+        assert_eq!(h.app.world().resource::<Handshakes>().0.len(), 1);
+    }
+
+    #[test]
+    fn outbound_byte_limit_reports_overload_and_recovers_after_drain() {
+        use voidmc_protocol::clientbound::{ClientboundPacket, PingResponse, StatusPacket};
+        let packet = || {
+            OutgoingPacket::new(
+                1,
+                ClientboundPacket::Status(StatusPacket::PingResponse(PingResponse {
+                    timestamp: 7,
+                })),
+            )
+        };
+        let bytes = packet().encoded_len();
+        let (outgoing, receiver) = flume::bounded(10);
+        let (control, _control_rx) = flume::unbounded();
+        let mut handle = ConnectionHandle::new(ConnectionId(1), outgoing, control);
+        handle.outbound_bytes = Quota::new(10, bytes);
+        assert_eq!(handle.try_send(packet()), Ok(()));
+        assert_eq!(handle.try_send(packet()), Err(SendError::Overloaded));
+        assert_eq!(handle.outbound_high_water(), (1, bytes));
+        drop(receiver.recv().unwrap());
+        assert_eq!(handle.try_send(packet()), Ok(()));
+    }
+
+    #[test]
+    fn large_chunk_traffic_hits_byte_limit_before_packet_count() {
+        use voidmc_protocol::clientbound::{
+            ChunkDataAndLight, ChunkHeightmaps, ClientboundPacket, ManualPlayPacket,
+        };
+        let chunk = || {
+            OutgoingPacket::new(
+                1,
+                ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(
+                    ChunkDataAndLight {
+                        chunk_x: 0,
+                        chunk_z: 0,
+                        heightmaps: ChunkHeightmaps::empty(),
+                        data: vec![0; 5 * 1024 * 1024],
+                        block_entities: vec![],
+                        sky_light_mask: vec![],
+                        block_light_mask: vec![],
+                        empty_sky_light_mask: vec![],
+                        empty_block_light_mask: vec![],
+                        sky_light_arrays: vec![],
+                        block_light_arrays: vec![],
+                    },
+                )),
+            )
+        };
+        let (outgoing, receiver) = flume::bounded(OUTBOUND_QUEUE_CAPACITY);
+        let (control, _control_rx) = flume::unbounded();
+        let handle = ConnectionHandle::new(ConnectionId(1), outgoing, control);
+        assert_eq!(handle.try_send(chunk()), Ok(()));
+        assert_eq!(handle.try_send(chunk()), Err(SendError::Overloaded));
+        assert_eq!(receiver.len(), 1);
+        assert_eq!(handle.outbound_high_water().0, 1);
+        assert!(handle.outbound_high_water().1 > 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn many_slow_readers_share_a_global_byte_limit() {
+        use voidmc_protocol::clientbound::{ClientboundPacket, PingResponse, StatusPacket};
+        let packet = |id| {
+            OutgoingPacket::new(
+                id,
+                ClientboundPacket::Status(StatusPacket::PingResponse(PingResponse {
+                    timestamp: 7,
+                })),
+            )
+        };
+        let bytes = packet(1).encoded_len();
+        let global = Quota::new(16, bytes * 8);
+        let (control, _control_rx) = flume::unbounded();
+        let mut receivers = Vec::new();
+        let mut results = Vec::new();
+        for id in 1..=16 {
+            let (tx, rx) = flume::bounded(1);
+            let handle = ConnectionHandle::new(ConnectionId(id), tx, control.clone())
+                .with_global_quota(global.clone());
+            results.push(handle.try_send(packet(id)));
+            receivers.push(rx);
+        }
+        assert_eq!(results[..8], [Ok(()); 8]);
+        assert_eq!(results[8..], [Err(SendError::Overloaded); 8]);
+        assert_eq!(global.high_water(), (8, bytes * 8));
+        assert_eq!(receivers.iter().map(Receiver::len).sum::<usize>(), 8);
     }
 
     #[derive(Resource, Default)]

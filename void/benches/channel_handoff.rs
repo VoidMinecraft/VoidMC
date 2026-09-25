@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use voidmc_codec::Encode;
+use voidmc_protocol::clientbound::{ChunkDataAndLight, ChunkHeightmaps};
 
 const MESSAGE_COUNT: u64 = 1_024;
 
@@ -46,6 +48,83 @@ fn mutex_vecdeque_handoff(message_count: u64) {
     receiver.join().unwrap();
 }
 
+fn bounded_flume_payload(message_count: u64, bytes: usize, recipients: usize) {
+    let payload: Arc<[u8]> = vec![0; bytes].into();
+    let mut senders = Vec::new();
+    let mut readers = Vec::new();
+    for _ in 0..recipients {
+        let (tx, rx) = flume::bounded::<Arc<[u8]>>(32);
+        senders.push(tx);
+        readers.push(thread::spawn(move || {
+            for _ in 0..message_count {
+                black_box(rx.recv().unwrap());
+            }
+        }));
+    }
+    for _ in 0..message_count {
+        for tx in &senders {
+            tx.send(Arc::clone(&payload)).unwrap();
+        }
+    }
+    for reader in readers {
+        reader.join().unwrap();
+    }
+}
+
+fn bounded_tokio_payload(message_count: u64, bytes: usize, recipients: usize) {
+    let payload: Arc<[u8]> = vec![0; bytes].into();
+    let mut senders = Vec::new();
+    let mut readers = Vec::new();
+    for _ in 0..recipients {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Arc<[u8]>>(32);
+        senders.push(tx);
+        readers.push(thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async move {
+                for _ in 0..message_count {
+                    black_box(rx.recv().await.unwrap());
+                }
+            });
+        }));
+    }
+    for _ in 0..message_count {
+        for tx in &senders {
+            tx.blocking_send(Arc::clone(&payload)).unwrap();
+        }
+    }
+    for reader in readers {
+        reader.join().unwrap();
+    }
+}
+
+fn chunk(bytes: usize) -> ChunkDataAndLight {
+    ChunkDataAndLight {
+        chunk_x: 0,
+        chunk_z: 0,
+        heightmaps: ChunkHeightmaps::empty(),
+        data: vec![0; bytes],
+        block_entities: vec![],
+        sky_light_mask: vec![],
+        block_light_mask: vec![],
+        empty_sky_light_mask: vec![],
+        empty_block_light_mask: vec![],
+        sky_light_arrays: vec![],
+        block_light_arrays: vec![],
+    }
+}
+
+fn encode_chunk(chunk: &ChunkDataAndLight, passes: usize) {
+    let mut encoded = Vec::new();
+    for _ in 0..passes {
+        encoded.clear();
+        chunk.encode(&mut encoded);
+        black_box(encoded.len());
+    }
+}
+
 fn channel_handoff(c: &mut Criterion) {
     let mut group = c.benchmark_group("channel_handoff");
     group.throughput(Throughput::Elements(MESSAGE_COUNT));
@@ -62,6 +141,34 @@ fn channel_handoff(c: &mut Criterion) {
     );
 
     group.finish();
+
+    let mut bounded = c.benchmark_group("bounded_payload_handoff");
+    for (bytes, recipients) in [(64, 1), (64 * 1024, 1), (64, 16), (64 * 1024, 16)] {
+        let name = format!("{bytes}b_to_{recipients}");
+        bounded.throughput(Throughput::Elements(MESSAGE_COUNT * recipients as u64));
+        bounded.bench_function(BenchmarkId::new("flume", &name), |b| {
+            b.iter(|| bounded_flume_payload(black_box(MESSAGE_COUNT), bytes, recipients));
+        });
+        bounded.bench_function(BenchmarkId::new("tokio_mpsc", &name), |b| {
+            b.iter(|| bounded_tokio_payload(black_box(MESSAGE_COUNT), bytes, recipients));
+        });
+    }
+    bounded.finish();
+
+    let mut serialization = c.benchmark_group("outbound_chunk_accounting");
+    for bytes in [64 * 1024, 1024 * 1024] {
+        let chunk = chunk(bytes);
+        serialization.throughput(Throughput::Bytes(bytes as u64));
+        for passes in [1, 2] {
+            serialization.bench_function(
+                BenchmarkId::new(format!("{passes}_encode_passes"), bytes),
+                |b| {
+                    b.iter(|| encode_chunk(black_box(&chunk), passes));
+                },
+            );
+        }
+    }
+    serialization.finish();
 }
 
 criterion_group!(benches, channel_handoff);

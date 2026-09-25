@@ -50,6 +50,14 @@ impl VoidServer {
     /// Starts the server — spawns the network thread and runs the Bevy app.
     /// This function blocks until the server shuts down.
     pub fn run(self) {
+        assert!(
+            self.config.max_packets_per_tick > 0,
+            "max_packets_per_tick must be positive"
+        );
+        assert!(
+            self.config.packet_ingest_budget_ms > 0,
+            "packet_ingest_budget_ms must be positive"
+        );
         let config_resource = ServerConfigResource::from(&self.config);
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
@@ -58,9 +66,10 @@ impl VoidServer {
 
         let world_gen = WorldGen(self.config.world_generator);
 
-        let (events_tx, events_rx) = flume::unbounded::<ConnectionEvent>();
-        let (outgoing_tx, _) = flume::unbounded::<OutgoingPacket>();
-        let (control_tx, control_rx) = flume::unbounded::<ConnectionCommand>();
+        let (events_tx, events_rx) = flume::bounded::<ConnectionEvent>(16 * 1024);
+        let (outgoing_tx, _) = flume::bounded::<OutgoingPacket>(1);
+        let (control_tx, control_rx) =
+            flume::bounded::<ConnectionCommand>(crate::network::MAX_CONNECTIONS + 1);
         let network_control = control_tx.clone();
 
         // Start the network server in a separate thread

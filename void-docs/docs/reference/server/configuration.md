@@ -44,8 +44,8 @@ let config = ServerConfigBuilder::new()
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
 | `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output |
 | `metrics_tps_output` | `Option<String>` | `None` | Optional TPS CSV output path (defaults to `logs/tps-<timestamp>.csv`) |
-| `max_packets_per_tick` | `usize` | `1000` | Cap packets drained from the ordered lifecycle stream each tick (0 = unlimited) |
-| `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
+| `max_packets_per_tick` | `usize` | `1000` | Cap packets decoded and dispatched each tick; must be positive |
+| `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for staging, decoding, and dispatch; must be positive |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
@@ -59,6 +59,24 @@ limits used while decoding strings, collections, remaining-byte fields, and NBT.
 The production defaults allow 2 MiB inbound frames and 8 MiB outbound frames.
 Applications can replace the complete policy through
 `ServerConfigBuilder::frame_limits`.
+
+The network accepts at most 256 concurrent TCP connections. A connection may
+queue 32 inbound frames or 4 MiB of inbound frame bodies; all connections
+share a 64 MiB inbound budget. Outbound queues allow at most 16,384 packets
+or 8 MiB of serialized payload per connection, with a 128 MiB global payload
+budget. Exceeding an inbound limit disconnects that client. Outbound sends
+return `SendError::Overloaded` through `Players::try_send` or
+`WorldPlayers::try_send` and request an overload disconnect. `send` remains a
+convenience method for callers that do not need the result. These budgets
+cover queued packet payloads; socket buffers, decoded game state, and Rust
+container overhead add to process memory. Direct outbound items retain both
+their protocol value and a cached serialized frame.
+The ordered event channel and game-thread staging queue each hold at most
+16,384 events. The close control
+channel at most 257 commands, and each connection's close channel one request.
+Optional disconnect packets and status responses are each limited to 64 KiB.
+The status response channel holds one item. The production fallback outgoing
+channel holds one item and has no receiver.
 
 Decoded packets must consume their complete declared frame. Packet definitions
 that intentionally accept an opaque tail must mark that field with

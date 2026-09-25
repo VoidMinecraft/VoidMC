@@ -44,6 +44,7 @@ fn broadcast_health(players: Players, mobs: Query<(&MinecraftEntityId, &Health, 
 | Method | Recipients |
 |---|---|
 | `send(entity, packet)` | One client entity — ready or still in status/login/configuration. |
+| `try_send(entity, packet)` | Same destination, returning `Result<(), SendError>` (`Overloaded`, `Closing`, or `Disconnected`). |
 | `send_to(entities, packet)` | Each listed entity. |
 | `broadcast(packet)` | Every player with `PlayerReady`. |
 | `broadcast_except(entity, packet)` | Every ready player but one. |
@@ -53,6 +54,9 @@ fn broadcast_health(players: Players, mobs: Query<(&MinecraftEntityId, &Health, 
 
 `Recipient` exposes `entity()`, `client_id()`, `dimension()`,
 `visible_from(Option<DimensionId>)` and `sees_chunk(dimension, chunk)` to predicates.
+When a caller needs to act on overload, use `try_send`. An overloaded direct
+send requests a connection close; queued ordered packets are never dropped
+individually. The convenience `send` methods keep their existing `()` return.
 
 ### Audiences
 
