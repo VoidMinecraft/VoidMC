@@ -123,7 +123,7 @@ mod tests {
         network::{NetworkChannels, OutgoingPacket},
     };
     use voidmc_data::v26_1_2::blocks;
-    use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     fn test_world() -> (World, flume::Receiver<OutgoingPacket>) {
         let mut world = World::new();
@@ -239,7 +239,7 @@ mod tests {
             .filter(|p| {
                 matches!(
                     p.packet,
-                    ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(_))
+                    ClientboundPacket::Play(PlayPacket::ChunkDataAndLight(_))
                 )
             })
             .map(|p| p.client_id)

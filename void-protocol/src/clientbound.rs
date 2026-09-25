@@ -13,45 +13,8 @@ pub enum ClientboundPacket {
     Status(StatusPacket),
     Login(LoginPacket),
     Configuration(ConfigurationPacket),
-    ManualConfiguration(ManualConfigurationPacket),
     Play(PlayPacket),
-    ManualPlay(ManualPlayPacket),
 }
-
-macro_rules! manual_into_clientbound {
-    ($wrap:ident, $inner:ident { $($variant:ident),* $(,)? }) => {
-        impl From<$inner> for ClientboundPacket {
-            fn from(packet: $inner) -> Self {
-                ClientboundPacket::$wrap(packet)
-            }
-        }
-        $(
-            impl From<$variant> for ClientboundPacket {
-                fn from(packet: $variant) -> Self {
-                    ClientboundPacket::$wrap($inner::$variant(packet))
-                }
-            }
-        )*
-    };
-}
-
-manual_into_clientbound!(
-    ManualConfiguration,
-    ManualConfigurationPacket { UpdateTags }
-);
-manual_into_clientbound!(
-    ManualPlay,
-    ManualPlayPacket {
-        PlayerInfoUpdate,
-        PlayerInfoRemove,
-        RemoveEntities,
-        ChunkDataAndLight,
-        Commands,
-        CommandSuggestionsResponse,
-        SetPassengers,
-        UpdateAdvancements,
-    }
-);
 
 #[cfg(test)]
 mod tests {
@@ -69,6 +32,22 @@ mod tests {
         assert!(matches!(
             packet,
             ClientboundPacket::Configuration(ConfigurationPacket::FinishConfiguration(_))
+        ));
+
+        let packet: ClientboundPacket = UpdateTags { registries: vec![] }.into();
+        assert!(matches!(
+            packet,
+            ClientboundPacket::Configuration(ConfigurationPacket::UpdateTags(_))
+        ));
+
+        let packet: ClientboundPacket = SetPassengers {
+            entity_id: 1,
+            passengers: vec![],
+        }
+        .into();
+        assert!(matches!(
+            packet,
+            ClientboundPacket::Play(PlayPacket::SetPassengers(_))
         ));
     }
 }

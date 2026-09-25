@@ -4,6 +4,7 @@ mod handshake;
 pub use handshake::*;
 use voidmc_codec::{Decode, Encode};
 
+// Network test helpers encode client handshakes through this enum.
 #[derive(Debug, Encode, Decode)]
 #[codec(tagged)]
 pub enum HandshakePacket {

@@ -2,9 +2,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use std::hint::black_box;
 use voidmc_codec::{Decode, Encode};
 use voidmc_protocol::{
-    clientbound::{
-        Chunk, KeepAlive, ManualPlayPacket, PlayPacket as ClientboundPlayPacket, blocks,
-    },
+    clientbound::{Chunk, KeepAlive, PlayPacket as ClientboundPlayPacket, blocks},
     serverbound::{PlayPacket as ServerboundPlayPacket, SetPlayerPos},
 };
 
@@ -30,8 +28,8 @@ fn bench_chunk_packet(c: &mut Criterion) {
     let chunk = representative_chunk();
     let chunk_packet = chunk.to_packet();
     let encoded_chunk_packet = encode_to_vec(&chunk_packet);
-    let manual_packet = ManualPlayPacket::ChunkDataAndLight(chunk_packet.clone());
-    let encoded_manual_packet = encode_to_vec(&manual_packet);
+    let phase_packet = ClientboundPlayPacket::ChunkDataAndLight(chunk_packet.clone());
+    let encoded_phase_packet = encode_to_vec(&phase_packet);
 
     let mut group = c.benchmark_group("chunk_packet");
     group.throughput(Throughput::Bytes(encoded_chunk_packet.len() as u64));
@@ -49,8 +47,8 @@ fn bench_chunk_packet(c: &mut Criterion) {
     );
 
     group.bench_with_input(
-        BenchmarkId::new("encode_manual_play_chunk", encoded_manual_packet.len()),
-        &manual_packet,
+        BenchmarkId::new("encode_play_phase_chunk", encoded_phase_packet.len()),
+        &phase_packet,
         |b, packet| {
             b.iter(|| encode_to_vec(black_box(packet)));
         },
@@ -65,13 +63,16 @@ fn bench_representative_packets(c: &mut Criterion) {
     });
     let encoded_keep_alive = encode_to_vec(&keep_alive);
 
-    let serverbound_position = ServerboundPlayPacket::SetPlayerPos(SetPlayerPos {
+    let serverbound_position = SetPlayerPos {
         x: 12.5,
         y: 64.0,
         z: -31.25,
         flags: 0,
-    });
-    let encoded_position = encode_to_vec(&serverbound_position);
+    };
+    let encoded_position_body = encode_to_vec(&serverbound_position);
+    let mut encoded_position = Vec::with_capacity(encoded_position_body.len() + 1);
+    voidmc_codec::VarI32(0x1E).encode(&mut encoded_position);
+    encoded_position.extend_from_slice(&encoded_position_body);
 
     let mut group = c.benchmark_group("representative_packets");
 
@@ -84,7 +85,10 @@ fn bench_representative_packets(c: &mut Criterion) {
     );
 
     group.bench_with_input(
-        BenchmarkId::new("encode_serverbound_position", encoded_position.len()),
+        BenchmarkId::new(
+            "encode_serverbound_position_body",
+            encoded_position_body.len(),
+        ),
         &serverbound_position,
         |b, packet| {
             b.iter(|| encode_to_vec(black_box(packet)));

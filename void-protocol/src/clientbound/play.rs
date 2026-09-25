@@ -112,10 +112,10 @@ pub use update_entity_position::*;
 pub use update_entity_position_and_rotation::*;
 pub use update_entity_rotation::*;
 pub use update_mob_effect::*;
-use voidmc_codec::{Decode, Encode};
+use voidmc_codec::Encode;
 pub use world_border::*;
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode)]
 #[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Play)]
 pub enum PlayPacket {
     #[codec(packet_id = 0x01)]
@@ -132,6 +132,10 @@ pub enum PlayPacket {
     ChunksBiomes(ChunksBiomes),
     #[codec(packet_id = 0x0E)]
     ClearTitles(ClearTitles),
+    #[codec(packet_id = 0x0F)]
+    CommandSuggestionsResponse(CommandSuggestionsResponse),
+    #[codec(packet_id = 0x10)]
+    Commands(Commands),
     #[codec(packet_id = 0x11)]
     CloseContainer(CloseContainer),
     #[codec(packet_id = 0x12)]
@@ -152,6 +156,8 @@ pub enum PlayPacket {
     InitializeBorder(InitializeBorder),
     #[codec(packet_id = 0x2C)]
     KeepAlive(KeepAlive),
+    #[codec(packet_id = 0x2D)]
+    ChunkDataAndLight(ChunkDataAndLight),
     #[codec(packet_id = 0x2F)]
     LevelParticles(LevelParticles),
     #[codec(packet_id = 0x31)]
@@ -168,12 +174,18 @@ pub enum PlayPacket {
     Ping(Ping),
     #[codec(packet_id = 0x40)]
     PlayerAbilities(PlayerAbilities),
+    #[codec(packet_id = 0x45)]
+    PlayerInfoRemove(PlayerInfoRemove),
+    #[codec(packet_id = 0x46)]
+    PlayerInfoUpdate(PlayerInfoUpdate),
     #[codec(packet_id = 0x48)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
-    #[codec(packet_id = 0x4F)]
-    ResetScore(ResetScore),
+    #[codec(packet_id = 0x4D)]
+    RemoveEntities(RemoveEntities),
     #[codec(packet_id = 0x4E)]
     RemoveMobEffect(RemoveMobEffect),
+    #[codec(packet_id = 0x4F)]
+    ResetScore(ResetScore),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x58)]
@@ -200,6 +212,8 @@ pub enum PlayPacket {
     SetHeldSlot(SetHeldSlot),
     #[codec(packet_id = 0x6A)]
     SetObjective(SetObjective),
+    #[codec(packet_id = 0x6B)]
+    SetPassengers(SetPassengers),
     #[codec(packet_id = 0x6D)]
     SetPlayerTeam(SetPlayerTeam),
     #[codec(packet_id = 0x6E)]
@@ -224,61 +238,10 @@ pub enum PlayPacket {
     SetTabListHeaderFooter(SetTabListHeaderFooter),
     #[codec(packet_id = 0x7D)]
     TeleportEntity(TeleportEntity),
+    #[codec(packet_id = 0x82)]
+    UpdateAdvancements(UpdateAdvancements),
     #[codec(packet_id = 0x83)]
     UpdateAttributes(UpdateAttributes),
     #[codec(packet_id = 0x84)]
     UpdateMobEffect(UpdateMobEffect),
-}
-
-/// Packets with manual Encode impls that can't be in the tagged enum.
-/// These are encoded directly with their packet ID prepended.
-#[derive(Debug, Clone)]
-pub enum ManualPlayPacket {
-    PlayerInfoUpdate(PlayerInfoUpdate),
-    PlayerInfoRemove(PlayerInfoRemove),
-    RemoveEntities(RemoveEntities),
-    ChunkDataAndLight(ChunkDataAndLight),
-    Commands(Commands),
-    CommandSuggestionsResponse(CommandSuggestionsResponse),
-    SetPassengers(SetPassengers),
-    UpdateAdvancements(UpdateAdvancements),
-}
-
-impl Encode for ManualPlayPacket {
-    fn encode(&self, buf: &mut Vec<u8>) {
-        match self {
-            ManualPlayPacket::PlayerInfoUpdate(packet) => {
-                voidmc_codec::VarI32(0x46).encode(buf);
-                packet.encode(buf);
-            }
-            ManualPlayPacket::PlayerInfoRemove(packet) => {
-                voidmc_codec::VarI32(0x45).encode(buf);
-                packet.encode(buf);
-            }
-            ManualPlayPacket::RemoveEntities(packet) => {
-                voidmc_codec::VarI32(0x4D).encode(buf);
-                packet.encode(buf);
-            }
-            ManualPlayPacket::ChunkDataAndLight(packet) => {
-                voidmc_codec::VarI32(0x2D).encode(buf);
-                packet.encode(buf);
-            }
-            ManualPlayPacket::Commands(packet) => {
-                voidmc_codec::VarI32(0x10).encode(buf);
-                packet.encode(buf);
-            }
-            ManualPlayPacket::CommandSuggestionsResponse(packet) => {
-                voidmc_codec::VarI32(0x0F).encode(buf);
-                packet.encode(buf);
-            }
-            ManualPlayPacket::SetPassengers(packet) => {
-                voidmc_codec::VarI32(0x6B).encode(buf);
-                packet.encode(buf);
-            }
-            ManualPlayPacket::UpdateAdvancements(packet) => {
-                voidmc_codec::VarI32(0x82).encode(buf);
-                packet.encode(buf);
-            }
-        }
-    }
 }

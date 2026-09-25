@@ -20,12 +20,12 @@ impl Encode for SetPassengers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clientbound::ManualPlayPacket;
+    use crate::clientbound::PlayPacket;
 
     #[test]
     fn passenger_ids_and_count_are_varints() {
         let mut bytes = Vec::new();
-        ManualPlayPacket::SetPassengers(SetPassengers {
+        PlayPacket::SetPassengers(SetPassengers {
             entity_id: 300,
             passengers: vec![1, 128],
         })

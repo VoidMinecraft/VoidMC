@@ -444,7 +444,7 @@ mod tests {
     use bevy_app::App;
     use flume::Receiver;
     use ussr_nbt::owned::Tag;
-    use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket, PlayPacket};
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
     use crate::components::{ClientId, PlayerDimension};
@@ -526,27 +526,25 @@ mod tests {
                         text_of(&packet.footer),
                     )
                 }
-                ClientboundPacket::ManualPlay(ManualPlayPacket::PlayerInfoUpdate(packet)) => {
-                    Sent::Info(
-                        out.client_id,
-                        packet.actions.bits(),
-                        packet
-                            .entries
-                            .iter()
-                            .map(|e| {
-                                (
-                                    e.uuid,
-                                    e.game_mode,
-                                    e.listed,
-                                    e.latency,
-                                    e.display_name.as_ref().map(text_of),
-                                    e.list_order,
-                                    e.show_hat,
-                                )
-                            })
-                            .collect(),
-                    )
-                }
+                ClientboundPacket::Play(PlayPacket::PlayerInfoUpdate(packet)) => Sent::Info(
+                    out.client_id,
+                    packet.actions.bits(),
+                    packet
+                        .entries
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.uuid,
+                                e.game_mode,
+                                e.listed,
+                                e.latency,
+                                e.display_name.as_ref().map(text_of),
+                                e.list_order,
+                                e.show_hat,
+                            )
+                        })
+                        .collect(),
+                ),
                 other => panic!("unexpected packet {other:?}"),
             })
             .collect();
@@ -558,7 +556,7 @@ mod tests {
         let mut sent: Vec<(u32, Vec<u8>)> = rx
             .try_iter()
             .map(|out| {
-                let ClientboundPacket::ManualPlay(packet) = out.packet else {
+                let ClientboundPacket::Play(packet) = out.packet else {
                     panic!("unexpected packet {:?}", out.packet);
                 };
                 let mut buf = Vec::new();

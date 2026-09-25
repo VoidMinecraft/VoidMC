@@ -886,8 +886,8 @@ pub(crate) mod tests {
     use voidmc::{EntityPlugin, Particle, Teleport, TextColor};
     use voidmc_codec::{Encode, VarI32};
     use voidmc_protocol::clientbound::{
-        BossEventAction, ClientboundPacket, ManualPlayPacket, ObjectiveAction, Parser, PlayPacket,
-        SoundEffect, SoundEvent, SoundSource,
+        BossEventAction, ClientboundPacket, ObjectiveAction, Parser, PlayPacket, SoundEffect,
+        SoundEvent, SoundSource,
     };
     use voidmc_protocol::serverbound::{ConfirmTeleportation, Pong};
 
@@ -1298,7 +1298,7 @@ pub(crate) mod tests {
                             progress,
                         }
                     }
-                    ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(_)) => {
+                    ClientboundPacket::Play(PlayPacket::ChunkDataAndLight(_)) => {
                         Out::Chunk(out.client_id)
                     }
                     ClientboundPacket::Play(PlayPacket::SpawnEntity(p)) => Out::Spawn {
@@ -1310,10 +1310,10 @@ pub(crate) mod tests {
                         z: p.z,
                         yaw: p.yaw,
                     },
-                    ClientboundPacket::ManualPlay(ManualPlayPacket::RemoveEntities(p)) => {
+                    ClientboundPacket::Play(PlayPacket::RemoveEntities(p)) => {
                         Out::Remove(out.client_id, p.entity_ids)
                     }
-                    ClientboundPacket::ManualPlay(ManualPlayPacket::SetPassengers(p)) => {
+                    ClientboundPacket::Play(PlayPacket::SetPassengers(p)) => {
                         Out::Passengers(out.client_id, p.entity_id, p.passengers)
                     }
                     ClientboundPacket::Play(PlayPacket::UpdateEntityPosition(p)) => Out::Move {

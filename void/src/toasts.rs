@@ -308,7 +308,7 @@ mod tests {
     use bevy_app::{App, Update};
     use flume::Receiver;
     use ussr_nbt::owned::{Nbt, Tag};
-    use voidmc_protocol::clientbound::{ManualPlayPacket, PlayPacket};
+    use voidmc_protocol::clientbound::PlayPacket;
     use voidmc_protocol::slot::DataComponent;
 
     use super::*;
@@ -353,7 +353,7 @@ mod tests {
 
     fn classify(packet: ClientboundPacket) -> Sent {
         match packet {
-            ClientboundPacket::ManualPlay(ManualPlayPacket::UpdateAdvancements(p)) => {
+            ClientboundPacket::Play(PlayPacket::UpdateAdvancements(p)) => {
                 assert!(!p.reset);
                 assert!(!p.show_advancements);
                 match (p.added.as_slice(), p.removed.as_slice()) {
