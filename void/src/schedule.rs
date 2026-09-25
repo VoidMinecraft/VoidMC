@@ -72,7 +72,7 @@ mod tests {
     use super::*;
     use crate::components::{ClientId, KeepAliveState, PlayerReady};
     use crate::config::{ServerConfig, ServerConfigResource};
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use crate::systems::{GameSystemsPlugin, KeepAliveTicker};
     use crate::world::ChunkIndex;
     use crate::world::generation::{DefaultWorldGenerator, WorldGen};
@@ -88,17 +88,13 @@ mod tests {
 
     #[test]
     fn user_systems_order_against_keep_alive_set() {
-        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
 
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
         .insert_resource(Outgoing(outgoing_rx))
         .insert_resource(ServerConfigResource::from(&ServerConfig::default()))

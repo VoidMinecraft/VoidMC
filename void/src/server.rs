@@ -1,22 +1,26 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use flume::{Receiver, Sender};
 use tokio::net::TcpListener;
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
 use tracing::{error, info, instrument};
 
 use crate::{
     client::Client,
-    network::{ClientConnected, IncomingPacket, OUTBOUND_QUEUE_CAPACITY},
+    network::{
+        CloseRequest, ConnectionCommand, ConnectionEvent, ConnectionHandle, ConnectionId,
+        DisconnectReason, OUTBOUND_QUEUE_CAPACITY,
+    },
     server_status::ServerStatusSnapshot,
 };
-use voidmc_net::socket::{FrameLimits, ServerSocket};
+use voidmc_net::socket::{FrameLimits, ServerSocket, SocketError};
 
 #[derive(Debug)]
 pub struct Server {
     socket: ServerSocket,
-    connections: HashMap<u32, AbortHandle>,
-    next_id: u32,
+    connections: HashMap<ConnectionId, (AbortHandle, Sender<CloseRequest>)>,
+    next_id: Option<u32>,
 }
 
 impl Server {
@@ -29,46 +33,36 @@ impl Server {
         Ok(Self {
             socket: ServerSocket::new(server, limits),
             connections: HashMap::new(),
-            next_id: 1,
+            next_id: Some(1),
         })
     }
 
     #[instrument(level = "info", skip(self))]
     pub async fn run(
         &mut self,
-        incoming_tx: Sender<IncomingPacket>,
-        connected_tx: Sender<ClientConnected>,
-        disconnect_tx: Sender<u32>,
-        kick_rx: Receiver<u32>,
+        events: Sender<ConnectionEvent>,
+        control: Receiver<ConnectionCommand>,
+        control_tx: Sender<ConnectionCommand>,
     ) {
-        self.run_inner(incoming_tx, connected_tx, disconnect_tx, kick_rx, None)
-            .await;
+        self.run_inner(events, control, control_tx, None).await;
     }
 
     pub(crate) async fn run_with_status(
         &mut self,
-        incoming_tx: Sender<IncomingPacket>,
-        connected_tx: Sender<ClientConnected>,
-        disconnect_tx: Sender<u32>,
-        kick_rx: Receiver<u32>,
+        events: Sender<ConnectionEvent>,
+        control: Receiver<ConnectionCommand>,
+        control_tx: Sender<ConnectionCommand>,
         server_status: ServerStatusSnapshot,
     ) {
-        self.run_inner(
-            incoming_tx,
-            connected_tx,
-            disconnect_tx,
-            kick_rx,
-            Some(server_status),
-        )
-        .await;
+        self.run_inner(events, control, control_tx, Some(server_status))
+            .await;
     }
 
     async fn run_inner(
         &mut self,
-        incoming_tx: Sender<IncomingPacket>,
-        connected_tx: Sender<ClientConnected>,
-        disconnect_tx: Sender<u32>,
-        kick_rx: Receiver<u32>,
+        events: Sender<ConnectionEvent>,
+        control: Receiver<ConnectionCommand>,
+        control_tx: Sender<ConnectionCommand>,
         server_status: Option<ServerStatusSnapshot>,
     ) {
         let local_addr = self.socket.local_addr().ok();
@@ -76,9 +70,13 @@ impl Server {
             info!(listen_addr = %addr, "Server listening");
         }
 
-        let (ended_tx, ended_rx) = flume::unbounded::<u32>();
+        let mut tasks = JoinSet::new();
+        let mut task_ids = HashMap::new();
+        let mut close_deadlines: HashMap<ConnectionId, Instant> = HashMap::new();
+        let mut close_reasons: HashMap<ConnectionId, DisconnectReason> = HashMap::new();
 
         loop {
+            let next_deadline = close_deadlines.values().min().copied();
             tokio::select! {
                 result = self.socket.accept() => {
                     match result {
@@ -86,38 +84,28 @@ impl Server {
                             let client_ip = client.peer_addr().to_string();
                             info!(client_ip = %client_ip, "Accepted new connection");
 
-                            let client_id = self.next_id;
-                            self.next_id += 1;
+                            let Some(client_id) = self.allocate_id() else {
+                                error!("Connection ID space exhausted; rejecting connection");
+                                continue;
+                            };
 
-                            let incoming_tx = incoming_tx.clone();
-                            let ended_tx = ended_tx.clone();
+                            let task_events = events.clone();
                             let server_status = server_status.clone();
                             let (outgoing_tx, outgoing_rx) = flume::bounded(OUTBOUND_QUEUE_CAPACITY);
+                            let (close_tx, close_rx) = flume::unbounded();
+                            let handle = ConnectionHandle::new(client_id, outgoing_tx, control_tx.clone());
 
-                            // The game thread must own this sender before the
-                            // client task can forward a single packet.
-                            if connected_tx.send(ClientConnected { client_id, outgoing: outgoing_tx }).is_err() {
-                                info!("Connected channel closed; shutting down network server");
+                            // All events for this connection share one FIFO stream.
+                            if events.send(ConnectionEvent::Connected(handle)).is_err() {
+                                info!("Lifecycle channel closed; shutting down network server");
                                 break;
                             }
 
-                            let task = tokio::spawn(
-                                Client::new(client_id, client, incoming_tx, outgoing_rx, server_status).run(),
+                            let task = tasks.spawn(
+                                Client::new(client_id.0, client, task_events, outgoing_rx, close_rx, server_status).run(),
                             );
-                            self.connections.insert(client_id, task.abort_handle());
-
-                            tokio::spawn(async move {
-                                match task.await {
-                                    Ok(Ok(())) => {}
-                                    Ok(Err(e)) => {
-                                        info!(client_ip = %client_ip, error = ?e, "Client connection closed");
-                                    }
-                                    Err(_) => {
-                                        info!(client_ip = %client_ip, "Client connection aborted");
-                                    }
-                                }
-                                let _ = ended_tx.send(client_id);
-                            });
+                            task_ids.insert(task.id(), client_id);
+                            self.connections.insert(client_id, (task, close_tx));
                         }
                         Err(e) => {
                             error!(error = ?e, "Failed to accept connection");
@@ -125,23 +113,88 @@ impl Server {
                     }
                 }
 
-                Ok(client_id) = ended_rx.recv_async() => {
-                    self.connections.remove(&client_id);
-                    let _ = disconnect_tx.send(client_id);
+                Some(result) = tasks.join_next_with_id(), if !tasks.is_empty() => {
+                    self.finish_task(result, &mut task_ids, &mut close_deadlines, &mut close_reasons, &events);
                 }
 
-                result = kick_rx.recv_async() => {
-                    let Ok(client_id) = result else {
-                        info!("Kick channel closed; shutting down network server");
-                        break;
-                    };
+                result = control.recv_async() => {
+                    match result {
+                        Ok(ConnectionCommand::Close { id, request }) => {
+                            if let Some((_, close)) = self.connections.get(&id) {
+                                let request = *request;
+                                let deadline = request.deadline;
+                                close_reasons.insert(id, request.reason.clone());
+                                let _ = close.send(request);
+                                close_deadlines.insert(id, deadline);
+                            }
+                        }
+                        Ok(ConnectionCommand::Shutdown) | Err(_) => break,
+                    }
+                }
 
-                    if let Some(connection) = self.connections.remove(&client_id) {
-                        connection.abort();
-                        info!(client_id = client_id, "Kicked client");
+                () = async {
+                    if let Some(deadline) = next_deadline {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                    }
+                }, if next_deadline.is_some() => {
+                    let now = Instant::now();
+                    let expired: Vec<_> = close_deadlines.iter()
+                        .filter(|(_, deadline)| **deadline <= now)
+                        .map(|(id, _)| *id).collect();
+                    for id in expired {
+                        close_deadlines.remove(&id);
+                        if let Some((abort, _)) = self.connections.get(&id) {
+                            abort.abort();
+                        }
                     }
                 }
             }
+        }
+    }
+
+    fn allocate_id(&mut self) -> Option<ConnectionId> {
+        let id = self.next_id?;
+        self.next_id = id.checked_add(1);
+        Some(ConnectionId(id))
+    }
+
+    fn finish_task(
+        &mut self,
+        result: Result<(Id, Result<DisconnectReason, SocketError>), JoinError>,
+        task_ids: &mut HashMap<Id, ConnectionId>,
+        close_deadlines: &mut HashMap<ConnectionId, Instant>,
+        close_reasons: &mut HashMap<ConnectionId, DisconnectReason>,
+        events: &Sender<ConnectionEvent>,
+    ) {
+        let (task_id, reason) = match result {
+            Ok((task_id, Ok(reason))) => (task_id, reason),
+            Ok((task_id, Err(SocketError::PeerClosed))) => (task_id, DisconnectReason::PeerClosed),
+            Ok((task_id, Err(error))) => {
+                info!(?error, "Client connection closed");
+                (task_id, DisconnectReason::Error(error.to_string()))
+            }
+            Err(error) => {
+                info!(?error, "Client connection task failed");
+                let reason = if error.is_cancelled() {
+                    task_ids
+                        .get(&error.id())
+                        .and_then(|id| close_reasons.get(id))
+                        .cloned()
+                        .unwrap_or_else(|| DisconnectReason::Error(error.to_string()))
+                } else {
+                    DisconnectReason::Error(error.to_string())
+                };
+                (error.id(), reason)
+            }
+        };
+        if let Some(client_id) = task_ids.remove(&task_id) {
+            self.connections.remove(&client_id);
+            close_deadlines.remove(&client_id);
+            close_reasons.remove(&client_id);
+            let _ = events.send(ConnectionEvent::Disconnected {
+                id: client_id,
+                reason,
+            });
         }
     }
 }
@@ -150,69 +203,294 @@ impl Server {
 mod tests {
     use std::time::Duration;
 
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
     use super::*;
 
     #[tokio::test]
-    async fn run_exits_when_kick_channel_closes() {
+    async fn run_exits_on_shutdown_command() {
         let mut server = Server::new("127.0.0.1:0").await.unwrap();
-        let (incoming_tx, _incoming_rx) = flume::unbounded();
-        let (connected_tx, _connected_rx) = flume::unbounded();
-        let (disconnect_tx, _disconnect_rx) = flume::unbounded();
-        let (kick_tx, kick_rx) = flume::unbounded();
-        drop(kick_tx);
+        let (events_tx, _events_rx) = flume::unbounded();
+        let (control_tx, control_rx) = flume::unbounded();
+        control_tx.send(ConnectionCommand::Shutdown).unwrap();
 
         tokio::time::timeout(
             Duration::from_millis(100),
-            server.run(incoming_tx, connected_tx, disconnect_tx, kick_rx),
+            server.run(events_tx, control_rx, control_tx),
         )
         .await
-        .expect("server should exit when the kick channel closes");
+        .expect("server should exit on shutdown");
     }
 
     #[tokio::test]
     async fn accept_announces_a_bounded_sender_before_any_packet() {
         let mut server = Server::new("127.0.0.1:0").await.unwrap();
         let address = server.socket.local_addr().unwrap();
-        let (incoming_tx, incoming_rx) = flume::unbounded();
-        let (connected_tx, connected_rx) = flume::unbounded();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded();
-        let (kick_tx, kick_rx) = flume::unbounded();
-        let running = tokio::spawn(async move {
-            server
-                .run(incoming_tx, connected_tx, disconnect_tx, kick_rx)
-                .await
-        });
+        let (events_tx, events_rx) = flume::unbounded();
+        let (control_tx, control_rx) = flume::unbounded();
+        let server_control = control_tx.clone();
+        let running =
+            tokio::spawn(async move { server.run(events_tx, control_rx, server_control).await });
 
         let mut peer = TcpStream::connect(address).await.unwrap();
-        let connected = tokio::time::timeout(Duration::from_secs(1), connected_rx.recv_async())
+        let connected = tokio::time::timeout(Duration::from_secs(1), events_rx.recv_async())
             .await
             .expect("accept should announce the client")
             .unwrap();
-        assert_eq!(connected.client_id, 1);
-        assert_eq!(connected.outgoing.capacity(), Some(OUTBOUND_QUEUE_CAPACITY));
+        let ConnectionEvent::Connected(connected) = connected else {
+            panic!("expected connected");
+        };
+        assert_eq!(connected.id, ConnectionId(1));
+        assert_eq!(
+            connected.outgoing().capacity(),
+            Some(OUTBOUND_QUEUE_CAPACITY)
+        );
 
         peer.write_all(&[0x01, 0x00]).await.unwrap();
-        let incoming = tokio::time::timeout(Duration::from_secs(1), incoming_rx.recv_async())
+        let incoming = tokio::time::timeout(Duration::from_secs(1), events_rx.recv_async())
             .await
             .expect("packet should follow the announcement")
             .unwrap();
+        let ConnectionEvent::Packet(incoming) = incoming else {
+            panic!("expected packet");
+        };
         assert_eq!(incoming.client_id, 1);
 
-        kick_tx.send(1).unwrap();
-        let disconnected = tokio::time::timeout(Duration::from_secs(1), disconnect_rx.recv_async())
+        assert!(connected.close(CloseRequest {
+            reason: DisconnectReason::Server("test".into()),
+            packet: None,
+            deadline: std::time::Instant::now() + Duration::from_secs(1),
+        }));
+        assert!(!connected.close(CloseRequest {
+            reason: DisconnectReason::Server("duplicate".into()),
+            packet: None,
+            deadline: std::time::Instant::now() + Duration::from_secs(1),
+        }));
+        let disconnected = tokio::time::timeout(Duration::from_secs(1), events_rx.recv_async())
             .await
-            .expect("kick should end the connection")
+            .expect("close should end the connection")
             .unwrap();
-        assert_eq!(disconnected, 1);
-        assert!(connected.outgoing.is_disconnected());
+        assert!(matches!(
+            disconnected,
+            ConnectionEvent::Disconnected {
+                id: ConnectionId(1),
+                reason: DisconnectReason::Server(_)
+            }
+        ));
 
-        drop(kick_tx);
+        control_tx.send(ConnectionCommand::Shutdown).unwrap();
         tokio::time::timeout(Duration::from_secs(1), running)
             .await
-            .expect("server should exit when the kick channel closes")
+            .expect("server should exit on shutdown")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ids_stop_at_exhaustion() {
+        let mut server = Server::new("127.0.0.1:0").await.unwrap();
+        server.next_id = Some(u32::MAX);
+        assert_eq!(server.allocate_id(), Some(ConnectionId(u32::MAX)));
+        assert_eq!(server.allocate_id(), None);
+    }
+
+    #[tokio::test]
+    async fn connection_churn_releases_all_handles() {
+        let mut server = Server::new("127.0.0.1:0").await.unwrap();
+        let address = server.socket.local_addr().unwrap();
+        let (events_tx, events_rx) = flume::unbounded();
+        let (control_tx, control_rx) = flume::unbounded();
+        let server_control = control_tx.clone();
+        let running = tokio::spawn(async move {
+            server.run(events_tx, control_rx, server_control).await;
+            server
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for expected in 1..=64 {
+                let peer = TcpStream::connect(address).await.unwrap();
+                let ConnectionEvent::Connected(handle) = events_rx.recv_async().await.unwrap()
+                else {
+                    panic!("expected connected");
+                };
+                assert_eq!(handle.id, ConnectionId(expected));
+                drop(peer);
+                let ConnectionEvent::Disconnected { id, .. } =
+                    events_rx.recv_async().await.unwrap()
+                else {
+                    panic!("expected disconnected");
+                };
+                assert_eq!(id, ConnectionId(expected));
+                assert!(handle.outgoing().is_disconnected());
+            }
+        })
+        .await
+        .expect("connection churn should finish");
+
+        control_tx.send(ConnectionCommand::Shutdown).unwrap();
+        let server = running.await.unwrap();
+        assert!(server.connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn close_flushes_disconnect_packet_before_ending() {
+        let mut server = Server::new("127.0.0.1:0").await.unwrap();
+        let address = server.socket.local_addr().unwrap();
+        let (events_tx, events_rx) = flume::unbounded();
+        let (control_tx, control_rx) = flume::unbounded();
+        let server_control = control_tx.clone();
+        let running = tokio::spawn(async move {
+            server.run(events_tx, control_rx, server_control).await;
+        });
+        let mut peer = TcpStream::connect(address).await.unwrap();
+        let ConnectionEvent::Connected(handle) = events_rx.recv_async().await.unwrap() else {
+            panic!("expected connected");
+        };
+        let packet: voidmc_protocol::clientbound::ClientboundPacket =
+            voidmc_protocol::clientbound::Disconnect {
+                reason: crate::messages::text_component("bye", crate::messages::TextColor::Red),
+            }
+            .into();
+        assert!(handle.close(CloseRequest {
+            reason: DisconnectReason::Server("bye".into()),
+            packet: Some(packet),
+            deadline: std::time::Instant::now() + Duration::from_secs(1),
+        }));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            let frame_len = peer.read_u8().await.unwrap();
+            assert!(frame_len > 1 && frame_len < 0x80);
+            assert_eq!(peer.read_u8().await.unwrap(), 0x20);
+            let mut rest = vec![0; frame_len as usize - 1];
+            peer.read_exact(&mut rest).await.unwrap();
+            let mut byte = [0];
+            assert_eq!(
+                peer.read(&mut byte).await.unwrap(),
+                0,
+                "socket should close after flush"
+            );
+        })
+        .await
+        .expect("disconnect packet should flush");
+        assert!(matches!(
+            events_rx.recv_async().await.unwrap(),
+            ConnectionEvent::Disconnected {
+                id: ConnectionId(1),
+                reason: DisconnectReason::Server(_)
+            }
+        ));
+        control_tx.send(ConnectionCommand::Shutdown).unwrap();
+        running.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_and_server_close_emit_one_disconnection() {
+        let mut server = Server::new("127.0.0.1:0").await.unwrap();
+        let address = server.socket.local_addr().unwrap();
+        let (events_tx, events_rx) = flume::unbounded();
+        let (control_tx, control_rx) = flume::unbounded();
+        let server_control = control_tx.clone();
+        let running = tokio::spawn(async move {
+            server.run(events_tx, control_rx, server_control).await;
+        });
+        let peer = TcpStream::connect(address).await.unwrap();
+        let ConnectionEvent::Connected(handle) = events_rx.recv_async().await.unwrap() else {
+            panic!("expected connected");
+        };
+        drop(peer);
+        let _ = handle.close(CloseRequest {
+            reason: DisconnectReason::Server("simultaneous".into()),
+            packet: None,
+            deadline: Instant::now() + Duration::from_millis(100),
+        });
+        assert!(matches!(
+            events_rx.recv_async().await.unwrap(),
+            ConnectionEvent::Disconnected {
+                id: ConnectionId(1),
+                ..
+            }
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), events_rx.recv_async())
+                .await
+                .is_err()
+        );
+        control_tx.send(ConnectionCommand::Shutdown).unwrap();
+        running.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn task_error_removes_registry_entry() {
+        let limits = FrameLimits {
+            max_outbound_frame_bytes: 1,
+            ..FrameLimits::default()
+        };
+        let mut server = Server::new_with_limits("127.0.0.1:0", limits)
+            .await
+            .unwrap();
+        let address = server.socket.local_addr().unwrap();
+        let (events_tx, events_rx) = flume::unbounded();
+        let (control_tx, control_rx) = flume::unbounded();
+        let server_control = control_tx.clone();
+        let running = tokio::spawn(async move {
+            server.run(events_tx, control_rx, server_control).await;
+            server
+        });
+        let _peer = TcpStream::connect(address).await.unwrap();
+        let ConnectionEvent::Connected(handle) = events_rx.recv_async().await.unwrap() else {
+            panic!("expected connected");
+        };
+        handle
+            .outgoing()
+            .send(crate::network::OutgoingPacket {
+                client_id: 1,
+                packet: voidmc_protocol::clientbound::ClientboundPacket::Status(
+                    voidmc_protocol::clientbound::StatusPacket::PingResponse(
+                        voidmc_protocol::clientbound::PingResponse { timestamp: 7 },
+                    ),
+                ),
+            })
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(1), events_rx.recv_async())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            ConnectionEvent::Disconnected {
+                id: ConnectionId(1),
+                reason: DisconnectReason::Error(_)
+            }
+        ));
+        control_tx.send(ConnectionCommand::Shutdown).unwrap();
+        assert!(running.await.unwrap().connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn task_panic_reports_disconnection_and_removes_handle() {
+        let mut server = Server::new("127.0.0.1:0").await.unwrap();
+        let mut tasks = JoinSet::<Result<DisconnectReason, SocketError>>::new();
+        let task = tasks.spawn(async { panic!("simulated actor panic") });
+        let mut task_ids = HashMap::from([(task.id(), ConnectionId(1))]);
+        let (close_tx, _close_rx) = flume::unbounded();
+        server.connections.insert(ConnectionId(1), (task, close_tx));
+        let (events_tx, events_rx) = flume::unbounded();
+
+        server.finish_task(
+            tasks.join_next_with_id().await.unwrap(),
+            &mut task_ids,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &events_tx,
+        );
+
+        assert!(server.connections.is_empty());
+        assert!(task_ids.is_empty());
+        assert!(matches!(
+            events_rx.try_recv().unwrap(),
+            ConnectionEvent::Disconnected {
+                id: ConnectionId(1),
+                reason: DisconnectReason::Error(_),
+            }
+        ));
     }
 }

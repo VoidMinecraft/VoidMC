@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,83 @@ pub struct IncomingPacket {
     pub packet: Packet,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ConnectionId(pub u32);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisconnectReason {
+    PeerClosed,
+    Server(String),
+    Overloaded,
+    Error(String),
+}
+
+pub struct CloseRequest {
+    pub reason: DisconnectReason,
+    pub packet: Option<voidmc_protocol::clientbound::ClientboundPacket>,
+    pub deadline: Instant,
+}
+
+pub enum ConnectionCommand {
+    Close {
+        id: ConnectionId,
+        request: Box<CloseRequest>,
+    },
+    Shutdown,
+}
+
+#[derive(Clone)]
+pub struct ConnectionHandle {
+    pub id: ConnectionId,
+    outgoing: Sender<OutgoingPacket>,
+    control: Sender<ConnectionCommand>,
+    closing: Arc<AtomicBool>,
+}
+
+impl ConnectionHandle {
+    pub fn new(
+        id: ConnectionId,
+        outgoing: Sender<OutgoingPacket>,
+        control: Sender<ConnectionCommand>,
+    ) -> Self {
+        Self {
+            id,
+            outgoing,
+            control,
+            closing: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn outgoing(&self) -> &Sender<OutgoingPacket> {
+        &self.outgoing
+    }
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Relaxed)
+    }
+
+    /// Only the first close request wins. A closed actor is also considered closed.
+    pub fn close(&self, request: CloseRequest) -> bool {
+        if self.closing.swap(true, Ordering::Relaxed) {
+            return false;
+        }
+        self.control
+            .send(ConnectionCommand::Close {
+                id: self.id,
+                request: Box::new(request),
+            })
+            .is_ok()
+    }
+}
+
+pub enum ConnectionEvent {
+    Connected(ConnectionHandle),
+    Packet(IncomingPacket),
+    Disconnected {
+        id: ConnectionId,
+        reason: DisconnectReason,
+    },
+}
+
 pub struct OutgoingPacket {
     pub client_id: u32,
     pub packet: voidmc_protocol::clientbound::ClientboundPacket,
@@ -30,35 +108,16 @@ pub struct OutgoingPacket {
 /// chunk packets, and a busy steady state is a few hundred packets per tick.
 pub const OUTBOUND_QUEUE_CAPACITY: usize = 16 * 1024;
 
-/// Sent by the network thread on accept, before the client's task starts, so it
-/// is always visible to the game thread before any packet from that client.
-pub struct ClientConnected {
-    pub client_id: u32,
-    pub outgoing: Sender<OutgoingPacket>,
-}
-
 pub struct NetworkPlugin {
-    incoming_rx: Receiver<IncomingPacket>,
+    events: Receiver<ConnectionEvent>,
     outgoing_tx: Sender<OutgoingPacket>,
-    disconnect_rx: Receiver<u32>,
-    kick_tx: Sender<u32>,
-    connected_rx: Receiver<ClientConnected>,
 }
 
 impl NetworkPlugin {
-    pub fn new(
-        incoming_rx: Receiver<IncomingPacket>,
-        outgoing_tx: Sender<OutgoingPacket>,
-        disconnect_rx: Receiver<u32>,
-        kick_tx: Sender<u32>,
-        connected_rx: Receiver<ClientConnected>,
-    ) -> Self {
+    pub fn new(events: Receiver<ConnectionEvent>, outgoing_tx: Sender<OutgoingPacket>) -> Self {
         Self {
-            incoming_rx,
+            events,
             outgoing_tx,
-            disconnect_rx,
-            kick_tx,
-            connected_rx,
         }
     }
 }
@@ -66,13 +125,11 @@ impl NetworkPlugin {
 impl Plugin for NetworkPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(NetworkChannels {
-            incoming: self.incoming_rx.clone(),
+            events: self.events.clone(),
             outgoing: self.outgoing_tx.clone(),
-            disconnect: self.disconnect_rx.clone(),
-            kick: self.kick_tx.clone(),
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
-        .insert_resource(ClientSenders::new(self.connected_rx.clone()))
+        .insert_resource(ClientSenders::default())
         .add_systems(
             PreUpdate,
             ingest_network_packets.in_set(VoidSystems::NetworkIngest),
@@ -82,63 +139,23 @@ impl Plugin for NetworkPlugin {
 
 #[derive(Resource)]
 pub struct NetworkChannels {
-    pub incoming: Receiver<IncomingPacket>,
+    pub events: Receiver<ConnectionEvent>,
     /// Fallback for client entities without a direct sender in [`ClientSenders`];
     /// the running server never reads it, tests use it as their packet sink.
     pub outgoing: Sender<OutgoingPacket>,
-    pub disconnect: Receiver<u32>,
-    pub kick: Sender<u32>,
 }
 
 #[derive(Resource)]
 pub struct ClientToEntityMap(pub HashMap<u32, Entity>);
 
-pub struct ClientSender {
-    outgoing: Sender<OutgoingPacket>,
-    kicked: AtomicBool,
-}
-
-impl ClientSender {
-    pub fn new(outgoing: Sender<OutgoingPacket>) -> Self {
-        Self {
-            outgoing,
-            kicked: AtomicBool::new(false),
-        }
-    }
-
-    pub fn outgoing(&self) -> &Sender<OutgoingPacket> {
-        &self.outgoing
-    }
-
-    pub fn kicked(&self) -> bool {
-        self.kicked.load(Ordering::Relaxed)
-    }
-
-    /// Returns `true` the first time only, so the kick is requested once.
-    pub fn mark_kicked(&self) -> bool {
-        !self.kicked.swap(true, Ordering::Relaxed)
-    }
-}
-
-/// Direct per-client outbound senders, keyed by client entity once the entity
-/// exists and parked by client id until then.
-#[derive(Resource)]
+/// Direct connection handles keyed by client entity.
+#[derive(Resource, Default)]
 pub struct ClientSenders {
-    connected: Receiver<ClientConnected>,
-    pending: HashMap<u32, Sender<OutgoingPacket>>,
-    active: HashMap<Entity, ClientSender>,
+    active: HashMap<Entity, ConnectionHandle>,
 }
 
 impl ClientSenders {
-    pub fn new(connected: Receiver<ClientConnected>) -> Self {
-        Self {
-            connected,
-            pending: HashMap::new(),
-            active: HashMap::new(),
-        }
-    }
-
-    pub fn get(&self, entity: Entity) -> Option<&ClientSender> {
+    pub fn get(&self, entity: Entity) -> Option<&ConnectionHandle> {
         self.active.get(&entity)
     }
 
@@ -146,37 +163,15 @@ impl ClientSenders {
         self.active.contains_key(&entity)
     }
 
-    pub fn is_pending(&self, client_id: u32) -> bool {
-        self.pending.contains_key(&client_id)
-    }
-
     pub fn active_len(&self) -> usize {
         self.active.len()
     }
 
-    pub fn pending_len(&self) -> usize {
-        self.pending.len()
+    pub fn register(&mut self, entity: Entity, handle: ConnectionHandle) {
+        self.active.insert(entity, handle);
     }
 
-    pub fn sync(&mut self) {
-        while let Ok(connected) = self.connected.try_recv() {
-            self.pending.insert(connected.client_id, connected.outgoing);
-        }
-    }
-
-    pub fn take_pending(&mut self, client_id: u32) -> Option<Sender<OutgoingPacket>> {
-        if !self.pending.contains_key(&client_id) {
-            self.sync();
-        }
-        self.pending.remove(&client_id)
-    }
-
-    pub fn register(&mut self, entity: Entity, outgoing: Sender<OutgoingPacket>) {
-        self.active.insert(entity, ClientSender::new(outgoing));
-    }
-
-    pub fn detach(&mut self, client_id: u32, entity: Option<Entity>) {
-        self.pending.remove(&client_id);
+    pub fn detach(&mut self, entity: Option<Entity>) {
         if let Some(entity) = entity {
             self.active.remove(&entity);
         }
@@ -206,42 +201,37 @@ pub fn ingest_network_packets(world: &mut World) {
     let mut hit_budget = false;
     let mut backlog = 0usize;
 
-    world.resource_mut::<ClientSenders>().sync();
-
-    let packets: Vec<IncomingPacket> =
+    let events: Vec<ConnectionEvent> =
         world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
-            let mut packets = Vec::new();
+            let mut events = Vec::new();
+            let mut packets = 0;
             loop {
-                if let Some(limit) = packet_limit {
-                    if packets.len() >= limit {
-                        hit_limit = true;
-                        break;
-                    }
+                if packet_limit.is_some_and(|limit| packets >= limit) {
+                    hit_limit = true;
+                    break;
                 }
-                if let Some(budget) = packet_budget {
-                    if start.elapsed() >= budget {
-                        hit_budget = true;
-                        break;
-                    }
+                if packet_budget.is_some_and(|budget| start.elapsed() >= budget) {
+                    hit_budget = true;
+                    break;
                 }
-
-                match channels.incoming.try_recv() {
-                    Ok(packet) => packets.push(packet),
+                match channels.events.try_recv() {
+                    Ok(event) => {
+                        packets += usize::from(matches!(event, ConnectionEvent::Packet(_)));
+                        events.push(event);
+                    }
                     Err(_) => break,
                 }
             }
-
             if hit_limit || hit_budget {
-                backlog = channels.incoming.len();
+                backlog = channels.events.len();
             }
-
-            packets
+            events
         });
 
     if hit_limit || hit_budget {
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
         tracing::warn!(
-            packets_processed = packets.len(),
+            events_processed = events.len(),
             backlog,
             max_packets_per_tick,
             packet_ingest_budget_ms = packet_budget_ms,
@@ -250,99 +240,65 @@ pub fn ingest_network_packets(world: &mut World) {
         );
     }
 
-    for incoming_packet in packets {
-        let Some(client_entity) = client_entity(world, incoming_packet.client_id) else {
-            tracing::debug!(
-                client_id = incoming_packet.client_id,
-                "Dropping packet from a client whose connection already ended"
-            );
-            continue;
-        };
-
-        if let Err(e) = dispatch_packet(
-            world,
-            incoming_packet.client_id,
-            client_entity,
-            incoming_packet.packet,
-        ) {
-            if matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_)) {
-                // Unrecognized packet (e.g. one we don't handle yet): expected and
-                // non-fatal, so warn instead of error.
-                tracing::warn!(
-                    "Unrecognized packet from client {}: {}",
-                    incoming_packet.client_id,
-                    e
-                );
-            } else {
-                tracing::error!(
-                    "Failed to handle packet from client {}: {}",
-                    incoming_packet.client_id,
-                    e
-                );
+    for event in events {
+        match event {
+            ConnectionEvent::Connected(handle) => {
+                let id = handle.id.0;
+                let entity = world
+                    .spawn((
+                        Client,
+                        ClientId(id),
+                        ConnectionState(voidmc_protocol::State::Handshake),
+                    ))
+                    .id();
+                world
+                    .resource_mut::<ClientToEntityMap>()
+                    .0
+                    .insert(id, entity);
+                world
+                    .resource_mut::<ClientSenders>()
+                    .register(entity, handle);
+            }
+            ConnectionEvent::Packet(incoming) => {
+                let entity = world
+                    .resource::<ClientToEntityMap>()
+                    .0
+                    .get(&incoming.client_id)
+                    .copied();
+                let Some(entity) = entity else {
+                    tracing::debug!(
+                        client_id = incoming.client_id,
+                        "Dropping packet from a client whose connection already ended"
+                    );
+                    continue;
+                };
+                if let Err(error) =
+                    dispatch_packet(world, incoming.client_id, entity, incoming.packet)
+                {
+                    if matches!(error, voidmc_codec::DecodeError::InvalidPacketId(_)) {
+                        tracing::warn!(client_id = incoming.client_id, %error, "Unrecognized packet");
+                    } else {
+                        tracing::error!(client_id = incoming.client_id, %error, "Failed to handle packet");
+                    }
+                }
+            }
+            ConnectionEvent::Disconnected { id, reason } => {
+                tracing::debug!(client_id = id.0, ?reason, "Client disconnected");
+                let entity = world.resource_mut::<ClientToEntityMap>().0.remove(&id.0);
+                if let Some(entity) = entity {
+                    if world.get::<PlayerReady>(entity).is_some() {
+                        world.trigger(PlayerQuitEvent {
+                            client_id: id.0,
+                            entity,
+                        });
+                        world.flush();
+                    }
+                    world.despawn(entity);
+                }
+                world.resource_mut::<ClientSenders>().detach(entity);
             }
         }
     }
-
-    // Drain disconnect channel and handle disconnects
-    let disconnected: Vec<u32> = world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
-        let mut disc = Vec::new();
-        while let Ok(client_id) = channels.disconnect.try_recv() {
-            disc.push(client_id);
-        }
-        disc
-    });
-
-    if !disconnected.is_empty() {
-        world.resource_mut::<ClientSenders>().sync();
-    }
-
-    for disc_client_id in disconnected {
-        let entity = world
-            .resource_mut::<ClientToEntityMap>()
-            .0
-            .remove(&disc_client_id);
-        if let Some(entity) = entity {
-            // Trigger quit event (observer will broadcast to other players)
-            let is_ready = world.get::<PlayerReady>(entity).is_some();
-            if is_ready {
-                world.trigger(PlayerQuitEvent {
-                    client_id: disc_client_id,
-                    entity,
-                });
-                world.flush();
-            }
-
-            world.despawn(entity);
-        }
-        world
-            .resource_mut::<ClientSenders>()
-            .detach(disc_client_id, entity);
-    }
-}
-
-fn client_entity(world: &mut World, client_id: u32) -> Option<Entity> {
-    if let Some(entity) = world.resource::<ClientToEntityMap>().0.get(&client_id) {
-        return Some(*entity);
-    }
-
-    let outgoing = world
-        .resource_mut::<ClientSenders>()
-        .take_pending(client_id)?;
-    let entity = world
-        .spawn((
-            Client,
-            ClientId(client_id),
-            ConnectionState(voidmc_protocol::State::Handshake),
-        ))
-        .id();
-    world
-        .resource_mut::<ClientSenders>()
-        .register(entity, outgoing);
-    world
-        .resource_mut::<ClientToEntityMap>()
-        .0
-        .insert(client_id, entity);
-    Some(entity)
 }
 
 #[derive(Debug, Event)]
@@ -612,10 +568,8 @@ mod tests {
 
     struct Harness {
         app: App,
-        incoming_tx: Sender<IncomingPacket>,
-        connected_tx: Sender<ClientConnected>,
-        disconnect_tx: Sender<u32>,
-        _kick_rx: Receiver<u32>,
+        events_tx: Sender<ConnectionEvent>,
+        control_tx: Sender<ConnectionCommand>,
         outgoing_rx: Option<Receiver<OutgoingPacket>>,
     }
 
@@ -686,26 +640,16 @@ mod tests {
     }
 
     fn harness() -> Harness {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (events_tx, events_rx) = flume::unbounded::<ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
-        let (connected_tx, connected_rx) = flume::unbounded::<ClientConnected>();
+        let (control_tx, _control_rx) = flume::unbounded::<ConnectionCommand>();
         let mut app = App::new();
-        app.add_plugins(NetworkPlugin::new(
-            incoming_rx,
-            outgoing_tx,
-            disconnect_rx,
-            kick_tx,
-            connected_rx,
-        ))
-        .insert_resource(ServerConfigResource::from(&crate::ServerConfig::default()));
+        app.add_plugins(NetworkPlugin::new(events_rx, outgoing_tx))
+            .insert_resource(ServerConfigResource::from(&crate::ServerConfig::default()));
         Harness {
             app,
-            incoming_tx,
-            connected_tx,
-            disconnect_tx,
-            _kick_rx,
+            events_tx,
+            control_tx,
             outgoing_rx: Some(outgoing_rx),
         }
     }
@@ -741,20 +685,30 @@ mod tests {
     impl Harness {
         fn connect(&self, client_id: u32) -> Receiver<OutgoingPacket> {
             let (tx, rx) = flume::bounded(OUTBOUND_QUEUE_CAPACITY);
-            self.connected_tx
-                .send(ClientConnected {
-                    client_id,
-                    outgoing: tx,
-                })
+            self.events_tx
+                .send(ConnectionEvent::Connected(ConnectionHandle::new(
+                    ConnectionId(client_id),
+                    tx,
+                    self.control_tx.clone(),
+                )))
                 .unwrap();
             rx
         }
 
         fn packet(&self, client_id: u32) {
-            self.incoming_tx
-                .send(IncomingPacket {
+            self.events_tx
+                .send(ConnectionEvent::Packet(IncomingPacket {
                     client_id,
                     packet: handshake_packet(),
+                }))
+                .unwrap();
+        }
+
+        fn disconnect(&self, client_id: u32) {
+            self.events_tx
+                .send(ConnectionEvent::Disconnected {
+                    id: ConnectionId(client_id),
+                    reason: DisconnectReason::PeerClosed,
                 })
                 .unwrap();
         }
@@ -790,7 +744,6 @@ mod tests {
 
         let entity = h.entity_of(1).expect("client entity spawned");
         assert!(h.senders().contains(entity));
-        assert!(!h.senders().is_pending(1));
         assert_eq!(h.app.world().get::<ClientId>(entity).unwrap().0, 1);
         assert_eq!(h.app.world().resource::<Handshakes>().0, vec![(1, entity)]);
     }
@@ -808,7 +761,6 @@ mod tests {
         assert!(h.entity_of(1).is_some());
         assert!(h.entity_of(2).is_some());
         assert_eq!(h.senders().active_len(), 2);
-        assert_eq!(h.senders().pending_len(), 0);
     }
 
     #[test]
@@ -841,7 +793,7 @@ mod tests {
             .entity_mut(entity)
             .insert((PlayerReady, PlayerName("slow".to_string())));
 
-        h.disconnect_tx.send(1).unwrap();
+        h.disconnect(1);
         h.app.update();
 
         assert!(h.entity_of(1).is_none());
@@ -860,7 +812,7 @@ mod tests {
         let entity = h.entity_of(1).unwrap();
 
         drop(rx);
-        h.disconnect_tx.send(1).unwrap();
+        h.disconnect(1);
         h.app.update();
         assert!(h.app.world().get_entity(entity).is_err());
 
@@ -868,7 +820,6 @@ mod tests {
         let logs = captured(|| h.app.update());
 
         assert!(h.entity_of(1).is_none());
-        assert!(!h.senders().is_pending(1));
         assert_eq!(h.senders().active_len(), 0);
         assert_eq!(
             h.app
@@ -883,6 +834,34 @@ mod tests {
             tracing::Level::DEBUG,
             "Dropping packet from a client whose connection already ended"
         ));
+    }
+
+    #[test]
+    fn inbound_backlog_preserves_disconnect_order() {
+        let mut h = harness();
+        h.app
+            .insert_resource(ServerConfigResource::from(&crate::ServerConfig {
+                max_packets_per_tick: 1,
+                ..crate::ServerConfig::default()
+            }));
+        let _rx = h.connect(7);
+        h.packet(7);
+        h.packet(7);
+        h.disconnect(7);
+        h.packet(7); // Simulates a stale producer after the close event.
+
+        h.app.update();
+        let entity = h
+            .entity_of(7)
+            .expect("connection stays live through first packet");
+        h.app.update();
+        assert_eq!(h.entity_of(7), Some(entity));
+        h.app.update();
+        assert!(h.entity_of(7).is_none());
+        assert!(h.app.world().get_entity(entity).is_err());
+        h.app.update();
+        assert!(h.entity_of(7).is_none());
+        assert_eq!(h.senders().active_len(), 0);
     }
 
     #[derive(Resource, Default)]
@@ -916,7 +895,7 @@ mod tests {
             .insert((PlayerReady, PlayerName("quitter".to_string())));
 
         drop(rx);
-        h.disconnect_tx.send(1).unwrap();
+        h.disconnect(1);
         let logs = captured(|| h.app.update());
 
         assert_eq!(
@@ -933,12 +912,10 @@ mod tests {
     fn status_only_connections_leave_no_pending_sender() {
         let mut h = harness();
         let rx = h.connect(1);
-        h.disconnect_tx.send(1).unwrap();
+        h.disconnect(1);
         h.app.update();
 
         assert!(h.entity_of(1).is_none());
-        assert!(!h.senders().is_pending(1));
-        assert_eq!(h.senders().pending_len(), 0);
         assert!(rx.is_disconnected());
     }
 }

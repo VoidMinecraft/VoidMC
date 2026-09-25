@@ -314,22 +314,18 @@ mod tests {
     use super::*;
     use crate::components::{ClientId, PlayerDimension, PlayerReady};
     use crate::messages::assert_guarded;
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use crate::world::DimensionId;
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         });
-        app.insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx));
+        app.insert_non_send_resource(incoming_tx);
         (app, outgoing_rx)
     }
 

@@ -21,7 +21,7 @@ graph TD
 flowchart LR
     Client[Minecraft Client] -->|TCP 25565| Net[void-net TCP listener]
     Net --> Tokio[Tokio network runtime]
-    Tokio -->|IncomingPacket| In[flume incoming channel]
+    Tokio -->|ConnectionEvent| In[ordered lifecycle channel]
     In --> Game[void Bevy ECS game loop]
     Game -->|OutgoingPacket| Out[bounded per-client flume channel]
     Out --> Tokio

@@ -420,7 +420,7 @@ mod tests {
     use super::*;
     use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
     use crate::entity::visibility_index::ChunkViewerIndex;
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
 
     fn index_viewers(app: &App, dimension: DimensionId, chunk: (i32, i32)) -> HashSet<Entity> {
         app.world()
@@ -431,18 +431,14 @@ mod tests {
     }
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
-        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .insert_non_send_resource(incoming_tx)
         .add_plugins(EntityPlugin);
         (app, outgoing_rx)
     }

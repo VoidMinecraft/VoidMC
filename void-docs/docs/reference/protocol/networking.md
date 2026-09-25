@@ -82,13 +82,14 @@ Client                              Server
 
 On every tick during `PreUpdate`:
 
-1. **Drain** all packets from the incoming channel
-2. For each packet:
-   - Look up or create the client entity in `ClientToEntityMap` (a new entity takes over the client's outbound sender in `ClientSenders`)
+1. **Drain** ordered lifecycle events, stopping at the configured packet limit
+2. For each event:
+   - `Connected`: create the client entity and register its `ConnectionHandle`
+   - `Packet`: look up the existing entity in `ClientToEntityMap`
    - Read the entity's `ConnectionState`
    - Decode the raw packet bytes using the protocol crate
    - Call the appropriate `handle_{state}_packet()` function
-3. **Drain** the disconnect channel and despawn disconnected entities
+   - `Disconnected`: trigger quit handling and despawn the entity
 
 ```rust
 fn dispatch_packet(world, client_id, entity, packet) {

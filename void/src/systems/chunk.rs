@@ -226,7 +226,7 @@ mod tests {
     use crate::WorldGenerator;
     use crate::components::ClientId;
     use crate::config::ServerConfig;
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use crate::world::DimensionId;
 
     struct Empty;
@@ -242,18 +242,14 @@ mod tests {
     }
 
     fn test_app(config: ServerConfig) -> (App, flume::Receiver<OutgoingPacket>) {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
-        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .insert_non_send_resource(incoming_tx)
         .insert_resource(ServerConfigResource::from(&config))
         .insert_resource(WorldGen(Box::new(Empty)))
         .init_resource::<ChunkIndex>()

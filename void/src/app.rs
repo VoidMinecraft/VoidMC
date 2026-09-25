@@ -8,7 +8,7 @@ use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
 use crate::config::{ServerConfig, ServerConfigResource};
 use crate::metrics::MetricsPlugin;
-use crate::network::{ClientConnected, IncomingPacket, NetworkPlugin, OutgoingPacket};
+use crate::network::{ConnectionCommand, ConnectionEvent, NetworkPlugin, OutgoingPacket};
 use crate::plugins::DefaultPlugins;
 use crate::registry::RegistryDataStore;
 use crate::server_status::ServerStatusSnapshot;
@@ -58,11 +58,10 @@ impl VoidServer {
 
         let world_gen = WorldGen(self.config.world_generator);
 
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (events_tx, events_rx) = flume::unbounded::<ConnectionEvent>();
         let (outgoing_tx, _) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
-        let (connected_tx, connected_rx) = flume::unbounded::<ClientConnected>();
+        let (control_tx, control_rx) = flume::unbounded::<ConnectionCommand>();
+        let network_control = control_tx.clone();
 
         // Start the network server in a separate thread
         let network_server_status = server_status.clone();
@@ -78,10 +77,9 @@ impl VoidServer {
                     .expect("Failed to start server");
                 server
                     .run_with_status(
-                        incoming_tx,
-                        connected_tx,
-                        disconnect_tx,
-                        kick_rx,
+                        events_tx,
+                        control_rx,
+                        network_control,
                         network_server_status,
                     )
                     .await;
@@ -97,13 +95,7 @@ impl VoidServer {
             // (the same signal `/stop` uses).
             TerminalCtrlCHandlerPlugin,
         ))
-        .add_plugins(NetworkPlugin::new(
-            incoming_rx,
-            outgoing_tx,
-            disconnect_rx,
-            kick_tx,
-            connected_rx,
-        ))
+        .add_plugins(NetworkPlugin::new(events_rx, outgoing_tx))
         .add_plugins(DefaultPlugins)
         .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin);
@@ -133,6 +125,7 @@ impl VoidServer {
         }
 
         app.run();
+        let _ = control_tx.send(ConnectionCommand::Shutdown);
     }
 }
 

@@ -151,21 +151,17 @@ mod tests {
 
     use super::*;
     use crate::components::ClientId;
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
 
     #[test]
     fn broadcast_position_wraps_negative_rotation() {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
 
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
         .add_systems(PostUpdate, broadcast_position);
 
@@ -212,22 +208,18 @@ mod tests {
         };
         assert_eq!(head_rotation.head_yaw, 192);
 
-        drop((incoming_tx, disconnect_tx, kick_rx));
+        drop(incoming_tx);
     }
 
     #[test]
     fn broadcast_position_teleports_when_delta_overflows_i16() {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
 
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
         .add_systems(PostUpdate, broadcast_position);
 
@@ -263,22 +255,18 @@ mod tests {
         assert_eq!(teleport.entity_id, 42);
         assert_eq!((teleport.x, teleport.y, teleport.z), (100.0, 64.0, 0.0));
 
-        drop((incoming_tx, disconnect_tx, kick_rx));
+        drop(incoming_tx);
     }
 
     fn test_app() -> (App, flume::Receiver<OutgoingPacket>) {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
-        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .insert_non_send_resource(incoming_tx)
         .add_systems(
             PostUpdate,
             (broadcast_position, update_previous_positions).chain(),

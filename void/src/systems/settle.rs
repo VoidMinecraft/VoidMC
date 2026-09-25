@@ -93,24 +93,20 @@ mod tests {
     use super::*;
     use crate::components::{ClientId, EntityViewers, PlayerReady};
     use crate::entity::{EntityBuilder, EntityKind};
-    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+    use crate::network::{NetworkChannels, OutgoingPacket};
     use crate::systems::entities::{broadcast_entity_movement, update_previous_entity_positions};
     use crate::world::{ChunkPos, DimensionId};
 
     #[test]
     fn ground_snap_reaches_existing_viewers() {
-        let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (incoming_tx, incoming_rx) = flume::unbounded::<crate::network::ConnectionEvent>();
         let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
-        let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
-        let (kick_tx, kick_rx) = flume::unbounded::<u32>();
         let mut app = App::new();
         app.insert_resource(NetworkChannels {
-            incoming: incoming_rx,
+            events: incoming_rx,
             outgoing: outgoing_tx,
-            disconnect: disconnect_rx,
-            kick: kick_tx,
         })
-        .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
+        .insert_non_send_resource(incoming_tx)
         .insert_resource(ChunkIndex::default())
         .add_systems(Update, settle_recent_spawns)
         .add_systems(
