@@ -11,7 +11,7 @@ The two threads communicate exclusively through [flume](https://docs.rs/flume) c
 
 | Channel | Direction | Type | Purpose |
 |---|---|---|---|
-| `events` | Network -> Game | `ConnectionEvent` | Ordered connection, packet, and disconnection events |
+| `events` | Network -> Game | `ConnectionEvent` | Bounded handoff of connection, packet, and disconnection events |
 | per-client outbound | Game -> Network | `OutgoingPacket` | One bounded queue per client, written to directly by the send path |
 | `control` | Game -> Network | `ConnectionCommand` | Typed close and shutdown requests |
 
@@ -28,19 +28,43 @@ The two threads communicate exclusively through [flume](https://docs.rs/flume) c
 +-----------------------------+                             +------------------------------+
 ```
 
-There is no global outgoing channel. On accept, the network thread creates a
+There is no production global outgoing path. On accept, the network thread creates a
 bounded outbound queue for the connection (`OUTBOUND_QUEUE_CAPACITY`, 16384
-packets) and announces a `ConnectionHandle` through `Connected` before the
+packets, with an 8 MiB serialized payload budget) and announces a `ConnectionHandle` through `Connected` before the
 client task starts. The game thread creates the entity on `Connected`, before
 the first packet. `ClientSenders` keeps handles keyed by client entity,
 and `Players` / `WorldPlayers` push straight into the target client's queue
-with a non-blocking `try_send`.
+with a non-blocking `try_send`. All outbound connections also share a 128 MiB
+payload budget. Direct sends serialize once for exact byte admission and keep
+that frame for the socket writer. The packet value is retained alongside it,
+so actual queue memory also includes the packet's in-memory representation.
+The network runtime admits at most 256 connections.
 
-If a queue is full the client is not keeping up; the game thread never blocks
+If a queue is full or its byte budget is exhausted, the client is not keeping up; the game thread never blocks
 and never drops individual packets (which would desync the client). Instead it
 requests an idempotent close with reason `Overloaded`. The network server gives
 the task until its close deadline, then aborts it if necessary. A final
 `Disconnected` event follows task completion and the entity is despawned.
+`Players::try_send` and `WorldPlayers::try_send` report `Overloaded`, `Closing`,
+or `Disconnected` to callers that need delivery feedback.
+
+Inbound frames reserve one of 32 per-connection slots and their raw frame
+bytes, up to 4 MiB per connection and 64 MiB globally. A reservation remains
+held while the event is staged in the game thread and is released after
+dispatch. An over-budget reader disconnects with reason `Overloaded`.
+The game thread stages a bounded slice of the shared channel and rotates
+among ready connections, processing one event per connection at a time.
+Events for each connection retain their order. The 4 ms ingest budget covers
+staging, decoding, observer execution, and world flushing; a single observer
+cannot be preempted midway. Status responses use a bounded single-item queue.
+Status responses and optional close packets are each capped at 64 KiB. The
+close control channel holds at most 257 commands (one per admitted connection
+plus shutdown), and each actor has one close request slot.
+No packet class is coalesced or dropped while its connection stays open:
+ordered game and control traffic retains FIFO order. Inbound quota exhaustion
+and outbound enqueue failure close the affected connection; the status fast
+path waits for its one-item response queue. Overload logs include queue
+high-water marks, and direct send callers can inspect `SendError`.
 
 `Server` owns the listener, task set, ID allocator, and task handles. Each
 connection task owns its socket and reader/writer halves. Bevy owns protocol
@@ -169,8 +193,10 @@ alive for the connection lifetime. Outbound readiness therefore cannot cancel
 an inbound frame after part of its length prefix or body has been consumed, and
 only the writer half can write, so partially written frames cannot interleave.
 
-`ClientWriter::send` frames the packet into one reusable buffer (length prefix
-and body in a single `write_all`) and hands it to a `BufWriter`; `send` may
+`ClientWriter::send` frames uncached packets into one reusable buffer. Direct
+game sends arrive with an already serialized frame, so the writer fills its
+length prefix and writes those bytes without re-encoding. Both paths hand the
+frame to a `BufWriter`; sending may
 leave the frame buffered, and `ClientWriter::flush` is required to guarantee
 delivery. The writer loop drains every packet already queued on the client's
 channels into the same batch, then flushes once, so a tick's worth of packets

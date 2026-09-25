@@ -150,11 +150,13 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// A zero limit is invalid; use a positive value to protect the tick.
     pub fn max_packets_per_tick(mut self, max_packets: usize) -> Self {
         self.config.max_packets_per_tick = max_packets;
         self
     }
 
+    /// A zero budget is invalid; use a positive value to protect the tick.
     pub fn packet_ingest_budget_ms(mut self, budget_ms: u64) -> Self {
         self.config.packet_ingest_budget_ms = budget_ms;
         self
@@ -186,6 +188,14 @@ impl ServerConfigBuilder {
     }
 
     pub fn build(self) -> ServerConfig {
+        assert!(
+            self.config.max_packets_per_tick > 0,
+            "max_packets_per_tick must be positive"
+        );
+        assert!(
+            self.config.packet_ingest_budget_ms > 0,
+            "packet_ingest_budget_ms must be positive"
+        );
         self.config
     }
 }

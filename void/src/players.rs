@@ -18,7 +18,7 @@ use voidmc_protocol::clientbound::ClientboundPacket;
 use crate::components::{ClientId, ConnectionState, LoadedChunks, PlayerDimension, PlayerReady};
 use crate::network::{
     ClientSenders, CloseRequest, DisconnectReason, NetworkChannels, OUTBOUND_QUEUE_CAPACITY,
-    OutgoingPacket,
+    OutgoingPacket, SendError,
 };
 use crate::world::{ChunkPos, DimensionId};
 
@@ -125,12 +125,13 @@ impl<'a> Recipients<'a> {
         let mut pending: Option<&Recipient<'a>> = None;
         for recipient in self.targets.iter().filter(|r| predicate(r)) {
             if let Some(previous) = pending.replace(recipient) {
-                self.outbox
+                let _ = self
+                    .outbox
                     .deliver(previous.entity, previous.client_id, packet.clone());
             }
         }
         if let Some(last) = pending {
-            self.outbox.deliver(last.entity, last.client_id, packet);
+            let _ = self.outbox.deliver(last.entity, last.client_id, packet);
         }
     }
 }
@@ -198,48 +199,59 @@ struct Outbox<'a> {
 }
 
 impl Outbox<'_> {
-    fn deliver(&self, entity: Entity, client_id: u32, packet: ClientboundPacket) {
+    fn deliver(
+        &self,
+        entity: Entity,
+        client_id: u32,
+        packet: ClientboundPacket,
+    ) -> Result<(), SendError> {
         let Some(client) = self.direct.and_then(|senders| senders.get(entity)) else {
-            if self
+            return self
                 .fallback
-                .send(OutgoingPacket { client_id, packet })
-                .is_err()
-                && !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed)
-            {
-                tracing::error!(
-                    ?entity,
-                    client_id,
-                    "Client entity has no outbound channel and the fallback channel is closed; dropping packets"
-                );
-            }
-            return;
+                .try_send(OutgoingPacket::new(client_id, packet))
+                .map_err(|error| {
+                    if !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed) {
+                        tracing::error!(
+                            ?entity,
+                            client_id,
+                            "Client entity has no usable outbound channel"
+                        );
+                    }
+                    match error {
+                        TrySendError::Full(_) => SendError::Overloaded,
+                        TrySendError::Disconnected(_) => SendError::Disconnected,
+                    }
+                });
         };
 
         if client.is_closing() {
-            return;
+            return Err(SendError::Closing);
         }
-        match client
-            .outgoing()
-            .try_send(OutgoingPacket { client_id, packet })
-        {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+        match client.try_send(OutgoingPacket::new(client_id, packet)) {
+            Ok(()) => Ok(()),
+            Err(SendError::Overloaded) => {
                 if client.close(CloseRequest {
                     reason: DisconnectReason::Overloaded,
                     packet: None,
                     deadline: Instant::now(),
                 }) {
+                    let (peak_packets, peak_bytes) = client.outbound_high_water();
                     tracing::warn!(
                         ?entity,
                         client_id,
                         capacity = OUTBOUND_QUEUE_CAPACITY,
+                        peak_packets,
+                        peak_bytes,
                         "Outbound queue full; disconnecting client that cannot keep up"
                     );
                 }
+                Err(SendError::Overloaded)
             }
-            Err(TrySendError::Disconnected(_)) => {
+            Err(SendError::Disconnected) => {
                 tracing::debug!(?entity, client_id, "Client connection already closed");
+                Err(SendError::Disconnected)
             }
+            Err(SendError::Closing) => Err(SendError::Closing),
         }
     }
 }
@@ -288,13 +300,23 @@ impl Players<'_, '_> {
 
     /// Works for any client entity, ready or still in status/login/configuration.
     pub fn send(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
+        let _ = self.try_send(entity, packet);
+    }
+
+    pub fn try_send(
+        &self,
+        entity: Entity,
+        packet: impl Into<ClientboundPacket>,
+    ) -> Result<(), SendError> {
         match self.clients.get(entity) {
             Ok(client_id) => self.outbox().deliver(entity, client_id.0, packet.into()),
             Err(QueryEntityError::NotSpawned(_)) => {
                 tracing::debug!(?entity, "Cannot send packet: entity no longer exists");
+                Err(SendError::Disconnected)
             }
             Err(_) => {
                 tracing::warn!(?entity, "Cannot send packet: entity has no ClientId");
+                Err(SendError::Disconnected)
             }
         }
     }
@@ -369,8 +391,18 @@ impl<'w> WorldPlayers<'w> {
 
     /// Works for any client entity, ready or still in status/login/configuration.
     pub fn send(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
+        let _ = self.try_send(entity, packet);
+    }
+
+    pub fn try_send(
+        &self,
+        entity: Entity,
+        packet: impl Into<ClientboundPacket>,
+    ) -> Result<(), SendError> {
         if let Some(client_id) = resolve_client(self.world, entity) {
-            self.outbox().deliver(entity, client_id, packet.into());
+            self.outbox().deliver(entity, client_id, packet.into())
+        } else {
+            Err(SendError::Disconnected)
         }
     }
 

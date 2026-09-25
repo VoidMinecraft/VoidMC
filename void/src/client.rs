@@ -1,11 +1,15 @@
 use crate::network::{
-    CloseRequest, ConnectionEvent, DisconnectReason, IncomingPacket, OutgoingPacket,
+    CloseRequest, ConnectionEvent, DisconnectReason, INBOUND_QUEUE_BYTES, INBOUND_QUEUE_CAPACITY,
+    IncomingPacket, OutgoingPacket, Quota,
 };
 use crate::server_status::ServerStatusSnapshot;
 use flume::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::Instant;
 use voidmc_net::socket::{ClientSocket, ClientWriter, Packet, SocketError};
 use voidmc_protocol::{State, clientbound, serverbound};
+
+const STATUS_RESPONSE_BYTES: usize = 64 * 1024;
 
 enum StatusFastPath {
     // Inspect only the initial handshake; every non-status connection is then
@@ -33,6 +37,8 @@ pub struct Client {
     client_id: u32,
     server_status: Option<ServerStatusSnapshot>,
     status_fast_path: StatusFastPath,
+    inbound_local: Arc<Quota>,
+    inbound_global: Arc<Quota>,
 }
 
 impl Client {
@@ -58,12 +64,19 @@ impl Client {
             client_id: id,
             server_status,
             status_fast_path,
+            inbound_local: Quota::new(INBOUND_QUEUE_CAPACITY, INBOUND_QUEUE_BYTES),
+            inbound_global: Quota::new(INBOUND_QUEUE_CAPACITY, INBOUND_QUEUE_BYTES),
         }
+    }
+
+    pub(crate) fn with_inbound_quota(mut self, global: Arc<Quota>) -> Self {
+        self.inbound_global = global;
+        self
     }
 
     pub async fn run(self) -> Result<DisconnectReason, SocketError> {
         let (mut reader, mut writer) = self.socket.into_split();
-        let (status_tx, status_rx) = flume::unbounded();
+        let (status_tx, status_rx) = flume::bounded(1);
         let mut status_fast_path = self.status_fast_path;
 
         let reader_loop = async {
@@ -76,19 +89,57 @@ impl Client {
                 )?;
                 if let StatusAction::Consumed(response) = action {
                     if let Some(response) = response {
-                        if status_tx.send(response).is_err() {
+                        use voidmc_codec::Encode;
+                        let mut encoded = Vec::new();
+                        response.encode(&mut encoded);
+                        if encoded.len() > STATUS_RESPONSE_BYTES {
+                            tracing::warn!(
+                                client_id = self.client_id,
+                                bytes = encoded.len(),
+                                limit = STATUS_RESPONSE_BYTES,
+                                "Status response exceeds queue byte limit"
+                            );
+                            return Ok(DisconnectReason::Overloaded);
+                        }
+                        if status_tx.send_async(response).await.is_err() {
                             return Ok(DisconnectReason::PeerClosed);
                         }
                     }
                     continue;
                 }
 
+                let bytes = packet.len();
+                let Some(local) = self.inbound_local.reserve(bytes) else {
+                    let (peak_packets, peak_bytes) = self.inbound_local.high_water();
+                    tracing::warn!(
+                        client_id = self.client_id,
+                        bytes,
+                        peak_packets,
+                        peak_bytes,
+                        "Inbound quota exceeded"
+                    );
+                    return Ok(DisconnectReason::Overloaded);
+                };
+                let Some(global) = self.inbound_global.reserve(bytes) else {
+                    let (peak_packets, peak_bytes) = self.inbound_global.high_water();
+                    tracing::warn!(
+                        client_id = self.client_id,
+                        bytes,
+                        peak_packets,
+                        peak_bytes,
+                        "Global inbound quota exceeded"
+                    );
+                    return Ok(DisconnectReason::Overloaded);
+                };
                 if self
                     .events
-                    .send(ConnectionEvent::Packet(IncomingPacket {
-                        client_id: self.client_id,
+                    .send_async(ConnectionEvent::Packet(IncomingPacket::charged(
+                        self.client_id,
                         packet,
-                    }))
+                        local,
+                        global,
+                    )))
+                    .await
                     .is_err()
                 {
                     return Ok(DisconnectReason::PeerClosed);
@@ -241,11 +292,17 @@ impl Client {
         status_rx: &Receiver<clientbound::StatusPacket>,
     ) -> Result<(), SocketError> {
         Self::write_outbound(writer, first).await?;
-        while let Ok(packet) = outgoing_rx.try_recv() {
+        for _ in 0..128 {
+            let Ok(packet) = outgoing_rx.try_recv() else {
+                break;
+            };
             Self::write_outbound(writer, Outbound::Game(packet)).await?;
         }
         if status_open {
-            while let Ok(packet) = status_rx.try_recv() {
+            for _ in 0..128 {
+                let Ok(packet) = status_rx.try_recv() else {
+                    break;
+                };
                 Self::write_outbound(writer, Outbound::Status(packet)).await?;
             }
         }
@@ -258,8 +315,12 @@ impl Client {
     ) -> Result<(), SocketError> {
         match outbound {
             Outbound::Status(packet) => writer.send(&packet).await?,
-            Outbound::Game(outgoing_packet) => {
-                Self::write_packet(writer, outgoing_packet.packet).await?
+            Outbound::Game(mut outgoing_packet) => {
+                if let Some(mut frame) = outgoing_packet.take_encoded_frame() {
+                    writer.send_preencoded_frame(&mut frame).await?;
+                } else {
+                    Self::write_packet(writer, outgoing_packet.packet).await?;
+                }
             }
         }
         Ok(())
@@ -409,6 +470,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oversized_status_response_closes_without_queueing() {
+        let (socket, mut peer) = connected_socket().await;
+        let (incoming_tx, _incoming_rx) = flume::bounded(1);
+        let (_outgoing_tx, outgoing_rx) = flume::bounded(1);
+        let (_close_tx, close_rx) = flume::bounded(1);
+        let status = ServerStatusSnapshot::new(&ServerConfig {
+            motd: "x".repeat(STATUS_RESPONSE_BYTES),
+            ..ServerConfig::default()
+        });
+        let client = tokio::spawn(
+            Client::new(7, socket, incoming_tx, outgoing_rx, close_rx, Some(status)).run(),
+        );
+        send_packet(&mut peer, &handshake(State::Status)).await;
+        send_packet(
+            &mut peer,
+            &serverbound::StatusPacket::StatusRequest(serverbound::StatusRequest {}),
+        )
+        .await;
+        let reason = tokio::time::timeout(Duration::from_secs(1), client)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(reason, DisconnectReason::Overloaded);
+    }
+
+    #[tokio::test]
+    async fn cached_outbound_frame_reaches_the_peer() {
+        use crate::network::{ConnectionHandle, ConnectionId, OutgoingPacket};
+        let (socket, mut peer) = connected_socket().await;
+        let (incoming_tx, _incoming_rx) = flume::bounded(1);
+        let (outgoing_tx, outgoing_rx) = flume::bounded(1);
+        let (control_tx, _control_rx) = flume::bounded(1);
+        let (_close_tx, close_rx) = flume::bounded(1);
+        let handle = ConnectionHandle::new(ConnectionId(7), outgoing_tx, control_tx);
+        let client =
+            tokio::spawn(Client::new(7, socket, incoming_tx, outgoing_rx, close_rx, None).run());
+        handle
+            .try_send(OutgoingPacket::new(
+                7,
+                clientbound::ClientboundPacket::Status(clientbound::StatusPacket::PingResponse(
+                    clientbound::PingResponse { timestamp: 42 },
+                )),
+            ))
+            .unwrap();
+        let response = tokio::time::timeout(
+            Duration::from_secs(1),
+            receive_packet::<clientbound::StatusPacket>(&mut peer),
+        )
+        .await
+        .unwrap();
+        let clientbound::StatusPacket::PingResponse(response) = response else {
+            panic!("expected ping");
+        };
+        assert_eq!(response.timestamp, 42);
+        drop(peer);
+        client.await.unwrap().unwrap_err();
+    }
+
+    #[tokio::test]
     async fn login_handshake_still_uses_the_bevy_channel() {
         let (socket, mut peer) = connected_socket().await;
         let (incoming_tx, incoming_rx) = flume::unbounded();
@@ -506,14 +627,12 @@ mod tests {
         send_ping(&outgoing_tx, 2);
         send_ping(&outgoing_tx, 3);
         outgoing_tx
-            .send(OutgoingPacket {
-                client_id: 7,
-                packet: clientbound::ClientboundPacket::Status(
-                    clientbound::StatusPacket::StatusResponse(
-                        ServerStatusSnapshot::new(&ServerConfig::default()).response(),
-                    ),
-                ),
-            })
+            .send(OutgoingPacket::new(
+                7,
+                clientbound::ClientboundPacket::Status(clientbound::StatusPacket::StatusResponse(
+                    ServerStatusSnapshot::new(&ServerConfig::default()).response(),
+                )),
+            ))
             .unwrap();
         send_ping(&outgoing_tx, 4);
 
@@ -542,14 +661,12 @@ mod tests {
 
     fn send_ping(outgoing_tx: &Sender<OutgoingPacket>, timestamp: i64) {
         outgoing_tx
-            .send(OutgoingPacket {
-                client_id: 7,
-                packet: clientbound::ClientboundPacket::Status(
-                    clientbound::StatusPacket::PingResponse(clientbound::PingResponse {
-                        timestamp,
-                    }),
-                ),
-            })
+            .send(OutgoingPacket::new(
+                7,
+                clientbound::ClientboundPacket::Status(clientbound::StatusPacket::PingResponse(
+                    clientbound::PingResponse { timestamp },
+                )),
+            ))
             .unwrap();
     }
 

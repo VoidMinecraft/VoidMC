@@ -121,6 +121,14 @@ pub struct Packet {
 }
 
 impl Packet {
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
     pub fn decode<T: Decode>(&self) -> Result<T, DecodeError> {
         let mut decoder = Decoder::new(&self.bytes, self.decode_limits);
         decoder.decode_exact::<T>()
@@ -243,6 +251,46 @@ pub struct ClientWriter {
 }
 
 impl ClientWriter {
+    /// Sends a body encoded after five reserved length-prefix bytes.
+    pub async fn send_preencoded_frame(&mut self, frame: &mut [u8]) -> Result<(), SocketError> {
+        if frame.len() < FRAME_HEADER_BYTES {
+            return Err(FrameError::EmptyFrame.into());
+        }
+        let body_len = frame.len() - FRAME_HEADER_BYTES;
+        if body_len == 0 {
+            return Err(FrameError::EmptyFrame.into());
+        }
+        if body_len > self.limits.max_outbound_frame_bytes {
+            return Err(FrameError::FrameTooLarge {
+                requested: body_len,
+                limit: self.limits.max_outbound_frame_bytes,
+            }
+            .into());
+        }
+        let len = i32::try_from(body_len).map_err(|_| FrameError::OutboundLengthOverflow {
+            requested: body_len,
+        })?;
+        let mut header = [0u8; FRAME_HEADER_BYTES];
+        let mut value = len as u32;
+        let mut written = 0;
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            header[written] = byte;
+            written += 1;
+            if value == 0 {
+                break;
+            }
+        }
+        let start = FRAME_HEADER_BYTES - written;
+        frame[start..FRAME_HEADER_BYTES].copy_from_slice(&header[..written]);
+        self.stream.write_all(&frame[start..]).await?;
+        Ok(())
+    }
+
     pub async fn send<T: Encode>(&mut self, packet: &T) -> Result<(), SocketError> {
         self.frame.clear();
         self.frame.resize(FRAME_HEADER_BYTES, 0);
@@ -330,6 +378,19 @@ mod tests {
         let peer = TcpStream::connect(address).await.unwrap();
         let socket = ServerSocket::new(listener, limits).accept().await.unwrap();
         (socket, peer)
+    }
+
+    #[tokio::test]
+    async fn preencoded_frame_writes_length_and_body_once() {
+        let (socket, mut peer) = connected(FrameLimits::default()).await;
+        let (_, mut writer) = socket.into_split();
+        let mut frame = vec![0; FRAME_HEADER_BYTES];
+        frame.extend_from_slice(&[0xab, 0xcd]);
+        writer.send_preencoded_frame(&mut frame).await.unwrap();
+        writer.flush().await.unwrap();
+        let mut received = [0; 3];
+        peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, [2, 0xab, 0xcd]);
     }
 
     #[tokio::test]

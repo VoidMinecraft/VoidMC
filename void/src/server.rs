@@ -74,6 +74,14 @@ impl Server {
         let mut task_ids = HashMap::new();
         let mut close_deadlines: HashMap<ConnectionId, Instant> = HashMap::new();
         let mut close_reasons: HashMap<ConnectionId, DisconnectReason> = HashMap::new();
+        let inbound_quota = crate::network::Quota::new(
+            crate::network::MAX_CONNECTIONS * crate::network::INBOUND_QUEUE_CAPACITY,
+            crate::network::GLOBAL_INBOUND_BYTES,
+        );
+        let outbound_quota = crate::network::Quota::new(
+            crate::network::MAX_CONNECTIONS * OUTBOUND_QUEUE_CAPACITY,
+            crate::network::GLOBAL_OUTBOUND_BYTES,
+        );
 
         loop {
             let next_deadline = close_deadlines.values().min().copied();
@@ -81,6 +89,10 @@ impl Server {
                 result = self.socket.accept() => {
                     match result {
                         Ok(client) => {
+                            if self.connections.len() >= crate::network::MAX_CONNECTIONS {
+                                tracing::warn!(capacity = crate::network::MAX_CONNECTIONS, "Connection admission limit reached");
+                                continue;
+                            }
                             let client_ip = client.peer_addr().to_string();
                             info!(client_ip = %client_ip, "Accepted new connection");
 
@@ -92,17 +104,19 @@ impl Server {
                             let task_events = events.clone();
                             let server_status = server_status.clone();
                             let (outgoing_tx, outgoing_rx) = flume::bounded(OUTBOUND_QUEUE_CAPACITY);
-                            let (close_tx, close_rx) = flume::unbounded();
-                            let handle = ConnectionHandle::new(client_id, outgoing_tx, control_tx.clone());
+                            let (close_tx, close_rx) = flume::bounded(1);
+                            let handle = ConnectionHandle::new(client_id, outgoing_tx, control_tx.clone())
+                                .with_global_quota(outbound_quota.clone());
 
                             // All events for this connection share one FIFO stream.
-                            if events.send(ConnectionEvent::Connected(handle)).is_err() {
+                            if events.send_async(ConnectionEvent::Connected(handle)).await.is_err() {
                                 info!("Lifecycle channel closed; shutting down network server");
                                 break;
                             }
 
                             let task = tasks.spawn(
-                                Client::new(client_id.0, client, task_events, outgoing_rx, close_rx, server_status).run(),
+                                Client::new(client_id.0, client, task_events, outgoing_rx, close_rx, server_status)
+                                    .with_inbound_quota(inbound_quota.clone()).run(),
                             );
                             task_ids.insert(task.id(), client_id);
                             self.connections.insert(client_id, (task, close_tx));
@@ -114,7 +128,7 @@ impl Server {
                 }
 
                 Some(result) = tasks.join_next_with_id(), if !tasks.is_empty() => {
-                    self.finish_task(result, &mut task_ids, &mut close_deadlines, &mut close_reasons, &events);
+                    self.finish_task(result, &mut task_ids, &mut close_deadlines, &mut close_reasons, &events).await;
                 }
 
                 result = control.recv_async() => {
@@ -123,9 +137,13 @@ impl Server {
                             if let Some((_, close)) = self.connections.get(&id) {
                                 let request = *request;
                                 let deadline = request.deadline;
-                                close_reasons.insert(id, request.reason.clone());
-                                let _ = close.send(request);
-                                close_deadlines.insert(id, deadline);
+                                let reason = request.reason.clone();
+                                if close.try_send(request).is_ok() {
+                                    close_reasons.insert(id, reason);
+                                    close_deadlines.insert(id, deadline);
+                                } else {
+                                    tracing::warn!(client_id = id.0, "Duplicate or closed actor close request");
+                                }
                             }
                         }
                         Ok(ConnectionCommand::Shutdown) | Err(_) => break,
@@ -158,7 +176,7 @@ impl Server {
         Some(ConnectionId(id))
     }
 
-    fn finish_task(
+    async fn finish_task(
         &mut self,
         result: Result<(Id, Result<DisconnectReason, SocketError>), JoinError>,
         task_ids: &mut HashMap<Id, ConnectionId>,
@@ -191,10 +209,12 @@ impl Server {
             self.connections.remove(&client_id);
             close_deadlines.remove(&client_id);
             close_reasons.remove(&client_id);
-            let _ = events.send(ConnectionEvent::Disconnected {
-                id: client_id,
-                reason,
-            });
+            let _ = events
+                .send_async(ConnectionEvent::Disconnected {
+                    id: client_id,
+                    reason,
+                })
+                .await;
         }
     }
 }
@@ -284,6 +304,48 @@ mod tests {
             .await
             .expect("server should exit on shutdown")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn inbound_flood_disconnects_when_per_connection_quota_is_full() {
+        let mut server = Server::new("127.0.0.1:0").await.unwrap();
+        let address = server.socket.local_addr().unwrap();
+        let (events_tx, events_rx) = flume::bounded(128);
+        let (control_tx, control_rx) = flume::bounded(2);
+        let server_control = control_tx.clone();
+        let running = tokio::spawn(async move {
+            server.run(events_tx, control_rx, server_control).await;
+        });
+
+        let mut peer = TcpStream::connect(address).await.unwrap();
+        let ConnectionEvent::Connected(handle) = events_rx.recv_async().await.unwrap() else {
+            panic!("expected connected");
+        };
+        peer.write_all(&[0x01, 0x00].repeat(crate::network::INBOUND_QUEUE_CAPACITY + 1))
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut pending = Vec::new();
+            for _ in 0..crate::network::INBOUND_QUEUE_CAPACITY {
+                pending.push(events_rx.recv_async().await.unwrap());
+                assert!(matches!(pending.last(), Some(ConnectionEvent::Packet(_))));
+            }
+            assert!(matches!(
+                events_rx.recv_async().await.unwrap(),
+                ConnectionEvent::Disconnected {
+                    reason: DisconnectReason::Overloaded,
+                    ..
+                }
+            ));
+        })
+        .await
+        .expect("flood should close deterministically");
+
+        drop(handle);
+
+        control_tx.send(ConnectionCommand::Shutdown).unwrap();
+        running.await.unwrap();
     }
 
     #[tokio::test]
@@ -441,14 +503,14 @@ mod tests {
         };
         handle
             .outgoing()
-            .send(crate::network::OutgoingPacket {
-                client_id: 1,
-                packet: voidmc_protocol::clientbound::ClientboundPacket::Status(
+            .send(crate::network::OutgoingPacket::new(
+                1,
+                voidmc_protocol::clientbound::ClientboundPacket::Status(
                     voidmc_protocol::clientbound::StatusPacket::PingResponse(
                         voidmc_protocol::clientbound::PingResponse { timestamp: 7 },
                     ),
                 ),
-            })
+            ))
             .unwrap();
         let event = tokio::time::timeout(Duration::from_secs(1), events_rx.recv_async())
             .await
@@ -475,13 +537,15 @@ mod tests {
         server.connections.insert(ConnectionId(1), (task, close_tx));
         let (events_tx, events_rx) = flume::unbounded();
 
-        server.finish_task(
-            tasks.join_next_with_id().await.unwrap(),
-            &mut task_ids,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &events_tx,
-        );
+        server
+            .finish_task(
+                tasks.join_next_with_id().await.unwrap(),
+                &mut task_ids,
+                &mut HashMap::new(),
+                &mut HashMap::new(),
+                &events_tx,
+            )
+            .await;
 
         assert!(server.connections.is_empty());
         assert!(task_ids.is_empty());
