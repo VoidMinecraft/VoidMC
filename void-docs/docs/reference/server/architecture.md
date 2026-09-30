@@ -176,3 +176,11 @@ packet); a larger frame is released after it is written. If a packet is
 rejected mid-batch (for example
 `FrameTooLarge`), the frames accepted before it are flushed before the error
 is propagated.
+
+Once compression is enabled (see [configuration](configuration.md#compression)),
+`ClientWriter` zlib-compresses packets at or above the threshold into a second
+reusable buffer with the same retention cap, on the network thread.
+`ClientReader` reads through an 8 KiB `BufReader`, so a frame length prefix no
+longer costs one `read` syscall per byte. This keeps the cancellation
+guarantees above: buffered bytes live in the reader, not in the `receive()`
+future, and `BufReader` only hands bytes out when a read completes.

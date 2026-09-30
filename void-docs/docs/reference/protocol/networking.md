@@ -31,7 +31,8 @@ Client                              Server
   |                                    |  Set state -> Login
   |                                    |
   |--- LoginStart (name, uuid) ------->|  Store PlayerName, PlayerUuid
-  |<-- LoginSuccess -------------------|
+  |<-- SetCompression (threshold) -----|  (network thread, if enabled)
+  |<-- LoginSuccess -------------------|  (compressed framing from here on)
   |                                    |
   |--- LoginAcknowledged ------------->|  Set state -> Configuration
   |<-- KnownPacks ---------------------|
@@ -77,6 +78,25 @@ Client                              Server
   |--- PingRequest (timestamp) ------->|
   |<-- PingResponse (timestamp) ------|
 ```
+
+## Compression
+
+When `ServerConfig::compression_threshold` is set (default `Some(256)`), the
+connection's writer sends `SetCompression` right before the first
+`LoginSuccess` and switches both halves of the socket to compressed framing:
+
+```
+VarInt packet_length | VarInt data_length | payload
+```
+
+`data_length = 0` means the payload is uncompressed (packet below the
+threshold); otherwise the payload is zlib data inflating to exactly
+`data_length` bytes. The writer flips a flag shared with the reader right after
+`SetCompression` is buffered, before it is flushed, so the client cannot have
+received it yet; the reader samples the flag after each frame's length prefix,
+so the client's first compressed packet (`LoginAcknowledged`) is always parsed
+as compressed. Game code never sees compression: it keeps sending
+`LoginSuccess` through `Players`.
 
 ## Packet Handling Pipeline
 
@@ -126,5 +146,4 @@ When a client pings the server list, the response includes:
 ## Current Limitations
 
 - **No encryption**: The server does not implement Mojang authentication or encrypted connections. All traffic is plaintext.
-- **No compression**: Packet compression is not implemented. All packets are sent at full size.
 - **No Transfer state**: The Transfer protocol state is defined but not handled.
