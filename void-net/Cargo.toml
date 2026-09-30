@@ -10,5 +10,6 @@ authors.workspace = true
 keywords.workspace = true
 
 [dependencies]
+flate2 = "1"
 tokio = { version = "1.44.1", features = ["full"] }
 voidmc-codec = { version = "0.1.1", path = "../void-codec" }

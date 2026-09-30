@@ -29,7 +29,8 @@ mod tests {
     #[test]
     fn set_compression_round_trips() {
         let bytes = encoded(1024);
-        let LoginPacket::SetCompression(packet) = LoginPacket::decode(&mut bytes.as_slice()).unwrap()
+        let LoginPacket::SetCompression(packet) =
+            LoginPacket::decode(&mut bytes.as_slice()).unwrap()
         else {
             panic!("expected set compression");
         };
