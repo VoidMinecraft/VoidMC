@@ -1897,6 +1897,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "criterion",
+ "flate2",
  "flume",
  "log",
  "rand 0.8.6",
