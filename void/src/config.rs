@@ -1,5 +1,5 @@
 use bevy_ecs::prelude::*;
-use voidmc_net::socket::FrameLimits;
+use voidmc_net::socket::{DEFAULT_COMPRESSION_THRESHOLD, FrameLimits};
 
 use crate::registry::RegistryDataStore;
 use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
@@ -42,6 +42,9 @@ pub struct ServerConfig {
     pub max_chunk_generations_per_tick: usize,
     pub slow_tick_ms: u64,
     pub frame_limits: FrameLimits,
+    /// Packets of at least this many bytes are zlib-compressed after login;
+    /// `None` disables compression. Defaults to vanilla's 256.
+    pub compression_threshold: Option<u32>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
 }
@@ -67,6 +70,7 @@ impl Default for ServerConfig {
             max_chunk_generations_per_tick: 8,
             slow_tick_ms: 200,
             frame_limits: FrameLimits::default(),
+            compression_threshold: Some(DEFAULT_COMPRESSION_THRESHOLD),
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
         }
@@ -172,6 +176,11 @@ impl ServerConfigBuilder {
 
     pub fn frame_limits(mut self, limits: FrameLimits) -> Self {
         self.config.frame_limits = limits;
+        self
+    }
+
+    pub fn compression_threshold(mut self, threshold: Option<u32>) -> Self {
+        self.config.compression_threshold = threshold;
         self
     }
 

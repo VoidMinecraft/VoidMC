@@ -33,6 +33,12 @@ impl Server {
         })
     }
 
+    /// See [`ServerSocket::with_compression_threshold`].
+    pub fn with_compression_threshold(mut self, threshold: Option<u32>) -> Self {
+        self.socket = self.socket.with_compression_threshold(threshold);
+        self
+    }
+
     #[instrument(level = "info", skip(self))]
     pub async fn run(
         &mut self,

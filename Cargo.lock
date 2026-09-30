@@ -1897,6 +1897,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "criterion",
+ "flate2",
  "flume",
  "log",
  "rand 0.8.6",
@@ -1978,6 +1979,7 @@ dependencies = [
 name = "voidmc-net"
 version = "0.1.1"
 dependencies = [
+ "flate2",
  "tokio",
  "voidmc-codec",
 ]

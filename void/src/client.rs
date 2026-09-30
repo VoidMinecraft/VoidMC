@@ -212,7 +212,20 @@ impl Client {
             Outbound::Status(packet) => writer.send(&packet).await?,
             Outbound::Game(outgoing_packet) => match outgoing_packet.packet {
                 clientbound::ClientboundPacket::Status(packet) => writer.send(&packet).await?,
-                clientbound::ClientboundPacket::Login(packet) => writer.send(&packet).await?,
+                clientbound::ClientboundPacket::Login(packet) => {
+                    if let clientbound::LoginPacket::LoginSuccess(_) = packet
+                        && let Some(threshold) = writer.pending_compression_threshold()
+                    {
+                        let threshold = i32::try_from(threshold).unwrap_or(i32::MAX);
+                        writer
+                            .send(&clientbound::LoginPacket::SetCompression(
+                                clientbound::SetCompression { threshold },
+                            ))
+                            .await?;
+                        writer.enable_compression();
+                    }
+                    writer.send(&packet).await?
+                }
                 clientbound::ClientboundPacket::Configuration(packet) => {
                     writer.send(&packet).await?
                 }
@@ -243,14 +256,190 @@ mod tests {
     use crate::ServerConfig;
 
     async fn connected_socket() -> (ClientSocket, TcpStream) {
+        connected_socket_with_compression(None).await
+    }
+
+    async fn connected_socket_with_compression(
+        threshold: Option<u32>,
+    ) -> (ClientSocket, TcpStream) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let peer = TcpStream::connect(address).await.unwrap();
         let socket = ServerSocket::new(listener, Default::default())
+            .with_compression_threshold(threshold)
             .accept()
             .await
             .unwrap();
         (socket, peer)
+    }
+
+    async fn receive_frame(peer: &mut TcpStream) -> Vec<u8> {
+        let mut length_bytes = Vec::new();
+        loop {
+            let byte = peer.read_u8().await.unwrap();
+            length_bytes.push(byte);
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        let length = VarI32::decode(&mut length_bytes.as_slice()).unwrap().0 as usize;
+        let mut frame = vec![0; length];
+        peer.read_exact(&mut frame).await.unwrap();
+        frame
+    }
+
+    async fn receive_compressed_packet<T: Decode>(peer: &mut TcpStream) -> (bool, T) {
+        use std::io::Read;
+        let frame = receive_frame(peer).await;
+        let mut rest = frame.as_slice();
+        let data_length = VarI32::decode(&mut rest).unwrap().0 as usize;
+        let payload = if data_length == 0 {
+            rest.to_vec()
+        } else {
+            let mut payload = Vec::new();
+            flate2::read::ZlibDecoder::new(rest)
+                .read_to_end(&mut payload)
+                .unwrap();
+            assert_eq!(payload.len(), data_length);
+            payload
+        };
+        (
+            data_length != 0,
+            T::decode(&mut payload.as_slice()).unwrap(),
+        )
+    }
+
+    async fn send_compressed_packet<T: Encode>(peer: &mut TcpStream, packet: &T) {
+        let mut inner = vec![0];
+        packet.encode(&mut inner);
+        let mut frame = Vec::new();
+        VarI32(inner.len() as i32).encode(&mut frame);
+        frame.extend(inner);
+        peer.write_all(&frame).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn login_success_switches_both_directions_to_compressed_framing() {
+        let (socket, mut peer) = connected_socket_with_compression(Some(256)).await;
+        let (incoming_tx, incoming_rx) = flume::unbounded();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded();
+        let status = ServerStatusSnapshot::new(&ServerConfig::default());
+        let client =
+            tokio::spawn(Client::new(7, socket, incoming_tx, outgoing_rx, Some(status)).run());
+
+        send_packet(&mut peer, &handshake(State::Login)).await;
+        incoming_rx.recv_async().await.unwrap();
+        send_packet(
+            &mut peer,
+            &serverbound::LoginPacket::LoginStart(serverbound::LoginStart {
+                name: "Steve".to_string(),
+                uuid: uuid::Uuid::nil(),
+            }),
+        )
+        .await;
+        incoming_rx.recv_async().await.unwrap();
+
+        let game = |packet: clientbound::ClientboundPacket| {
+            outgoing_tx
+                .send(OutgoingPacket {
+                    client_id: 7,
+                    packet,
+                })
+                .unwrap()
+        };
+        game(clientbound::ClientboundPacket::Login(
+            clientbound::LoginPacket::LoginSuccess(clientbound::LoginSuccess {
+                uuid: uuid::Uuid::nil(),
+                username: "Steve".to_string(),
+                properties: vec![],
+            }),
+        ));
+
+        let clientbound::LoginPacket::SetCompression(set_compression) =
+            receive_packet::<clientbound::LoginPacket>(&mut peer).await
+        else {
+            panic!("expected set compression before login success");
+        };
+        assert_eq!(set_compression.threshold, 256);
+        let (compressed, packet) =
+            receive_compressed_packet::<clientbound::LoginPacket>(&mut peer).await;
+        assert!(!compressed);
+        let clientbound::LoginPacket::LoginSuccess(success) = packet else {
+            panic!("expected login success");
+        };
+        assert_eq!(success.username, "Steve");
+
+        send_compressed_packet(
+            &mut peer,
+            &serverbound::LoginPacket::LoginAcknowledged(serverbound::LoginAcknowledged {}),
+        )
+        .await;
+        let acknowledged = incoming_rx.recv_async().await.unwrap();
+        assert!(matches!(
+            acknowledged.packet.decode::<serverbound::LoginPacket>(),
+            Ok(serverbound::LoginPacket::LoginAcknowledged(_))
+        ));
+
+        let message = "x".repeat(4000);
+        game(clientbound::ClientboundPacket::Play(
+            clientbound::PlayPacket::SystemChat(crate::commands::system_chat(&message, "white")),
+        ));
+        let (compressed, packet) =
+            receive_compressed_packet::<clientbound::PlayPacket>(&mut peer).await;
+        assert!(compressed);
+        let clientbound::PlayPacket::SystemChat(chat) = packet else {
+            panic!("expected system chat");
+        };
+        let mut expected = Vec::new();
+        crate::commands::system_chat(&message, "white").encode(&mut expected);
+        let mut actual = Vec::new();
+        chat.encode(&mut actual);
+        assert_eq!(actual, expected);
+
+        game(clientbound::ClientboundPacket::Login(
+            clientbound::LoginPacket::LoginSuccess(success),
+        ));
+        let (_, packet) = receive_compressed_packet::<clientbound::LoginPacket>(&mut peer).await;
+        assert!(matches!(packet, clientbound::LoginPacket::LoginSuccess(_)));
+
+        drop(peer);
+        client.await.unwrap().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn status_and_ping_stay_uncompressed_when_compression_is_configured() {
+        let (socket, mut peer) = connected_socket_with_compression(Some(0)).await;
+        let (incoming_tx, _incoming_rx) = flume::unbounded();
+        let (_outgoing_tx, outgoing_rx) = flume::unbounded();
+        let status = ServerStatusSnapshot::new(&ServerConfig::default());
+        let client =
+            tokio::spawn(Client::new(7, socket, incoming_tx, outgoing_rx, Some(status)).run());
+
+        send_packet(&mut peer, &handshake(State::Status)).await;
+        send_packet(
+            &mut peer,
+            &serverbound::StatusPacket::StatusRequest(serverbound::StatusRequest {}),
+        )
+        .await;
+        let response = receive_packet::<clientbound::StatusPacket>(&mut peer).await;
+        assert!(matches!(
+            response,
+            clientbound::StatusPacket::StatusResponse(_)
+        ));
+        send_packet(
+            &mut peer,
+            &serverbound::StatusPacket::PingRequest(serverbound::PingRequest { timestamp: 9 }),
+        )
+        .await;
+        let clientbound::StatusPacket::PingResponse(pong) =
+            receive_packet::<clientbound::StatusPacket>(&mut peer).await
+        else {
+            panic!("expected ping response");
+        };
+        assert_eq!(pong.timestamp, 9);
+
+        drop(peer);
+        client.await.unwrap().unwrap_err();
     }
 
     async fn send_packet<T: Encode>(peer: &mut TcpStream, packet: &T) {
