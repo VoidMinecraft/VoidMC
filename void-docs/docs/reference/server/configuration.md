@@ -66,7 +66,9 @@ With compression enabled, a compressed inbound frame is rejected when its
 declared uncompressed length is below the threshold, above
 `min(max_inbound_frame_bytes, 8 MiB)`, or does not match the inflated payload.
 Inflation never writes past the declared length. `max_outbound_frame_bytes`
-applies to the packet before compression.
+applies to the packet before compression, and once a connection is compressed
+it is capped at 8 MiB, the largest uncompressed size the vanilla client
+accepts.
 
 ## Compression
 

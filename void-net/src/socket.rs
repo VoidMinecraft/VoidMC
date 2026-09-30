@@ -8,8 +8,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, Encode, VarI32};
 
-/// Largest uncompressed packet a compressed frame may declare, as in vanilla.
-pub const MAX_DECOMPRESSED_BYTES: usize = 1 << 23;
+const MAX_DECOMPRESSED_BYTES: usize = 1 << 23;
 
 /// Vanilla's default `network-compression-threshold`.
 pub const DEFAULT_COMPRESSION_THRESHOLD: u32 = 256;
@@ -193,7 +192,7 @@ impl ClientSocket {
                         frame: Vec::new(),
                         retained_bytes: self.limits.max_inbound_frame_bytes
                             / FRAME_BUFFER_RETAINED_DIVISOR,
-                        inflater: Decompress::new(true),
+                        inflater: None,
                     }),
             },
             ClientWriter {
@@ -207,9 +206,10 @@ impl ClientSocket {
                     .map(|threshold| OutboundCompression {
                         threshold,
                         enabled,
-                        active: false,
-                        deflater: Compress::new(Compression::new(COMPRESSION_LEVEL), true),
+                        deflater: None,
                         frame: Vec::new(),
+                        retained_bytes: self.limits.max_outbound_frame_bytes
+                            / COMPRESSED_BUFFER_RETAINED_DIVISOR,
                     }),
             },
         )
@@ -223,7 +223,7 @@ struct InboundCompression {
     enabled: Arc<AtomicBool>,
     frame: Vec<u8>,
     retained_bytes: usize,
-    inflater: Decompress,
+    inflater: Option<Decompress>,
 }
 
 pub struct ClientReader {
@@ -348,7 +348,7 @@ fn decompress_frame(
     frame: &[u8],
     threshold: u32,
     limit: usize,
-    inflater: &mut Decompress,
+    inflater: &mut Option<Decompress>,
 ) -> Result<Vec<u8>, FrameError> {
     let mut input = frame;
     let data_length = VarI32::decode(&mut input)
@@ -389,7 +389,13 @@ fn decompress_frame(
         .map_err(|_| FrameError::AllocationFailed {
             requested: data_length,
         })?;
-    inflater.reset(true);
+    let inflater = match inflater {
+        Some(inflater) => {
+            inflater.reset(true);
+            inflater
+        }
+        None => inflater.insert(Decompress::new(true)),
+    };
     loop {
         let consumed_before = inflater.total_in();
         let produced_before = inflater.total_out();
@@ -426,13 +432,14 @@ fn decompress_frame(
 const VARINT_MAX_BYTES: usize = 5;
 const FRAME_HEADER_BYTES: usize = 2 * VARINT_MAX_BYTES;
 const FRAME_BUFFER_RETAINED_DIVISOR: usize = 8;
+const COMPRESSED_BUFFER_RETAINED_DIVISOR: usize = 32;
 
 struct OutboundCompression {
     threshold: u32,
     enabled: Arc<AtomicBool>,
-    active: bool,
-    deflater: Compress,
+    deflater: Option<Compress>,
     frame: Vec<u8>,
+    retained_bytes: usize,
 }
 
 pub struct ClientWriter {
@@ -449,14 +456,8 @@ impl ClientWriter {
     pub fn pending_compression_threshold(&self) -> Option<u32> {
         self.compression
             .as_ref()
-            .filter(|compression| !compression.active)
+            .filter(|compression| compression.deflater.is_none())
             .map(|compression| compression.threshold)
-    }
-
-    pub fn compression_enabled(&self) -> bool {
-        self.compression
-            .as_ref()
-            .is_some_and(|compression| compression.active)
     }
 
     /// Switches both halves to compressed framing. Call right after the Set
@@ -465,8 +466,10 @@ impl ClientWriter {
     /// is read from now on is parsed as compressed. The packet is still in
     /// this writer's buffer at that point, so the peer cannot have answered it.
     pub fn enable_compression(&mut self) {
-        if let Some(compression) = &mut self.compression {
-            compression.active = true;
+        if let Some(compression) = &mut self.compression
+            && compression.deflater.is_none()
+        {
+            compression.deflater = Some(Compress::new(Compression::new(COMPRESSION_LEVEL), true));
             compression.enabled.store(true, Ordering::Release);
         }
     }
@@ -481,44 +484,47 @@ impl ClientWriter {
             self.frame.shrink_to(self.retained_bytes);
         }
         if let Some(compression) = &mut self.compression
-            && compression.frame.capacity() > self.retained_bytes
+            && compression.frame.capacity() > compression.retained_bytes
         {
             compression.frame.clear();
-            compression.frame.shrink_to(self.retained_bytes);
+            compression.frame.shrink_to(compression.retained_bytes);
         }
         result
     }
 
     async fn write_frame(&mut self) -> Result<(), SocketError> {
         let body_len = self.frame.len() - FRAME_HEADER_BYTES;
-        if body_len > self.limits.max_outbound_frame_bytes {
+        let active =
+            self.compression
+                .as_mut()
+                .and_then(|compression| match &mut compression.deflater {
+                    Some(deflater) => {
+                        Some((compression.threshold, deflater, &mut compression.frame))
+                    }
+                    None => None,
+                });
+        let limit = if active.is_some() {
+            self.limits
+                .max_outbound_frame_bytes
+                .min(MAX_DECOMPRESSED_BYTES)
+        } else {
+            self.limits.max_outbound_frame_bytes
+        };
+        if body_len > limit {
             return Err(FrameError::FrameTooLarge {
                 requested: body_len,
-                limit: self.limits.max_outbound_frame_bytes,
+                limit,
             }
             .into());
         }
-        let threshold = self
-            .compression
-            .as_ref()
-            .filter(|compression| compression.active)
-            .map(|compression| compression.threshold);
-        let (buf, data_length) = match threshold {
+        let (buf, data_length) = match active {
             None => (&mut self.frame, None),
-            Some(threshold) if u32::try_from(body_len).is_ok_and(|len| len < threshold) => {
+            Some((threshold, _, _)) if u32::try_from(body_len).is_ok_and(|len| len < threshold) => {
                 (&mut self.frame, Some(0))
             }
-            Some(_) => {
-                let compression = self
-                    .compression
-                    .as_mut()
-                    .expect("active threshold implies compression state");
-                deflate_into(
-                    &mut compression.deflater,
-                    &self.frame[FRAME_HEADER_BYTES..],
-                    &mut compression.frame,
-                )?;
-                (&mut compression.frame, Some(body_len))
+            Some((_, deflater, frame)) => {
+                deflate_into(deflater, &self.frame[FRAME_HEADER_BYTES..], frame)?;
+                (frame, Some(body_len))
             }
         };
         let start = write_frame_header(buf, data_length)?;
@@ -539,7 +545,7 @@ fn deflate_into(
 ) -> Result<(), FrameError> {
     out.clear();
     out.resize(FRAME_HEADER_BYTES, 0);
-    out.reserve(input.len() / 4 + 64);
+    out.reserve(input.len() / 16 + 64);
     deflater.reset();
     loop {
         if out.len() == out.capacity() {
@@ -951,7 +957,7 @@ mod tests {
         assert_eq!(writer.pending_compression_threshold(), Some(threshold));
         writer.enable_compression();
         assert_eq!(writer.pending_compression_threshold(), None);
-        assert!(writer.compression_enabled());
+        assert!(deflater_built(&writer));
         (reader, writer, peer)
     }
 
@@ -1022,7 +1028,7 @@ mod tests {
         let (_reader, mut writer) = socket.into_split();
         assert_eq!(writer.pending_compression_threshold(), None);
         writer.enable_compression();
-        assert!(!writer.compression_enabled());
+        assert!(!deflater_built(&writer));
         writer.send(&Bytes(vec![0; 300])).await.unwrap();
         writer.flush().await.unwrap();
         assert_eq!(read_raw_frame(&mut peer).await, vec![0; 300]);
@@ -1059,11 +1065,13 @@ mod tests {
             writer.send(&Bytes(chunk.clone())).await.unwrap();
             assert_eq!(writer.compression.as_ref().unwrap().frame.capacity(), warm);
         }
+        let retained = writer.compression.as_ref().unwrap().retained_bytes;
+        assert_eq!(retained, 256 * 1024);
         let noise: Vec<u8> = (0..4 * writer.retained_bytes as u64)
             .map(|i| (i.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 56) as u8)
             .collect();
         writer.send(&Bytes(noise)).await.unwrap();
-        assert!(writer.compression.as_ref().unwrap().frame.capacity() <= writer.retained_bytes);
+        assert!(writer.compression.as_ref().unwrap().frame.capacity() <= retained);
         writer.flush().await.unwrap();
         drop(writer);
         receiving.await.unwrap();
@@ -1103,12 +1111,7 @@ mod tests {
     }
 
     fn decompress(frame: &[u8], threshold: u32) -> Result<Vec<u8>, FrameError> {
-        decompress_frame(
-            frame,
-            threshold,
-            MAX_DECOMPRESSED_BYTES,
-            &mut Decompress::new(true),
-        )
+        decompress_frame(frame, threshold, MAX_DECOMPRESSED_BYTES, &mut None)
     }
 
     fn inner(data_length: i32, body: &[u8]) -> Vec<u8> {
@@ -1139,12 +1142,7 @@ mod tests {
             })
         );
         assert_eq!(
-            decompress_frame(
-                &inner(i32::MAX, &[0x78]),
-                0,
-                2 * 1024 * 1024,
-                &mut Decompress::new(true)
-            ),
+            decompress_frame(&inner(i32::MAX, &[0x78]), 0, 2 * 1024 * 1024, &mut None),
             Err(FrameError::DecompressedTooLarge {
                 requested: i32::MAX as usize,
                 limit: 2 * 1024 * 1024
@@ -1220,7 +1218,7 @@ mod tests {
 
     #[test]
     fn inflater_is_reusable_after_an_error() {
-        let mut inflater = Decompress::new(true);
+        let mut inflater = None;
         let data = vec![4; 500];
         assert!(
             decompress_frame(
@@ -1251,6 +1249,69 @@ mod tests {
         assert!(matches!(
             reader.receive().await,
             Err(SocketError::Frame(FrameError::CorruptCompressedData))
+        ));
+    }
+
+    fn deflater_built(writer: &ClientWriter) -> bool {
+        writer
+            .compression
+            .as_ref()
+            .is_some_and(|compression| compression.deflater.is_some())
+    }
+
+    fn inflater_built(reader: &ClientReader) -> bool {
+        reader
+            .compression
+            .as_ref()
+            .is_some_and(|compression| compression.inflater.is_some())
+    }
+
+    #[tokio::test]
+    async fn codec_state_is_only_built_once_needed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut peer = TcpStream::connect(address).await.unwrap();
+        let socket = ServerSocket::new(listener, FrameLimits::default())
+            .with_compression_threshold(Some(DEFAULT_COMPRESSION_THRESHOLD))
+            .accept()
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = socket.into_split();
+
+        peer.write_all(&frame_bytes(&[0x00, 0x01])).await.unwrap();
+        reader.receive().await.unwrap();
+        writer.send(&Bytes(vec![0; 1000])).await.unwrap();
+        writer.flush().await.unwrap();
+        assert_eq!(read_raw_frame(&mut peer).await, vec![0; 1000]);
+        assert!(!deflater_built(&writer));
+        assert!(!inflater_built(&reader));
+
+        writer.enable_compression();
+        assert!(deflater_built(&writer));
+        peer.write_all(&compressed_frame(0, &[1, 2])).await.unwrap();
+        assert_eq!(reader.receive().await.unwrap().bytes, [1, 2]);
+        assert!(!inflater_built(&reader));
+
+        peer.write_all(&compressed_frame(300, &zlib(&[3; 300])))
+            .await
+            .unwrap();
+        assert_eq!(reader.receive().await.unwrap().bytes, vec![3; 300]);
+        assert!(inflater_built(&reader));
+    }
+
+    #[tokio::test]
+    async fn compressed_packets_are_capped_at_the_vanilla_maximum() {
+        let limits = FrameLimits {
+            max_outbound_frame_bytes: 16 * 1024 * 1024,
+            ..FrameLimits::default()
+        };
+        let (_reader, mut writer, _peer) = compressed(256, limits).await;
+        assert!(matches!(
+            writer.send(&Bytes(vec![0; MAX_DECOMPRESSED_BYTES + 1])).await,
+            Err(SocketError::Frame(FrameError::FrameTooLarge {
+                requested,
+                limit: MAX_DECOMPRESSED_BYTES
+            })) if requested == MAX_DECOMPRESSED_BYTES + 1
         ));
     }
 }
