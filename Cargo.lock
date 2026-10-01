@@ -1976,6 +1976,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "voidmc-navigation"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "criterion",
+ "tracing",
+ "uuid",
+ "voidmc",
+ "voidmc-data",
+ "voidmc-protocol",
+]
+
+[[package]]
 name = "voidmc-net"
 version = "0.1.1"
 dependencies = [

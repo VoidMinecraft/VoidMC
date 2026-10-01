@@ -1,0 +1,38 @@
+[package]
+name = "voidmc-navigation"
+edition = "2024"
+description = "Entity navigation for VoidMC: engine-agnostic voxel pathfinding, path following and goal selection, a VoidMC adapter and an operator remote."
+version = "0.1.0"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+keywords.workspace = true
+
+[features]
+default = ["voidmc"]
+voidmc = [
+  "dep:voidmc",
+  "dep:voidmc-protocol",
+  "dep:voidmc-data",
+  "dep:bevy_ecs",
+  "dep:bevy_app",
+  "dep:tracing",
+  "dep:uuid",
+]
+
+[dependencies]
+voidmc = { version = "0.2.0", path = "../void", optional = true }
+voidmc-protocol = { version = "0.3.0", path = "../void-protocol", optional = true }
+voidmc-data = { version = "0.1.2", path = "../void-data", optional = true }
+bevy_ecs = { version = "0.18.0", optional = true }
+bevy_app = { version = "0.18.0", optional = true }
+tracing = { version = "0.1.44", optional = true }
+uuid = { version = "1.16.0", features = ["v4"], optional = true }
+
+[dev-dependencies]
+criterion = "0.7"
+
+[[bench]]
+name = "pathfinding"
+harness = false

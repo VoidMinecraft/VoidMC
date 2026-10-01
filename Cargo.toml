@@ -5,6 +5,7 @@ members = [
   "void-data",
   "void-demo",
   "void-example",
+  "void-navigation",
   "void-net",
   "void-protocol",
   "void-codec",
