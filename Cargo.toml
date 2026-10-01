@@ -11,6 +11,7 @@ members = [
   "void-codec-macros",
   "void-world-io"
 ]
+exclude = ["void-e2e"]
 
 [workspace.package]
 license = "MIT"
