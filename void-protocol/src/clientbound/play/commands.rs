@@ -36,8 +36,14 @@ pub enum Parser {
     Component,
     Style,
     Message,
+    Objective,
+    ObjectiveCriteria,
+    Operation,
     Angle,
     Rotation,
+    ScoreboardSlot,
+    ScoreHolder { multiple: bool },
+    Team,
     ResourceLocation,
     Dimension,
     GameMode,
@@ -69,8 +75,14 @@ impl Parser {
             Parser::Component => 18,
             Parser::Style => 19,
             Parser::Message => 20,
+            Parser::Objective => 24,
+            Parser::ObjectiveCriteria => 25,
+            Parser::Operation => 26,
             Parser::Angle => 28,
             Parser::Rotation => 29,
+            Parser::ScoreboardSlot => 30,
+            Parser::ScoreHolder { .. } => 31,
+            Parser::Team => 33,
             Parser::ResourceLocation => 36,
             Parser::Dimension => 41,
             Parser::GameMode => 42,
@@ -129,6 +141,9 @@ impl Parser {
                 let flags = (*single as u8) | ((*players_only as u8) << 1);
                 buf.push(flags);
             }
+            Parser::ScoreHolder { multiple } => {
+                buf.push(*multiple as u8);
+            }
             Parser::Time { min } => {
                 buf.extend_from_slice(&min.to_be_bytes());
             }
@@ -148,8 +163,13 @@ impl Parser {
             | Parser::Component
             | Parser::Style
             | Parser::Message
+            | Parser::Objective
+            | Parser::ObjectiveCriteria
+            | Parser::Operation
             | Parser::Angle
             | Parser::Rotation
+            | Parser::ScoreboardSlot
+            | Parser::Team
             | Parser::ResourceLocation
             | Parser::Dimension
             | Parser::GameMode
@@ -302,8 +322,14 @@ mod tests {
             (Parser::Component, 18),
             (Parser::Style, 19),
             (Parser::Message, 20),
+            (Parser::Objective, 24),
+            (Parser::ObjectiveCriteria, 25),
+            (Parser::Operation, 26),
             (Parser::Angle, 28),
             (Parser::Rotation, 29),
+            (Parser::ScoreboardSlot, 30),
+            (Parser::ScoreHolder { multiple: true }, 31),
+            (Parser::Team, 33),
             (Parser::ResourceLocation, 36),
             (Parser::Dimension, 41),
             (Parser::GameMode, 42),
@@ -349,8 +375,13 @@ mod tests {
             Parser::Component,
             Parser::Style,
             Parser::Message,
+            Parser::Objective,
+            Parser::ObjectiveCriteria,
+            Parser::Operation,
             Parser::Angle,
             Parser::Rotation,
+            Parser::ScoreboardSlot,
+            Parser::Team,
             Parser::ResourceLocation,
             Parser::Dimension,
             Parser::GameMode,
@@ -414,6 +445,17 @@ mod tests {
         }
         .encode_properties(&mut buf);
         assert_eq!(buf, [0x02]);
+    }
+
+    #[test]
+    fn score_holder_flags_multiple_is_bit0() {
+        let mut buf = Vec::new();
+        Parser::ScoreHolder { multiple: true }.encode_properties(&mut buf);
+        assert_eq!(buf, [0x01]);
+
+        let mut buf = Vec::new();
+        Parser::ScoreHolder { multiple: false }.encode_properties(&mut buf);
+        assert_eq!(buf, [0x00]);
     }
 
     #[test]
