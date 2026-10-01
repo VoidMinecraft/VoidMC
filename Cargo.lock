@@ -1971,6 +1971,7 @@ dependencies = [
  "uuid",
  "voidmc",
  "voidmc-data",
+ "voidmc-navigation",
  "voidmc-protocol",
  "voidmc-world-io",
 ]
@@ -1982,6 +1983,7 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "criterion",
+ "flume",
  "tracing",
  "uuid",
  "voidmc",
