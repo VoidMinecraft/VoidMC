@@ -114,7 +114,7 @@ pub struct SpawnPosition {
 }
 ```
 
-When `y` is `None` (the default), the server automatically computes the spawn Y coordinate by calling `WorldGenerator::surface_height_at(x, z) + 1`. This ensures players always spawn on top of the terrain.
+When `y` is `None` (the default), the server uses `WorldGenerator::surface_height_at(x, z)` as the spawn Y coordinate: the first air block above the terrain, so players spawn standing on it.
 
 ## ServerConfigResource
 
