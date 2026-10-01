@@ -1,0 +1,33 @@
+[package]
+name = "voidmc-e2e"
+edition = "2024"
+description = "End-to-end test harness: boots a VoidMC server in-process and drives it with real protocol clients."
+version = "0.0.0"
+publish = false
+license = "MIT"
+repository = "https://github.com/VoidMinecraft/VoidMC"
+
+[workspace]
+
+[dependencies]
+voidmc = { path = "../void" }
+voidmc-protocol = { path = "../void-protocol" }
+azalea-protocol = { version = "=0.16.0", default-features = false, features = ["connecting"] }
+azalea-world = "=0.16.0"
+azalea-core = "=0.16.0"
+azalea-block = "=0.16.0"
+azalea-registry = "=0.16.0"
+azalea-inventory = "=0.16.0"
+azalea-brigadier = "=0.16.0"
+azalea-crypto = "=0.16.0"
+azalea-entity = "=0.16.0"
+bevy_app = "0.18.0"
+bevy_ecs = "0.18.0"
+flume = "0.12.0"
+tokio = { version = "1.44.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = "1.16.0"
+
+[profile.dev.package."*"]
+opt-level = 2

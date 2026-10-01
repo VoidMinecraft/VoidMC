@@ -14,6 +14,7 @@ members = [
   "void-vanilla-commands",
   "void-worldedit"
 ]
+exclude = ["void-e2e"]
 
 [workspace.package]
 license = "MIT"
