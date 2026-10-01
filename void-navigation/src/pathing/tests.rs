@@ -571,3 +571,59 @@ fn hopeless_short_searches_stop_early() {
     );
     assert!(pathfinder.stats().expanded > 1_000);
 }
+
+#[test]
+fn smoothed_segments_keep_the_body_clear_of_blocks() {
+    let mut world = flat();
+    let mut seed = 31u64;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) as i32
+    };
+    for _ in 0..180 {
+        let (x, z) = (next() % 50 - 25, next() % 50 - 25);
+        if x.abs() > 2 || z.abs() > 2 {
+            world.fill(BlockPos::new(x, 1, z), BlockPos::new(x, 2, z), Cell::FULL);
+        }
+    }
+    let profile = walker();
+    let half = profile.width / 2.0;
+    let mut checked = 0;
+    for target in [(20, 20), (-20, 18), (22, -15), (-18, -21), (5, 24)] {
+        let (status, path) = search(&mut world, &profile, feet(0, 0), feet(target.0, target.1));
+        if !status.found_path() {
+            continue;
+        }
+        let mut from = feet(0, 0);
+        for &to in path.points() {
+            for i in 0..=200 {
+                let p = from.lerp(to, i as f64 / 200.0);
+                for (ox, oz) in [
+                    (-half, -half),
+                    (half, -half),
+                    (-half, half),
+                    (half, half),
+                    (0.0, -half),
+                    (0.0, half),
+                    (-half, 0.0),
+                    (half, 0.0),
+                ] {
+                    let cell = world.get(BlockPos::containing(Vec3::new(
+                        p.x + ox,
+                        p.y + 0.5,
+                        p.z + oz,
+                    )));
+                    assert!(
+                        !cell.has_collision(),
+                        "segment {from:?} -> {to:?} clips at {p:?}"
+                    );
+                }
+            }
+            from = to;
+            checked += 1;
+        }
+    }
+    assert!(checked > 10);
+}

@@ -79,14 +79,17 @@ physics can climb.
 While it has a goal, a navigator owns the entity's horizontal `Velocity` and
 yaw. Gravity, block collision and step-up stay with the engine physics.
 Navigation systems run in `NavigationSystems`, after the built-in wander AI and
-before the physics step. A navigator with a goal therefore overrides `Wander`.
+before the physics step. A navigator that is walking a path therefore overrides
+`Wander`. While it waits for a path, `Wander` can still move the entity.
 
-A goal ends in exactly one `NavigationEvent { entity, outcome }`:
+`MoveTo` and `Flee` goals end in exactly one `NavigationEvent { entity, outcome }`.
+A `Follow` goal fires only `Interrupted`: when no path exists, it waits and retries. A patrol never ends by
+itself and can fire `Unreachable` once per skipped point:
 
 | Outcome | When |
 |---|---|
 | `Reached` | A `MoveTo` or `Flee` goal is satisfied. |
-| `Unreachable` | No path was found after `max_failures` attempts, or the path stayed blocked. A patrol fires it for each skipped point. |
+| `Unreachable` | A `MoveTo` or `Flee` search found no path, or the mob stayed stuck for `max_failures` re-plans in a row. When a `Follow` re-plan fails, the mob keeps walking its current path. A patrol fires it for each skipped point and backs off after `max_failures` skips in a row. |
 | `Interrupted` | The goal was replaced or stopped, or its target entity despawned or changed dimension. |
 
 ```rust
@@ -184,7 +187,8 @@ sweet berry bushes, wither roses, powder snow, cobwebs).
 
 ## Performance
 
-Navigation is budgeted per tick and allocation-free once warm.
+Navigation is budgeted per tick. Once warm, it allocates only when the path
+cache grows.
 
 - **Cell cache.** Sections are converted to cells the first time a search
   reads them: about 2 µs each, palette decoding included. A changed chunk
@@ -193,7 +197,8 @@ Navigation is budgeted per tick and allocation-free once warm.
 - **One shared planner.** Every navigator queues its request in one FIFO,
   served by a single resumable A*. `NavigationSettings::expansions_per_tick`
   (default 2000, about 0.65 ms at most) caps the nodes all searches may expand in
-  one tick. A search that runs out of budget resumes the next tick. Searches
+  one tick. A search that runs out of budget resumes the next tick. At most 64
+  requests are taken from the queue per tick, cache hits included. Searches
   never allocate: the open set, the node arena and a dense 128×32×128 node
   window are reused, with a hash map fallback outside the window.
 - **Path cache.** Paths to fixed goals (`MoveTo`, patrol points) are cached by
@@ -211,14 +216,14 @@ Measured on an Apple M-series laptop with `cargo bench -p voidmc-navigation`
 
 | Scenario | Result |
 |---|---|
-| 64-block walk on flat ground, warm cache (65 nodes) | 22 µs |
-| 96-block walk over hills with trees and slabs (126 nodes) | 49 µs warm, 88 µs cold |
+| 64-block walk on flat ground, warm cache (65 nodes) | 25 µs |
+| 96-block walk over hills with trees and slabs (126 nodes) | 55 µs warm, 95 µs cold |
 | 254-block diagonal across hills | 104 µs |
-| 96-block flight over hills (137 nodes) | 130 µs |
-| 164-block maze (22,862 nodes, run uncapped) | 6.2 ms in total, spread over about 12 ticks by the budget |
+| 96-block flight over hills (137 nodes) | 188 µs |
+| 164-block maze (22,862 nodes, run uncapped) | 6.6 ms in total, spread over about 12 ticks by the budget |
 | Unreachable goal 41 blocks away (distance-scaled cap of 1312 nodes) | 376 µs |
 | Section fill (chunk palette to 4096 cells) | 1.8 µs |
-| 500 path followers, one tick | 5.2 µs |
+| 500 path followers, one tick | 5.0 µs |
 | 500 wandering mobs on generated terrain: whole tick, physics included | 322 µs (204 µs of it planning, about 5 searches per tick) |
 | 500 patrolling mobs: whole tick, physics included | 217 µs (79 µs of it planning, path-cache hits) |
 | 1000 wandering mobs / 1000 patrolling mobs | 633 µs / 430 µs |

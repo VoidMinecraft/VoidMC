@@ -116,7 +116,12 @@ pub struct Navigator {
 
 impl Default for Navigator {
     fn default() -> Self {
-        Self::new(NavigationProfile::walker())
+        let body = voidmc::components::EntityCollider::default();
+        Self::new(
+            NavigationProfile::walker()
+                .size(body.half_width * 2.0, body.height)
+                .step_height(body.step_height),
+        )
     }
 }
 
@@ -146,7 +151,6 @@ impl Navigator {
         }
     }
 
-    /// Blocks per tick.
     pub fn with_speed(mut self, speed: f64) -> Self {
         self.speed = speed.max(0.0);
         self

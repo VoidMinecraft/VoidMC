@@ -11,10 +11,13 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::common_conditions::any_with_component;
-use voidmc::components::{EntityUuid, MinecraftEntityId, Position};
+use voidmc::components::{
+    EntityDimension, EntityUuid, MinecraftEntityId, PlayerDimension, Position,
+};
 use voidmc::entity::EntityMetadata;
 use voidmc::item::ItemId;
 use voidmc::item_behavior::ItemBehaviorRegistry;
+use voidmc::world::DimensionId;
 use voidmc::{CommandRegistry, Players};
 use voidmc_protocol::clientbound::entity_metadata::entity_index;
 use voidmc_protocol::clientbound::{ClientboundPacket, EntityMetadataValue};
@@ -56,11 +59,16 @@ impl RemoteSettings {
 pub struct NavRemote {
     selected: Option<Entity>,
     scene: Scene,
+    used_this_tick: bool,
 }
 
 impl NavRemote {
     pub fn selected(&self) -> Option<Entity> {
         self.selected
+    }
+
+    pub(crate) fn claim_use(&mut self) -> bool {
+        !std::mem::replace(&mut self.used_this_tick, true)
     }
 }
 
@@ -80,7 +88,7 @@ pub fn select(world: &mut World, operator: Entity, target: Option<Entity>) -> bo
         None if target.is_some() => {
             player.insert(NavRemote {
                 selected: target,
-                scene: Scene::default(),
+                ..NavRemote::default()
             });
         }
         None => {}
@@ -116,7 +124,6 @@ impl NavRemotePlugin {
         self
     }
 
-    /// Whether to register the `/nav` command (default true).
     pub fn command(mut self, enabled: bool) -> Self {
         self.command = enabled;
         self
@@ -160,17 +167,23 @@ type Watched<'w, 's> = Query<
         &'static MinecraftEntityId,
         &'static EntityUuid,
         Option<&'static EntityMetadata>,
+        Option<&'static EntityDimension>,
     ),
 >;
 
-fn frame_of<'a>(watched: &'a Watched, target: Entity, tick: u64) -> Option<Frame<'a>> {
-    let (navigator, position, network_id, uuid, metadata) = watched.get(target).ok()?;
+fn frame_of<'a>(
+    watched: &'a Watched,
+    target: Entity,
+    tick: u64,
+) -> Option<(Frame<'a>, DimensionId)> {
+    let (navigator, position, network_id, uuid, metadata, dimension) = watched.get(target).ok()?;
     let flags = match metadata.and_then(|m| m.get(entity_index::FLAGS)) {
         Some(EntityMetadataValue::Byte(flags)) => *flags,
         _ => 0,
     };
     let path = navigator.path();
-    Some(Frame {
+    let dimension = dimension.map_or(DimensionId::Overworld, |d| d.0);
+    let frame = Frame {
         target,
         network_id: network_id.0,
         uuid: uuid.0,
@@ -183,29 +196,38 @@ fn frame_of<'a>(watched: &'a Watched, target: Entity, tick: u64) -> Option<Frame
         revision: navigator.path_revision(),
         destination: navigator.destination(),
         tick,
-    })
+    };
+    Some((frame, dimension))
 }
 
 fn render_scenes(
     players: Players,
     watched: Watched,
-    mut remotes: Query<(Entity, &mut NavRemote)>,
+    mut remotes: Query<(Entity, &mut NavRemote, Option<&PlayerDimension>)>,
     mut packets: Local<Vec<ClientboundPacket>>,
     mut tick: Local<u64>,
 ) {
     *tick += 1;
-    for (watcher, mut remote) in &mut remotes {
+    for (watcher, mut remote, watcher_dimension) in &mut remotes {
+        let remote = remote.bypass_change_detection();
+        remote.used_this_tick = false;
         if remote.selected.is_none() && remote.scene.is_empty() {
             continue;
         }
-        let remote = remote.as_mut();
-        let frame = remote
+        let watcher_dimension = watcher_dimension.map_or(DimensionId::Overworld, |d| d.0);
+        let found = remote
             .selected
             .and_then(|target| frame_of(&watched, target, *tick));
-        if frame.is_none() {
-            remote.selected = None;
+        match &found {
+            None => {
+                remote.selected = None;
+                remote.scene.clear(&mut packets);
+            }
+            Some((_, dimension)) if *dimension != watcher_dimension => {
+                remote.scene.clear(&mut packets)
+            }
+            Some((frame, _)) => remote.scene.sync(Some(frame), &mut packets),
         }
-        remote.scene.sync(frame.as_ref(), &mut packets);
         for packet in packets.drain(..) {
             players.send(watcher, packet);
         }

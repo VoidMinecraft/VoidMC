@@ -60,14 +60,15 @@ fn solid_at(world: &World, dimension: DimensionId, pos: BlockPos) -> Option<bool
     Some(is_solid_block_state(state))
 }
 
+enum Hit {
+    Block { distance: f64, before: BlockPos },
+    Unloaded,
+    Miss,
+}
+
 /// The first solid block along the ray (voxel traversal), with the empty cell
 /// the ray entered it from.
-fn block_hit(
-    world: &World,
-    dimension: DimensionId,
-    ray: &Ray,
-    range: f64,
-) -> Option<(f64, BlockPos, BlockPos)> {
+fn block_hit(world: &World, dimension: DimensionId, ray: &Ray, range: f64) -> Hit {
     let mut cell = BlockPos::containing(ray.origin);
     let step = |d: f64| if d > 0.0 { 1 } else { -1 };
     let (sx, sy, sz) = (
@@ -113,11 +114,18 @@ fn block_hit(
             t = tz;
             tz += dz;
         }
-        if solid_at(world, dimension, cell)? {
-            return Some((t, cell, previous));
+        match solid_at(world, dimension, cell) {
+            Some(true) => {
+                return Hit::Block {
+                    distance: t,
+                    before: previous,
+                };
+            }
+            Some(false) => {}
+            None => return Hit::Unloaded,
         }
     }
-    None
+    Hit::Miss
 }
 
 fn aabb_hit(ray: &Ray, min: Vec3, max: Vec3) -> Option<f64> {
@@ -147,7 +155,10 @@ fn aabb_hit(ray: &Ray, min: Vec3, max: Vec3) -> Option<f64> {
 /// The navigating mob `player` is looking at, if no block is in the way.
 pub fn select_looked_at(world: &mut World, player: Entity) -> Option<Entity> {
     let (ray, dimension) = view_ray(world, player)?;
-    let wall = block_hit(world, dimension, &ray, PICK_RANGE).map_or(PICK_RANGE, |hit| hit.0);
+    let wall = match block_hit(world, dimension, &ray, PICK_RANGE) {
+        Hit::Block { distance, .. } => distance,
+        Hit::Unloaded | Hit::Miss => PICK_RANGE,
+    };
     let mut query = world.query_filtered::<(
         Entity,
         &Position,
@@ -185,10 +196,27 @@ fn standing_spot(world: &World, dimension: DimensionId, cell: BlockPos) -> Vec3 
     pos.bottom_center()
 }
 
-fn clicked_destination(world: &World, player: Entity) -> Option<Vec3> {
-    let (ray, dimension) = view_ray(world, player)?;
-    let (_, _, before) = block_hit(world, dimension, &ray, CLICK_RANGE)?;
-    Some(standing_spot(world, dimension, before))
+enum Clicked {
+    Spot(Vec3),
+    Unloaded,
+    Sky,
+}
+
+fn clicked_destination(world: &World, player: Entity) -> Clicked {
+    let Some((ray, dimension)) = view_ray(world, player) else {
+        return Clicked::Sky;
+    };
+    match block_hit(world, dimension, &ray, CLICK_RANGE) {
+        Hit::Block { before, .. } => Clicked::Spot(standing_spot(world, dimension, before)),
+        Hit::Unloaded => Clicked::Unloaded,
+        Hit::Miss => Clicked::Sky,
+    }
+}
+
+fn claim_use(world: &mut World, player: Entity) -> bool {
+    world
+        .get_mut::<NavRemote>(player)
+        .is_none_or(|mut remote| remote.claim_use())
 }
 
 fn selected(world: &World, player: Entity) -> Option<Entity> {
@@ -231,11 +259,16 @@ impl ItemBehavior for RemoteWand {
             return UseResult::Pass;
         };
         let reply = ctx.with_world_mut(|world| {
+            if !claim_use(world, player) {
+                return None;
+            }
             if selected(world, player).is_none() {
-                return match pick(world, player) {
-                    Some(_) => "Selected the mob you are looking at.".to_string(),
-                    None => "Right-click a mob with the remote to select it.".to_string(),
+                let reply = match pick(world, player) {
+                    Some(_) => "Selected the mob you are looking at.",
+                    None => "Right-click a mob with the remote to select it.",
                 };
+                claim_use(world, player);
+                return Some(reply.to_string());
             }
             let dimension = world
                 .get::<PlayerDimension>(player)
@@ -246,12 +279,14 @@ impl ItemBehavior for RemoteWand {
                 dimension,
                 BlockPos::new(face.x, face.y as i32, face.z),
             );
-            match drive(world, player, target) {
+            Some(match drive(world, player, target) {
                 Some(_) => format!("Moving to {}.", describe(target)),
                 None => "The selected mob is gone.".to_string(),
-            }
+            })
         });
-        ctx.reply(&reply);
+        if let Some(reply) = reply {
+            ctx.reply(&reply);
+        }
         UseResult::Handled
     }
 
@@ -261,6 +296,9 @@ impl ItemBehavior for RemoteWand {
             return UseResult::Pass;
         }
         let reply = ctx.with_world_mut(|world| {
+            if !claim_use(world, player) {
+                return None;
+            }
             let current = selected(world, player);
             if let Some(mob) = select_looked_at(world, player) {
                 if current == Some(mob) {
@@ -271,7 +309,7 @@ impl ItemBehavior for RemoteWand {
             }
             let mob = current?;
             match clicked_destination(world, player) {
-                Some(target) => {
+                Clicked::Spot(target) => {
                     let already = world
                         .get::<Navigator>(mob)
                         .and_then(Navigator::destination)
@@ -282,7 +320,8 @@ impl ItemBehavior for RemoteWand {
                     drive(world, player, target);
                     Some(format!("Moving to {}.", describe(target)))
                 }
-                None => {
+                Clicked::Unloaded => Some("That spot is not loaded.".to_string()),
+                Clicked::Sky => {
                     select(world, player, None);
                     Some("Released the mob.".to_string())
                 }

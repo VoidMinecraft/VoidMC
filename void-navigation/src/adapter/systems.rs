@@ -20,6 +20,7 @@ const RETRY_TICKS: u16 = 40;
 const HOLD_SLACK: f64 = 1.0;
 const FLEE_MARGIN: f64 = 2.0;
 const PATH_CACHE_CAPACITY: usize = 2048;
+const MAX_REQUESTS_PER_TICK: u32 = 64;
 
 /// Tunables shared by every navigator.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -271,10 +272,15 @@ pub(crate) fn run_planner(
     let planner = planner.as_mut();
     let mut budget = settings.expansions_per_tick;
     stats.expanded_last_tick = 0;
+    let mut requests = 0;
     while budget > 0 {
         let active = match planner.active {
             Some(active) => active,
             None => {
+                if requests >= MAX_REQUESTS_PER_TICK {
+                    break;
+                }
+                requests += 1;
                 let Some(entity) = planner.queue.pop_front() else {
                     break;
                 };
@@ -332,6 +338,16 @@ pub(crate) fn run_planner(
                 active
             }
         };
+        let current = navigators
+            .get(active.entity)
+            .is_ok_and(|navigator| navigator.search_ticket == active.ticket);
+        if !current {
+            planner.active = None;
+            if let Ok(mut navigator) = navigators.get_mut(active.entity) {
+                navigator.queued = false;
+            }
+            continue;
+        }
         let before = budget;
         let status = planner
             .pathfinder
@@ -369,13 +385,21 @@ pub(crate) fn run_planner(
                     if planner.cache.len() >= PATH_CACHE_CAPACITY {
                         planner.cache.clear();
                     }
-                    planner.cache.insert(
-                        key,
-                        CachedPath {
-                            path: navigator.path.clone(),
-                            epoch: active.epoch,
-                        },
-                    );
+                    match planner.cache.get_mut(&key) {
+                        Some(cached) => {
+                            cached.path.copy_from(&navigator.path);
+                            cached.epoch = active.epoch;
+                        }
+                        None => {
+                            planner.cache.insert(
+                                key,
+                                CachedPath {
+                                    path: navigator.path.clone(),
+                                    epoch: active.epoch,
+                                },
+                            );
+                        }
+                    }
                 }
             } else {
                 stats.partial += 1;
@@ -391,6 +415,11 @@ pub(crate) fn run_planner(
 }
 
 fn unreachable(settings: &NavigationSettings, navigator: &mut Navigator) {
+    let still_following = navigator.phase == Phase::Following && !navigator.path.is_empty();
+    if still_following && matches!(navigator.goal(), Some(Goal::Follow { .. })) {
+        navigator.repath_cooldown = RETRY_TICKS;
+        return;
+    }
     navigator.clear_path();
     navigator.failures = navigator.failures.saturating_add(1);
     match navigator.goal_mut() {
@@ -420,11 +449,11 @@ pub(crate) fn follow_paths(
         &mut Velocity,
         &mut Rotation,
         &mut VerticalVelocity,
-        &mut Grounded,
+        &Grounded,
     )>,
 ) {
     let mut moving = 0;
-    for (mut navigator, mut position, mut velocity, mut rotation, mut vertical, mut grounded) in
+    for (mut navigator, mut position, mut velocity, mut rotation, mut vertical, grounded) in
         &mut navigators
     {
         let navigator = navigator.as_mut();
@@ -461,7 +490,6 @@ pub(crate) fn follow_paths(
                 }
                 if steering.jump {
                     vertical.0 = JUMP_VELOCITY;
-                    grounded.0 = false;
                 }
             }
             FollowStatus::Arrived => {
@@ -473,7 +501,7 @@ pub(crate) fn follow_paths(
                 halt(&mut velocity);
                 navigator.owns_velocity = false;
                 navigator.failures = navigator.failures.saturating_add(1);
-                if navigator.failures > settings.max_failures {
+                if navigator.failures >= settings.max_failures {
                     unreachable(&settings, navigator);
                 } else {
                     navigator.clear_path();

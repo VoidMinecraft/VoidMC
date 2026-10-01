@@ -4,6 +4,8 @@ use super::movement::stand;
 use super::profile::{Mobility, MoveModel};
 
 const MAX_SHORTCUT: usize = 32;
+const CLEARANCE_MARGIN: f64 = 0.1;
+const PROBE_SPACING: f64 = 0.25;
 
 /// A followable path: feet positions from the start (excluded) to the end.
 /// `complete` is false when the search stopped at its node budget or could
@@ -139,9 +141,8 @@ impl SegmentProbe {
         let a = from.point();
         let b = to.point();
         let length = a.distance(b);
-        let spacing = (model.half_width * 2.0).clamp(0.2, 0.5);
-        let samples = (length / spacing).ceil().max(1.0) as usize;
-        let reach = model.half_width.max(0.05) - 1.0e-3;
+        let samples = (length / PROBE_SPACING).ceil().max(1.0) as usize;
+        let reach = model.half_width.max(0.05) + CLEARANCE_MARGIN;
         for i in 1..samples {
             let p = a.lerp(b, i as f64 / samples as f64);
             for (ox, oz) in [

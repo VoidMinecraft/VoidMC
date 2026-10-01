@@ -181,7 +181,6 @@ impl Behaviours {
         }
     }
 
-    /// Appends a behaviour below the ones already added.
     pub fn with(mut self, behaviour: Behaviour) -> Self {
         self.list.push(behaviour);
         self

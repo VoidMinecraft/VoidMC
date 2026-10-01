@@ -48,7 +48,7 @@ pub(crate) struct Frame<'a> {
 pub(crate) struct Scene {
     target: Option<bevy_ecs::entity::Entity>,
     revision: u32,
-    segments: Vec<i32>,
+    segments: Vec<Option<i32>>,
     cleared: usize,
     marker: Option<i32>,
     glow: Option<(i32, i8)>,
@@ -123,7 +123,12 @@ impl Scene {
     }
 
     fn drop_path(&mut self, out: &mut Vec<ClientboundPacket>) {
-        let mut ids: Vec<i32> = self.segments.drain(..).skip(self.cleared).collect();
+        let mut ids: Vec<i32> = self
+            .segments
+            .drain(..)
+            .skip(self.cleared)
+            .flatten()
+            .collect();
         ids.extend(self.marker.take());
         self.cleared = 0;
         if !ids.is_empty() {
@@ -141,9 +146,7 @@ impl Scene {
         };
         let mut from = frame.origin;
         for &to in frame.path.iter().take(MAX_SEGMENTS) {
-            let id = MinecraftEntityId::allocate().0;
-            segment(id, from, to, beam, out);
-            self.segments.push(id);
+            self.segments.push(segment(from, to, beam, out));
             from = to;
         }
         if let Some(&end) = frame.path.last() {
@@ -157,12 +160,14 @@ impl Scene {
     fn trim(&mut self, waypoint: usize, out: &mut Vec<ClientboundPacket>) {
         let done = waypoint.min(self.segments.len());
         if done > self.cleared {
-            out.push(
-                RemoveEntities {
-                    entity_ids: self.segments[self.cleared..done].to_vec(),
-                }
-                .into(),
-            );
+            let entity_ids: Vec<i32> = self.segments[self.cleared..done]
+                .iter()
+                .flatten()
+                .copied()
+                .collect();
+            if !entity_ids.is_empty() {
+                out.push(RemoveEntities { entity_ids }.into());
+            }
             self.cleared = done;
         }
     }
@@ -295,10 +300,9 @@ pub(crate) fn segment_transform(from: Vec3, to: Vec3) -> Option<DisplayTransform
     })
 }
 
-fn segment(id: i32, from: Vec3, to: Vec3, block: i32, out: &mut Vec<ClientboundPacket>) {
-    let Some(transform) = segment_transform(from, to) else {
-        return;
-    };
+fn segment(from: Vec3, to: Vec3, block: i32, out: &mut Vec<ClientboundPacket>) -> Option<i32> {
+    let transform = segment_transform(from, to)?;
+    let id = MinecraftEntityId::allocate().0;
     let mut metadata = EntityMetadata::default();
     Display {
         transform,
@@ -309,6 +313,7 @@ fn segment(id: i32, from: Vec3, to: Vec3, block: i32, out: &mut Vec<ClientboundP
     .write(&mut metadata);
     BlockDisplay(block).write(&mut metadata);
     spawn_display(id, from, metadata, out);
+    Some(id)
 }
 
 fn marker(id: i32, at: Vec3, out: &mut Vec<ClientboundPacket>) {
@@ -473,6 +478,21 @@ mod tests {
         out.clear();
         scene.sync(None, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn zero_length_segments_are_never_removed() {
+        let origin = Vec3::new(0.5, 64.0, 0.5);
+        let path = [origin, Vec3::new(4.5, 64.0, 0.5)];
+        let mut scene = Scene::default();
+        let mut out = Vec::new();
+        scene.sync(Some(&frame(&path, 0, 1, 0)), &mut out);
+        assert_eq!(count(&out, "SpawnEntity"), 2);
+        out.clear();
+        scene.sync(Some(&frame(&path, 1, 1, 1)), &mut out);
+        assert!(out.is_empty(), "{out:?}");
+        scene.sync(None, &mut out);
+        assert_eq!(removed(&out), 2);
     }
 
     #[test]

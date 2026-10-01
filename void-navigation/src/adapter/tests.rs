@@ -404,3 +404,92 @@ fn a_single_point_patrol_settles_instead_of_replanning() {
     assert_eq!(app.world().resource::<NavigationStats>().searches, searches);
     assert!(position(&app, guard).horizontal_distance(Vec3::new(5.5, 1.0, 0.5)) < 0.5);
 }
+
+#[test]
+fn the_default_navigator_climbs_steps_through_the_engine_physics() {
+    let mut app = app(NavigationSettings::default());
+    for x in 4..12 {
+        for z in -3..3 {
+            set_block(&mut app, x, 1, z, blocks::STONE);
+        }
+    }
+    for x in 8..12 {
+        for z in -3..3 {
+            set_block(&mut app, x, 2, z, blocks::STONE);
+        }
+    }
+    let target = Vec3::new(10.5, 3.0, 0.5);
+    let zombie = mob(
+        &mut app,
+        0.5,
+        0.5,
+        Navigator::default().with_goal(Goal::move_to(target)),
+    );
+    run(&mut app, 300);
+    assert_eq!(outcomes(&app, zombie), vec![NavigationOutcome::Reached]);
+    assert!((position(&app, zombie).y - 3.0).abs() < 1.0e-6);
+}
+
+#[test]
+fn stopping_mid_search_frees_the_planner_at_once() {
+    let settings = NavigationSettings {
+        expansions_per_tick: 8,
+        ..NavigationSettings::default()
+    };
+    let mut app = app(settings);
+    wall(&mut app, 5, -30, 30);
+    let slow = mob(
+        &mut app,
+        0.5,
+        0.5,
+        walker().with_goal(Goal::move_to([20.5, 1.0, 0.5])),
+    );
+    let quick = mob(
+        &mut app,
+        0.5,
+        5.5,
+        walker().with_goal(Goal::move_to([2.5, 1.0, 5.5])),
+    );
+    app.update();
+    app.world_mut()
+        .get_mut::<Navigator>(slow)
+        .expect("navigator")
+        .stop();
+    run(&mut app, 3);
+    let navigator = app.world().get::<Navigator>(quick).expect("navigator");
+    assert!(navigator.is_moving() || navigator.is_idle());
+    assert_eq!(app.world().resource::<NavigationStats>().queued, 0);
+}
+
+#[test]
+fn a_failed_follow_replan_keeps_the_current_path() {
+    let mut app = app(NavigationSettings::default());
+    let steve = player(&mut app, 12.5, 0.5);
+    let wolf = mob(&mut app, 0.5, 0.5, walker());
+    app.world_mut()
+        .get_mut::<Navigator>(wolf)
+        .expect("navigator")
+        .follow(steve, 2.0);
+    run(&mut app, 3);
+    assert!(
+        app.world()
+            .get::<Navigator>(wolf)
+            .expect("navigator")
+            .is_moving()
+    );
+    for (x, y, z) in [(12, 3, 0), (12, 1, 0), (12, 2, 0)] {
+        set_block(&mut app, x, y, z, blocks::STONE);
+    }
+    for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        for y in 1..=4 {
+            set_block(&mut app, 12 + dx, y, dz, blocks::STONE);
+        }
+    }
+    app.world_mut()
+        .get_mut::<Position>(steve)
+        .expect("player")
+        .y = 4.0;
+    run(&mut app, 15);
+    let navigator = app.world().get::<Navigator>(wolf).expect("navigator");
+    assert!(!navigator.path().is_empty() || navigator.is_moving());
+}
