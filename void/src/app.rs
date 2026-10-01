@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin, TerminalCtrlCHandlerPlugin};
@@ -17,6 +18,11 @@ use crate::world::{
     ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
     generation::WorldGen, load_or_generate,
 };
+
+/// The address the server is listening on, known once [`VoidServer::run`] has
+/// bound its socket. Differs from the configured address when binding port 0.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListenAddress(pub SocketAddr);
 
 /// The main entry point for running a Void server.
 pub struct VoidServer {
@@ -47,13 +53,25 @@ impl VoidServer {
         self
     }
 
-    /// Starts the server — spawns the network thread and runs the Bevy app.
-    /// This function blocks until the server shuts down.
+    /// Starts the server — binds the listening socket, spawns the network
+    /// thread and runs the Bevy app. This function blocks until the server
+    /// shuts down, and panics if the address cannot be bound.
     pub fn run(self) {
         let config_resource = ServerConfigResource::from(&self.config);
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
-        let address = self.config.address.clone();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let listener = runtime
+            .block_on(tokio::net::TcpListener::bind(&self.config.address))
+            .unwrap_or_else(|error| panic!("Failed to bind {}: {error}", self.config.address));
+        let listen_address = ListenAddress(
+            listener
+                .local_addr()
+                .expect("a bound listener has a local address"),
+        );
         let frame_limits = self.config.frame_limits;
         let compression_threshold = self.config.compression_threshold;
 
@@ -68,15 +86,8 @@ impl VoidServer {
         // Start the network server in a separate thread
         let network_server_status = server_status.clone();
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-
-            rt.block_on(async move {
-                let mut server = Server::new_with_limits(&address, frame_limits)
-                    .await
-                    .expect("Failed to start server")
+            runtime.block_on(async move {
+                let mut server = Server::from_listener(listener, frame_limits)
                     .with_compression_threshold(compression_threshold);
                 server
                     .run_with_status(
@@ -117,6 +128,7 @@ impl VoidServer {
         app.insert_resource(self.config.registries)
             .insert_resource(config_resource)
             .insert_resource(server_status)
+            .insert_resource(listen_address)
             .insert_resource(world_gen)
             .init_resource::<ChunkIndex>()
             .add_systems(Startup, init_world);

@@ -25,12 +25,16 @@ impl Server {
     }
 
     pub async fn new_with_limits(addr: &str, limits: FrameLimits) -> std::io::Result<Self> {
-        let server = TcpListener::bind(addr).await?;
-        Ok(Self {
-            socket: ServerSocket::new(server, limits),
+        let listener = TcpListener::bind(addr).await?;
+        Ok(Self::from_listener(listener, limits))
+    }
+
+    pub fn from_listener(listener: TcpListener, limits: FrameLimits) -> Self {
+        Self {
+            socket: ServerSocket::new(listener, limits),
             connections: HashMap::new(),
             next_id: 1,
-        })
+        }
     }
 
     /// See [`ServerSocket::with_compression_threshold`].
