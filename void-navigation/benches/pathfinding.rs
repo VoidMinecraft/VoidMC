@@ -139,18 +139,29 @@ fn scenarios() -> Vec<Scenario> {
             profile: NavigationProfile::walker(),
         },
         Scenario {
-            name: "maze_128",
+            name: "maze_160",
             world: maze_world(),
             from: (-80, 0),
             to: (80, 10),
-            profile: NavigationProfile::walker().search_limit(16_384),
+            profile: NavigationProfile::walker()
+                .search_limit(65_536)
+                .nodes_per_block(0),
         },
         Scenario {
-            name: "sealed_cap_4096",
+            name: "sealed_scaled_cap",
             world: sealed_world(),
             from: (0, 0),
             to: (41, 0),
             profile: NavigationProfile::walker().allow_partial(false),
+        },
+        Scenario {
+            name: "sealed_full_cap_4096",
+            world: sealed_world(),
+            from: (0, 0),
+            to: (41, 0),
+            profile: NavigationProfile::walker()
+                .allow_partial(false)
+                .nodes_per_block(0),
         },
         Scenario {
             name: "hills_flyer_96",

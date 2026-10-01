@@ -3,14 +3,16 @@ use std::time::{Duration, Instant};
 
 use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
+use bevy_ecs::system::SystemState;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use voidmc::systems::physics::apply_spawned_entity_physics;
 use voidmc::world::generation::{generate_chunk, surface_height_at};
 use voidmc::world::{ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, DimensionId};
 use voidmc::{EntityBuilder, EntityKind};
+use voidmc_navigation::pathing::{BlockPos, NavWorld};
 use voidmc_navigation::{
-    Behaviour, Behaviours, Goal, NavigationPlugin, NavigationProfile, NavigationStats,
-    NavigationSystems, Navigator,
+    Behaviour, Behaviours, ChunkCells, Goal, NavigationPlugin, NavigationProfile, NavigationStats,
+    NavigationSystems, NavigationWorld, Navigator,
 };
 
 const RADIUS_CHUNKS: i32 = 6;
@@ -139,5 +141,26 @@ fn tick_benches(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, tick_benches);
+fn fill_benches(c: &mut Criterion) {
+    let mut app = world(true);
+    let mut state: SystemState<(ResMut<NavigationWorld>, ChunkCells)> =
+        SystemState::new(app.world_mut());
+    let (mut navigation, chunks) = state.get_mut(app.world_mut());
+    let mut group = c.benchmark_group("cell_cache");
+    let mut chunk = 0;
+    group.bench_function("fill_terrain_section", |b| {
+        b.iter(|| {
+            chunk = (chunk + 1) % 64;
+            let pos = ChunkPos::new(chunk % 8 - 4, chunk / 8 - 4);
+            navigation.invalidate_chunk(DimensionId::Overworld, pos);
+            let cell = navigation
+                .view(DimensionId::Overworld, &chunks)
+                .cell(BlockPos::new(pos.x * 16, 60, pos.z * 16));
+            black_box(cell)
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, tick_benches, fill_benches);
 criterion_main!(benches);

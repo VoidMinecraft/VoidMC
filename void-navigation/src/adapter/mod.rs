@@ -13,15 +13,25 @@ mod tests;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
-use voidmc::VoidSystems;
+use voidmc::components::EntityCollider;
 use voidmc::systems::physics::apply_spawned_entity_physics;
 use voidmc::systems::wander::wander_system;
+use voidmc::{EntityKind, VoidSystems};
 
 pub use behaviour::{Behaviour, BehaviourContext, Behaviours, Choice};
 pub use blocks::{BlockModel, CellTable, classify};
 pub use navigator::{DEFAULT_SPEED, Goal, NavigationEvent, NavigationOutcome, Navigator};
 pub use systems::{NavigationSettings, NavigationStats, PathPlanner};
 pub use world::{ChunkCells, DimensionCells, NavigationWorld};
+
+/// A walking profile sized to the collider VoidMC gives `kind`, stepping as
+/// high as the engine physics does.
+pub fn walking_profile(kind: EntityKind) -> crate::pathing::NavigationProfile {
+    let collider = EntityCollider::for_entity_name(kind.name());
+    crate::pathing::NavigationProfile::walker()
+        .size(collider.half_width * 2.0, collider.height)
+        .step_height(collider.step_height)
+}
 
 /// Runs every navigation system, after the built-in wander AI and before the
 /// entity physics step of the same tick.
