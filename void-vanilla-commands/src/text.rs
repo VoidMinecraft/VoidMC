@@ -89,6 +89,7 @@ fn parse_value(input: &str) -> Result<Value, String> {
     let mut reader = Reader {
         chars: input.chars().collect(),
         index: 0,
+        depth: 0,
     };
     let value = reader.value()?;
     reader.skip_whitespace();
@@ -101,9 +102,12 @@ fn parse_value(input: &str) -> Result<Value, String> {
     Ok(value)
 }
 
+const MAX_DEPTH: usize = 512;
+
 struct Reader {
     chars: Vec<char>,
     index: usize,
+    depth: usize,
 }
 
 impl Reader {
@@ -131,9 +135,20 @@ impl Reader {
 
     fn value(&mut self) -> Result<Value, String> {
         self.skip_whitespace();
+        if matches!(self.peek(), Some('{' | '[')) {
+            if self.depth == MAX_DEPTH {
+                return Err(format!("text component nested deeper than {MAX_DEPTH}"));
+            }
+            self.depth += 1;
+            let value = if self.peek() == Some('{') {
+                self.compound()
+            } else {
+                self.list()
+            };
+            self.depth -= 1;
+            return value;
+        }
         match self.peek() {
-            Some('{') => self.compound(),
-            Some('[') => self.list(),
             Some(_) => self.string().map(Value::Text),
             None => Err("expected a text component".into()),
         }
@@ -293,6 +308,20 @@ mod tests {
         ] {
             assert!(parse_component(input).is_err(), "{input:?}");
         }
+    }
+
+    #[test]
+    fn nesting_is_bounded() {
+        let deep = "[".repeat(32_000);
+        assert!(parse_component(&deep).is_err());
+        let ok = format!("{}a{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert_eq!(text(&ok).text, "a");
+        let over = format!(
+            "{}a{}",
+            "[".repeat(MAX_DEPTH + 1),
+            "]".repeat(MAX_DEPTH + 1)
+        );
+        assert!(parse_component(&over).is_err());
     }
 
     #[test]

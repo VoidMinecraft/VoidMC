@@ -24,8 +24,11 @@ VoidServer::new(config)
 Each plugin has one field, `access`. `Access::Operators` (the default, as in
 vanilla) only lets players carrying the `Operator` component run the command;
 `Access::Everyone` opens it to all players, which the example server does.
+The engine sends every player the same command tree, so non-operators still
+see both commands and their completions; they are refused when they run them.
 `team_command(access)` and `scoreboard_command(access)` return the bare
-`Command` for a registry of your own.
+`Command` for a registry of your own; without `ScoreboardCommandsPlugin` the
+scoreboard is still kept, but nothing is shown to clients.
 
 ## /team
 
@@ -50,7 +53,8 @@ vanilla) only lets players carrying the `Operator` component run the command;
 Teams are the engine's [`Team`](scoreboard.md#teams) entities: `/team add`
 spawns one, `/team remove` despawns it, `/team modify` edits its fields, and
 the scoreboard sync sends the difference. Teams spawned by code show up in
-`/team list` and can be modified the same way.
+`/team list` and can be modified the same way; removing one only takes the
+`Team` component off its entity.
 
 Members join by name (`Team::entries`), as vanilla score holders do, so a
 player keeps their team across reconnects and offline names or UUIDs can join
@@ -92,8 +96,14 @@ tagged `DisplayedObjective(slot)`, and the engine sends only what changed. Like
 vanilla, an objective in no slot is never sent to clients.
 
 Operations follow Java integer semantics: additions wrap, `/=` and `%=` round
-towards negative infinity, dividing by zero fails without changing any score,
-and missing scores count as 0. `><` swaps.
+towards negative infinity, and missing scores count as 0. `><` swaps. Dividing
+by zero fails without changing any score (vanilla keeps the pairs it already
+applied).
+
+Display slots and objective names are shared with every other engine
+`Objective`, such as a [`Sidebar`](sidebar.md). When one already holds the slot
+or name for a player, that player keeps it, and `setdisplay` adds a warning to
+its reply.
 
 ### From code
 
@@ -137,7 +147,8 @@ fn lap(mut board: ResMut<Scoreboard>, player: &str) {
 | `ComponentArg` | `StyledText` | `minecraft:component` | `"text"`, `'text'`, a bare word, `{"text":..,"color":..}` (JSON or SNBT), or a list of those |
 | `StyleArg` | `ScoreFormat` | `minecraft:style` | `{"color":"gold"}` |
 
-`ComponentArg` and `StyleArg` take the rest of the line, so register them as
+`ComponentArg` and `StyleArg` take the rest of the line (nested at most 512
+deep, like vanilla), so register them as
 the last, variadic argument.
 
 ## Not supported

@@ -33,6 +33,9 @@ const COLLISIONS: [(&str, CollisionRule); 4] = [
 
 type Outcome = Result<String, String>;
 
+#[derive(Component)]
+struct CommandTeam;
+
 pub fn team_command(access: Access) -> Command {
     let run = |handler: fn(&mut CommandContext)| access.guard(handler);
     let choices =
@@ -204,7 +207,7 @@ fn add(ctx: &mut CommandContext) {
         }
         let team = Team::new(&name).display_name(display.unwrap_or_else(|| name.clone()));
         let message = format!("Created team {}", label(&team));
-        world.spawn(team);
+        world.spawn((team, CommandTeam));
         Ok(message)
     });
     respond(ctx, outcome);
@@ -214,7 +217,11 @@ fn remove(ctx: &mut CommandContext) {
     let team = team_arg(ctx);
     let outcome = ctx.with_world_mut(|world| {
         let message = format!("Removed team {}", team_label(world, team));
-        world.despawn(team);
+        if world.get::<CommandTeam>(team).is_some() {
+            world.despawn(team);
+        } else {
+            world.entity_mut(team).remove::<Team>();
+        }
         Ok(message)
     });
     respond(ctx, outcome);
@@ -611,6 +618,18 @@ mod tests {
             h.ok("team list red").reply(),
             "Team [red] has 1 member(s): Alice"
         );
+    }
+
+    #[test]
+    fn removing_a_code_team_keeps_its_entity() {
+        #[derive(Component)]
+        struct Arena;
+        let mut h = Harness::new();
+        let arena = h.app.world_mut().spawn((Team::new("code"), Arena)).id();
+        h.app.update();
+        h.ok("team remove code");
+        assert!(h.app.world().get::<Arena>(arena).is_some());
+        assert!(h.team("code").is_none());
     }
 
     #[test]

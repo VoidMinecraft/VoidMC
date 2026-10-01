@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
+use bevy_ecs::prelude::{DetectChangesMut, Without};
 use voidmc::{
-    BoolArg, Command, CommandBuilder, CommandContext, DisplaySlot, IntegerArg, RenderType,
-    ScoreFormat,
+    BoolArg, Command, CommandBuilder, CommandContext, DisplaySlot, IntegerArg, Objective,
+    RenderType, ScoreFormat,
 };
 
 use crate::args::{
     ComponentArg, CriteriaArg, NameArg, ObjectiveArg, Operation, OperationArg, ScoreHolderArg,
     SlotArg, StyleArg, slot_name,
 };
-use crate::model::{Criteria, ScoreObjective, Scoreboard};
+use crate::model::{Criteria, DisplayedObjective, ScoreObjective, Scoreboard};
 use crate::text::StyledText;
 use crate::{Access, respond};
 
@@ -174,9 +175,25 @@ pub fn scoreboard_command(access: Access) -> Command {
         .build()
 }
 
-fn edit(ctx: &mut CommandContext, f: impl FnOnce(&mut Scoreboard) -> Outcome) {
-    let outcome = ctx.with_world_mut(|world| f(&mut world.resource_mut::<Scoreboard>()));
+fn edit(ctx: &mut CommandContext, f: impl FnOnce(&mut Scoreboard) -> Outcome) -> bool {
+    let outcome = ctx.with_world_mut(|world| {
+        let mut board = world.get_resource_or_init::<Scoreboard>();
+        let outcome = f(board.bypass_change_detection());
+        if outcome.is_ok() {
+            board.set_changed();
+        }
+        outcome
+    });
+    let done = outcome.is_ok();
     respond(ctx, outcome);
+    done
+}
+
+fn read<R>(ctx: &CommandContext, f: impl FnOnce(&Scoreboard) -> R) -> R {
+    ctx.with_world(|world| match world.get_resource::<Scoreboard>() {
+        Some(board) => f(board),
+        None => f(&Scoreboard::default()),
+    })
 }
 
 fn edit_objective(ctx: &mut CommandContext, f: impl FnOnce(&str, &mut ScoreObjective) -> Outcome) {
@@ -187,6 +204,26 @@ fn edit_objective(ctx: &mut CommandContext, f: impl FnOnce(&str, &mut ScoreObjec
             .ok_or_else(|| format!("Unknown scoreboard objective '{name}'"))?;
         f(&name, objective)
     });
+}
+
+/// Engine objectives spawned by other code win their slot and name for the
+/// players they already show to, so warn instead of failing silently.
+fn warn_if_claimed(ctx: &CommandContext, slot: DisplaySlot, name: &str) {
+    let claimed = ctx.with_world(|world| {
+        world
+            .try_query_filtered::<&Objective, Without<DisplayedObjective>>()
+            .is_some_and(|mut query| {
+                query
+                    .iter(world)
+                    .any(|other| other.slot == slot || other.name == name)
+            })
+    });
+    if claimed {
+        ctx.reply_error(
+            "Another objective on this server already uses that display slot or name; \
+             players who see it will not see this one",
+        );
+    }
 }
 
 fn string(ctx: &CommandContext, name: &str) -> String {
@@ -206,8 +243,7 @@ fn objective_label(board: &Scoreboard, name: &str) -> String {
 }
 
 fn list_objectives(ctx: &mut CommandContext) {
-    let outcome = ctx.with_world(|world| {
-        let board = world.resource::<Scoreboard>();
+    let outcome = read(ctx, |board| {
         let labels: Vec<String> = board.objectives().map(|(_, o)| label(o)).collect();
         if labels.is_empty() {
             return Ok("There are no objectives".into());
@@ -248,7 +284,8 @@ fn remove_objective(ctx: &mut CommandContext) {
 fn set_display(ctx: &mut CommandContext) {
     let slot = *ctx.get::<DisplaySlot>("slot").unwrap();
     let objective = ctx.get::<String>("objective").cloned();
-    edit(ctx, |board| match objective {
+    let shown = objective.clone();
+    let done = edit(ctx, |board| match objective {
         None if board.display(slot).is_none() => {
             Err("Nothing changed. That display slot is already empty".into())
         }
@@ -271,6 +308,9 @@ fn set_display(ctx: &mut CommandContext) {
             ))
         }
     });
+    if let (true, Some(name)) = (done, shown) {
+        warn_if_claimed(ctx, slot, &name);
+    }
 }
 
 fn set_display_name(ctx: &mut CommandContext) {
@@ -324,36 +364,33 @@ fn set_objective_format(ctx: &mut CommandContext, format: Option<ScoreFormat>) {
 
 fn list_players(ctx: &mut CommandContext) {
     let target = ctx.get::<String>("target").cloned();
-    let lines = ctx.with_world(|world| {
-        let board = world.resource::<Scoreboard>();
-        match target {
-            None => {
-                let holders: Vec<&str> = board.holders().into_iter().collect();
-                if holders.is_empty() {
-                    return vec!["There are no tracked entities".to_string()];
-                }
-                vec![format!(
-                    "There are {} tracked entity/entities: {}",
-                    holders.len(),
-                    holders.join(", ")
-                )]
+    let lines = read(ctx, |board| match target {
+        None => {
+            let holders: Vec<&str> = board.holders().into_iter().collect();
+            if holders.is_empty() {
+                return vec!["There are no tracked entities".to_string()];
             }
-            Some(target) => {
-                let scores: Vec<String> = board
-                    .objectives()
-                    .filter_map(|(_, objective)| {
-                        objective
-                            .get(&target)
-                            .map(|value| format!("{}: {value}", label(objective)))
-                    })
-                    .collect();
-                if scores.is_empty() {
-                    return vec![format!("{target} has no scores to show")];
-                }
-                let mut lines = vec![format!("{target} has {} score(s):", scores.len())];
-                lines.extend(scores);
-                lines
+            vec![format!(
+                "There are {} tracked entity/entities: {}",
+                holders.len(),
+                holders.join(", ")
+            )]
+        }
+        Some(target) => {
+            let scores: Vec<String> = board
+                .objectives()
+                .filter_map(|(_, objective)| {
+                    objective
+                        .get(&target)
+                        .map(|value| format!("{}: {value}", label(objective)))
+                })
+                .collect();
+            if scores.is_empty() {
+                return vec![format!("{target} has no scores to show")];
             }
+            let mut lines = vec![format!("{target} has {} score(s):", scores.len())];
+            lines.extend(scores);
+            lines
         }
     });
     for line in lines {
@@ -364,9 +401,10 @@ fn list_players(ctx: &mut CommandContext) {
 fn get_score(ctx: &mut CommandContext) {
     let target = string(ctx, "target");
     let name = string(ctx, "objective");
-    let outcome = ctx.with_world(|world| {
-        let board = world.resource::<Scoreboard>();
-        let objective = board.objective(&name).unwrap();
+    let outcome = read(ctx, |board| {
+        let objective = board
+            .objective(&name)
+            .ok_or_else(|| format!("Unknown scoreboard objective '{name}'"))?;
         match objective.get(&target) {
             Some(value) => Ok(format!("{target} has {value} {}", label(objective))),
             None => Err(format!(
@@ -874,6 +912,64 @@ mod tests {
             (alice.display.as_ref(), alice.format.as_ref()),
             (None, None)
         );
+    }
+
+    #[test]
+    fn setdisplay_warns_when_another_objective_holds_the_slot() {
+        let mut h = Harness::new();
+        h.app
+            .world_mut()
+            .spawn(voidmc::Objective::sidebar("altitude"));
+        h.app.update();
+        h.ok("scoreboard objectives add kills dummy");
+        let run = h.run("scoreboard objectives setdisplay sidebar kills");
+        assert_eq!(run.replies.len(), 2, "{:?}", run.replies);
+        assert!(run.replies[1].starts_with("Another objective"));
+        assert_eq!(
+            h.ok("scoreboard objectives setdisplay list kills")
+                .replies
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_commands_leave_the_scoreboard_unchanged() {
+        use bevy_ecs::prelude::DetectChanges;
+        let mut h = Harness::new();
+        h.ok("scoreboard objectives add kills dummy");
+        let tick = h.app.world().read_change_tick();
+        h.run("scoreboard objectives setdisplay sidebar");
+        h.run("scoreboard players operation Alice kills /= Bob kills");
+        let changed = h.app.world().resource_ref::<Scoreboard>().last_changed();
+        assert!(changed.get() < tick.get());
+    }
+
+    #[test]
+    fn the_bare_command_works_without_the_plugin_resource() {
+        use voidmc::components::{ClientId, PlayerName, PlayerReady};
+        let mut world = bevy_ecs::world::World::new();
+        let (outgoing_tx, _rx) = flume::unbounded();
+        let (_i, incoming) = flume::unbounded();
+        let (_d, disconnect) = flume::unbounded();
+        let (kick, _k) = flume::unbounded();
+        world.insert_resource(voidmc::network::NetworkChannels {
+            incoming,
+            outgoing: outgoing_tx,
+            disconnect,
+            kick,
+        });
+        let mut registry = voidmc::CommandRegistry::new();
+        registry.register(scoreboard_command(crate::Access::Everyone));
+        world.insert_resource(registry);
+        let player = world
+            .spawn((ClientId(1), PlayerName("Alice".into()), PlayerReady))
+            .id();
+        for line in ["objectives list", "players list", "objectives add k dummy"] {
+            let args = line.split_whitespace().map(String::from).collect();
+            voidmc::commands::dispatch_command(&mut world, 1, player, "scoreboard", args);
+        }
+        assert!(world.resource::<Scoreboard>().objective("k").is_some());
     }
 
     #[test]
