@@ -591,6 +591,9 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
     // ---- block entity hosts module
     emit_block_entity_hosts_module(out, &defs, block_entity_hosts);
 
+    // ---- block types (name + property values per state)
+    emit_block_types_module(out, blocks_obj);
+
     // ---- packets module
     emit_packets_module(out, packets);
 
@@ -605,6 +608,61 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
     emit_entity_attributes(out, entity_attributes);
 
     let _ = writeln!(out, "}}");
+}
+
+type PropertyValues = Vec<(String, Vec<String>)>;
+
+/// Emits the `block_types` submodule: every block with its state range and the
+/// raw property values from `blocks.json`, sorted by first state id so a state
+/// id resolves to its block with a binary search.
+fn emit_block_types_module(out: &mut String, blocks_obj: &Map<String, Value>) {
+    let mut rows: Vec<(i32, i32, &str, PropertyValues)> = Vec::new();
+    for (name, block) in blocks_obj {
+        let states = block
+            .get("states")
+            .and_then(|v| v.as_array())
+            .expect("block states");
+        let id = |state: &Value| state.get("id").and_then(|v| v.as_i64()).unwrap() as i32;
+        let min = id(&states[0]);
+        let default = states
+            .iter()
+            .find(|s| s.get("default").and_then(|v| v.as_bool()).unwrap_or(false))
+            .map(id)
+            .unwrap_or(min);
+        let properties = block
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .map(|props| {
+                props
+                    .iter()
+                    .map(|(prop, values)| (prop.clone(), json_string_array(values)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        rows.push((min, default, name.as_str(), properties));
+    }
+    rows.sort_by_key(|row| row.0);
+
+    let _ = writeln!(out, "    /// Every block type, sorted by first state id.");
+    let _ = writeln!(out, "    pub mod block_types {{");
+    let _ = writeln!(out, "        use crate::{{BlockProperty, BlockType}};");
+    let _ = writeln!(out, "        pub static BLOCK_TYPES: &[BlockType] = &[");
+    for (min, default, name, properties) in &rows {
+        let _ = write!(
+            out,
+            "            BlockType {{ name: {name:?}, min_state_id: {min}, default_state_id: {default}, properties: &["
+        );
+        for (prop, values) in properties {
+            let _ = write!(out, "BlockProperty {{ name: {prop:?}, values: &[");
+            for value in values {
+                let _ = write!(out, "{value:?}, ");
+            }
+            let _ = write!(out, "] }}, ");
+        }
+        let _ = writeln!(out, "] }},");
+    }
+    let _ = writeln!(out, "        ];");
+    let _ = writeln!(out, "    }}");
 }
 
 /// Reads `assets/<version>/block_entity_hosts.json` (block entity type ->
