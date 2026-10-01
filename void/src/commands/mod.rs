@@ -34,20 +34,10 @@ pub(crate) struct ArgumentDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// Command & registered command
+// Command
 // ---------------------------------------------------------------------------
 
-/// A registered command in the registry.
-struct RegisteredCommand {
-    name: String,
-    description: String,
-    aliases: Vec<String>,
-    usage: Option<String>,
-    arguments: Vec<ArgumentDefinition>,
-    flag_definitions: Vec<FlagDefinition>,
-    handler: Arc<dyn Fn(&mut CommandContext) + Send + Sync>,
-    suggest_entity_types: bool,
-}
+type Handler = Arc<dyn Fn(&mut CommandContext) + Send + Sync>;
 
 /// The result of `CommandBuilder::build()` — a command ready to be registered.
 pub struct Command {
@@ -57,8 +47,31 @@ pub struct Command {
     usage: Option<String>,
     arguments: Vec<ArgumentDefinition>,
     flag_definitions: Vec<FlagDefinition>,
-    handler: Arc<dyn Fn(&mut CommandContext) + Send + Sync>,
+    handler: Option<Handler>,
+    subcommands: Vec<Command>,
     suggest_entity_types: bool,
+}
+
+impl Command {
+    fn matches(&self, literal: &str) -> bool {
+        self.name == literal || self.aliases.iter().any(|alias| alias == literal)
+    }
+
+    fn subcommand(&self, literal: &str) -> Option<&Command> {
+        self.subcommands.iter().find(|sub| sub.matches(literal))
+    }
+
+    fn argument_tokens(&self) -> usize {
+        self.arguments.iter().map(|a| a.parser.token_count()).sum()
+    }
+
+    fn subcommand_names(&self) -> String {
+        self.subcommands
+            .iter()
+            .map(|sub| sub.name.as_str())
+            .collect::<Vec<_>>()
+            .join("|")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +86,8 @@ pub struct CommandBuilder {
     usage: Option<String>,
     arguments: Vec<ArgumentDefinition>,
     flag_definitions: Vec<FlagDefinition>,
-    handler: Option<Arc<dyn Fn(&mut CommandContext) + Send + Sync>>,
+    handler: Option<Handler>,
+    subcommands: Vec<Command>,
     suggest_entity_types: bool,
 }
 
@@ -87,6 +101,7 @@ impl CommandBuilder {
             arguments: Vec::new(),
             flag_definitions: Vec::new(),
             handler: None,
+            subcommands: Vec::new(),
             suggest_entity_types: false,
         }
     }
@@ -195,6 +210,14 @@ impl CommandBuilder {
         self
     }
 
+    /// Add a literal branch tried after this command's arguments, like
+    /// `add` in `/team add <team>`. The subcommand's arguments are parsed
+    /// after the parent's, and both are read from the same context.
+    pub fn subcommand(mut self, subcommand: CommandBuilder) -> Self {
+        self.subcommands.push(subcommand.build());
+        self
+    }
+
     pub fn build(self) -> Command {
         // Validate: variadic must be last
         if let Some(pos) = self.arguments.iter().position(|a| a.variadic) {
@@ -203,6 +226,14 @@ impl CommandBuilder {
                 "Variadic argument must be the last argument"
             );
         }
+        assert!(
+            self.handler.is_some() || !self.subcommands.is_empty(),
+            "Command must have a handler or subcommands"
+        );
+        assert!(
+            self.subcommands.is_empty() || self.arguments.iter().all(|a| a.required && !a.variadic),
+            "Arguments before subcommands must be required and not variadic"
+        );
 
         Command {
             name: self.name,
@@ -211,7 +242,8 @@ impl CommandBuilder {
             usage: self.usage,
             arguments: self.arguments,
             flag_definitions: self.flag_definitions,
-            handler: self.handler.expect("Command must have a handler"),
+            handler: self.handler,
+            subcommands: self.subcommands,
             suggest_entity_types: self.suggest_entity_types,
         }
     }
@@ -328,15 +360,106 @@ pub fn text_to_nbt(text: &str, color: &str) -> ussr_nbt::owned::Nbt {
 
 /// Internal resolve result — handler + definitions needed for the parsing pipeline.
 struct ResolveResult {
-    handler: Arc<dyn Fn(&mut CommandContext) + Send + Sync>,
+    handler: Option<Handler>,
     arguments: Vec<(String, Arc<dyn ArgParser>, bool, bool)>, // (name, parser, required, variadic)
     flag_definitions: Vec<FlagDefinition>,
     usage: String,
+    tokens: Vec<String>,
+    unknown_subcommand: Option<String>,
+    subcommands: String,
 }
 
 enum Resolved {
     Found(ResolveResult),
     NotFound(String),
+}
+
+/// The subcommands a token list selects, starting from a registered command.
+struct Walk<'a> {
+    path: Vec<&'a Command>,
+    literals: Vec<usize>,
+    unknown: Option<usize>,
+}
+
+impl<'a> Walk<'a> {
+    fn new<S: AsRef<str>>(root: &'a Command, tokens: &[S]) -> Self {
+        let mut walk = Walk {
+            path: vec![root],
+            literals: Vec::new(),
+            unknown: None,
+        };
+        let mut index = 0;
+        loop {
+            let node = walk.node();
+            if node.subcommands.is_empty() {
+                break;
+            }
+            let flags = walk.flags();
+            let mut needed = node.argument_tokens();
+            while index < tokens.len() {
+                if let Some(next) = skip_flag(tokens, index, &flags) {
+                    index = next;
+                } else if needed > 0 {
+                    needed -= 1;
+                    index += 1;
+                } else {
+                    break;
+                }
+            }
+            let Some(token) = tokens.get(index) else {
+                break;
+            };
+            match node.subcommand(token.as_ref()) {
+                Some(subcommand) => {
+                    walk.literals.push(index);
+                    walk.path.push(subcommand);
+                    index += 1;
+                }
+                None => {
+                    walk.unknown = Some(index);
+                    break;
+                }
+            }
+        }
+        walk
+    }
+
+    fn node(&self) -> &'a Command {
+        self.path[self.path.len() - 1]
+    }
+
+    fn flags(&self) -> Vec<FlagDefinition> {
+        self.path
+            .iter()
+            .flat_map(|command| command.flag_definitions.iter().cloned())
+            .collect()
+    }
+
+    fn start(&self) -> usize {
+        self.literals.last().map_or(0, |index| index + 1)
+    }
+
+    fn usage(&self) -> String {
+        self.node()
+            .usage
+            .clone()
+            .unwrap_or_else(|| auto_usage(&self.path))
+    }
+}
+
+fn skip_flag<S: AsRef<str>>(
+    tokens: &[S],
+    index: usize,
+    definitions: &[FlagDefinition],
+) -> Option<usize> {
+    let token = tokens[index].as_ref();
+    if token == "--" || is_combined_short_flags(token, definitions) {
+        return Some(index + 1);
+    }
+    definitions
+        .iter()
+        .find(|definition| definition.matches_token(token))
+        .map(|definition| index + 1 + definition.takes_value as usize)
 }
 
 fn append_flag_branch(
@@ -409,6 +532,88 @@ fn append_flag_branches(
             append_flag_branch(nodes, parent_index, format!("-{short}"), definition);
         }
     }
+}
+
+fn literal_node(name: &str, is_executable: bool, children: Vec<i32>) -> CommandNode {
+    CommandNode {
+        node_type: 1,
+        is_executable,
+        children,
+        redirect_node: None,
+        name: Some(name.to_string()),
+        parser: None,
+        suggestions_type: None,
+    }
+}
+
+/// Appends `command`'s literal, argument chain and subcommands; returns the
+/// literal node indices (name then aliases) for the parent to adopt.
+fn append_command(
+    nodes: &mut Vec<CommandNode>,
+    command: &Command,
+    inherited_flags: &[FlagDefinition],
+) -> Vec<i32> {
+    let flags: Vec<FlagDefinition> = inherited_flags
+        .iter()
+        .chain(&command.flag_definitions)
+        .cloned()
+        .collect();
+    let runnable = command.handler.is_some();
+    let executable_from =
+        |index: usize| runnable && command.arguments[index..].iter().all(|a| !a.required);
+
+    let literal_index = nodes.len() as i32;
+    let literal_executable = executable_from(0);
+    nodes.push(literal_node(&command.name, literal_executable, Vec::new()));
+    let mut flag_parents = Vec::new();
+    if literal_executable {
+        flag_parents.push(literal_index);
+    }
+
+    let mut tail = literal_index;
+    for (i, arg) in command.arguments.iter().enumerate() {
+        let index = nodes.len() as i32;
+        nodes[tail as usize].children.push(index);
+        let is_executable = executable_from(i + 1);
+        nodes.push(CommandNode {
+            node_type: 2,
+            is_executable,
+            children: Vec::new(),
+            redirect_node: None,
+            name: Some(arg.name.clone()),
+            parser: Some(
+                arg.parser
+                    .protocol_parser()
+                    .unwrap_or(Parser::String(StringType::SingleWord)),
+            ),
+            suggestions_type: arg.parser.suggestions_type().map(str::to_string),
+        });
+        if is_executable {
+            flag_parents.push(index);
+        }
+        tail = index;
+    }
+
+    for subcommand in &command.subcommands {
+        let literals = append_command(nodes, subcommand, &flags);
+        nodes[tail as usize].children.extend(literals);
+    }
+
+    let mut literals = vec![literal_index];
+    for alias in &command.aliases {
+        let index = nodes.len() as i32;
+        let children = nodes[literal_index as usize].children.clone();
+        nodes.push(literal_node(alias, literal_executable, children));
+        if literal_executable {
+            flag_parents.push(index);
+        }
+        literals.push(index);
+    }
+
+    for parent_index in flag_parents {
+        append_flag_branches(nodes, parent_index, &flags);
+    }
+    literals
 }
 
 /// Suggestions for the token starting at byte `start` of the chat line.
@@ -490,7 +695,7 @@ fn argument_at(arguments: &[ArgumentDefinition], positional: usize) -> Option<&A
 /// ECS Resource holding all registered commands.
 #[derive(Resource)]
 pub struct CommandRegistry {
-    commands: HashMap<String, RegisteredCommand>,
+    commands: HashMap<String, Command>,
     aliases: HashMap<String, String>,
 }
 
@@ -513,19 +718,7 @@ impl CommandRegistry {
         for alias in &command.aliases {
             self.aliases.insert(alias.clone(), command.name.clone());
         }
-        self.commands.insert(
-            command.name.clone(),
-            RegisteredCommand {
-                name: command.name,
-                description: command.description,
-                aliases: command.aliases,
-                usage: command.usage,
-                arguments: command.arguments,
-                flag_definitions: command.flag_definitions,
-                handler: command.handler,
-                suggest_entity_types: command.suggest_entity_types,
-            },
-        );
+        self.commands.insert(command.name.clone(), command);
     }
 
     /// Returns `true` if the canonical command was built with `.suggest_entity_types()`.
@@ -554,13 +747,28 @@ impl CommandRegistry {
             .filter(|&index| text.is_char_boundary(index))
             .unwrap_or(text.len());
 
-        let mut matches = if partial.starts_with('-') && !cmd.flag_definitions.is_empty() {
-            flag_completions(&cmd.flag_definitions, partial)
+        let walk = Walk::new(cmd, completed);
+        let node = walk.node();
+        let flags = walk.flags();
+        let mut matches = if walk.unknown.is_some() {
+            Vec::new()
+        } else if partial.starts_with('-') && !flags.is_empty() {
+            flag_completions(&flags, partial)
         } else {
-            let positional = positional_count(completed, &cmd.flag_definitions);
-            let mut matches = argument_at(&cmd.arguments, positional)
-                .map(|arg| arg.parser.suggestions(partial, world))
-                .unwrap_or_default();
+            let positional = positional_count(&completed[walk.start()..], &flags);
+            let mut matches =
+                if !node.subcommands.is_empty() && positional >= node.argument_tokens() {
+                    node.subcommands
+                        .iter()
+                        .flat_map(|sub| std::iter::once(&sub.name).chain(&sub.aliases))
+                        .filter(|literal| parser::starts_with_ignore_case(literal, partial))
+                        .cloned()
+                        .collect()
+                } else {
+                    argument_at(&node.arguments, positional)
+                        .map(|arg| arg.parser.suggestions(partial, world))
+                        .unwrap_or_default()
+                };
             if cmd.suggest_entity_types {
                 matches.extend(
                     voidmc_data::entity_type_names(voidmc_data::Version::V26_1_2)
@@ -590,58 +798,49 @@ impl CommandRegistry {
         }
     }
 
-    /// Look up a command handler + definitions by name (or alias).
-    /// Clones Arcs so the registry borrow can be dropped before invoking.
-    fn resolve_handler(&self, name: &str) -> Resolved {
-        let canonical = if self.commands.contains_key(name) {
-            name
-        } else if let Some(alias) = self.aliases.get(name) {
-            alias.as_str()
-        } else {
+    /// Look up the handler + definitions selected by a command name (or
+    /// alias) and its tokens. Clones Arcs so the registry borrow can be
+    /// dropped before invoking.
+    fn resolve_handler(&self, name: &str, args: &[String]) -> Resolved {
+        let Some(cmd) = self.resolve(name).and_then(|name| self.commands.get(name)) else {
             return Resolved::NotFound(format!("Unknown command: /{}", name));
         };
-
-        match self.commands.get(canonical) {
-            Some(cmd) => {
-                let args_info: Vec<_> = cmd
-                    .arguments
-                    .iter()
-                    .map(|a| {
-                        (
-                            a.name.clone(),
-                            Arc::clone(&a.parser),
-                            a.required,
-                            a.variadic,
-                        )
-                    })
-                    .collect();
-
-                // Rebuild flag definitions (clone the Arcs)
-                let flag_defs: Vec<FlagDefinition> = cmd
-                    .flag_definitions
-                    .iter()
-                    .map(|f| FlagDefinition {
-                        long: f.long.clone(),
-                        short: f.short,
-                        description: f.description.clone(),
-                        takes_value: f.takes_value,
-                        value_parser: f.value_parser.as_ref().map(Arc::clone),
-                    })
-                    .collect();
-
-                let usage = cmd.usage.clone().unwrap_or_else(|| {
-                    auto_usage(&cmd.name, &cmd.arguments, &cmd.flag_definitions)
-                });
-
-                Resolved::Found(ResolveResult {
-                    handler: Arc::clone(&cmd.handler),
-                    arguments: args_info,
-                    flag_definitions: flag_defs,
-                    usage,
-                })
-            }
-            None => Resolved::NotFound(format!("Unknown command: /{}", name)),
-        }
+        let walk = Walk::new(cmd, args);
+        let node = walk.node();
+        let arguments = walk
+            .path
+            .iter()
+            .flat_map(|command| &command.arguments)
+            .map(|a| {
+                (
+                    a.name.clone(),
+                    Arc::clone(&a.parser),
+                    a.required,
+                    a.variadic,
+                )
+            })
+            .collect();
+        let tokens = args
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !walk.literals.contains(index))
+            .map(|(_, token)| token.clone())
+            .collect();
+        let subcommands = node.subcommand_names();
+        Resolved::Found(ResolveResult {
+            handler: node.handler.clone(),
+            arguments,
+            flag_definitions: walk.flags(),
+            usage: walk.usage(),
+            tokens,
+            unknown_subcommand: walk.unknown.map(|index| {
+                format!(
+                    "Unknown subcommand '{}' (expected {})",
+                    args[index], subcommands
+                )
+            }),
+            subcommands,
+        })
     }
 
     /// Get all registered command names (canonical names only).
@@ -658,16 +857,13 @@ impl CommandRegistry {
     /// Get the usage string of a command.
     pub fn usage(&self, name: &str) -> Option<String> {
         let canonical = self.resolve(name)?;
-        self.commands.get(canonical).map(|c| {
-            c.usage
-                .clone()
-                .unwrap_or_else(|| auto_usage(&c.name, &c.arguments, &c.flag_definitions))
-        })
+        self.commands
+            .get(canonical)
+            .map(|c| c.usage.clone().unwrap_or_else(|| auto_usage(&[c])))
     }
 
     /// Build the clientbound Commands packet from the registry.
     pub fn build_command_tree(&self) -> Commands {
-        // Node 0 = root
         let mut nodes: Vec<CommandNode> = vec![CommandNode {
             node_type: 0, // root
             is_executable: false,
@@ -679,103 +875,9 @@ impl CommandRegistry {
         }];
 
         let mut root_children: Vec<i32> = Vec::new();
-
         for cmd in self.commands.values() {
-            let mut flag_parent_indices = Vec::new();
-            let cmd_node_index = nodes.len() as i32;
-
-            // Build argument chain for this command
-            let mut arg_indices: Vec<i32> = Vec::new();
-            for _arg in &cmd.arguments {
-                let arg_index = nodes.len() as i32 + arg_indices.len() as i32 + 1;
-                arg_indices.push(arg_index);
-            }
-
-            // The literal node for the command name
-            let is_executable =
-                cmd.arguments.is_empty() || cmd.arguments.iter().all(|a| !a.required);
-            let children = if arg_indices.is_empty() {
-                Vec::new()
-            } else {
-                vec![arg_indices[0]]
-            };
-
-            nodes.push(CommandNode {
-                node_type: 1, // literal
-                is_executable,
-                children,
-                redirect_node: None,
-                name: Some(cmd.name.clone()),
-                parser: None,
-                suggestions_type: None,
-            });
-            root_children.push(cmd_node_index);
-            if is_executable {
-                flag_parent_indices.push(cmd_node_index);
-            }
-
-            // Add argument nodes
-            for (i, arg) in cmd.arguments.iter().enumerate() {
-                let next_children = if i + 1 < cmd.arguments.len() {
-                    vec![arg_indices[i + 1]]
-                } else {
-                    Vec::new()
-                };
-
-                let is_exec = i + 1 == cmd.arguments.len()
-                    || cmd.arguments[i + 1..].iter().all(|a| !a.required);
-
-                let protocol_parser = arg
-                    .parser
-                    .protocol_parser()
-                    .unwrap_or(Parser::String(StringType::SingleWord));
-
-                let suggestions = arg.parser.suggestions_type().map(|s| s.to_string());
-
-                nodes.push(CommandNode {
-                    node_type: 2, // argument
-                    is_executable: is_exec,
-                    children: next_children,
-                    redirect_node: None,
-                    name: Some(arg.name.clone()),
-                    parser: Some(protocol_parser),
-                    suggestions_type: suggestions,
-                });
-                if is_exec {
-                    flag_parent_indices.push(arg_indices[i]);
-                }
-            }
-
-            // Add alias literal nodes pointing to the same argument chain
-            for alias in &cmd.aliases {
-                let alias_node_index = nodes.len() as i32;
-                let children = if arg_indices.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![arg_indices[0]]
-                };
-
-                nodes.push(CommandNode {
-                    node_type: 1, // literal
-                    is_executable,
-                    children,
-                    redirect_node: None,
-                    name: Some(alias.clone()),
-                    parser: None,
-                    suggestions_type: None,
-                });
-                root_children.push(alias_node_index);
-                if is_executable {
-                    flag_parent_indices.push(alias_node_index);
-                }
-            }
-
-            for parent_index in flag_parent_indices {
-                append_flag_branches(&mut nodes, parent_index, &cmd.flag_definitions);
-            }
+            root_children.extend(append_command(&mut nodes, cmd, &[]));
         }
-
-        // Update root node children
         nodes[0].children = root_children;
 
         Commands {
@@ -789,23 +891,38 @@ impl CommandRegistry {
 // Auto-generated usage string
 // ---------------------------------------------------------------------------
 
-fn auto_usage(name: &str, arguments: &[ArgumentDefinition], flags: &[FlagDefinition]) -> String {
-    let mut parts = vec![format!("/{}", name)];
+fn auto_usage(path: &[&Command]) -> String {
+    let mut parts = vec![format!("/{}", path[0].name)];
 
-    for arg in arguments {
-        let type_name = arg.parser.type_name();
-        if arg.variadic && arg.required {
-            parts.push(format!("<{}:{}>...", arg.name, type_name));
-        } else if arg.variadic {
-            parts.push(format!("[{}:{}]...", arg.name, type_name));
-        } else if arg.required {
-            parts.push(format!("<{}:{}>", arg.name, type_name));
-        } else {
-            parts.push(format!("[{}:{}]", arg.name, type_name));
+    for (depth, command) in path.iter().enumerate() {
+        if depth > 0 {
+            parts.push(command.name.clone());
+        }
+        for arg in &command.arguments {
+            let type_name = arg.parser.type_name();
+            if arg.variadic && arg.required {
+                parts.push(format!("<{}:{}>...", arg.name, type_name));
+            } else if arg.variadic {
+                parts.push(format!("[{}:{}]...", arg.name, type_name));
+            } else if arg.required {
+                parts.push(format!("<{}:{}>", arg.name, type_name));
+            } else {
+                parts.push(format!("[{}:{}]", arg.name, type_name));
+            }
         }
     }
 
-    for flag in flags {
+    let node = path[path.len() - 1];
+    if !node.subcommands.is_empty() {
+        let names = node.subcommand_names();
+        if node.handler.is_some() {
+            parts.push(format!("[{names}]"));
+        } else {
+            parts.push(format!("<{names}>"));
+        }
+    }
+
+    for flag in path.iter().flat_map(|command| &command.flag_definitions) {
         let short = flag.short.map(|c| format!("-{}/", c)).unwrap_or_default();
         if flag.takes_value {
             parts.push(format!("[{}--{} <value>]", short, flag.long));
@@ -988,60 +1105,66 @@ pub fn dispatch_command(
     // Step 1: borrow registry immutably to clone handler + definitions
     let resolved = world
         .resource::<CommandRegistry>()
-        .resolve_handler(command_name);
+        .resolve_handler(command_name, &args);
 
     // Step 2: registry borrow is dropped — we now have full &mut World
-    match resolved {
-        Resolved::Found(res) => {
-            let ctx = ParseContext {
-                world,
-                executor: entity,
-            };
-            let (positional, flags, flag_errors) =
-                flags::extract_flags(&args, &res.flag_definitions, &ctx);
-
-            if !flag_errors.is_empty() {
-                for err in &flag_errors {
-                    send_system_chat(world, entity, &err.to_player_message(), TextColor::Red);
-                }
-                send_system_chat(
-                    world,
-                    entity,
-                    &format!("Usage: {}", res.usage),
-                    TextColor::Gray,
-                );
-                return;
-            }
-
-            let parsed = parse_positional(&positional, &res.arguments, &ctx);
-
-            match parsed {
-                Ok(parsed_args) => {
-                    let mut ctx = CommandContext {
-                        world,
-                        entity,
-                        client_id,
-                        args,
-                        parsed_args,
-                        flags,
-                    };
-                    (res.handler)(&mut ctx);
-                }
-                Err(errors) => {
-                    for err in &errors {
-                        send_system_chat(world, entity, &err.to_player_message(), TextColor::Red);
-                    }
-                    send_system_chat(
-                        world,
-                        entity,
-                        &format!("Usage: {}", res.usage),
-                        TextColor::Gray,
-                    );
-                }
-            }
-        }
+    let res = match resolved {
+        Resolved::Found(res) => res,
         Resolved::NotFound(err) => {
             send_system_chat(world, entity, &err, TextColor::Red);
+            return;
+        }
+    };
+    let fail = |world: &World, errors: &[String]| {
+        for err in errors {
+            send_system_chat(world, entity, err, TextColor::Red);
+        }
+        send_system_chat(
+            world,
+            entity,
+            &format!("Usage: {}", res.usage),
+            TextColor::Gray,
+        );
+    };
+    if let Some(err) = &res.unknown_subcommand {
+        fail(world, std::slice::from_ref(err));
+        return;
+    }
+
+    let ctx = ParseContext {
+        world,
+        executor: entity,
+    };
+    let (positional, flags, flag_errors) =
+        flags::extract_flags(&res.tokens, &res.flag_definitions, &ctx);
+    if !flag_errors.is_empty() {
+        let errors: Vec<String> = flag_errors.iter().map(|e| e.to_player_message()).collect();
+        fail(world, &errors);
+        return;
+    }
+
+    match parse_positional(&positional, &res.arguments, &ctx) {
+        Ok(parsed_args) => {
+            let Some(handler) = &res.handler else {
+                fail(
+                    world,
+                    &[format!("Missing subcommand (expected {})", res.subcommands)],
+                );
+                return;
+            };
+            let mut ctx = CommandContext {
+                world,
+                entity,
+                client_id,
+                args,
+                parsed_args,
+                flags,
+            };
+            handler(&mut ctx);
+        }
+        Err(errors) => {
+            let errors: Vec<String> = errors.iter().map(|e| e.to_player_message()).collect();
+            fail(world, &errors);
         }
     }
 }
@@ -1434,5 +1557,242 @@ mod tests {
                 Some(position)
             );
         }
+    }
+    fn recording_world() -> (
+        World,
+        Entity,
+        Arc<std::sync::Mutex<Vec<String>>>,
+        flume::Receiver<crate::network::OutgoingPacket>,
+    ) {
+        use crate::components::ClientId;
+        use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
+        let mut world = World::new();
+        world.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        });
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        world.insert_resource(registry_with([club_command(Arc::clone(&calls))]));
+        let player = world
+            .spawn((ClientId(1), PlayerName("Alice".into()), PlayerReady))
+            .id();
+        (world, player, calls, outgoing_rx)
+    }
+
+    fn club_command(calls: Arc<std::sync::Mutex<Vec<String>>>) -> Command {
+        let record = |calls: &Arc<std::sync::Mutex<Vec<String>>>, label: &'static str| {
+            let calls = Arc::clone(calls);
+            move |ctx: &mut CommandContext| {
+                let mut entry = label.to_string();
+                for name in ["club", "member", "color", "text"] {
+                    if let Some(value) = ctx.get::<String>(name) {
+                        entry.push_str(&format!(" {name}={value}"));
+                    }
+                }
+                if ctx.flag("quiet") {
+                    entry.push_str(" quiet");
+                }
+                calls.lock().unwrap().push(entry);
+            }
+        };
+        CommandBuilder::new("club")
+            .subcommand(
+                CommandBuilder::new("add")
+                    .alias("create")
+                    .arg("club", StringArg::single_word())
+                    .arg_variadic("text", StringArg::greedy())
+                    .handler(record(&calls, "add")),
+            )
+            .subcommand(
+                CommandBuilder::new("list")
+                    .arg_optional("club", StringArg::single_word())
+                    .handler(record(&calls, "list")),
+            )
+            .subcommand(
+                CommandBuilder::new("modify")
+                    .arg("club", StringArg::single_word())
+                    .subcommand(
+                        CommandBuilder::new("color")
+                            .arg("color", Arc::new(parser::ColorArg))
+                            .flag("quiet", Some('q'), "")
+                            .handler(record(&calls, "color")),
+                    )
+                    .subcommand(
+                        CommandBuilder::new("member")
+                            .arg("member", Arc::new(GameProfileArg))
+                            .handler(record(&calls, "member")),
+                    ),
+            )
+            .build()
+    }
+
+    fn chats(rx: &flume::Receiver<crate::network::OutgoingPacket>) -> usize {
+        rx.try_iter().count()
+    }
+
+    fn run(world: &mut World, player: Entity, line: &str) {
+        let args = line.split_whitespace().map(String::from).collect();
+        dispatch_command(world, 1, player, "club", args);
+    }
+
+    #[test]
+    fn subcommands_dispatch_with_the_whole_path_parsed() {
+        let (mut world, player, calls, rx) = recording_world();
+
+        run(&mut world, player, "add reds The Red Club");
+        run(&mut world, player, "create blues");
+        run(&mut world, player, "list");
+        run(&mut world, player, "list reds");
+        run(&mut world, player, "modify reds color gold -q");
+        run(&mut world, player, "modify reds member Alice");
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                "add club=reds text=The Red Club",
+                "add club=blues",
+                "list",
+                "list club=reds",
+                "color club=reds color=gold quiet",
+                "member club=reds member=Alice",
+            ]
+        );
+        assert_eq!(chats(&rx), 0);
+    }
+
+    #[test]
+    fn subcommand_errors_reply_without_running_a_handler() {
+        let (mut world, player, calls, rx) = recording_world();
+
+        for line in [
+            "",
+            "nope",
+            "modify",
+            "modify reds",
+            "modify reds paint red",
+            "modify reds color purple_rain",
+            "list a b",
+        ] {
+            run(&mut world, player, line);
+            assert_eq!(
+                chats(&rx),
+                2,
+                "{line:?} should send an error and a usage line"
+            );
+        }
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn subcommand_usage_follows_the_resolved_path() {
+        let registry = registry_with([club_command(Default::default())]);
+        assert_eq!(registry.usage("club").unwrap(), "/club <add|list|modify>");
+
+        let usage = |line: &str| {
+            let args: Vec<String> = line.split_whitespace().map(String::from).collect();
+            match registry.resolve_handler("club", &args) {
+                Resolved::Found(res) => res.usage,
+                Resolved::NotFound(err) => err,
+            }
+        };
+        assert_eq!(
+            usage("modify x"),
+            "/club modify <club:string> <color|member>"
+        );
+        assert_eq!(
+            usage("modify x color"),
+            "/club modify <club:string> color <color:color> [-q/--quiet]"
+        );
+        assert_eq!(usage("create"), "/club add <club:string> [text:string]...");
+    }
+
+    #[test]
+    fn completion_walks_subcommands_to_the_right_argument() {
+        let registry = registry_with([club_command(Default::default())]);
+        let world = player_world();
+
+        let literals = registry.complete("/club ", &world).unwrap();
+        assert_eq!(literals.matches, vec!["add", "create", "list", "modify"]);
+        let partial = registry.complete("/club mo", &world).unwrap();
+        assert_eq!(partial.matches, vec!["modify"]);
+        assert_eq!((partial.start, partial.length), (6, 2));
+
+        let options = registry.complete("/club modify reds ", &world).unwrap();
+        assert_eq!(options.matches, vec!["color", "member"]);
+
+        let members = registry
+            .complete("/club modify reds member b", &world)
+            .unwrap();
+        assert_eq!(members.matches, vec!["Bob"]);
+
+        let flags = registry
+            .complete("/club modify reds color gold -", &world)
+            .unwrap();
+        assert_eq!(flags.matches, vec!["--quiet", "-q"]);
+
+        let unknown = registry.complete("/club paint ", &world).unwrap();
+        assert!(unknown.matches.is_empty());
+    }
+
+    #[test]
+    fn subcommand_tree_branches_literals_after_arguments() {
+        let registry = registry_with([club_command(Default::default())]);
+        let tree = registry.build_command_tree();
+
+        let club = child_named(&tree, tree.root_index, "club");
+        assert!(!tree.nodes[club as usize].is_executable);
+
+        let add = child_named(&tree, club, "add");
+        let create = child_named(&tree, club, "create");
+        assert_eq!(
+            tree.nodes[add as usize].children,
+            tree.nodes[create as usize].children
+        );
+        let add_club = child_named(&tree, add, "club");
+        assert!(tree.nodes[add_club as usize].is_executable);
+
+        let list = child_named(&tree, club, "list");
+        assert!(tree.nodes[list as usize].is_executable);
+
+        let modify = child_named(&tree, club, "modify");
+        assert!(!tree.nodes[modify as usize].is_executable);
+        let modify_club = child_named(&tree, modify, "club");
+        assert!(!tree.nodes[modify_club as usize].is_executable);
+        let color = child_named(&tree, modify_club, "color");
+        assert_eq!(tree.nodes[color as usize].node_type, 1);
+        let color_value = child_named(&tree, color, "color");
+        assert!(matches!(
+            tree.nodes[color_value as usize].parser,
+            Some(Parser::Color)
+        ));
+        assert!(tree.nodes[color_value as usize].is_executable);
+        let quiet = child_named(&tree, color_value, "--quiet");
+        assert_eq!(tree.nodes[quiet as usize].redirect_node, Some(color_value));
+
+        let mut buf = Vec::new();
+        tree.encode(&mut buf);
+        assert_eq!(buf[0] as usize, tree.nodes.len());
+    }
+
+    #[test]
+    #[should_panic(expected = "handler or subcommands")]
+    fn commands_need_a_handler_or_subcommands() {
+        CommandBuilder::new("empty").build();
+    }
+
+    #[test]
+    #[should_panic(expected = "before subcommands must be required")]
+    fn optional_arguments_cannot_precede_subcommands() {
+        CommandBuilder::new("bad")
+            .arg_optional("x", StringArg::single_word())
+            .subcommand(CommandBuilder::new("y").handler(|_| {}))
+            .build();
     }
 }

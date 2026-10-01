@@ -117,8 +117,48 @@ let command = CommandBuilder::new("greet")
 | `arg_variadic_required(name, parser)`   | Add a required variadic argument (at least one token; must be last)             |
 | `flag(long, short, description)`        | Add a boolean flag (`--long` / `-s`)                                            |
 | `flag_value(long, short, desc, parser)` | Add a flag that takes a typed value (`--long value`)                            |
+| `subcommand(builder)`                   | Add a literal branch after this command's arguments (see below)                 |
 | `handler(fn)`                           | Set the handler function                                                        |
 | `build()`                               | Consume the builder and produce a `Command`                                     |
+
+### Subcommands
+
+`subcommand` adds a literal branch, the shape of vanilla commands like
+`/team modify <team> color <value>`. A subcommand is a full `CommandBuilder`
+(arguments, aliases, flags, its own subcommands) whose literal is tried after
+the parent's arguments; every argument along the path lands in the same
+`CommandContext`:
+
+```rust
+let team = CommandBuilder::new("team")
+    .subcommand(
+        CommandBuilder::new("add")
+            .arg("team", StringArg::single_word())
+            .handler(|ctx| { /* ctx.get::<String>("team") */ }),
+    )
+    .subcommand(
+        CommandBuilder::new("modify")
+            .arg("team", StringArg::single_word())
+            .subcommand(
+                CommandBuilder::new("color")
+                    .arg("value", Arc::new(ColorArg))
+                    .handler(|ctx| { /* "team" and "value" are both set */ }),
+            ),
+    )
+    .build();
+```
+
+- A command needs a handler, subcommands, or both. With both, the handler runs
+  when no literal follows (`/scoreboard objectives modify <o> numberformat`
+  clears, `... numberformat blank` takes the branch).
+- Arguments before subcommands must be required and not variadic, so the
+  literal position is never ambiguous.
+- Flags declared on a parent apply to its subcommands; put them after the
+  subcommand literal.
+- Errors name the missing or unknown subcommand, and the usage line follows
+  the resolved path (`/team modify <team:team> <displayName|color|...>`).
+- The client tree carries real literal nodes, so literals complete locally
+  and arguments after them use their own parser and suggestions.
 
 ## CommandContext
 
@@ -181,6 +221,13 @@ the handler reads back with `ctx.get::<T>(name)`.
 | `ResourceLocationArg` | `String` | `minecraft:resource_location` | `namespace:path` |
 | `SummonableEntityArg` | `String` | `minecraft:resource_location` + `summonable_entities` | Entity type id |
 | `MessageArg` | `String` | `minecraft:message` | Chat message |
+
+The `voidmc-vanilla-commands` crate adds parsers for the scoreboard family
+(`TeamArg`, `ObjectiveArg`, `ScoreHolderArg`, `OperationArg`, `SlotArg`,
+`CriteriaArg`, `ComponentArg`, `StyleArg`); see
+[Vanilla /team & /scoreboard](vanilla-commands.md#argument-types). Their client
+parsers (`minecraft:team`, `objective`, `score_holder`, `operation`,
+`scoreboard_slot`, `objective_criteria`) are `Parser` variants like the rest.
 
 Parser ids and property encodings follow the 26.1.2
 `minecraft:command_argument_type` registry; a wrong id disconnects the client
@@ -419,6 +466,8 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
   (ready player names) and `EnumArg` (variant names) use it out of the box.
 - Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
 - Alias support (aliases appear as separate entries pointing to the same argument chain)
+- Subcommand literals, completed locally by the client; `complete` walks the
+  literals typed so far before picking the argument under the cursor
 
 The command tree is rebuilt from the registry each time a client joins.
 

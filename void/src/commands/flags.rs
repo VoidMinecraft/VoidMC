@@ -6,6 +6,7 @@ use super::error::ParseError;
 use super::parser::{ArgParser, ParseContext};
 
 /// Definition of a CLI-style flag for a command.
+#[derive(Clone)]
 pub struct FlagDefinition {
     pub long: String,
     pub short: Option<char>,
