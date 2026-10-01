@@ -61,6 +61,13 @@ mod tests {
 
         let mut buf = Vec::new();
         uuid.encode(&mut buf);
+        assert_eq!(
+            buf,
+            [
+                0xf4, 0x7a, 0xc1, 0x0b, 0x58, 0xcc, 0x43, 0x72, 0xa5, 0x67, 0x0e, 0x02, 0xb2, 0xc3,
+                0xd4, 0x79
+            ]
+        );
 
         let mut slice = buf.as_slice();
         let decoded = Uuid::decode(&mut slice).unwrap();
