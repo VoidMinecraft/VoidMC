@@ -119,12 +119,13 @@ VoidServer::new(config)
 in an exclusive system (the same queue + drain pattern as commands), so they can
 mutate anything.
 
-Three hooks are available:
+Four hooks are available:
 
 | Method | Fires on |
 |--------|----------|
 | `on_use_on_block` | right-click pointing at a block |
 | `on_use` | right-click in the air |
+| `before_break_block` | when the player starts breaking a block, and in survival again right before the mined block is removed; `Handled` keeps it and resyncs the player |
 | `on_break_block` | after the player breaks a block (tool side effects) |
 
 Overriding the default placement is just a `Handled` `on_use_on_block`:

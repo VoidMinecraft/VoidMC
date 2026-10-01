@@ -96,6 +96,11 @@
   },
   {
     "type": "file",
+    "name": "worldedit",
+    "label": "World Editing"
+  },
+  {
+    "type": "file",
     "name": "world-border",
     "label": "World Border"
   },
