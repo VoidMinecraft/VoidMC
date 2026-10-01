@@ -55,8 +55,11 @@ impl ScoreObjective {
 
     /// Lets `holder` use the trigger once; `false` if it already could.
     pub fn enable(&mut self, holder: &str) -> bool {
+        if !self.enabled.insert(holder.to_string()) {
+            return false;
+        }
         self.scores.entry(holder.to_string()).or_default();
-        self.enabled.insert(holder.to_string())
+        true
     }
 
     pub fn is_enabled(&self, holder: &str) -> bool {
@@ -249,8 +252,11 @@ mod tests {
         board.add_objective("kills", Criteria::Dummy);
         let vote = board.objective_mut("vote").unwrap();
         assert!(vote.enable("Alice"));
-        assert!(!vote.enable("Alice"));
         assert_eq!(vote.get("Alice"), Some(0));
+        vote.scores.remove("Alice");
+        assert!(!vote.enable("Alice"));
+        assert_eq!(vote.get("Alice"), None);
+        vote.set("Alice", 0);
         board.set("Alice", "kills", 1);
 
         assert!(board.reset("Alice", None));
