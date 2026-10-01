@@ -141,8 +141,8 @@ fn scenarios() -> Vec<Scenario> {
         Scenario {
             name: "maze_160",
             world: maze_world(),
-            from: (-80, 0),
-            to: (80, 10),
+            from: (-82, 0),
+            to: (82, 10),
             profile: NavigationProfile::walker()
                 .search_limit(65_536)
                 .nodes_per_block(0),
