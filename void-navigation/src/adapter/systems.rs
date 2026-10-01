@@ -36,7 +36,7 @@ pub struct NavigationSettings {
 impl Default for NavigationSettings {
     fn default() -> Self {
         Self {
-            expansions_per_tick: 3_000,
+            expansions_per_tick: 2_000,
             repath_interval: 10,
             max_failures: 3,
         }
@@ -504,11 +504,11 @@ fn arrived(navigator: &mut Navigator) {
     navigator.failures = 0;
     match navigator.goal_mut() {
         Some(Goal::MoveTo { .. }) => navigator.finish(NavigationOutcome::Reached),
-        Some(Goal::Patrol { points, next }) => {
-            *next = (*next + 1) % points.len().max(1);
+        Some(Goal::Patrol { points, next }) if points.len() > 1 => {
+            *next = (*next + 1) % points.len();
             navigator.request_path();
         }
-        Some(Goal::Follow { .. }) => navigator.phase = Phase::Holding,
+        Some(Goal::Patrol { .. }) | Some(Goal::Follow { .. }) => navigator.phase = Phase::Holding,
         Some(Goal::Flee { .. }) => navigator.request_path(),
         None => {}
     }

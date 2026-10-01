@@ -388,3 +388,19 @@ fn behaviours_pick_the_first_applicable_goal() {
     );
     assert_eq!(active(&app), Some("patrol"));
 }
+
+#[test]
+fn a_single_point_patrol_settles_instead_of_replanning() {
+    let mut app = app(NavigationSettings::default());
+    let guard = mob(
+        &mut app,
+        0.5,
+        0.5,
+        walker().with_goal(Goal::patrol([[5.5, 1.0, 0.5]])),
+    );
+    run(&mut app, 80);
+    let searches = app.world().resource::<NavigationStats>().searches;
+    run(&mut app, 40);
+    assert_eq!(app.world().resource::<NavigationStats>().searches, searches);
+    assert!(position(&app, guard).horizontal_distance(Vec3::new(5.5, 1.0, 0.5)) < 0.5);
+}
