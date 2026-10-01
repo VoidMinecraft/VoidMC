@@ -155,6 +155,8 @@ let team = CommandBuilder::new("team")
   literal position is never ambiguous.
 - Flags declared on a parent apply to its subcommands; put them after the
   subcommand literal.
+- `description` and `suggest_entity_types` are read on the top-level command
+  only.
 - Errors name the missing or unknown subcommand, and the usage line follows
   the resolved path (`/team modify <team:team> <displayName|color|...>`).
 - The client tree carries real literal nodes, so literals complete locally

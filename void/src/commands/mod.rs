@@ -389,6 +389,7 @@ impl<'a> Walk<'a> {
             unknown: None,
         };
         let mut index = 0;
+        let mut flags_allowed = true;
         loop {
             let node = walk.node();
             if node.subcommands.is_empty() {
@@ -397,7 +398,13 @@ impl<'a> Walk<'a> {
             let flags = walk.flags();
             let mut needed = node.argument_tokens();
             while index < tokens.len() {
-                if let Some(next) = skip_flag(tokens, index, &flags) {
+                if flags_allowed && tokens[index].as_ref() == "--" {
+                    flags_allowed = false;
+                    index += 1;
+                } else if let Some(next) = flags_allowed
+                    .then(|| skip_flag(tokens, index, &flags))
+                    .flatten()
+                {
                     index = next;
                 } else if needed > 0 {
                     needed -= 1;
@@ -453,7 +460,7 @@ fn skip_flag<S: AsRef<str>>(
     definitions: &[FlagDefinition],
 ) -> Option<usize> {
     let token = tokens[index].as_ref();
-    if token == "--" || is_combined_short_flags(token, definitions) {
+    if is_combined_short_flags(token, definitions) {
         return Some(index + 1);
     }
     definitions
@@ -1652,6 +1659,7 @@ mod tests {
         run(&mut world, player, "list reds");
         run(&mut world, player, "modify reds color gold -q");
         run(&mut world, player, "modify reds member Alice");
+        run(&mut world, player, "modify -- reds color gold");
 
         assert_eq!(
             *calls.lock().unwrap(),
@@ -1662,6 +1670,7 @@ mod tests {
                 "list club=reds",
                 "color club=reds color=gold quiet",
                 "member club=reds member=Alice",
+                "color club=reds color=gold",
             ]
         );
         assert_eq!(chats(&rx), 0);
