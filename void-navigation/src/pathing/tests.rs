@@ -524,3 +524,50 @@ fn follower_jumps_onto_rises_above_the_step_height() {
     };
     assert!(!airborne.jump);
 }
+
+#[test]
+fn goals_off_the_ground_snap_to_the_nearest_floor() {
+    let mut world = flat();
+    world.fill(BlockPos::new(6, 1, -3), BlockPos::new(9, 1, 3), Cell::FULL);
+    let profile = walker().allow_partial(false);
+    let (status, path) = search(&mut world, &profile, feet(0, 0), Vec3::new(3.5, 6.0, 0.5));
+    assert_eq!(status, SearchStatus::Complete);
+    assert_eq!(path.end(), Some(feet(3, 0)));
+    let (status, path) = search(&mut world, &profile, feet(0, 0), Vec3::new(7.5, 0.0, 0.5));
+    assert_eq!(status, SearchStatus::Complete);
+    assert_eq!(path.end().map(|p| p.y), Some(2.0));
+}
+
+#[test]
+fn hopeless_short_searches_stop_early() {
+    let mut world = flat();
+    world.fill(BlockPos::new(8, 1, -2), BlockPos::new(12, 3, 2), Cell::FULL);
+    world.fill(
+        BlockPos::new(9, 1, -1),
+        BlockPos::new(11, 3, 1),
+        Cell::EMPTY,
+    );
+    let profile = walker().allow_partial(false);
+    let mut pathfinder = Pathfinder::new();
+    let mut path = Path::default();
+    let status = pathfinder.find(
+        &mut world,
+        &profile,
+        SearchRequest::new(feet(0, 0), feet(10, 0)),
+        &mut path,
+    );
+    assert_eq!(status, SearchStatus::Unreachable);
+    assert!(
+        pathfinder.stats().expanded <= 320,
+        "{}",
+        pathfinder.stats().expanded
+    );
+    let unbounded = profile.nodes_per_block(0);
+    pathfinder.find(
+        &mut world,
+        &unbounded,
+        SearchRequest::new(feet(0, 0), feet(10, 0)),
+        &mut path,
+    );
+    assert!(pathfinder.stats().expanded > 1_000);
+}

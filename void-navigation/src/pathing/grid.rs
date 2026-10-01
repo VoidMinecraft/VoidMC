@@ -135,7 +135,9 @@ impl CellCache {
 
     /// Drops every cached section of the 16-wide column `(x, z)` in section
     /// coordinates, e.g. when its chunk unloads.
-    pub fn invalidate_column(&mut self, x: i32, z: i32) {
+    /// Returns how many sections were dropped.
+    pub fn invalidate_column(&mut self, x: i32, z: i32) -> usize {
+        let before = self.free.len();
         let free = &mut self.free;
         self.index.retain(|section, slot| {
             let keep = section.x != x || section.z != z;
@@ -145,6 +147,7 @@ impl CellCache {
             keep
         });
         self.forget_recent();
+        self.free.len() - before
     }
 
     pub fn clear(&mut self) {

@@ -44,6 +44,13 @@ impl Path {
         self.complete = false;
     }
 
+    /// Replaces this path with a copy of `other`, reusing the allocation.
+    pub fn copy_from(&mut self, other: &Path) {
+        self.points.clear();
+        self.points.extend_from_slice(&other.points);
+        self.complete = other.complete;
+    }
+
     pub(crate) fn begin(&mut self, complete: bool) -> &mut Vec<Vec3> {
         self.points.clear();
         self.complete = complete;

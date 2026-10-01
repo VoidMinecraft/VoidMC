@@ -21,6 +21,7 @@ pub struct NavigationProfile {
     pub jump_cost: f32,
     pub fall_cost: f32,
     pub max_nodes: u32,
+    pub nodes_per_block: u32,
     pub heuristic_weight: f32,
     pub allow_partial: bool,
 }
@@ -48,7 +49,8 @@ impl NavigationProfile {
             jump_cost: 0.5,
             fall_cost: 0.1,
             max_nodes: 4096,
-            heuristic_weight: 1.0,
+            nodes_per_block: 32,
+            heuristic_weight: 1.25,
             allow_partial: true,
         }
     }
@@ -59,6 +61,7 @@ impl NavigationProfile {
             width: 0.6,
             height: 0.9,
             water_cost: Some(2.0),
+            nodes_per_block: 128,
             ..Self::walker()
         }
     }
@@ -69,6 +72,7 @@ impl NavigationProfile {
             width: 0.9,
             height: 0.6,
             water_cost: Some(1.0),
+            nodes_per_block: 128,
             ..Self::walker()
         }
     }
@@ -119,6 +123,14 @@ impl NavigationProfile {
         self
     }
 
+    /// Caps a search at `nodes` expansions per block of straight-line
+    /// distance (never below 256, never above [`Self::search_limit`]), so an
+    /// unreachable nearby goal fails fast. 0 disables the scaling.
+    pub fn nodes_per_block(mut self, nodes: u32) -> Self {
+        self.nodes_per_block = nodes;
+        self
+    }
+
     /// Weighted A*: above 1.0 trades path optimality for fewer expansions.
     pub fn heuristic_weight(mut self, weight: f32) -> Self {
         self.heuristic_weight = weight.max(1.0);
@@ -147,6 +159,7 @@ impl NavigationProfile {
             jump_cost: self.jump_cost,
             fall_cost: self.fall_cost,
             max_nodes: self.max_nodes.max(1),
+            nodes_per_block: self.nodes_per_block,
             weight: self.heuristic_weight.max(1.0),
             allow_partial: self.allow_partial,
         }
@@ -170,8 +183,52 @@ pub struct MoveModel {
     pub jump_cost: f32,
     pub fall_cost: f32,
     pub max_nodes: u32,
+    pub nodes_per_block: u32,
     pub weight: f32,
     pub allow_partial: bool,
+}
+
+const MIN_SCALED_NODES: u32 = 256;
+
+impl MoveModel {
+    /// A hash of every field, for keying caches of paths computed with this
+    /// model.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (
+            self.mobility,
+            self.head,
+            self.step,
+            self.rise,
+            self.max_fall,
+            self.radius,
+            self.half_width.to_bits(),
+        )
+            .hash(&mut hasher);
+        for cost in [self.water, self.hazard, self.lava] {
+            cost.map(f32::to_bits).hash(&mut hasher);
+        }
+        (
+            self.jump_cost.to_bits(),
+            self.fall_cost.to_bits(),
+            self.max_nodes,
+            self.nodes_per_block,
+            self.weight.to_bits(),
+            self.allow_partial,
+        )
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The expansion cap for a search spanning `distance` blocks.
+    pub fn node_limit(&self, distance: f32) -> u32 {
+        if self.nodes_per_block == 0 {
+            return self.max_nodes;
+        }
+        let scaled = (distance.max(0.0) * self.nodes_per_block as f32) as u32;
+        scaled.max(MIN_SCALED_NODES).min(self.max_nodes)
+    }
 }
 
 #[cfg(test)]

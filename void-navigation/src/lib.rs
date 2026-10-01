@@ -3,7 +3,15 @@
 //! - [`pathing`]: the engine-agnostic core (voxel cells, movement model,
 //!   resumable A*, path smoothing and following). It only needs a
 //!   [`pathing::CellSource`] from the host engine.
+//! - [`adapter`]: the VoidMC binding — the [`Navigator`] component, goals,
+//!   behaviours, outcome events and the chunk-backed cell cache.
 
 pub mod pathing;
 
+#[cfg(feature = "voidmc")]
+pub mod adapter;
+
 pub use pathing::{BlockPos, Mobility, NavigationProfile, Path, Vec3};
+
+#[cfg(feature = "voidmc")]
+pub use adapter::*;

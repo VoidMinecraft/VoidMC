@@ -36,3 +36,8 @@ criterion = "0.7"
 [[bench]]
 name = "pathfinding"
 harness = false
+
+[[bench]]
+name = "navigation_tick"
+harness = false
+required-features = ["voidmc"]

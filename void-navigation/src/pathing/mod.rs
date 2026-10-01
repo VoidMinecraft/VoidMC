@@ -6,7 +6,7 @@
 mod cell;
 mod follow;
 mod grid;
-mod hash;
+pub(crate) mod hash;
 mod math;
 mod movement;
 mod path;

@@ -29,6 +29,7 @@ pub struct PathFollower {
     best_distance: f64,
     idle_ticks: u16,
     stuck_ticks: u16,
+    heading: Option<(Vec3, f32)>,
 }
 
 impl Default for PathFollower {
@@ -44,6 +45,7 @@ impl PathFollower {
             best_distance: f64::INFINITY,
             idle_ticks: 0,
             stuck_ticks: stuck_ticks.max(1),
+            heading: None,
         }
     }
 
@@ -116,8 +118,19 @@ impl PathFollower {
             && grounded
             && delta.y > model.step as f64 / 16.0 + 1.0e-3
             && delta.horizontal_length() < 1.5;
-        let yaw =
-            (velocity.x != 0.0 || velocity.z != 0.0).then(|| yaw_towards(velocity.x, velocity.z));
+        let yaw = if velocity.x == 0.0 && velocity.z == 0.0 {
+            None
+        } else {
+            let direction = Vec3::new(velocity.x, 0.0, velocity.z).normalize_or_zero();
+            match self.heading {
+                Some((last, yaw)) if last.distance_squared(direction) < 1.0e-6 => Some(yaw),
+                _ => {
+                    let yaw = yaw_towards(direction.x, direction.z);
+                    self.heading = Some((direction, yaw));
+                    Some(yaw)
+                }
+            }
+        };
         FollowStatus::Moving(Steering {
             velocity,
             yaw,

@@ -10,6 +10,7 @@ use super::profile::{Mobility, MoveModel, NavigationProfile};
 
 const NONE: u32 = u32::MAX;
 const START_DROP: i32 = 3;
+const GOAL_SNAP: i32 = 8;
 const WINDOW_XZ: i32 = 128;
 const WINDOW_Y: i32 = 32;
 
@@ -123,6 +124,7 @@ fn open_key(f: f32, h: f32) -> u64 {
 #[derive(Clone, Copy)]
 struct Active {
     model: MoveModel,
+    limit: u32,
     goal: Vec3,
     goal_block: BlockPos,
     radius_sq: f64,
@@ -217,13 +219,15 @@ impl Pathfinder {
     pub fn start(&mut self, world: &mut impl NavWorld, model: &MoveModel, request: SearchRequest) {
         self.reset();
         let (start, floor) = resolve_start(model, world, request.start);
-        let goal_block = BlockPos::containing(request.goal);
+        let goal = resolve_goal(model, world, request.goal);
+        let goal_block = BlockPos::containing(goal);
         let radius = request.radius.max(0.75);
         let vertical = match model.mobility {
             Mobility::Walk => request.radius.max(1.25),
             Mobility::Fly | Mobility::Swim => radius,
         };
         let h = heuristic(model, start, goal_block);
+        let limit = model.node_limit(h);
         self.nodes.push(Node {
             pos: start,
             floor,
@@ -243,7 +247,8 @@ impl Pathfinder {
         });
         self.active = Some(Active {
             model: *model,
-            goal: request.goal,
+            limit,
+            goal,
             goal_block,
             radius_sq: radius * radius,
             vertical,
@@ -297,7 +302,7 @@ impl Pathfinder {
             if node.h < best.h || (node.h == best.h && node.g < best.g) {
                 active.best = current;
             }
-            if self.stats.expanded >= model.max_nodes {
+            if self.stats.expanded >= active.limit {
                 return finish(active, None);
             }
 
@@ -401,6 +406,22 @@ fn reaches(active: &Active, node: &Node) -> bool {
         Mobility::Walk => dx * dx + dz * dz <= active.radius_sq && dy.abs() <= active.vertical,
         Mobility::Fly | Mobility::Swim => dx * dx + dy * dy + dz * dz <= active.radius_sq,
     }
+}
+
+/// Walkers can only end on a floor: a goal floating above or buried below
+/// the ground is moved to the nearest standable height of its column.
+fn resolve_goal(model: &MoveModel, world: &mut impl NavWorld, goal: Vec3) -> Vec3 {
+    if model.mobility != Mobility::Walk {
+        return goal;
+    }
+    let block = BlockPos::containing(Vec3::new(goal.x, goal.y + 1.0e-3, goal.z));
+    let offsets = std::iter::once(0).chain((1..=GOAL_SNAP).flat_map(|d| [-d, d]));
+    for dy in offsets {
+        if let Some(found) = stand(model, world, block.offset(0, dy, 0)) {
+            return Vec3::new(goal.x, found.floor as f64 / 16.0, goal.z);
+        }
+    }
+    goal
 }
 
 fn resolve_start(model: &MoveModel, world: &mut impl NavWorld, start: Vec3) -> (BlockPos, i32) {
