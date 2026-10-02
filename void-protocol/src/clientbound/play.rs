@@ -23,6 +23,7 @@ mod player_info_update;
 mod remove_entities;
 mod remove_mob_effect;
 mod reset_score;
+mod section_blocks_update;
 mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
@@ -82,6 +83,7 @@ pub use player_info_update::*;
 pub use remove_entities::*;
 pub use remove_mob_effect::*;
 pub use reset_score::*;
+pub use section_blocks_update::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
@@ -176,6 +178,8 @@ pub enum PlayPacket {
     RemoveMobEffect(RemoveMobEffect),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
+    #[codec(packet_id = 0x54)]
+    SectionBlocksUpdate(SectionBlocksUpdate),
     #[codec(packet_id = 0x58)]
     SetBorderCenter(SetBorderCenter),
     #[codec(packet_id = 0x59)]
