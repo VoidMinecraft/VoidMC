@@ -1972,6 +1972,7 @@ dependencies = [
  "voidmc",
  "voidmc-data",
  "voidmc-protocol",
+ "voidmc-vanilla-commands",
  "voidmc-world-io",
 ]
 
@@ -1997,6 +1998,19 @@ dependencies = [
  "voidmc-codec",
  "voidmc-codec-macros",
  "voidmc-data",
+]
+
+[[package]]
+name = "voidmc-vanilla-commands"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "flume",
+ "ussr-nbt",
+ "voidmc",
+ "voidmc-codec",
+ "voidmc-protocol",
 ]
 
 [[package]]

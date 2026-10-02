@@ -117,8 +117,67 @@ let command = CommandBuilder::new("greet")
 | `arg_variadic_required(name, parser)`   | Add a required variadic argument (at least one token; must be last)             |
 | `flag(long, short, description)`        | Add a boolean flag (`--long` / `-s`)                                            |
 | `flag_value(long, short, desc, parser)` | Add a flag that takes a typed value (`--long value`)                            |
+| `subcommand(builder)`                   | Add a literal branch after this command's arguments (see below)                 |
+| `requires(fn(&World, Entity) -> bool)`  | Who may run it; checked before parsing and completion (see below)               |
 | `handler(fn)`                           | Set the handler function                                                        |
 | `build()`                               | Consume the builder and produce a `Command`                                     |
+
+### Subcommands
+
+`subcommand` adds a literal branch, the shape of vanilla commands like
+`/team modify <team> color <value>`. A subcommand is a full `CommandBuilder`
+(arguments, aliases, flags, its own subcommands) whose literal is tried after
+the parent's arguments; every argument along the path lands in the same
+`CommandContext`:
+
+```rust
+let team = CommandBuilder::new("team")
+    .subcommand(
+        CommandBuilder::new("add")
+            .arg("team", StringArg::single_word())
+            .handler(|ctx| { /* ctx.get::<String>("team") */ }),
+    )
+    .subcommand(
+        CommandBuilder::new("modify")
+            .arg("team", StringArg::single_word())
+            .subcommand(
+                CommandBuilder::new("color")
+                    .arg("value", Arc::new(ColorArg))
+                    .handler(|ctx| { /* "team" and "value" are both set */ }),
+            ),
+    )
+    .build();
+```
+
+- A command needs a handler, subcommands, or both. With both, the handler runs
+  when no literal follows (`/scoreboard objectives modify <o> numberformat`
+  clears, `... numberformat blank` takes the branch).
+- Arguments before subcommands must be required and not variadic, so the
+  literal position is never ambiguous.
+- Flags declared on a parent apply to its subcommands; put them after the
+  subcommand literal.
+- `description` and `suggest_entity_types` are read on the top-level command
+  only.
+- Errors name the missing or unknown subcommand, and the usage line follows
+  the resolved path (`/team modify <team:team> <displayName|color|...>`).
+- The client tree carries real literal nodes, so literals complete locally
+  and arguments after them use their own parser and suggestions.
+
+### Requirements
+
+`requires` is brigadier's permission check. It runs before any argument is
+parsed or completed, on the command and on every subcommand along the path, so
+a refused player gets one "You do not have permission to use this command"
+reply and no suggestions, never an argument error that would reveal state:
+
+```rust
+CommandBuilder::new("stop")
+    .requires(|world, player| world.get::<Operator>(player).is_some())
+    .handler(|ctx| { /* ... */ })
+    .build();
+```
+
+The command tree is still sent to every player.
 
 ## CommandContext
 
@@ -181,6 +240,13 @@ the handler reads back with `ctx.get::<T>(name)`.
 | `ResourceLocationArg` | `String` | `minecraft:resource_location` | `namespace:path` |
 | `SummonableEntityArg` | `String` | `minecraft:resource_location` + `summonable_entities` | Entity type id |
 | `MessageArg` | `String` | `minecraft:message` | Chat message |
+
+The `voidmc-vanilla-commands` crate adds parsers for the scoreboard family
+(`TeamArg`, `ObjectiveArg`, `ScoreHolderArg`, `OperationArg`, `SlotArg`,
+`CriteriaArg`, `ComponentArg`, `StyleArg`); see
+[Vanilla /team & /scoreboard](vanilla-commands.md#argument-types). Their client
+parsers (`minecraft:team`, `objective`, `score_holder`, `operation`,
+`scoreboard_slot`, `objective_criteria`) are `Parser` variants like the rest.
 
 Parser ids and property encodings follow the 26.1.2
 `minecraft:command_argument_type` registry; a wrong id disconnects the client
@@ -307,6 +373,12 @@ Flags are parsed in a pre-pass before positional arguments:
 - `-f value` — Short value flag (must be standalone, not combined)
 - `--` — Stop flag parsing; everything after is positional
 
+A command (or subcommand path) that declares no flags skips the pre-pass, so
+`-blue` or `--` are ordinary arguments. When the last argument is variadic,
+flags are only read before it starts: once the earlier arguments are filled,
+the rest of the line, dashes included, belongs to it. A flag right before the
+first word of that argument still counts (`/sign -g hello`).
+
 Example:
 
 ```
@@ -412,13 +484,15 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
   game modes, dimensions, times, UUIDs)
 - Long and short flag suggestions after the command's required arguments
 - Server-side completion through `minecraft:ask_server`: the client sends
-  `CommandSuggestionsRequest` with the whole line, `CommandRegistry::complete`
+  `CommandSuggestionsRequest` with the whole line, `CommandRegistry::complete(text, world, executor)`
   finds the argument under the cursor (skipping flags and their values) and
   calls its parser's `suggestions`, and the reply is a
   `CommandSuggestionsResponse` covering just the partial token. `GameProfileArg`
   (ready player names) and `EnumArg` (variant names) use it out of the box.
 - Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
 - Alias support (aliases appear as separate entries pointing to the same argument chain)
+- Subcommand literals, completed locally by the client; `complete` walks the
+  literals typed so far before picking the argument under the cursor
 
 The command tree is rebuilt from the registry each time a client joins.
 

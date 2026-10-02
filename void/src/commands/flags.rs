@@ -6,6 +6,7 @@ use super::error::ParseError;
 use super::parser::{ArgParser, ParseContext};
 
 /// Definition of a CLI-style flag for a command.
+#[derive(Clone)]
 pub struct FlagDefinition {
     pub long: String,
     pub short: Option<char>,
@@ -90,14 +91,33 @@ pub fn extract_flags(
     definitions: &[FlagDefinition],
     ctx: &ParseContext<'_>,
 ) -> (Vec<String>, FlagSet, Vec<ParseError>) {
+    extract_flags_before(tokens, definitions, ctx, None)
+}
+
+/// Like [`extract_flags`], but once more than `greedy_start` positionals were
+/// read every token is positional, so a trailing greedy argument keeps its
+/// `-words`. Commands without flags never lose a token.
+pub(crate) fn extract_flags_before(
+    tokens: &[String],
+    definitions: &[FlagDefinition],
+    ctx: &ParseContext<'_>,
+    greedy_start: Option<usize>,
+) -> (Vec<String>, FlagSet, Vec<ParseError>) {
     let mut positional = Vec::new();
     let mut flags = FlagSet::new();
     let mut errors = Vec::new();
+    if definitions.is_empty() {
+        return (tokens.to_vec(), flags, errors);
+    }
     let mut stop_parsing = false;
 
     let mut i = 0;
     while i < tokens.len() {
         let token = &tokens[i];
+
+        if greedy_start.is_some_and(|start| positional.len() > start) {
+            stop_parsing = true;
+        }
 
         if stop_parsing {
             positional.push(token.clone());

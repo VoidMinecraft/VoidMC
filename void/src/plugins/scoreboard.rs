@@ -383,7 +383,8 @@ impl Team {
         self.members.contains(&player)
     }
 
-    /// Raw scoreboard entries: entity UUIDs or names of players not on this server.
+    /// Raw scoreboard entries by name or UUID, kept across reconnects; online
+    /// players may be listed here and in `members` at once.
     pub fn add_entry(&mut self, entry: impl Into<String>) -> bool {
         self.entries.insert(entry.into())
     }
