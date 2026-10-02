@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
-use voidmc::components::PlayerName;
+use voidmc::components::{PlayerName, PlayerReady};
 use voidmc::{
     BoolArg, CollisionRule, ColorArg, Command, CommandBuilder, CommandContext, NameTagVisibility,
     Team, TeamColor, TextColor,
@@ -145,6 +145,23 @@ pub fn team_command(access: Access) -> Command {
                 ),
         )
         .build()
+}
+
+/// Teams list members by name so they survive reconnects; put the player's
+/// entity back so `Team::contains` holds again once they are ready.
+pub(crate) fn rejoin_teams(
+    event: On<Add, PlayerReady>,
+    names: Query<&PlayerName>,
+    mut teams: Query<&mut Team>,
+) {
+    let Ok(name) = names.get(event.entity) else {
+        return;
+    };
+    for mut team in &mut teams {
+        if team.entries.contains(&name.0) && !team.members.contains(&event.entity) {
+            team.members.insert(event.entity);
+        }
+    }
 }
 
 fn team_arg(ctx: &CommandContext) -> Entity {
@@ -612,6 +629,37 @@ mod tests {
             h.ok("team list blue").reply(),
             "There are no members on team [blue]"
         );
+    }
+
+    #[test]
+    fn players_are_back_on_their_team_after_logging_in() {
+        use voidmc::components::ClientId;
+
+        let mut h = Harness::new();
+        h.ok("team add red");
+        h.ok("team join red Carol");
+        h.ok("team join red");
+        let carol = h
+            .app
+            .world_mut()
+            .spawn((ClientId(3), PlayerName("Carol".into()), PlayerReady))
+            .id();
+        h.app.update();
+        assert!(h.team("red").unwrap().contains(carol));
+
+        let alice = h.alice;
+        h.app.world_mut().despawn(alice);
+        h.app.update();
+        assert!(!h.team("red").unwrap().contains(alice));
+        let alice = h
+            .app
+            .world_mut()
+            .spawn((ClientId(1), PlayerName("Alice".into()), PlayerReady))
+            .id();
+        h.app.update();
+        let red = h.team("red").unwrap();
+        assert!(red.contains(alice));
+        assert_eq!(red.entries.len(), 2);
     }
 
     #[test]

@@ -58,6 +58,7 @@ pub struct TeamCommandsPlugin {
 
 impl Plugin for TeamCommandsPlugin {
     fn build(&self, app: &mut App) {
+        app.add_observer(team::rejoin_teams);
         register(app, team_command(self.access));
     }
 }

@@ -60,8 +60,10 @@ the scoreboard sync sends the difference. Teams spawned by code show up in
 
 Members join by name (`Team::entries`), as vanilla score holders do, so a
 player keeps their team across reconnects and offline names or UUIDs can join
-too. A player online at join time is also added to `Team::members`, so
-`team.contains(player)` holds for them. `join` and `leave` first take the holder off every other team, including
+too. Online players are also kept in `Team::members`: when they join, and
+again each time a player whose name a team lists becomes ready, so
+`team.contains(player)` holds across reconnects and for players added while
+offline. `join` and `leave` first take the holder off every other team, including
 one that listed the player's entity in `Team::members`. `join` without members
 adds the executor.
 
