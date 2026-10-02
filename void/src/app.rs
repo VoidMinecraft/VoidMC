@@ -1,8 +1,10 @@
-use std::net::SocketAddr;
+use std::io;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::Duration;
 
 use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin, TerminalCtrlCHandlerPlugin};
 use bevy_ecs::prelude::*;
+use socket2::{Domain, Socket, Type};
 
 use crate::Server;
 use crate::commands::plugin::CommandPlugin;
@@ -60,12 +62,7 @@ impl VoidServer {
         let config_resource = ServerConfigResource::from(&self.config);
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let listener = runtime
-            .block_on(tokio::net::TcpListener::bind(&self.config.address))
+        let listener = bind_listener(&self.config.address)
             .unwrap_or_else(|error| panic!("Failed to bind {}: {error}", self.config.address));
         let listen_address = ListenAddress(
             listener
@@ -86,7 +83,14 @@ impl VoidServer {
         // Start the network server in a separate thread
         let network_server_status = server_status.clone();
         std::thread::spawn(move || {
-            runtime.block_on(async move {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            rt.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener)
+                    .expect("Failed to register the listener with Tokio");
                 let mut server = Server::from_listener(listener, frame_limits)
                     .with_compression_threshold(compression_threshold);
                 server
@@ -150,6 +154,31 @@ impl VoidServer {
     }
 }
 
+const LISTEN_BACKLOG: i32 = 1024;
+
+fn bind_listener(address: &str) -> io::Result<std::net::TcpListener> {
+    let mut last_error = None;
+    for address in address.to_socket_addrs()? {
+        match bind_address(address) {
+            Ok(listener) => return Ok(listener),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "address resolved to nothing")
+    }))
+}
+
+fn bind_address(address: SocketAddr) -> io::Result<std::net::TcpListener> {
+    let socket = Socket::new(Domain::for_address(address), Type::STREAM, None)?;
+    #[cfg(not(windows))]
+    socket.set_reuse_address(true)?;
+    socket.bind(&address.into())?;
+    socket.listen(LISTEN_BACKLOG)?;
+    socket.set_nonblocking(true)?;
+    Ok(socket.into())
+}
+
 fn init_world(
     mut commands: Commands,
     mut chunk_index: ResMut<ChunkIndex>,
@@ -178,4 +207,37 @@ fn init_world(
     }
 
     tracing::info!("Generated {} spawn area chunks", count);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+
+    use super::bind_listener;
+
+    #[tokio::test]
+    async fn binds_port_zero_from_inside_a_tokio_runtime() {
+        let listener = bind_listener("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        assert_ne!(address.port(), 0);
+
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        let (mut accepted, _) = listener.accept().await.unwrap();
+        client.write_all(b"ok").unwrap();
+        let mut received = [0; 2];
+        tokio::io::AsyncReadExt::read_exact(&mut accepted, &mut received)
+            .await
+            .unwrap();
+        assert_eq!(&received, b"ok");
+        drop(accepted);
+        assert_eq!(client.read(&mut received).unwrap(), 0);
+    }
+
+    #[test]
+    fn reports_an_address_already_in_use() {
+        let first = bind_listener("127.0.0.1:0").unwrap();
+        let taken = first.local_addr().unwrap().to_string();
+        assert!(bind_listener(&taken).is_err());
+    }
 }
