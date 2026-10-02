@@ -70,8 +70,8 @@ pub struct CacheStats {
 }
 
 /// Lazily built per-section cell arrays. Sections are filled on first query
-/// and patched in place on block changes ([`CellCache::set_cell`]), so a
-/// steady-state search never touches the block storage.
+/// and re-read when their column changes ([`CellCache::refresh_column`]), so
+/// a steady-state search never touches the block storage.
 pub struct CellCache {
     slots: Vec<Box<SectionCells>>,
     free: Vec<u32>,
@@ -116,21 +116,10 @@ impl CellCache {
         self.index.contains_key(&section)
     }
 
-    /// Patches one cell of a cached section; uncached sections are left to be
-    /// filled fresh. Returns whether a cached section was touched.
+    /// The cell at `pos` if its section is cached, without filling it.
     pub fn cached(&self, pos: BlockPos) -> Option<Cell> {
         let slot = *self.index.get(&SectionPos::of(pos))?;
         Some(self.slots[slot as usize][cell_index(pos)])
-    }
-
-    pub fn set_cell(&mut self, pos: BlockPos, cell: Cell) -> bool {
-        match self.index.get(&SectionPos::of(pos)) {
-            Some(&slot) => {
-                self.slots[slot as usize][cell_index(pos)] = cell;
-                true
-            }
-            None => false,
-        }
     }
 
     pub fn invalidate_section(&mut self, section: SectionPos) {
@@ -384,7 +373,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cache_matches_source_and_patches_in_place() {
+    fn cache_matches_source() {
         let mut world = ArrayWorld::new(BlockPos::new(-20, 0, -20), 40, 32, 40);
         world.set(BlockPos::new(-17, 3, 5), Cell::FULL);
         let mut cache = CellCache::new();
@@ -394,12 +383,8 @@ mod tests {
             assert_eq!(view.cell(BlockPos::new(-17, 4, 5)), Cell::EMPTY);
             assert_eq!(view.cell(BlockPos::new(500, 4, 5)), Cell::UNLOADED);
         }
-        assert!(cache.set_cell(BlockPos::new(-17, 3, 5), Cell::EMPTY));
-        assert_eq!(
-            cache.view(&world).cell(BlockPos::new(-17, 3, 5)),
-            Cell::EMPTY
-        );
-        assert!(!cache.set_cell(BlockPos::new(200, 3, 5), Cell::FULL));
+        assert_eq!(cache.cached(BlockPos::new(-17, 3, 5)), Some(Cell::FULL));
+        assert_eq!(cache.cached(BlockPos::new(200, 3, 5)), None);
     }
 
     #[test]

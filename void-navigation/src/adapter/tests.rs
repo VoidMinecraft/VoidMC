@@ -866,3 +866,70 @@ fn a_wide_body_path_is_invalidated_by_a_block_in_the_next_chunk() {
     assert_eq!(after.cache_hits, cached.cache_hits);
     assert_eq!(after.searches, cached.searches + 1);
 }
+
+fn twins_behind_hogs(before: usize, after: usize) -> (App, Vec<Entity>, [Entity; 2]) {
+    let mut app = app(NavigationSettings {
+        expansions_per_tick: 200,
+        ..NavigationSettings::default()
+    });
+    seal_goal(&mut app);
+    wall(&mut app, 0, -47, -30);
+    let goal = [39.5, 1.0, -40.5];
+    let twin = |app: &mut App| mob(app, -40.5, -40.5, walker().with_goal(Goal::move_to(goal)));
+    let mut twins: Vec<Entity> = (0..before).map(|_| twin(&mut app)).collect();
+    let hogs = [hog(&mut app, -10.5), hog(&mut app, 10.5)];
+    twins.extend((0..after).map(|_| twin(&mut app)));
+    (app, twins, hogs)
+}
+
+#[test]
+fn parked_twins_move_as_soon_as_the_first_caches_its_path() {
+    for (before, after) in [(1, 1), (2, 0), (3, 12)] {
+        let (mut app, twins, hogs) = twins_behind_hogs(before, after);
+        let mut tick = 0;
+        while !started(&app, twins[0]) {
+            assert!(tick < 50, "the first walker never got a path");
+            app.update();
+            tick += 1;
+        }
+        let navigator = app.world().get::<Navigator>(twins[0]).expect("navigator");
+        assert!(navigator.path().is_complete());
+        let hits = app.world().resource::<NavigationStats>().cache_hits;
+        run(&mut app, 2);
+        for &twin in &twins {
+            assert!(
+                started(&app, twin),
+                "{before}+{after} twins: one was still waiting"
+            );
+        }
+        assert_eq!(
+            app.world().resource::<NavigationStats>().cache_hits,
+            hits + twins.len() as u64 - 1
+        );
+        for &hog in &hogs {
+            assert!(outcomes(&app, hog).is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_twin_waiting_on_a_cancelled_search_runs_its_own() {
+    let (mut app, twins, hogs) = twins_behind_hogs(2, 0);
+    app.update();
+    assert!(!started(&app, twins[0]));
+    app.world_mut()
+        .get_mut::<Navigator>(twins[0])
+        .expect("navigator")
+        .stop();
+    let mut tick = 0;
+    while !started(&app, twins[1]) {
+        assert!(tick < 10, "the second walker waited on a cancelled search");
+        app.update();
+        tick += 1;
+    }
+    let navigator = app.world().get::<Navigator>(twins[1]).expect("navigator");
+    assert!(navigator.path().is_complete());
+    for &hog in &hogs {
+        assert!(outcomes(&app, hog).is_empty());
+    }
+}

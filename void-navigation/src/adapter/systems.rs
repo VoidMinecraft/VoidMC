@@ -102,6 +102,9 @@ struct Lane {
 /// the tick budget on it in total. A search still running past that leaves
 /// the main lane for one of two long lanes, sharing a quarter of the budget;
 /// when both are busy it waits its turn, in order, and restarts from scratch.
+/// A search identical to one running in a long lane waits for that result
+/// instead of duplicating it, and every waiting navigator, queued or parked,
+/// is served from the path cache as soon as a matching path lands there.
 #[derive(Resource, Default)]
 pub struct PathPlanner {
     main: Lane,
@@ -293,6 +296,7 @@ enum Request {
         dimension: DimensionId,
         request: SearchRequest,
         key: Option<PathKey>,
+        planned_for: Vec3,
     },
 }
 
@@ -303,7 +307,6 @@ fn prepare(
     world: &NavigationWorld,
     bodies: &Bodies,
     stats: &mut NavigationStats,
-    commit: bool,
 ) -> Request {
     if !navigator.wants_path || navigator.is_paused() {
         navigator.queued = false;
@@ -339,15 +342,12 @@ fn prepare(
         stats.cache_hits += 1;
         return Request::Served;
     }
-    if commit {
-        navigator.wants_path = false;
-        navigator.planned_for = Some(plan.planned_for);
-    }
     Request::Search {
         me,
         dimension,
         request: plan.request,
         key,
+        planned_for: plan.planned_for,
     }
 }
 
@@ -369,6 +369,16 @@ fn is_current(navigators: &Query<&mut Navigator>, active: &ActiveSearch) -> bool
     navigators
         .get(active.entity)
         .is_ok_and(|navigator| navigator.search_ticket == active.ticket)
+}
+
+fn running(lanes: &[Lane], key: PathKey) -> bool {
+    lanes
+        .iter()
+        .any(|lane| lane.active.is_some_and(|active| active.key == Some(key)))
+}
+
+fn duplicates(lanes: &[Lane], search: &Request) -> bool {
+    matches!(search, Request::Search { key: Some(key), .. } if running(lanes, *key))
 }
 
 fn release(navigators: &mut Query<&mut Navigator>, entity: Entity) {
@@ -395,7 +405,7 @@ fn advance(
 fn launch(
     lane: &mut Lane,
     entity: Entity,
-    navigator: &Navigator,
+    navigator: &mut Navigator,
     search: Request,
     world: &mut NavigationWorld,
     chunks: &ChunkCells,
@@ -406,10 +416,13 @@ fn launch(
         dimension,
         request,
         key,
+        planned_for,
     } = search
     else {
         return;
     };
+    navigator.wants_path = false;
+    navigator.planned_for = Some(planned_for);
     let model = navigator.model;
     lane.pathfinder
         .start(&mut world.view(dimension, chunks), &model, request);
@@ -481,16 +494,29 @@ pub(crate) fn run_planner(
             return false;
         };
         matches!(
-            prepare(entity, &mut navigator, cache, world, &bodies, stats, false),
+            prepare(entity, &mut navigator, cache, world, &bodies, stats),
             Request::Search { .. }
         )
     });
+    if full {
+        let PathPlanner { parked, cache, .. } = planner;
+        parked.retain(|&(entity, _)| {
+            let Ok(mut navigator) = navigators.get_mut(entity) else {
+                return false;
+            };
+            matches!(
+                prepare(entity, &mut navigator, cache, world, &bodies, stats),
+                Request::Search { .. }
+            )
+        });
+    }
     planner.unchecked = 0;
     planner.checked_generation = planner.generation;
 
-    for lane in &mut planner.long {
-        while lane.active.is_none() {
-            let Some((entity, _)) = planner.parked.pop_front() else {
+    let mut deferred = Vec::new();
+    for index in 0..LONG_LANES {
+        while planner.long[index].active.is_none() {
+            let Some((entity, ticket)) = planner.parked.pop_front() else {
                 break;
             };
             let Ok(mut navigator) = navigators.get_mut(entity) else {
@@ -503,10 +529,24 @@ pub(crate) fn run_planner(
                 world,
                 &bodies,
                 stats,
-                true,
             );
-            launch(lane, entity, &navigator, search, world, &chunks, stats);
+            if duplicates(&planner.long, &search) {
+                deferred.push((entity, ticket));
+                continue;
+            }
+            launch(
+                &mut planner.long[index],
+                entity,
+                &mut navigator,
+                search,
+                world,
+                &chunks,
+                stats,
+            );
         }
+    }
+    for entry in deferred.into_iter().rev() {
+        planner.parked.push_front(entry);
     }
 
     let total = settings.expansions_per_tick;
@@ -540,15 +580,18 @@ pub(crate) fn run_planner(
                 world,
                 &bodies,
                 stats,
-                true,
             );
+            if duplicates(&planner.long, &search) {
+                planner.parked.push_back((entity, navigator.search_ticket));
+                continue;
+            }
             if matches!(search, Request::Search { .. }) {
                 requests += 1;
             }
             launch(
                 &mut planner.main,
                 entity,
-                &navigator,
+                &mut navigator,
                 search,
                 world,
                 &chunks,
@@ -592,7 +635,13 @@ pub(crate) fn run_planner(
         if planner.main.spent < probe {
             break;
         }
-        match planner.long.iter_mut().find(|lane| lane.active.is_none()) {
+        let duplicate = active.key.is_some_and(|key| running(&planner.long, key));
+        match planner
+            .long
+            .iter_mut()
+            .find(|lane| lane.active.is_none())
+            .filter(|_| !duplicate)
+        {
             Some(lane) => std::mem::swap(&mut planner.main, lane),
             None => {
                 planner.main.active = None;
