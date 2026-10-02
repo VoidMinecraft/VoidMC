@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 use bevy_ecs::prelude::*;
@@ -9,6 +10,7 @@ use voidmc::{DimensionId, TextColor, WorldMessages};
 use super::WorldEditConfig;
 use super::extent::ChunkExtent;
 use super::session::session_mut;
+use crate::clipboard::Clipboard;
 use crate::history::ChangeSet;
 use crate::job::{Budget, CopyJob, EditJob};
 use crate::math::BlockPos;
@@ -120,9 +122,20 @@ struct Pending {
     reported: Instant,
 }
 
+pub(crate) struct Finished {
+    pub clipboard: Option<(Clipboard, BlockPos)>,
+    pub message: String,
+}
+
+struct Background {
+    owner: Option<Entity>,
+    handle: JoinHandle<Result<Finished, String>>,
+}
+
 #[derive(Resource, Default)]
 pub struct EditQueue {
     pending: VecDeque<Pending>,
+    background: Vec<Background>,
 }
 
 impl EditQueue {
@@ -135,16 +148,28 @@ impl EditQueue {
         });
     }
 
+    pub(crate) fn spawn(
+        &mut self,
+        owner: Entity,
+        work: impl FnOnce() -> Result<Finished, String> + Send + 'static,
+    ) {
+        self.background.push(Background {
+            owner: Some(owner),
+            handle: std::thread::spawn(work),
+        });
+    }
+
     pub fn len(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.background.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
+        self.pending.is_empty() && self.background.is_empty()
     }
 
     pub fn is_busy(&self, player: Entity) -> bool {
         self.pending.iter().any(|p| p.edit.owner == Some(player))
+            || self.background.iter().any(|b| b.owner == Some(player))
     }
 
     /// Lets a leaving player's edits finish without recording them anywhere.
@@ -154,11 +179,48 @@ impl EditQueue {
                 pending.edit.owner = None;
             }
         }
+        for task in &mut self.background {
+            if task.owner == Some(player) {
+                task.owner = None;
+            }
+        }
+    }
+}
+
+fn finish_background(world: &mut World) {
+    let mut queue = world.resource_mut::<EditQueue>();
+    if queue.background.is_empty() {
+        return;
+    }
+    let (done, running) = std::mem::take(&mut queue.background)
+        .into_iter()
+        .partition::<Vec<_>, _>(|task| task.handle.is_finished());
+    queue.background = running;
+    for task in done {
+        let result = task
+            .handle
+            .join()
+            .unwrap_or_else(|_| Err("The task failed.".to_string()));
+        let Some(owner) = task.owner else {
+            continue;
+        };
+        match result {
+            Ok(finished) => {
+                if let Some((clipboard, origin)) = finished.clipboard
+                    && let Some(mut session) = session_mut(world, owner)
+                {
+                    session.set_clipboard(clipboard, origin);
+                }
+                reply(world, owner, &finished.message, TextColor::LightPurple);
+            }
+            Err(error) => reply(world, owner, &error, TextColor::Red),
+        }
     }
 }
 
 pub(crate) fn run_edit_queue(world: &mut World) {
-    if world.resource::<EditQueue>().is_empty() {
+    finish_background(world);
+    if world.resource::<EditQueue>().pending.is_empty() {
         return;
     }
     let config = world.resource::<WorldEditConfig>().clone();
@@ -222,14 +284,24 @@ fn complete(world: &mut World, pending: Pending) -> Option<Pending> {
             let (changes, stats) = job.finish();
             let owner = owner?;
             let changed = changes.changed_blocks();
+            let mut recorded = true;
             if let Some(mut session) = session_mut(world, owner) {
-                match record {
+                recorded = match record {
                     Record::History => session.history.push(changes, dimension),
-                    Record::Undo(original) => session.history.push_redo(original, dimension),
-                    Record::Redo(original) => session.history.push_undo(original, dimension),
-                }
+                    Record::Undo(original) => {
+                        session.history.push_redo(original, dimension);
+                        true
+                    }
+                    Record::Redo(original) => {
+                        session.history.push_undo(original, dimension);
+                        true
+                    }
+                };
             }
             let mut message = format!("{label}: {changed} blocks changed in {elapsed:.2}s.");
+            if !recorded {
+                message.push_str(" It was too large for your history and cannot be undone.");
+            }
             if stats.unloaded_sections > 0 {
                 message.push_str(&format!(
                     " {} unloaded sections were skipped.",

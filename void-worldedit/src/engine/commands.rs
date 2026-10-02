@@ -10,10 +10,11 @@ use voidmc::{
 
 use super::WorldEditConfig;
 use super::args::{BlocksArg, DirectionArg, DirectionChoice};
-use super::queue::{AfterCopy, Edit, EditQueue, Record, reply};
+use super::queue::{AfterCopy, Edit, EditQueue, Finished, Record, reply};
 use super::session::{EditSession, session_mut};
 use super::tools::{BrushItems, BrushTool, Corner, describe_volume, set_corner, target_block};
 use crate::brush::{Brush, BrushShape, MAX_BRUSH_RADIUS};
+use crate::clipboard::Clipboard;
 use crate::mask::Mask;
 use crate::math::{Axis, BlockPos, Direction, WORLD_LIMIT};
 use crate::operation::{Fill, Operation, Paste, Restore};
@@ -99,6 +100,27 @@ fn not_busy(world: &World, actor: &Actor) -> Result<(), String> {
         return Err("Your previous edit is still running.".to_string());
     }
     Ok(())
+}
+
+fn clipboard_and_origin(
+    world: &mut World,
+    actor: &Actor,
+) -> Result<(Arc<Clipboard>, BlockPos), String> {
+    let session = session(world, actor)?;
+    let clipboard = session
+        .clipboard()
+        .cloned()
+        .ok_or("Your clipboard is empty.")?;
+    Ok((clipboard, session.clipboard_origin().unwrap_or(actor.feet)))
+}
+
+fn background(
+    world: &mut World,
+    actor: &Actor,
+    work: impl FnOnce() -> Result<Finished, String> + Send + 'static,
+) -> Outcome {
+    world.resource_mut::<EditQueue>().spawn(actor.player, work);
+    Ok(String::new())
 }
 
 fn submit(
@@ -643,14 +665,13 @@ fn rotate() -> Command {
             if degrees % 90 != 0 {
                 return Err("Rotation must be a multiple of 90 degrees.".to_string());
             }
-            let mut session = session(world, actor)?;
-            let clipboard = session
-                .clipboard()
-                .cloned()
-                .ok_or("Your clipboard is empty.")?;
-            let origin = session.clipboard_origin().unwrap_or(actor.feet);
-            session.set_clipboard(clipboard.rotated((degrees / 90) as u8), origin);
-            Ok(format!("Clipboard rotated {degrees}°."))
+            let (clipboard, origin) = clipboard_and_origin(world, actor)?;
+            background(world, actor, move || {
+                Ok(Finished {
+                    clipboard: Some((clipboard.rotated((degrees / 90) as u8), origin)),
+                    message: format!("Clipboard rotated {degrees}°."),
+                })
+            })
         })
     })
     .build()
@@ -664,14 +685,13 @@ fn flip() -> Command {
             run(ctx, |world, actor| {
                 not_busy(world, actor)?;
                 let direction = resolve(choice, actor);
-                let mut session = session(world, actor)?;
-                let clipboard = session
-                    .clipboard()
-                    .cloned()
-                    .ok_or("Your clipboard is empty.")?;
-                let origin = session.clipboard_origin().unwrap_or(actor.feet);
-                session.set_clipboard(clipboard.flipped(direction.axis()), origin);
-                Ok(format!("Clipboard flipped {}.", direction.name()))
+                let (clipboard, origin) = clipboard_and_origin(world, actor)?;
+                background(world, actor, move || {
+                    Ok(Finished {
+                        clipboard: Some((clipboard.flipped(direction.axis()), origin)),
+                        message: format!("Clipboard flipped {}.", direction.name()),
+                    })
+                })
             })
         })
         .build()
@@ -801,32 +821,43 @@ fn schematic() -> Command {
                             .clipboard()
                             .cloned()
                             .ok_or("Your clipboard is empty.")?;
-                        if let Some(dir) = path.parent() {
-                            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                        }
-                        Schematic::save(&clipboard, &path).map_err(|e| e.to_string())?;
-                        Ok(format!(
-                            "Saved {} blocks to {name}.schem.",
-                            clipboard.block_count()
-                        ))
+                        background(world, actor, move || {
+                            if let Some(dir) = path.parent() {
+                                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                            }
+                            Schematic::save(&clipboard, &path).map_err(|e| e.to_string())?;
+                            Ok(Finished {
+                                clipboard: None,
+                                message: format!(
+                                    "Saved {} blocks to {name}.schem.",
+                                    clipboard.block_count()
+                                ),
+                            })
+                        })
                     }
                     SchematicAction::Load => {
                         let limit = world.resource::<WorldEditConfig>().max_volume;
-                        let file = std::fs::File::open(&path)
-                            .map_err(|_| format!("No schematic named '{name}'."))?;
-                        let loaded =
-                            Schematic::read_with_limit(file, limit).map_err(|e| e.to_string())?;
-                        let count = loaded.clipboard.block_count();
-                        session(world, actor)?.set_clipboard(loaded.clipboard, actor.feet);
-                        let mut message =
-                            format!("Loaded {name}.schem ({count} blocks) into your clipboard.");
-                        if !loaded.unknown_blocks.is_empty() {
-                            message.push_str(&format!(
-                                " Unknown blocks became air: {}.",
-                                loaded.unknown_blocks.join(", ")
-                            ));
-                        }
-                        Ok(message)
+                        let origin = actor.feet;
+                        background(world, actor, move || {
+                            let file = std::fs::File::open(&path)
+                                .map_err(|_| format!("No schematic named '{name}'."))?;
+                            let loaded = Schematic::read_with_limit(file, limit)
+                                .map_err(|e| e.to_string())?;
+                            let count = loaded.clipboard.block_count();
+                            let mut message = format!(
+                                "Loaded {name}.schem ({count} blocks) into your clipboard."
+                            );
+                            if !loaded.unknown_blocks.is_empty() {
+                                message.push_str(&format!(
+                                    " Unknown blocks became air: {}.",
+                                    loaded.unknown_blocks.join(", ")
+                                ));
+                            }
+                            Ok(Finished {
+                                clipboard: Some((loaded.clipboard, origin)),
+                                message,
+                            })
+                        })
                     }
                     SchematicAction::Delete => {
                         std::fs::remove_file(&path)

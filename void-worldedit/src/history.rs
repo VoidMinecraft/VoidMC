@@ -170,13 +170,18 @@ impl<T> History<T> {
         }
     }
 
-    /// Records a fresh edit; it invalidates the redo stack.
-    pub fn push(&mut self, changes: ChangeSet, tag: T) {
+    /// Records a fresh edit; it invalidates the redo stack. Returns `false`
+    /// when the edit alone exceeds the memory budget and was not recorded.
+    pub fn push(&mut self, changes: ChangeSet, tag: T) -> bool {
         if changes.is_empty() {
-            return;
+            return true;
         }
         self.redo.clear();
+        if changes.memory_bytes() > self.max_bytes {
+            return false;
+        }
         self.push_undo(Arc::new(changes), tag);
+        true
     }
 
     pub fn pop_undo(&mut self) -> Option<(Arc<ChangeSet>, T)> {
@@ -320,5 +325,27 @@ mod tests {
         history.push(edit.clone(), 5);
         assert_eq!(history.undo_len(), 2);
         assert!(history.memory_bytes() <= size * 2);
+    }
+
+    #[test]
+    fn an_edit_larger_than_the_budget_is_refused() {
+        let mut noisy = SectionBlocks::default();
+        for index in 0..SECTION_VOLUME {
+            noisy[index] = BlockState(index as u32 + 1);
+        }
+        let edit = record(&SectionBlocks::default(), &noisy);
+        let small = record(
+            &SectionBlocks::default(),
+            &SectionBlocks::filled(BlockState(1)),
+        );
+        let mut history = History::new(10, edit.memory_bytes() - 1);
+        assert!(history.push(small.clone(), 0));
+        let (undone, tag) = history.pop_undo().unwrap();
+        history.push_redo(undone, tag);
+        assert!(history.push(small, 1));
+        assert!(!history.push(edit, 2));
+        assert_eq!(history.undo_len(), 1);
+        assert_eq!(history.redo_len(), 0);
+        assert!(history.memory_bytes() < 200);
     }
 }

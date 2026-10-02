@@ -18,7 +18,7 @@ use voidmc::{
 };
 use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData};
 use voidmc_protocol::clientbound::{ClientboundPacket, ManualPlayPacket, PlayPacket};
-use voidmc_protocol::serverbound::{PlayerAction, UseItem};
+use voidmc_protocol::serverbound::{PlayerAction, UseItem, UseItemOn};
 use voidmc_protocol::types::{BlockFace, BlockPosition, Hand, PlayerActionStatus};
 use voidmc_worldedit::engine::{EditQueue, EditSession, Permission};
 use voidmc_worldedit::{BlockPos, BlockState, WorldEditPlugin};
@@ -103,11 +103,12 @@ impl Server {
     }
 
     fn settle(&mut self) {
-        for _ in 0..200 {
+        for _ in 0..2000 {
             self.tick();
             if self.app.world().resource::<EditQueue>().is_empty() {
                 return;
             }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         panic!("edit queue never drained");
     }
@@ -260,7 +261,22 @@ fn copy_rotate_paste_and_move() {
     server.settle();
     server.command("//copy");
     server.settle();
+    server.packets();
     server.command("//rotate 90");
+    assert!(
+        server
+            .app
+            .world()
+            .resource::<EditQueue>()
+            .is_busy(server.player)
+    );
+    server.command("//paste");
+    assert!(
+        Server::chat(&server.packets())
+            .iter()
+            .any(|line| line.contains("still running"))
+    );
+    server.settle();
 
     server
         .app
@@ -400,11 +416,22 @@ fn schematics_save_and_load_through_the_clipboard() {
     server.command("//copy");
     server.settle();
     server.command("/schem save hut");
+    server.settle();
     assert!(dir.path().join("hut.schem").is_file());
     server.command("/schem save ../escape");
+    server.settle();
     assert!(!dir.path().join("../escape.schem").exists());
 
+    server.packets();
+    server.command("/schem load missing");
+    server.settle();
+    assert!(
+        Server::chat(&server.packets())
+            .iter()
+            .any(|line| line.contains("No schematic named 'missing'"))
+    );
     server.command("/schem load hut");
+    server.settle();
     server
         .app
         .world_mut()
@@ -487,6 +514,52 @@ fn wand_left_click_sets_the_first_corner_and_keeps_the_block() {
         .get::<EditSession>(server.player)
         .unwrap();
     assert_eq!(session.selection.pos1(), Some(BlockPos::new(2, 64, 2)));
+}
+
+#[test]
+fn edits_larger_than_the_history_budget_are_not_recorded() {
+    let mut server = Server::new(WorldEditPlugin::default().history(25, 1024));
+    server.command("//pos1 0 64 0");
+    server.command("//pos2 15 79 15");
+    server.packets();
+    server.command("//set stone,dirt,gravel,sand");
+    server.settle();
+    assert!(
+        Server::chat(&server.packets())
+            .iter()
+            .any(|line| line.contains("cannot be undone"))
+    );
+    let session = server
+        .app
+        .world()
+        .get::<EditSession>(server.player)
+        .unwrap();
+    assert_eq!(session.history.undo_len(), 0);
+    assert!(session.history.memory_bytes() <= 1024);
+}
+
+#[test]
+fn the_wand_checks_permission_before_claiming_the_off_hand() {
+    let mut server = Server::new(WorldEditPlugin::default().wand("minecraft:stone"));
+    server
+        .app
+        .world_mut()
+        .entity_mut(server.player)
+        .remove::<Operator>();
+    server.hold("minecraft:stone");
+    server.packet(UseItemOn {
+        hand: Hand::OffHand,
+        location: BlockPosition { x: 3, y: 63, z: 3 },
+        face: BlockFace::Top,
+        cursor_x: 0.5,
+        cursor_y: 1.0,
+        cursor_z: 0.5,
+        inside_block: false,
+        world_border_hit: false,
+        sequence: 1,
+    });
+    server.tick();
+    assert_eq!(server.block(3, 64, 3), stone());
 }
 
 #[test]

@@ -50,13 +50,13 @@ WorldEditPlugin::default()
 | `blocks_per_tick` | 1,000,000 | Work budget per tick across all queued edits (one section costs 4096). |
 | `time_per_tick` | 15 ms | Wall-clock budget per tick, checked between sections. |
 | `max_volume` | 33,554,432 | Largest region (bounding box) one command may touch. |
-| `history` | 25 entries, 128 MiB | Per-player undo history limits. |
+| `history` | 25 entries, 128 MiB | Per-player undo history limits. An edit whose undo data alone exceeds the memory limit is not recorded, and the player is told it cannot be undone. |
 | `schematic_dir` | `schematics` | Where `/schem` reads and writes `.schem` files. |
 | `show_selection` | `true` | Draw the selection outline. |
 | `brush_preview` | `true` | Show where the held brush would land. |
 
 The example server (`cargo run -p voidmc-example`) gives operators the wand
-when they join; set `VOID_EXAMPLE_OPERATORS=1` to make every player an
+when they join, unless they already carry one; set `VOID_EXAMPLE_OPERATORS=1` to make every player an
 operator while testing locally.
 
 ## Commands
@@ -88,7 +88,7 @@ command itself is named `/set`, `/copy`, …
 | `//paste [-a] [-o] [-s]` | Paste at your position; `-o` at the original position, `-s` selects the result. |
 | `//rotate <90\|180\|270>` | Turn the clipboard clockwise seen from above, block states included. |
 | `//flip [dir]` | Mirror the clipboard along a direction. |
-| `//undo [n]`, `//redo [n]`, `//clearhistory` | History. |
+| `//undo [n]`, `//redo [n]`, `//clearhistory` | History. Undo restores blocks, not the contents of chests, signs or other block entities. |
 | `/schem save\|load\|delete <name>`, `/schem list` (`/schematic`) | Sponge schematics in `schematic_dir`; `save` overwrites. |
 | `/brush …` (`/br`) | Bind a brush to the held item, see [Brushes](#brushes). |
 
@@ -156,6 +156,11 @@ The offset between the paste origin and the copied volume survives the round
 trip, so a building pastes where it should relative to you. Block names
 unknown to this server become air and are listed. Block entities, entities
 and biomes are not carried over.
+
+Saving, loading, `//rotate` and `//flip` run on a background thread, so a
+large clipboard never stalls the tick; the result is applied on a later tick
+and your other edits wait for it like for any running edit. Lists and arrays
+in a file are checked against its size before anything is allocated.
 
 ```rust
 use voidmc_worldedit::Schematic;
@@ -259,5 +264,5 @@ EditJob::new(Restore::undo(changes.into()), world.height()).run(&mut world);
 - Polygon selections; spheres and cylinders are outlined by their bounds.
 - Block entities, entities and biomes in clipboards and schematics.
 - Lighting and heightmaps are not recomputed after an edit.
-- Large schematics are read and written on the game thread.
+- Undo does not restore block-entity contents (chest items, sign text).
 - No `//cancel`; edits run first in, first out.

@@ -73,6 +73,7 @@ impl Schematic {
                 .read_to_end(&mut inflated)?;
             bytes = inflated;
         }
+        check_nbt(&bytes)?;
         let nbt =
             Nbt::read(&mut bytes.as_slice()).map_err(|e| SchematicError::Nbt(format!("{e:?}")))?;
         let root = match get(&nbt.compound, "Schematic") {
@@ -284,6 +285,106 @@ fn schematic_offset(root: &Compound, version: i32) -> BlockPos {
         .clamped(),
         _ => BlockPos::ZERO,
     }
+}
+
+const MAX_NBT_DEPTH: u16 = 512;
+
+/// The NBT reader allocates whatever length a list or array claims before
+/// reading it, so every length is checked against the bytes actually left.
+fn check_nbt(bytes: &[u8]) -> Result<(), SchematicError> {
+    let mut input = bytes;
+    if take(&mut input, 1)? != [10] {
+        return Err(SchematicError::Nbt("root is not a compound".to_string()));
+    }
+    let name_len = u16::from_be_bytes(take(&mut input, 2)?.try_into().unwrap());
+    take(&mut input, usize::from(name_len))?;
+    skip_payload(&mut input, 10, 0)
+}
+
+fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8], SchematicError> {
+    if input.len() < len {
+        return Err(SchematicError::Nbt(
+            "truncated or oversized length".to_string(),
+        ));
+    }
+    let (head, rest) = input.split_at(len);
+    *input = rest;
+    Ok(head)
+}
+
+fn length(input: &mut &[u8], element: usize) -> Result<usize, SchematicError> {
+    let len = i32::from_be_bytes(take(input, 4)?.try_into().unwrap()).max(0) as usize;
+    if len.saturating_mul(element) > input.len() {
+        return Err(SchematicError::Nbt(
+            "truncated or oversized length".to_string(),
+        ));
+    }
+    Ok(len)
+}
+
+fn smallest_payload(id: u8) -> Option<usize> {
+    Some(match id {
+        1 | 10 => 1,
+        2 | 8 => 2,
+        3 | 5 | 7 | 11 => 4,
+        4 | 6 | 12 => 8,
+        9 => 5,
+        _ => return None,
+    })
+}
+
+fn skip_payload(input: &mut &[u8], id: u8, depth: u16) -> Result<(), SchematicError> {
+    if depth >= MAX_NBT_DEPTH {
+        return Err(SchematicError::Nbt("nested too deeply".to_string()));
+    }
+    match id {
+        1..=6 => {
+            take(input, smallest_payload(id).unwrap())?;
+        }
+        7 => {
+            let len = length(input, 1)?;
+            take(input, len)?;
+        }
+        8 => {
+            let len = u16::from_be_bytes(take(input, 2)?.try_into().unwrap());
+            take(input, usize::from(len))?;
+        }
+        9 => {
+            let element = take(input, 1)?[0];
+            let len = i32::from_be_bytes(take(input, 4)?.try_into().unwrap());
+            if len > 0 {
+                let size = smallest_payload(element)
+                    .ok_or_else(|| SchematicError::Nbt(format!("invalid tag {element}")))?;
+                if (len as usize).saturating_mul(size) > input.len() {
+                    return Err(SchematicError::Nbt(
+                        "truncated or oversized length".to_string(),
+                    ));
+                }
+                for _ in 0..len {
+                    skip_payload(input, element, depth + 1)?;
+                }
+            }
+        }
+        10 => loop {
+            let tag = take(input, 1)?[0];
+            if tag == 0 {
+                break;
+            }
+            let name_len = u16::from_be_bytes(take(input, 2)?.try_into().unwrap());
+            take(input, usize::from(name_len))?;
+            skip_payload(input, tag, depth + 1)?;
+        },
+        11 => {
+            let len = length(input, 4)?;
+            take(input, len * 4)?;
+        }
+        12 => {
+            let len = length(input, 8)?;
+            take(input, len * 8)?;
+        }
+        _ => return Err(SchematicError::Nbt(format!("invalid tag {id}"))),
+    }
+    Ok(())
 }
 
 fn name(text: &str) -> MString {
@@ -528,6 +629,34 @@ mod tests {
         assert!(matches!(
             Schematic::read_with_limit(huge.as_slice(), 1_000_000),
             Err(SchematicError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_lengths_longer_than_the_file() {
+        let list_bomb = [
+            0x0a, 0x00, 0x00, 0x09, 0x00, 0x00, 0x0a, 0x7f, 0xff, 0xff, 0xff, 0x00, 0x00,
+        ];
+        assert_eq!(list_bomb.len(), 13);
+        assert!(matches!(
+            Schematic::read(list_bomb.as_slice()),
+            Err(SchematicError::Nbt(_))
+        ));
+        let array_bomb = [
+            0x0a, 0x00, 0x00, 0x0b, 0x00, 0x00, 0x7f, 0xff, 0xff, 0xff, 0x00, 0x00,
+        ];
+        assert!(matches!(
+            Schematic::read(array_bomb.as_slice()),
+            Err(SchematicError::Nbt(_))
+        ));
+        let mut nested = vec![0x0a, 0x00, 0x00, 0x09, 0x00, 0x00];
+        for _ in 0..100_000 {
+            nested.extend([0x09, 0x00, 0x00, 0x00, 0x01]);
+        }
+        nested.extend([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        assert!(matches!(
+            Schematic::read(nested.as_slice()),
+            Err(SchematicError::Nbt(_))
         ));
     }
 

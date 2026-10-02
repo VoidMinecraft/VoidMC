@@ -92,10 +92,13 @@ impl ItemBehavior for Wand {
         let Some(target) = ctx.block else {
             return UseResult::Pass;
         };
+        let player = ctx.player;
+        if !ctx.with_world(|world| world.resource::<WorldEditConfig>().allows(world, player)) {
+            return UseResult::Pass;
+        }
         if ctx.hand != Hand::MainHand {
             return UseResult::Handled;
         }
-        let player = ctx.player;
         let pos = BlockPos::new(
             target.position.x,
             i32::from(target.position.y),
