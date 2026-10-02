@@ -118,6 +118,7 @@ let command = CommandBuilder::new("greet")
 | `flag(long, short, description)`        | Add a boolean flag (`--long` / `-s`)                                            |
 | `flag_value(long, short, desc, parser)` | Add a flag that takes a typed value (`--long value`)                            |
 | `subcommand(builder)`                   | Add a literal branch after this command's arguments (see below)                 |
+| `requires(fn(&World, Entity) -> bool)`  | Who may run it; checked before parsing and completion (see below)               |
 | `handler(fn)`                           | Set the handler function                                                        |
 | `build()`                               | Consume the builder and produce a `Command`                                     |
 
@@ -161,6 +162,22 @@ let team = CommandBuilder::new("team")
   the resolved path (`/team modify <team:team> <displayName|color|...>`).
 - The client tree carries real literal nodes, so literals complete locally
   and arguments after them use their own parser and suggestions.
+
+### Requirements
+
+`requires` is brigadier's permission check. It runs before any argument is
+parsed or completed, on the command and on every subcommand along the path, so
+a refused player gets one "You do not have permission to use this command"
+reply and no suggestions, never an argument error that would reveal state:
+
+```rust
+CommandBuilder::new("stop")
+    .requires(|world, player| world.get::<Operator>(player).is_some())
+    .handler(|ctx| { /* ... */ })
+    .build();
+```
+
+The command tree is still sent to every player.
 
 ## CommandContext
 
@@ -356,6 +373,11 @@ Flags are parsed in a pre-pass before positional arguments:
 - `-f value` — Short value flag (must be standalone, not combined)
 - `--` — Stop flag parsing; everything after is positional
 
+A command (or subcommand path) that declares no flags skips the pre-pass, so
+`-blue` or `--` are ordinary arguments. When the last argument is variadic,
+flags are only read before it starts: once the earlier arguments are filled,
+the rest of the line, dashes included, belongs to it.
+
 Example:
 
 ```
@@ -461,7 +483,7 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
   game modes, dimensions, times, UUIDs)
 - Long and short flag suggestions after the command's required arguments
 - Server-side completion through `minecraft:ask_server`: the client sends
-  `CommandSuggestionsRequest` with the whole line, `CommandRegistry::complete`
+  `CommandSuggestionsRequest` with the whole line, `CommandRegistry::complete(text, world, executor)`
   finds the argument under the cursor (skipping flags and their values) and
   calls its parser's `suggestions`, and the reply is a
   `CommandSuggestionsResponse` covering just the partial token. `GameProfileArg`

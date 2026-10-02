@@ -91,14 +91,33 @@ pub fn extract_flags(
     definitions: &[FlagDefinition],
     ctx: &ParseContext<'_>,
 ) -> (Vec<String>, FlagSet, Vec<ParseError>) {
+    extract_flags_before(tokens, definitions, ctx, None)
+}
+
+/// Like [`extract_flags`], but every token after the first `positional_limit`
+/// positionals is positional too, so a trailing greedy argument keeps its
+/// `-words`. Commands without flags never lose a token.
+pub fn extract_flags_before(
+    tokens: &[String],
+    definitions: &[FlagDefinition],
+    ctx: &ParseContext<'_>,
+    positional_limit: Option<usize>,
+) -> (Vec<String>, FlagSet, Vec<ParseError>) {
     let mut positional = Vec::new();
     let mut flags = FlagSet::new();
     let mut errors = Vec::new();
+    if definitions.is_empty() {
+        return (tokens.to_vec(), flags, errors);
+    }
     let mut stop_parsing = false;
 
     let mut i = 0;
     while i < tokens.len() {
         let token = &tokens[i];
+
+        if positional_limit.is_some_and(|limit| positional.len() >= limit) {
+            stop_parsing = true;
+        }
 
         if stop_parsing {
             positional.push(token.clone());

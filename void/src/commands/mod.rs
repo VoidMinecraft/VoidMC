@@ -18,7 +18,7 @@ use crate::messages::{TextColor, WorldMessages};
 use crate::players::WorldPlayers;
 
 pub use error::ParseError;
-pub use flags::{FlagDefinition, FlagSet};
+pub use flags::{FlagDefinition, FlagSet, extract_flags_before};
 pub use parser::{ArgParser, ParseContext};
 
 // ---------------------------------------------------------------------------
@@ -38,6 +38,7 @@ pub(crate) struct ArgumentDefinition {
 // ---------------------------------------------------------------------------
 
 type Handler = Arc<dyn Fn(&mut CommandContext) + Send + Sync>;
+type Requirement = Arc<dyn Fn(&World, Entity) -> bool + Send + Sync>;
 
 /// The result of `CommandBuilder::build()` — a command ready to be registered.
 pub struct Command {
@@ -49,6 +50,7 @@ pub struct Command {
     flag_definitions: Vec<FlagDefinition>,
     handler: Option<Handler>,
     subcommands: Vec<Command>,
+    requirement: Option<Requirement>,
     suggest_entity_types: bool,
 }
 
@@ -88,6 +90,7 @@ pub struct CommandBuilder {
     flag_definitions: Vec<FlagDefinition>,
     handler: Option<Handler>,
     subcommands: Vec<Command>,
+    requirement: Option<Requirement>,
     suggest_entity_types: bool,
 }
 
@@ -102,6 +105,7 @@ impl CommandBuilder {
             flag_definitions: Vec::new(),
             handler: None,
             subcommands: Vec::new(),
+            requirement: None,
             suggest_entity_types: false,
         }
     }
@@ -218,6 +222,16 @@ impl CommandBuilder {
         self
     }
 
+    /// Who may run this command (and its subcommands): checked before any
+    /// argument is parsed or completed, like brigadier's `requires`.
+    pub fn requires(
+        mut self,
+        requirement: impl Fn(&World, Entity) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.requirement = Some(Arc::new(requirement));
+        self
+    }
+
     pub fn build(self) -> Command {
         // Validate: variadic must be last
         if let Some(pos) = self.arguments.iter().position(|a| a.variadic) {
@@ -244,6 +258,7 @@ impl CommandBuilder {
             flag_definitions: self.flag_definitions,
             handler: self.handler,
             subcommands: self.subcommands,
+            requirement: self.requirement,
             suggest_entity_types: self.suggest_entity_types,
         }
     }
@@ -367,6 +382,8 @@ struct ResolveResult {
     tokens: Vec<String>,
     unknown_subcommand: Option<String>,
     subcommands: String,
+    requirements: Vec<Requirement>,
+    positional_limit: Option<usize>,
 }
 
 enum Resolved {
@@ -398,7 +415,7 @@ impl<'a> Walk<'a> {
             let flags = walk.flags();
             let mut needed = node.argument_tokens();
             while index < tokens.len() {
-                if flags_allowed && tokens[index].as_ref() == "--" {
+                if flags_allowed && !flags.is_empty() && tokens[index].as_ref() == "--" {
                     flags_allowed = false;
                     index += 1;
                 } else if let Some(next) = flags_allowed
@@ -440,6 +457,15 @@ impl<'a> Walk<'a> {
             .iter()
             .flat_map(|command| command.flag_definitions.iter().cloned())
             .collect()
+    }
+
+    fn permits(&self, world: &World, executor: Entity) -> bool {
+        self.path.iter().all(|command| {
+            command
+                .requirement
+                .as_ref()
+                .is_none_or(|requirement| requirement(world, executor))
+        })
     }
 
     fn start(&self) -> usize {
@@ -649,7 +675,7 @@ fn positional_count(tokens: &[&str], definitions: &[FlagDefinition]) -> usize {
     while index < tokens.len() {
         let token = tokens[index];
         index += 1;
-        if flags_allowed && token == "--" {
+        if flags_allowed && !definitions.is_empty() && token == "--" {
             flags_allowed = false;
             continue;
         }
@@ -738,7 +764,7 @@ impl CommandRegistry {
     /// Server-side tab-completion for a `minecraft:ask_server` request
     /// carrying the full chat line (`/tp @`), or `None` when the line does
     /// not name a registered command with at least one argument typed.
-    pub fn complete(&self, text: &str, world: &World) -> Option<Completion> {
+    pub fn complete(&self, text: &str, world: &World, executor: Entity) -> Option<Completion> {
         let line = text.strip_prefix('/').unwrap_or(text);
         let (name, rest) = line.split_once(' ')?;
         let cmd = self.commands.get(self.resolve(name)?)?;
@@ -757,7 +783,7 @@ impl CommandRegistry {
         let walk = Walk::new(cmd, completed);
         let node = walk.node();
         let flags = walk.flags();
-        let mut matches = if walk.unknown.is_some() {
+        let mut matches = if walk.unknown.is_some() || !walk.permits(world, executor) {
             Vec::new()
         } else if partial.starts_with('-') && !flags.is_empty() {
             flag_completions(&flags, partial)
@@ -847,6 +873,19 @@ impl CommandRegistry {
                 )
             }),
             subcommands,
+            requirements: walk
+                .path
+                .iter()
+                .filter_map(|command| command.requirement.clone())
+                .collect(),
+            positional_limit: node.arguments.last().filter(|arg| arg.variadic).map(|_| {
+                walk.path
+                    .iter()
+                    .flat_map(|command| &command.arguments)
+                    .filter(|arg| !arg.variadic)
+                    .map(|arg| arg.parser.token_count())
+                    .sum()
+            }),
         })
     }
 
@@ -1133,6 +1172,19 @@ pub fn dispatch_command(
             TextColor::Gray,
         );
     };
+    if !res
+        .requirements
+        .iter()
+        .all(|requirement| requirement(world, entity))
+    {
+        send_system_chat(
+            world,
+            entity,
+            "You do not have permission to use this command",
+            TextColor::Red,
+        );
+        return;
+    }
     if let Some(err) = &res.unknown_subcommand {
         fail(world, std::slice::from_ref(err));
         return;
@@ -1142,8 +1194,12 @@ pub fn dispatch_command(
         world,
         executor: entity,
     };
-    let (positional, flags, flag_errors) =
-        flags::extract_flags(&res.tokens, &res.flag_definitions, &ctx);
+    let (positional, flags, flag_errors) = flags::extract_flags_before(
+        &res.tokens,
+        &res.flag_definitions,
+        &ctx,
+        res.positional_limit,
+    );
     if !flag_errors.is_empty() {
         let errors: Vec<String> = flag_errors.iter().map(|e| e.to_player_message()).collect();
         fail(world, &errors);
@@ -1246,7 +1302,9 @@ mod tests {
         let registry = registry_with([team_command()]);
         let world = player_world();
 
-        let players = registry.complete("/team ", &world).unwrap();
+        let players = registry
+            .complete("/team ", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(players.start, 6);
         assert_eq!(players.length, 0);
         assert_eq!(
@@ -1254,7 +1312,9 @@ mod tests {
             vec!["Alice".to_string(), "Bob".to_string()]
         );
 
-        let partial = registry.complete("/t bo", &world).unwrap();
+        let partial = registry
+            .complete("/t bo", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(
             partial,
             Completion {
@@ -1264,11 +1324,15 @@ mod tests {
             }
         );
 
-        let teams = registry.complete("/team Bob b", &world).unwrap();
+        let teams = registry
+            .complete("/team Bob b", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(teams.start, 10);
         assert_eq!(teams.matches, vec!["blue".to_string()]);
 
-        let time = registry.complete("/team Bob red 1", &world).unwrap();
+        let time = registry
+            .complete("/team Bob red 1", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert!(time.matches.is_empty());
         assert_eq!(time.start, 14);
     }
@@ -1279,19 +1343,25 @@ mod tests {
         let world = player_world();
 
         let teams = registry
-            .complete("/team --silent -r why Bob r", &world)
+            .complete("/team --silent -r why Bob r", &world, Entity::PLACEHOLDER)
             .unwrap();
         assert_eq!(teams.matches, vec!["red".to_string()]);
 
-        let flags = registry.complete("/team Bob red --", &world).unwrap();
+        let flags = registry
+            .complete("/team Bob red --", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(
             flags.matches,
             vec!["--silent".to_string(), "--reason".to_string()]
         );
-        let short = registry.complete("/team Bob red -s", &world).unwrap();
+        let short = registry
+            .complete("/team Bob red -s", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(short.matches, vec!["-s".to_string()]);
 
-        let after_stop = registry.complete("/team -- Bob r", &world).unwrap();
+        let after_stop = registry
+            .complete("/team -- Bob r", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(after_stop.matches, vec!["red".to_string()]);
     }
 
@@ -1300,28 +1370,40 @@ mod tests {
         let registry = registry_with([team_command()]);
         let world = player_world();
 
-        let after_accent = registry.complete("/team Émile ", &world).unwrap();
+        let after_accent = registry
+            .complete("/team Émile ", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(after_accent.start, 12);
         assert_eq!(after_accent.length, 0);
 
-        let partial = registry.complete("/team Émile bl", &world).unwrap();
+        let partial = registry
+            .complete("/team Émile bl", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(partial.start, 12);
         assert_eq!(partial.length, 2);
         assert_eq!(partial.matches, vec!["blue".to_string()]);
 
-        let astral = registry.complete("/team 😀 r", &world).unwrap();
+        let astral = registry
+            .complete("/team 😀 r", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(astral.start, 9);
         assert_eq!(astral.length, 1);
 
-        let tab = registry.complete("/team É\t", &world).unwrap();
+        let tab = registry
+            .complete("/team É\t", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(tab.start, 8);
         assert_eq!(tab.length, 0);
 
-        let nbsp = registry.complete("/team É\u{a0}", &world).unwrap();
+        let nbsp = registry
+            .complete("/team É\u{a0}", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(nbsp.start, 8);
         assert_eq!(nbsp.length, 0);
 
-        let after_tab = registry.complete("/team É\tbl", &world).unwrap();
+        let after_tab = registry
+            .complete("/team É\tbl", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(after_tab.start, 8);
         assert_eq!(after_tab.length, 2);
         assert_eq!(after_tab.matches, vec!["blue".to_string()]);
@@ -1353,7 +1435,7 @@ mod tests {
                 body
             };
             let utf16_len = text.encode_utf16().count();
-            if let Some(completion) = registry.complete(&text, &world) {
+            if let Some(completion) = registry.complete(&text, &world, Entity::PLACEHOLDER) {
                 assert!(
                     completion.start + completion.length <= utf16_len,
                     "range out of bounds for {text:?}"
@@ -1377,16 +1459,24 @@ mod tests {
         let registry = registry_with([command]);
         let world = World::new();
 
-        let combined = registry.complete("/summon -wg r", &world).unwrap();
+        let combined = registry
+            .complete("/summon -wg r", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(combined.matches, vec!["red".to_string()]);
 
-        let with_value_flag = registry.complete("/summon -wr r", &world).unwrap();
+        let with_value_flag = registry
+            .complete("/summon -wr r", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert!(with_value_flag.matches.is_empty());
 
-        let unknown = registry.complete("/summon -wx r", &world).unwrap();
+        let unknown = registry
+            .complete("/summon -wx r", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert!(unknown.matches.is_empty());
 
-        let after_stop = registry.complete("/summon -- -wg r", &world).unwrap();
+        let after_stop = registry
+            .complete("/summon -- -wg r", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert!(after_stop.matches.is_empty());
     }
 
@@ -1472,9 +1562,21 @@ mod tests {
     fn completion_ignores_unknown_commands_and_bare_names() {
         let registry = registry_with([team_command()]);
         let world = player_world();
-        assert!(registry.complete("/nope ", &world).is_none());
-        assert!(registry.complete("/tea", &world).is_none());
-        assert!(registry.complete("/team", &world).is_none());
+        assert!(
+            registry
+                .complete("/nope ", &world, Entity::PLACEHOLDER)
+                .is_none()
+        );
+        assert!(
+            registry
+                .complete("/tea", &world, Entity::PLACEHOLDER)
+                .is_none()
+        );
+        assert!(
+            registry
+                .complete("/team", &world, Entity::PLACEHOLDER)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1486,7 +1588,9 @@ mod tests {
             .build();
         let registry = registry_with([command]);
         let world = World::new();
-        let completion = registry.complete("/ride minecraft:pi", &world).unwrap();
+        let completion = registry
+            .complete("/ride minecraft:pi", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert!(completion.matches.contains(&"minecraft:pig".to_string()));
         assert!(
             completion
@@ -1659,7 +1763,7 @@ mod tests {
         run(&mut world, player, "list reds");
         run(&mut world, player, "modify reds color gold -q");
         run(&mut world, player, "modify reds member Alice");
-        run(&mut world, player, "modify -- reds color gold");
+        run(&mut world, player, "modify reds color -- gold");
 
         assert_eq!(
             *calls.lock().unwrap(),
@@ -1727,26 +1831,38 @@ mod tests {
         let registry = registry_with([club_command(Default::default())]);
         let world = player_world();
 
-        let literals = registry.complete("/club ", &world).unwrap();
+        let literals = registry
+            .complete("/club ", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(literals.matches, vec!["add", "create", "list", "modify"]);
-        let partial = registry.complete("/club mo", &world).unwrap();
+        let partial = registry
+            .complete("/club mo", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(partial.matches, vec!["modify"]);
         assert_eq!((partial.start, partial.length), (6, 2));
 
-        let options = registry.complete("/club modify reds ", &world).unwrap();
+        let options = registry
+            .complete("/club modify reds ", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert_eq!(options.matches, vec!["color", "member"]);
 
         let members = registry
-            .complete("/club modify reds member b", &world)
+            .complete("/club modify reds member b", &world, Entity::PLACEHOLDER)
             .unwrap();
         assert_eq!(members.matches, vec!["Bob"]);
 
         let flags = registry
-            .complete("/club modify reds color gold -", &world)
+            .complete(
+                "/club modify reds color gold -",
+                &world,
+                Entity::PLACEHOLDER,
+            )
             .unwrap();
         assert_eq!(flags.matches, vec!["--quiet", "-q"]);
 
-        let unknown = registry.complete("/club paint ", &world).unwrap();
+        let unknown = registry
+            .complete("/club paint ", &world, Entity::PLACEHOLDER)
+            .unwrap();
         assert!(unknown.matches.is_empty());
     }
 
@@ -1803,5 +1919,116 @@ mod tests {
             .arg_optional("x", StringArg::single_word())
             .subcommand(CommandBuilder::new("y").handler(|_| {}))
             .build();
+    }
+
+    fn echo_world(command: Command) -> (World, Entity) {
+        let (mut world, player, _, _) = recording_world();
+        world.insert_resource(registry_with([command]));
+        (world, player)
+    }
+
+    #[test]
+    fn dash_tokens_stay_positional_without_flags_or_after_a_greedy_start() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = |seen: &Arc<std::sync::Mutex<Vec<String>>>| {
+            let seen = Arc::clone(seen);
+            move |ctx: &mut CommandContext| {
+                let mut entry = ctx.get::<String>("word").cloned().unwrap_or_default();
+                if let Some(rest) = ctx.get::<String>("rest") {
+                    entry.push('|');
+                    entry.push_str(rest);
+                }
+                if ctx.flag("loud") {
+                    entry.push_str("|loud");
+                }
+                seen.lock().unwrap().push(entry);
+            }
+        };
+        let plain = CommandBuilder::new("plain")
+            .arg("word", StringArg::single_word())
+            .arg_variadic("rest", StringArg::greedy())
+            .handler(record(&seen))
+            .build();
+        let flagged = CommandBuilder::new("flagged")
+            .arg("word", StringArg::single_word())
+            .arg_variadic("rest", StringArg::greedy())
+            .flag("loud", Some('l'), "")
+            .handler(record(&seen))
+            .build();
+        let (mut world, player) = echo_world(plain);
+        world.resource_mut::<CommandRegistry>().register(flagged);
+
+        for (name, line) in [
+            ("plain", "-blue"),
+            ("plain", "red \"Red -big team\""),
+            ("plain", "-abc --"),
+            ("flagged", "-l red a --b -c"),
+            ("flagged", "red -- -x"),
+        ] {
+            let args = line.split_whitespace().map(String::from).collect();
+            dispatch_command(&mut world, 1, player, name, args);
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                "-blue",
+                "red|\"Red -big team\"",
+                "-abc|--",
+                "red|a --b -c|loud",
+                "red|-- -x",
+            ]
+        );
+    }
+
+    #[test]
+    fn requirements_gate_dispatch_and_completion_before_parsing() {
+        use crate::components::Operator;
+
+        let ran = Arc::new(std::sync::Mutex::new(0));
+        let counter = Arc::clone(&ran);
+        let command = CommandBuilder::new("secret")
+            .requires(|world, executor| world.get::<Operator>(executor).is_some())
+            .subcommand(
+                CommandBuilder::new("open")
+                    .arg("who", Arc::new(PlayerArg))
+                    .handler(move |_| *counter.lock().unwrap() += 1),
+            )
+            .build();
+        let (mut world, player) = echo_world(command);
+
+        dispatch_command(
+            &mut world,
+            1,
+            player,
+            "secret",
+            vec!["open".into(), "nobody".into()],
+        );
+        assert_eq!(*ran.lock().unwrap(), 0);
+        let registry = world.resource::<CommandRegistry>();
+        assert!(
+            registry
+                .complete("/secret ", &world, player)
+                .unwrap()
+                .matches
+                .is_empty()
+        );
+
+        world.entity_mut(player).insert(Operator);
+        dispatch_command(
+            &mut world,
+            1,
+            player,
+            "secret",
+            vec!["open".into(), "@s".into()],
+        );
+        assert_eq!(*ran.lock().unwrap(), 1);
+        let registry = world.resource::<CommandRegistry>();
+        assert_eq!(
+            registry
+                .complete("/secret ", &world, player)
+                .unwrap()
+                .matches,
+            vec!["open"]
+        );
     }
 }
