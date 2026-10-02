@@ -37,7 +37,6 @@ type Outcome = Result<String, String>;
 struct CommandTeam;
 
 pub fn team_command(access: Access) -> Command {
-    let run = |handler: fn(&mut CommandContext)| access.guard(handler);
     let choices =
         |name: &str,
          values: &'static [(&'static str, NameTagVisibility)],
@@ -45,63 +44,64 @@ pub fn team_command(access: Access) -> Command {
             values
                 .iter()
                 .fold(CommandBuilder::new(name), |builder, &(label, value)| {
-                    builder.subcommand(CommandBuilder::new(label).handler(access.guard(
+                    builder.subcommand(CommandBuilder::new(label).handler(
                         move |ctx: &mut CommandContext| {
                             let team = team_arg(ctx);
                             let outcome =
                                 ctx.with_world_mut(|world| set(world, team, label, value));
                             respond(ctx, outcome);
                         },
-                    )))
+                    ))
                 })
         };
     let collisions = COLLISIONS.iter().fold(
         CommandBuilder::new("collisionRule"),
         |builder, &(label, rule)| {
-            builder.subcommand(CommandBuilder::new(label).handler(access.guard(
+            builder.subcommand(CommandBuilder::new(label).handler(
                 move |ctx: &mut CommandContext| {
                     let team = team_arg(ctx);
                     let outcome =
                         ctx.with_world_mut(|world| set_collision(world, team, label, rule));
                     respond(ctx, outcome);
                 },
-            )))
+            ))
         },
     );
 
     CommandBuilder::new("team")
         .description("Manage teams")
+        .requires(move |world, player| access.allows(world, player))
         .subcommand(
             CommandBuilder::new("add")
                 .arg("team", Arc::new(NameArg))
                 .arg_variadic("displayName", Arc::new(ComponentArg))
-                .handler(run(add)),
+                .handler(add),
         )
         .subcommand(
             CommandBuilder::new("remove")
                 .arg("team", Arc::new(TeamArg))
-                .handler(run(remove)),
+                .handler(remove),
         )
         .subcommand(
             CommandBuilder::new("empty")
                 .arg("team", Arc::new(TeamArg))
-                .handler(run(empty)),
+                .handler(empty),
         )
         .subcommand(
             CommandBuilder::new("join")
                 .arg("team", Arc::new(TeamArg))
                 .arg_optional("members", ScoreHolderArg::multiple())
-                .handler(run(join)),
+                .handler(join),
         )
         .subcommand(
             CommandBuilder::new("leave")
                 .arg("members", ScoreHolderArg::multiple())
-                .handler(run(leave)),
+                .handler(leave),
         )
         .subcommand(
             CommandBuilder::new("list")
                 .arg_optional("team", Arc::new(TeamArg))
-                .handler(run(list)),
+                .handler(list),
         )
         .subcommand(
             CommandBuilder::new("modify")
@@ -109,22 +109,22 @@ pub fn team_command(access: Access) -> Command {
                 .subcommand(
                     CommandBuilder::new("displayName")
                         .arg_variadic_required("displayName", Arc::new(ComponentArg))
-                        .handler(run(modify_display_name)),
+                        .handler(modify_display_name),
                 )
                 .subcommand(
                     CommandBuilder::new("color")
                         .arg("value", Arc::new(ColorArg))
-                        .handler(run(modify_color)),
+                        .handler(modify_color),
                 )
                 .subcommand(
                     CommandBuilder::new("friendlyFire")
                         .arg("allowed", Arc::new(BoolArg))
-                        .handler(run(modify_friendly_fire)),
+                        .handler(modify_friendly_fire),
                 )
                 .subcommand(
                     CommandBuilder::new("seeFriendlyInvisibles")
                         .arg("allowed", Arc::new(BoolArg))
-                        .handler(run(modify_see_invisibles)),
+                        .handler(modify_see_invisibles),
                 )
                 .subcommand(choices("nametagVisibility", &VISIBILITIES, set_name_tags))
                 .subcommand(choices(
@@ -136,12 +136,12 @@ pub fn team_command(access: Access) -> Command {
                 .subcommand(
                     CommandBuilder::new("prefix")
                         .arg_variadic_required("prefix", Arc::new(ComponentArg))
-                        .handler(run(modify_prefix)),
+                        .handler(modify_prefix),
                 )
                 .subcommand(
                     CommandBuilder::new("suffix")
                         .arg_variadic_required("suffix", Arc::new(ComponentArg))
-                        .handler(run(modify_suffix)),
+                        .handler(modify_suffix),
                 ),
         )
         .build()
@@ -259,10 +259,10 @@ fn join(ctx: &mut CommandContext) {
     let outcome = ctx.with_world_mut(|world| {
         for holder in &holders {
             leave_all(world, holder);
-            world
-                .get_mut::<Team>(team)
-                .unwrap()
-                .add_entry(holder.clone());
+            let online = players_named(world, holder);
+            let mut team = world.get_mut::<Team>(team).unwrap();
+            team.add_entry(holder.clone());
+            team.members.extend(online);
         }
         let team = team_label(world, team);
         Ok(match holders.as_slice() {
@@ -551,7 +551,13 @@ mod tests {
             "A team already exists by that name"
         );
         assert_eq!(h.ok("team add blue").reply(), "Created team [blue]");
-        assert!(h.run("team add bad#name").replies.len() == 2);
+        assert_eq!(
+            h.run("team add bad#name").replies,
+            vec![
+                "Invalid value 'bad#name' for <team>: expected name ('bad#name' may only contain letters, digits and _ - . +)",
+                "Usage: /team add <team:name> [displayName:component]...",
+            ]
+        );
     }
 
     #[test]
@@ -562,6 +568,7 @@ mod tests {
 
         let run = h.ok("team join red");
         assert_eq!(run.reply(), "Added Alice to team [red]");
+        assert!(h.team("red").unwrap().contains(h.alice));
         assert_eq!(
             team_packets(&run),
             vec![
@@ -576,6 +583,8 @@ mod tests {
         assert!(packets.contains(&(1, "red".into(), "leave", vec!["Alice".into()])));
         assert!(packets.contains(&(1, "blue".into(), "join", vec!["Alice".into(), "Bob".into()])));
         assert!(h.team("red").unwrap().entries.is_empty());
+        assert!(!h.team("red").unwrap().contains(h.alice));
+        assert!(h.team("blue").unwrap().contains(h.bob));
 
         assert_eq!(
             h.ok("team join red Offline").reply(),

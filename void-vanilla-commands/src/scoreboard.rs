@@ -20,56 +20,53 @@ type Outcome = Result<String, String>;
 /// branches; `apply` receives `None` to clear the format.
 fn number_format(
     base: CommandBuilder,
-    access: Access,
     apply: fn(&mut CommandContext, Option<ScoreFormat>),
 ) -> CommandBuilder {
-    base.handler(access.guard(move |ctx| apply(ctx, None)))
+    base.handler(move |ctx| apply(ctx, None))
         .subcommand(
-            CommandBuilder::new("blank")
-                .handler(access.guard(move |ctx| apply(ctx, Some(ScoreFormat::Blank)))),
+            CommandBuilder::new("blank").handler(move |ctx| apply(ctx, Some(ScoreFormat::Blank))),
         )
         .subcommand(
             CommandBuilder::new("fixed")
                 .arg_variadic_required("contents", Arc::new(ComponentArg))
-                .handler(access.guard(move |ctx| {
+                .handler(move |ctx| {
                     let text = ctx.get::<StyledText>("contents").unwrap().text.clone();
                     apply(ctx, Some(ScoreFormat::Fixed(text)))
-                })),
+                }),
         )
         .subcommand(
             CommandBuilder::new("styled")
                 .arg_variadic_required("style", Arc::new(StyleArg))
-                .handler(access.guard(move |ctx| {
+                .handler(move |ctx| {
                     let format = ctx.get::<ScoreFormat>("style").unwrap().clone();
                     apply(ctx, Some(format))
-                })),
+                }),
         )
 }
 
 pub fn scoreboard_command(access: Access) -> Command {
-    let run = |handler: fn(&mut CommandContext)| access.guard(handler);
     let render = |name: &str, render: RenderType| {
-        CommandBuilder::new(name).handler(access.guard(move |ctx| set_render(ctx, render)))
+        CommandBuilder::new(name).handler(move |ctx| set_render(ctx, render))
     };
     let objectives = CommandBuilder::new("objectives")
-        .subcommand(CommandBuilder::new("list").handler(run(list_objectives)))
+        .subcommand(CommandBuilder::new("list").handler(list_objectives))
         .subcommand(
             CommandBuilder::new("add")
                 .arg("objective", Arc::new(NameArg))
                 .arg("criteria", Arc::new(CriteriaArg))
                 .arg_variadic("displayName", Arc::new(ComponentArg))
-                .handler(run(add_objective)),
+                .handler(add_objective),
         )
         .subcommand(
             CommandBuilder::new("remove")
                 .arg("objective", Arc::new(ObjectiveArg))
-                .handler(run(remove_objective)),
+                .handler(remove_objective),
         )
         .subcommand(
             CommandBuilder::new("setdisplay")
                 .arg("slot", Arc::new(SlotArg))
                 .arg_optional("objective", Arc::new(ObjectiveArg))
-                .handler(run(set_display)),
+                .handler(set_display),
         )
         .subcommand(
             CommandBuilder::new("modify")
@@ -77,7 +74,7 @@ pub fn scoreboard_command(access: Access) -> Command {
                 .subcommand(
                     CommandBuilder::new("displayname")
                         .arg_variadic_required("displayName", Arc::new(ComponentArg))
-                        .handler(run(set_display_name)),
+                        .handler(set_display_name),
                 )
                 .subcommand(
                     CommandBuilder::new("rendertype")
@@ -87,11 +84,10 @@ pub fn scoreboard_command(access: Access) -> Command {
                 .subcommand(
                     CommandBuilder::new("displayautoupdate")
                         .arg("value", Arc::new(BoolArg))
-                        .handler(run(set_auto_update)),
+                        .handler(set_auto_update),
                 )
                 .subcommand(number_format(
                     CommandBuilder::new("numberformat"),
-                    access,
                     set_objective_format,
                 )),
         );
@@ -100,46 +96,46 @@ pub fn scoreboard_command(access: Access) -> Command {
         .subcommand(
             CommandBuilder::new("list")
                 .arg_optional("target", ScoreHolderArg::single())
-                .handler(run(list_players)),
+                .handler(list_players),
         )
         .subcommand(
             CommandBuilder::new("get")
                 .arg("target", ScoreHolderArg::single())
                 .arg("objective", Arc::new(ObjectiveArg))
-                .handler(run(get_score)),
+                .handler(get_score),
         )
         .subcommand(
             CommandBuilder::new("set")
                 .arg("targets", ScoreHolderArg::multiple())
                 .arg("objective", Arc::new(ObjectiveArg))
                 .arg("score", IntegerArg::unbounded())
-                .handler(run(set_score)),
+                .handler(set_score),
         )
         .subcommand(
             CommandBuilder::new("add")
                 .arg("targets", ScoreHolderArg::multiple())
                 .arg("objective", Arc::new(ObjectiveArg))
                 .arg("score", IntegerArg::min(0))
-                .handler(run(add_score)),
+                .handler(add_score),
         )
         .subcommand(
             CommandBuilder::new("remove")
                 .arg("targets", ScoreHolderArg::multiple())
                 .arg("objective", Arc::new(ObjectiveArg))
                 .arg("score", IntegerArg::min(0))
-                .handler(run(remove_score)),
+                .handler(remove_score),
         )
         .subcommand(
             CommandBuilder::new("reset")
                 .arg("targets", ScoreHolderArg::multiple())
                 .arg_optional("objective", Arc::new(ObjectiveArg))
-                .handler(run(reset_scores)),
+                .handler(reset_scores),
         )
         .subcommand(
             CommandBuilder::new("enable")
                 .arg("targets", ScoreHolderArg::multiple())
                 .arg("objective", Arc::new(ObjectiveArg))
-                .handler(run(enable_trigger)),
+                .handler(enable_trigger),
         )
         .subcommand(
             CommandBuilder::new("operation")
@@ -148,7 +144,7 @@ pub fn scoreboard_command(access: Access) -> Command {
                 .arg("operation", Arc::new(OperationArg))
                 .arg("source", ScoreHolderArg::multiple())
                 .arg("sourceObjective", Arc::new(ObjectiveArg))
-                .handler(run(operation)),
+                .handler(operation),
         )
         .subcommand(
             CommandBuilder::new("display")
@@ -157,19 +153,19 @@ pub fn scoreboard_command(access: Access) -> Command {
                         .arg("targets", ScoreHolderArg::multiple())
                         .arg("objective", Arc::new(ObjectiveArg))
                         .arg_variadic("text", Arc::new(ComponentArg))
-                        .handler(run(set_score_name)),
+                        .handler(set_score_name),
                 )
                 .subcommand(number_format(
                     CommandBuilder::new("numberformat")
                         .arg("targets", ScoreHolderArg::multiple())
                         .arg("objective", Arc::new(ObjectiveArg)),
-                    access,
                     set_score_format,
                 )),
         );
 
     CommandBuilder::new("scoreboard")
         .description("Manage scoreboard objectives and scores")
+        .requires(move |world, player| access.allows(world, player))
         .subcommand(objectives)
         .subcommand(players)
         .build()

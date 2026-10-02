@@ -24,8 +24,10 @@ VoidServer::new(config)
 Each plugin has one field, `access`. `Access::Operators` (the default, as in
 vanilla) only lets players carrying the `Operator` component run the command;
 `Access::Everyone` opens it to all players, which the example server does.
-The engine sends every player the same command tree, so non-operators still
-see both commands and their completions; they are refused when they run them.
+The check is a [`requires`](commands.md#requirements): it runs before any
+argument is parsed, so other players get no completions and no error that
+names a team or objective. The engine sends every player the same command
+tree, so they still see that both commands exist.
 `team_command(access)` and `scoreboard_command(access)` return the bare
 `Command` for a registry of your own; without `ScoreboardCommandsPlugin` the
 scoreboard is still kept, but nothing is shown to clients.
@@ -58,7 +60,8 @@ the scoreboard sync sends the difference. Teams spawned by code show up in
 
 Members join by name (`Team::entries`), as vanilla score holders do, so a
 player keeps their team across reconnects and offline names or UUIDs can join
-too. `join` and `leave` first take the holder off every other team, including
+too. A player online at join time is also added to `Team::members`, so
+`team.contains(player)` holds for them. `join` and `leave` first take the holder off every other team, including
 one that listed the player's entity in `Team::members`. `join` without members
 adds the executor.
 
@@ -141,7 +144,7 @@ fn lap(mut board: ResMut<Scoreboard>, player: &str) {
 | `ObjectiveArg` | `String` | `minecraft:objective` + `ask_server` | An existing objective name |
 | `NameArg` | `String` | `brigadier:string` (word) | A new name: `0-9 A-Z a-z _ - . +` |
 | `CriteriaArg` | `Criteria` | `minecraft:objective_criteria` | `dummy` or `trigger` |
-| `ScoreHolderArg::multiple()` / `::single()` | `Vec<String>` / `String` | `minecraft:score_holder` + `ask_server` | `*`, `@a`, `@s`, `@p`, `@r`, any name or UUID |
+| `ScoreHolderArg::multiple()` / `::single()` | `Vec<String>` / `String` | `minecraft:score_holder` + `ask_server` | `*`, `@a`, `@s`, `@p`, `@r`, any name or UUID (an online player's UUID becomes their name) |
 | `OperationArg` | `Operation` | `minecraft:operation` | `= += -= *= /= %= < > ><` |
 | `SlotArg` | `DisplaySlot` | `minecraft:scoreboard_slot` | `list`, `sidebar`, `below_name`, `sidebar.team.<color>` |
 | `ComponentArg` | `StyledText` | `minecraft:component` | `"text"`, `'text'`, a bare word, `{"text":..,"color":..}` (JSON or SNBT), or a list of those |

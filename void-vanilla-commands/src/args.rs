@@ -2,7 +2,7 @@ use std::any::Any;
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
-use voidmc::components::{PlayerName, PlayerReady};
+use voidmc::components::{PlayerName, PlayerReady, PlayerUuid};
 use voidmc::{ArgParser, DisplaySlot, ParseContext, PlayerSelector, ScoreFormat, Team};
 use voidmc_protocol::clientbound::commands::{Parser, StringType};
 
@@ -295,8 +295,20 @@ impl ArgParser for SlotArg {
     }
 }
 
+fn player_with_uuid(world: &World, input: &str) -> Option<String> {
+    if input.len() != 36 {
+        return None;
+    }
+    let mut players = world.try_query::<(&PlayerUuid, &PlayerName)>()?;
+    players
+        .iter(world)
+        .find(|(uuid, _)| uuid.0.to_string().eq_ignore_ascii_case(input))
+        .map(|(_, name)| name.0.clone())
+}
+
 /// Score holders: `*` (every tracked holder), a player selector (`@a`,
-/// `@s`, `@p`, `@r`) or any literal name or UUID, online or not. Parses to
+/// `@s`, `@p`, `@r`) or any literal name or UUID, online or not; an online
+/// player's UUID resolves to their name, as in vanilla. Parses to
 /// `Vec<String>`, or to `String` when built with [`ScoreHolderArg::single`].
 pub struct ScoreHolderArg {
     multiple: bool,
@@ -327,7 +339,8 @@ impl ScoreHolderArg {
             return Ok(holders);
         }
         if !input.starts_with('@') {
-            return Ok(vec![input.to_string()]);
+            let holder = player_with_uuid(ctx.world, input).unwrap_or_else(|| input.to_string());
+            return Ok(vec![holder]);
         }
         let selector = PlayerSelector::parse(input)?;
         if !self.multiple && !selector.is_single() {
@@ -529,6 +542,16 @@ mod tests {
         all.sort();
         assert_eq!(all, vec!["Alice", "Bob"]);
         assert_eq!(ctx(&world, "Offline", &one).unwrap(), vec!["Offline"]);
+        let uuid = "069a79f4-44e9-4726-a5be-fca90e38aaf5";
+        world
+            .entity_mut(alice)
+            .insert(PlayerUuid(uuid.parse().unwrap()));
+        assert_eq!(
+            ctx(&world, &uuid.to_uppercase(), &one).unwrap(),
+            vec!["Alice"]
+        );
+        let stranger = "11111111-2222-3333-4444-555555555555";
+        assert_eq!(ctx(&world, stranger, &one).unwrap(), vec![stranger]);
         assert!(ctx(&world, "@a", &one).is_err());
         assert!(ctx(&world, "@e", &many).is_err());
         assert!(ctx(&world, "*", &many).is_err());

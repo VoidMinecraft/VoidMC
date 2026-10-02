@@ -10,6 +10,7 @@ mod text;
 
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_ecs::prelude::*;
+use voidmc::components::Operator;
 use voidmc::{CommandContext, CommandRegistry, VoidSystems};
 
 pub use args::{
@@ -30,17 +31,8 @@ pub enum Access {
 }
 
 impl Access {
-    fn guard(
-        self,
-        handler: impl Fn(&mut CommandContext) + Send + Sync + 'static,
-    ) -> impl Fn(&mut CommandContext) + Send + Sync + 'static {
-        move |ctx| {
-            if self == Access::Operators && !ctx.is_operator() {
-                ctx.reply_error("You do not have permission to use this command");
-            } else {
-                handler(ctx);
-            }
-        }
+    pub fn allows(self, world: &World, player: Entity) -> bool {
+        self == Access::Everyone || world.get::<Operator>(player).is_some()
     }
 }
 
@@ -122,9 +114,51 @@ mod tests {
         let world = h.app.world();
         world
             .resource::<CommandRegistry>()
-            .complete(line, world)
+            .complete(line, world, h.alice)
             .map(|completion| completion.matches)
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn dashes_and_double_dashes_are_plain_text() {
+        let mut h = Harness::new();
+        assert_eq!(
+            h.ok(r#"team add red "Red -big team""#).reply(),
+            "Created team [Red -big team]"
+        );
+        assert_eq!(h.ok("team add -blue").reply(), "Created team [-blue]");
+        assert_eq!(h.ok("team add --").reply(), "Created team [--]");
+        h.ok("team add green");
+        assert_eq!(
+            h.ok(r#"team modify green prefix {text:"a --b"}"#).reply(),
+            "Team prefix set to a --b"
+        );
+        h.ok("scoreboard objectives add k dummy");
+        assert_eq!(
+            h.ok("scoreboard players set -abc k 1").reply(),
+            "Set [k] for -abc to 1"
+        );
+    }
+
+    #[test]
+    fn non_operators_learn_nothing_from_errors_or_completion() {
+        let mut h = Harness::new();
+        h.ok("team add red");
+        let bob = h.bob;
+        let denied = "You do not have permission to use this command";
+        for line in [
+            "team modify nope color red",
+            "team list red",
+            "scoreboard players get x nope",
+        ] {
+            assert_eq!(h.run_as(bob, line).replies, vec![denied], "{line}");
+        }
+        let world = h.app.world();
+        let completion = world
+            .resource::<CommandRegistry>()
+            .complete("/team join ", world, bob)
+            .unwrap();
+        assert!(completion.matches.is_empty());
     }
 
     #[test]
@@ -246,8 +280,24 @@ mod tests {
         );
         assert!(find(&tree, &["team", "join", "team"]).is_executable);
 
+        let mut names: Vec<_> = tree.nodes[tree.root_index as usize]
+            .children
+            .iter()
+            .map(|child| tree.nodes[*child as usize].name.clone().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["scoreboard", "team"]);
+        for node in &tree.nodes {
+            for index in node.children.iter().chain(&node.redirect_node) {
+                assert!((*index as usize) < tree.nodes.len(), "{node:?}");
+            }
+            assert_eq!(node.parser.is_some(), node.node_type == 2, "{node:?}");
+        }
+
         let mut buf = Vec::new();
         tree.encode(&mut buf);
-        assert!(!buf.is_empty());
+        let mut count = Vec::new();
+        voidmc_codec::VarI32(tree.nodes.len() as i32).encode(&mut count);
+        assert_eq!(&buf[..count.len()], count.as_slice());
     }
 }
