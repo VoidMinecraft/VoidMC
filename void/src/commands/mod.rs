@@ -493,6 +493,30 @@ impl<'a> Walk<'a> {
         self.literals.last().map_or(0, |index| index + 1)
     }
 
+    /// Scans `tokens[..end]` exactly as dispatch splits the whole path:
+    /// subcommand literals dropped, the walk's `--` ending flags. Returns the
+    /// positional count and whether a flag may follow.
+    fn scan<S: AsRef<str>>(
+        &self,
+        tokens: &[S],
+        definitions: &[FlagDefinition],
+        end: usize,
+    ) -> (usize, bool) {
+        let separator = self.separator.filter(|&index| index < end);
+        let kept = |range: std::ops::Range<usize>| {
+            range
+                .filter(|index| !self.literals.contains(index))
+                .map(|index| tokens[index].as_ref())
+                .collect::<Vec<&str>>()
+        };
+        let before = kept(0..separator.unwrap_or(end));
+        let (count, flags_allowed) = scan_positionals(&before, definitions, self.greedy_start());
+        match separator {
+            Some(index) => (count + kept(index + 1..end).len(), false),
+            None => (count, flags_allowed),
+        }
+    }
+
     fn usage(&self) -> String {
         self.node()
             .usage
@@ -719,6 +743,9 @@ fn scan_positionals(
             })
             .flatten();
         match flag {
+            Some(definition) if definition.takes_value && index == tokens.len() => {
+                return (count, false);
+            }
             Some(definition) => {
                 if definition.takes_value {
                     index += 1;
@@ -815,16 +842,9 @@ impl CommandRegistry {
         let walk = Walk::new(cmd, completed);
         let node = walk.node();
         let flags = walk.flags();
-        let rest = &completed[walk.start()..];
-        let (positional, flags_allowed) = match walk.separator {
-            Some(separator) if separator >= walk.start() => {
-                let split = separator - walk.start();
-                let (before, _) = scan_positionals(&rest[..split], &flags, walk.greedy_start());
-                (before + rest.len() - split - 1, false)
-            }
-            Some(_) => (rest.len(), false),
-            None => scan_positionals(rest, &flags, walk.greedy_start()),
-        };
+        let (total, flags_allowed) = walk.scan(completed, &flags, completed.len());
+        let (parents, _) = walk.scan(completed, &flags, walk.start());
+        let positional = total.saturating_sub(parents);
         let mut matches = if walk.unknown.is_some() || !walk.permits(world, executor) {
             Vec::new()
         } else if partial.starts_with('-') && flags_allowed {
@@ -2132,6 +2152,244 @@ mod tests {
         assert_eq!(
             registry.complete("/gate ", &world, player).unwrap().matches,
             vec!["open"]
+        );
+    }
+
+    fn with_flags(mut builder: CommandBuilder, letters: &str) -> CommandBuilder {
+        for letter in letters.chars() {
+            builder = match letter {
+                'g' => builder.flag("glow", Some('g'), ""),
+                'z' => builder.flag("zap", Some('z'), ""),
+                'c' => builder.flag_value("count", Some('c'), "", StringArg::single_word()),
+                _ => unreachable!(),
+            };
+        }
+        builder
+    }
+
+    fn greedy_leaf(name: &str, flags: &str) -> CommandBuilder {
+        with_flags(
+            CommandBuilder::new(name)
+                .arg_variadic_required("text", StringArg::greedy())
+                .handler(|_| {}),
+            flags,
+        )
+    }
+
+    fn agreement_shapes() -> Vec<(&'static str, Command, Vec<&'static str>)> {
+        let word = StringArg::single_word;
+        vec![
+            (
+                "flat",
+                with_flags(
+                    CommandBuilder::new("flat")
+                        .arg("a", word())
+                        .arg_optional("b", word())
+                        .handler(|_| {}),
+                    "gzc",
+                )
+                .build(),
+                vec![],
+            ),
+            ("greedy", greedy_leaf("greedy", "gzc").build(), vec![]),
+            (
+                "pg",
+                with_flags(
+                    CommandBuilder::new("pg")
+                        .arg("a", word())
+                        .arg_variadic("text", StringArg::greedy())
+                        .handler(|_| {}),
+                    "gzc",
+                )
+                .build(),
+                vec![],
+            ),
+            (
+                "rootflags",
+                with_flags(
+                    CommandBuilder::new("rootflags")
+                        .arg("a", word())
+                        .subcommand(greedy_leaf("say", "")),
+                    "gzc",
+                )
+                .build(),
+                vec!["say"],
+            ),
+            (
+                "pal",
+                CommandBuilder::new("leafflags")
+                    .alias("pal")
+                    .arg("a", word())
+                    .subcommand(greedy_leaf("say", "gzc").alias("speak"))
+                    .build(),
+                vec!["say", "speak"],
+            ),
+            (
+                "nested",
+                with_flags(
+                    CommandBuilder::new("nested")
+                        .arg("a", word())
+                        .subcommand(with_flags(
+                            CommandBuilder::new("grp")
+                                .arg("b", word())
+                                .subcommand(greedy_leaf("say", "z"))
+                                .subcommand(with_flags(
+                                    CommandBuilder::new("set").arg("v", word()).handler(|_| {}),
+                                    "z",
+                                )),
+                            "c",
+                        )),
+                    "g",
+                )
+                .build(),
+                vec!["grp", "say", "set"],
+            ),
+            (
+                "split",
+                with_flags(
+                    CommandBuilder::new("split")
+                        .subcommand(with_flags(
+                            CommandBuilder::new("say")
+                                .arg("a", word())
+                                .arg_variadic("text", StringArg::greedy())
+                                .handler(|_| {}),
+                            "gc",
+                        ))
+                        .subcommand(
+                            CommandBuilder::new("opt")
+                                .arg_optional("a", word())
+                                .handler(|_| {}),
+                        ),
+                    "z",
+                )
+                .build(),
+                vec!["say", "opt"],
+            ),
+            (
+                "coords",
+                with_flags(
+                    CommandBuilder::new("coords")
+                        .arg("at", Arc::new(parser::BlockPosArg))
+                        .subcommand(greedy_leaf("say", "gc")),
+                    "z",
+                )
+                .build(),
+                vec!["say"],
+            ),
+            (
+                "rootzap",
+                with_flags(
+                    CommandBuilder::new("rootzap")
+                        .arg("a", word())
+                        .subcommand(greedy_leaf("say", "gc")),
+                    "z",
+                )
+                .build(),
+                vec!["say"],
+            ),
+        ]
+    }
+
+    fn dispatch_reads_flag(
+        registry: &CommandRegistry,
+        world: &World,
+        name: &str,
+        args: &[String],
+    ) -> bool {
+        let Resolved::Found(res) = registry.resolve_handler(name, args) else {
+            return false;
+        };
+        if res.unknown_subcommand.is_some() {
+            return false;
+        }
+        let ctx = ParseContext {
+            world,
+            executor: Entity::PLACEHOLDER,
+        };
+        let (_, flags, _) = flags::extract_flags_before(
+            &res.tokens,
+            &res.flag_definitions,
+            &ctx,
+            res.positional_limit,
+        );
+        flags.has("zap")
+    }
+
+    #[test]
+    fn completion_offers_a_flag_exactly_where_dispatch_reads_one() {
+        let world = player_world();
+        for (name, command, literals) in agreement_shapes() {
+            let registry = registry_with([command]);
+            let alphabet: Vec<&str> = ["n", "-g", "--glow", "-gg", "-c", "--"]
+                .into_iter()
+                .chain(literals)
+                .collect();
+            let mut inputs: Vec<Vec<&str>> = vec![Vec::new()];
+            let mut frontier = inputs.clone();
+            for _ in 0..5 {
+                frontier = frontier
+                    .iter()
+                    .flat_map(|prefix| {
+                        alphabet.iter().map(move |token| {
+                            let mut next = prefix.clone();
+                            next.push(token);
+                            next
+                        })
+                    })
+                    .collect();
+                inputs.extend(frontier.iter().cloned());
+            }
+            let mut outcomes = [0usize; 2];
+            for input in inputs {
+                for probe in ["-z", "--zap"] {
+                    let mut args: Vec<String> = input.iter().map(|t| t.to_string()).collect();
+                    args.push(probe.to_string());
+                    let dispatched = dispatch_reads_flag(&registry, &world, name, &args);
+                    let line = format!("/{name} {}", args.join(" "));
+                    let offered = registry
+                        .complete(&line, &world, Entity::PLACEHOLDER)
+                        .unwrap()
+                        .matches
+                        .iter()
+                        .any(|candidate| candidate == probe);
+                    assert_eq!(
+                        offered, dispatched,
+                        "{line:?}: completion offers {probe}: {offered}, dispatch reads it: {dispatched}"
+                    );
+                    outcomes[dispatched as usize] += 1;
+                }
+            }
+            assert!(
+                outcomes.iter().all(|&count| count > 0),
+                "{name} never exercised both outcomes: {outcomes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_arguments_do_not_shift_the_completed_greedy_start() {
+        let world = player_world();
+        let registry = registry_with(
+            agreement_shapes()
+                .into_iter()
+                .map(|(_, command, _)| command),
+        );
+        let complete = |line: &str| {
+            registry
+                .complete(line, &world, Entity::PLACEHOLDER)
+                .unwrap()
+                .matches
+        };
+        assert_eq!(complete("/rootflags n say x -"), Vec::<String>::new());
+        assert_eq!(complete("/pal n speak x -"), Vec::<String>::new());
+        assert_eq!(complete("/nested n grp m say x -"), Vec::<String>::new());
+        assert_eq!(
+            complete("/rootflags n say -"),
+            vec!["--glow", "-g", "--zap", "-z", "--count", "-c"]
+        );
+        assert_eq!(
+            complete("/nested n grp m say -"),
+            vec!["--glow", "-g", "--count", "-c", "--zap", "-z"]
         );
     }
 }
