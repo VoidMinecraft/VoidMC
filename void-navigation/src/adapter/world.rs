@@ -1,5 +1,6 @@
 use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
+use voidmc::events::BlockChangeEvent;
 use voidmc::world::{
     CHUNK_MIN_Y, ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, DimensionId,
 };
@@ -8,16 +9,19 @@ use voidmc_protocol::clientbound::chunk::{ChunkSection, PaletteData};
 use super::blocks::{BlockModel, CellTable};
 use crate::pathing::hash::FastMap;
 use crate::pathing::{
-    CachedWorld, Cell, CellCache, CellSource, SECTION_CELLS, SectionCells, SectionPos,
+    BlockPos, CachedWorld, Cell, CellCache, CellSource, SECTION_CELLS, SectionCells, SectionPos,
 };
 
-/// Navigation cells for every dimension, built lazily from chunk data and
-/// dropped when a chunk changes or unloads.
+/// Navigation cells for every dimension, built lazily from chunk data. A
+/// single block change patches one cell; any other chunk change or an unload
+/// drops the chunk's cached sections.
 #[derive(Resource)]
 pub struct NavigationWorld {
     table: CellTable,
     caches: FastMap<DimensionId, CellCache>,
-    epochs: FastMap<DimensionId, u64>,
+    stamp: u64,
+    changes: FastMap<(DimensionId, ChunkPos), u64>,
+    patched: Vec<(DimensionId, ChunkPos)>,
 }
 
 impl NavigationWorld {
@@ -25,7 +29,9 @@ impl NavigationWorld {
         Self {
             table: CellTable::new(model),
             caches: FastMap::default(),
-            epochs: FastMap::default(),
+            stamp: 0,
+            changes: FastMap::default(),
+            patched: Vec::new(),
         }
     }
 
@@ -48,10 +54,46 @@ impl NavigationWorld {
         self.caches.values().map(CellCache::memory_bytes).sum()
     }
 
-    /// Bumped whenever cells that a search may have read change, so results
-    /// derived from them (cached paths) can be told apart from fresh ones.
-    pub fn epoch(&self, dimension: DimensionId) -> u64 {
-        self.epochs.get(&dimension).copied().unwrap_or(0)
+    /// Increases whenever cached cells change. Compare with
+    /// [`Self::changed_since`] to tell whether results derived from cells read
+    /// at a given stamp (cached paths) are still current.
+    pub fn stamp(&self) -> u64 {
+        self.stamp
+    }
+
+    /// Whether a cached cell of any chunk between `min` and `max` (inclusive)
+    /// changed after `stamp`.
+    pub fn changed_since(
+        &self,
+        dimension: DimensionId,
+        min: ChunkPos,
+        max: ChunkPos,
+        stamp: u64,
+    ) -> bool {
+        if self.stamp <= stamp {
+            return false;
+        }
+        let area = (max.x - min.x + 1) as usize * (max.z - min.z + 1) as usize;
+        if area > self.changes.len() {
+            return self.changes.iter().any(|(&(d, chunk), &changed)| {
+                changed > stamp
+                    && d == dimension
+                    && (min.x..=max.x).contains(&chunk.x)
+                    && (min.z..=max.z).contains(&chunk.z)
+            });
+        }
+        (min.z..=max.z).any(|z| {
+            (min.x..=max.x).any(|x| {
+                self.changes
+                    .get(&(dimension, ChunkPos::new(x, z)))
+                    .is_some_and(|&changed| changed > stamp)
+            })
+        })
+    }
+
+    fn touch(&mut self, dimension: DimensionId, chunk: ChunkPos) {
+        self.stamp += 1;
+        self.changes.insert((dimension, chunk), self.stamp);
     }
 
     pub fn invalidate_chunk(&mut self, dimension: DimensionId, chunk: ChunkPos) {
@@ -60,8 +102,24 @@ impl NavigationWorld {
             .get_mut(&dimension)
             .map_or(0, |cache| cache.invalidate_column(chunk.x, chunk.z));
         if dropped > 0 {
-            *self.epochs.entry(dimension).or_default() += 1;
+            self.touch(dimension, chunk);
         }
+    }
+
+    /// Re-reads one block. Returns false when its section was not cached.
+    pub fn set_block(&mut self, dimension: DimensionId, pos: BlockPos, state: i32) -> bool {
+        let cell = self.table.get(state);
+        let Some(cache) = self.caches.get_mut(&dimension) else {
+            return false;
+        };
+        if cache.cached(pos) == Some(cell) {
+            return true;
+        }
+        if !cache.set_cell(pos, cell) {
+            return false;
+        }
+        self.touch(dimension, ChunkPos::new(pos.x >> 4, pos.z >> 4));
+        true
     }
 
     pub fn view<'a, 'w, 's>(
@@ -179,8 +237,23 @@ pub(crate) fn invalidate_changed_chunks(
     mut world: ResMut<NavigationWorld>,
     changed: Query<(&ChunkPosition, &ChunkDimension), Changed<ChunkData>>,
 ) {
+    let world = world.as_mut();
+    let patched = std::mem::take(&mut world.patched);
     for (position, dimension) in &changed {
-        world.invalidate_chunk(dimension.0, position.0);
+        if !patched.contains(&(dimension.0, position.0)) {
+            world.invalidate_chunk(dimension.0, position.0);
+        }
+    }
+    world.patched = patched;
+    world.patched.clear();
+}
+
+pub(crate) fn patch_changed_block(event: On<BlockChangeEvent>, mut world: ResMut<NavigationWorld>) {
+    let pos = BlockPos::new(event.position.x, event.position.y as i32, event.position.z);
+    world.set_block(event.dimension, pos, event.new_state);
+    let chunk = (event.dimension, ChunkPos::new(pos.x >> 4, pos.z >> 4));
+    if !world.patched.contains(&chunk) {
+        world.patched.push(chunk);
     }
 }
 
@@ -197,7 +270,6 @@ pub(crate) fn evict_unloaded_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pathing::BlockPos;
     use crate::pathing::cell_index;
 
     #[test]

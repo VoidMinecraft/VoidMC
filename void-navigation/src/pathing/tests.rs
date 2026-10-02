@@ -285,6 +285,31 @@ fn wide_bodies_do_not_fit_one_block_gaps() {
 }
 
 #[test]
+fn giants_do_not_fit_three_block_gaps() {
+    let mut world = flat();
+    wall(&mut world, 5, -32, 31, 14);
+    world.fill(
+        BlockPos::new(5, 1, -1),
+        BlockPos::new(5, 14, 1),
+        Cell::EMPTY,
+    );
+    let giant = walker().size(3.6, 12.0).allow_partial(false);
+    assert_eq!(
+        search(&mut world, &giant, feet(0, 0), feet(10, 0)).0,
+        SearchStatus::Unreachable
+    );
+    world.fill(
+        BlockPos::new(5, 1, -2),
+        BlockPos::new(5, 14, 2),
+        Cell::EMPTY,
+    );
+    assert_eq!(
+        search(&mut world, &giant, feet(0, 0), feet(10, 0)).0,
+        SearchStatus::Complete
+    );
+}
+
+#[test]
 fn diagonals_do_not_cut_corners() {
     let model = walker().compile();
     let mut world = flat();

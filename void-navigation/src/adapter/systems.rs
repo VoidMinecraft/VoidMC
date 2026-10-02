@@ -6,7 +6,7 @@ use bevy_ecs::prelude::*;
 use voidmc::components::{
     EntityDimension, Grounded, PlayerDimension, Position, Rotation, Velocity, VerticalVelocity,
 };
-use voidmc::world::DimensionId;
+use voidmc::world::{ChunkPos, DimensionId};
 
 use super::navigator::{Goal, NavigationEvent, NavigationOutcome, Navigator, Phase};
 use super::world::{ChunkCells, NavigationWorld};
@@ -21,6 +21,8 @@ const HOLD_SLACK: f64 = 1.0;
 const FLEE_MARGIN: f64 = 2.0;
 const PATH_CACHE_CAPACITY: usize = 2048;
 const MAX_REQUESTS_PER_TICK: u32 = 64;
+const LONG_LANES: usize = 2;
+const CACHE_MARGIN: f64 = 2.0;
 
 /// Tunables shared by every navigator.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -66,7 +68,7 @@ struct ActiveSearch {
     dimension: DimensionId,
     origin: Vec3,
     key: Option<PathKey>,
-    epoch: u64,
+    stamp: u64,
 }
 
 /// Identifies a search whose result can be reused: same body, same start
@@ -82,21 +84,35 @@ struct PathKey {
 
 struct CachedPath {
     path: Path,
-    epoch: u64,
+    stamp: u64,
+    min: ChunkPos,
+    max: ChunkPos,
 }
 
-/// The single shared pathfinder and its FIFO of navigators waiting for a path.
+#[derive(Default)]
+struct Lane {
+    pathfinder: Pathfinder,
+    active: Option<ActiveSearch>,
+}
+
+/// The shared pathfinders and the FIFO of navigators waiting for a path. A
+/// search still running at the end of a tick moves to a long lane, which
+/// shares a quarter of the budget, so it never holds up everyone else.
 #[derive(Resource, Default)]
 pub struct PathPlanner {
-    pathfinder: Pathfinder,
+    main: Lane,
+    long: [Lane; LONG_LANES],
     queue: VecDeque<Entity>,
-    active: Option<ActiveSearch>,
     cache: FastMap<PathKey, CachedPath>,
 }
 
 impl PathPlanner {
     pub fn queued(&self) -> usize {
-        self.queue.len() + usize::from(self.active.is_some())
+        let running = std::iter::once(&self.main)
+            .chain(&self.long)
+            .filter(|lane| lane.active.is_some())
+            .count();
+        self.queue.len() + running
     }
 }
 
@@ -259,6 +275,112 @@ fn request_for(navigator: &Navigator, me: Vec3, bodies: &Bodies) -> Option<Plan>
     }
 }
 
+enum Request {
+    Skip,
+    Served,
+    Search {
+        me: Vec3,
+        dimension: DimensionId,
+        request: SearchRequest,
+        key: Option<PathKey>,
+    },
+}
+
+fn prepare(
+    entity: Entity,
+    navigator: &mut Navigator,
+    cache: &FastMap<PathKey, CachedPath>,
+    world: &NavigationWorld,
+    bodies: &Bodies,
+    stats: &mut NavigationStats,
+    commit: bool,
+) -> Request {
+    if !navigator.wants_path || navigator.is_paused() {
+        navigator.queued = false;
+        return Request::Skip;
+    }
+    let Some((me, dimension)) = locate(bodies, entity) else {
+        navigator.queued = false;
+        return Request::Skip;
+    };
+    let Some(plan) = request_for(navigator, me, bodies) else {
+        navigator.queued = false;
+        navigator.finish(NavigationOutcome::Interrupted);
+        return Request::Skip;
+    };
+    let key = plan.fixed.then(|| PathKey {
+        dimension,
+        start: BlockPos::containing(me),
+        goal: BlockPos::containing(plan.request.goal),
+        radius: plan.request.radius.to_bits(),
+        model: navigator.fingerprint,
+    });
+    let hit = key
+        .and_then(|key| cache.get(&key))
+        .filter(|hit| !world.changed_since(dimension, hit.min, hit.max, hit.stamp));
+    if let Some(hit) = hit {
+        navigator.queued = false;
+        navigator.wants_path = false;
+        navigator.planned_for = Some(plan.planned_for);
+        navigator.path.copy_from(&hit.path);
+        navigator.origin = me;
+        navigator.path_changed();
+        navigator.phase = Phase::Following;
+        stats.cache_hits += 1;
+        return Request::Served;
+    }
+    if commit {
+        navigator.wants_path = false;
+        navigator.planned_for = Some(plan.planned_for);
+    }
+    Request::Search {
+        me,
+        dimension,
+        request: plan.request,
+        key,
+    }
+}
+
+fn chunk_box(origin: Vec3, path: &Path) -> (ChunkPos, ChunkPos) {
+    let (mut lo, mut hi) = (origin, origin);
+    for point in path.points() {
+        lo = Vec3::new(lo.x.min(point.x), 0.0, lo.z.min(point.z));
+        hi = Vec3::new(hi.x.max(point.x), 0.0, hi.z.max(point.z));
+    }
+    let chunk = |v: f64| (v.floor() as i32) >> 4;
+    (
+        ChunkPos::new(chunk(lo.x - CACHE_MARGIN), chunk(lo.z - CACHE_MARGIN)),
+        ChunkPos::new(chunk(hi.x + CACHE_MARGIN), chunk(hi.z + CACHE_MARGIN)),
+    )
+}
+
+fn is_current(navigators: &Query<&mut Navigator>, active: &ActiveSearch) -> bool {
+    navigators
+        .get(active.entity)
+        .is_ok_and(|navigator| navigator.search_ticket == active.ticket)
+}
+
+fn release(navigators: &mut Query<&mut Navigator>, entity: Entity) {
+    if let Ok(mut navigator) = navigators.get_mut(entity) {
+        navigator.queued = false;
+    }
+}
+
+fn advance(
+    pathfinder: &mut Pathfinder,
+    world: &mut NavigationWorld,
+    chunks: &ChunkCells,
+    dimension: DimensionId,
+    budget: &mut u32,
+    stats: &mut NavigationStats,
+) -> SearchStatus {
+    let before = *budget;
+    let status = pathfinder.step(&mut world.view(dimension, chunks), budget);
+    stats.expanded_last_tick += before - *budget;
+    stats.expanded += (before - *budget) as u64;
+    status
+}
+
 pub(crate) fn run_planner(
     settings: Res<NavigationSettings>,
     mut planner: ResMut<PathPlanner>,
@@ -270,59 +392,73 @@ pub(crate) fn run_planner(
 ) {
     let started = Instant::now();
     let planner = planner.as_mut();
-    let mut budget = settings.expansions_per_tick;
+    let world = world.as_mut();
+    let stats = stats.as_mut();
     stats.expanded_last_tick = 0;
+
+    let mut scanned = 0;
+    let PathPlanner { queue, cache, .. } = planner;
+    queue.retain(|&entity| {
+        if scanned >= MAX_REQUESTS_PER_TICK {
+            return true;
+        }
+        scanned += 1;
+        let Ok(mut navigator) = navigators.get_mut(entity) else {
+            return false;
+        };
+        matches!(
+            prepare(entity, &mut navigator, cache, world, &bodies, stats, false),
+            Request::Search { .. }
+        )
+    });
+
+    let total = settings.expansions_per_tick;
+    let long_running = planner
+        .long
+        .iter()
+        .filter(|lane| lane.active.is_some())
+        .count();
+    let long_share = if long_running > 0 {
+        (total / 4).max(1).min(total)
+    } else {
+        0
+    };
+    let mut budget = total - long_share;
     let mut requests = 0;
     while budget > 0 {
-        let active = match planner.active {
+        let active = match planner.main.active {
             Some(active) => active,
             None => {
                 if requests >= MAX_REQUESTS_PER_TICK {
                     break;
                 }
-                requests += 1;
                 let Some(entity) = planner.queue.pop_front() else {
                     break;
                 };
+                requests += 1;
                 let Ok(mut navigator) = navigators.get_mut(entity) else {
                     continue;
                 };
-                navigator.queued = false;
-                if !navigator.wants_path || navigator.is_paused() {
-                    continue;
-                }
-                let Some((me, dimension)) = locate(&bodies, entity) else {
-                    continue;
-                };
-                let Some(plan) = request_for(&navigator, me, &bodies) else {
-                    navigator.finish(NavigationOutcome::Interrupted);
-                    continue;
-                };
-                navigator.wants_path = false;
-                navigator.planned_for = Some(plan.planned_for);
-                let epoch = world.epoch(dimension);
-                let key = plan.fixed.then(|| PathKey {
+                let Request::Search {
+                    me,
                     dimension,
-                    start: BlockPos::containing(me),
-                    goal: BlockPos::containing(plan.request.goal),
-                    radius: plan.request.radius.to_bits(),
-                    model: navigator.fingerprint,
-                });
-                if let Some(hit) = key.and_then(|key| planner.cache.get(&key))
-                    && hit.epoch == epoch
-                {
-                    let navigator = navigator.as_mut();
-                    navigator.path.copy_from(&hit.path);
-                    navigator.origin = me;
-                    navigator.path_changed();
-                    navigator.phase = Phase::Following;
-                    stats.cache_hits += 1;
+                    request,
+                    key,
+                } = prepare(
+                    entity,
+                    &mut navigator,
+                    &planner.cache,
+                    world,
+                    &bodies,
+                    stats,
+                    true,
+                )
+                else {
                     continue;
-                }
-                navigator.queued = true;
-                let request = plan.request;
+                };
                 let model = navigator.model;
                 planner
+                    .main
                     .pathfinder
                     .start(&mut world.view(dimension, &chunks), &model, request);
                 stats.searches += 1;
@@ -332,86 +468,167 @@ pub(crate) fn run_planner(
                     dimension,
                     origin: me,
                     key,
-                    epoch,
+                    stamp: world.stamp(),
                 };
-                planner.active = Some(active);
+                planner.main.active = Some(active);
                 active
             }
         };
-        let current = navigators
-            .get(active.entity)
-            .is_ok_and(|navigator| navigator.search_ticket == active.ticket);
-        if !current {
-            planner.active = None;
-            if let Ok(mut navigator) = navigators.get_mut(active.entity) {
-                navigator.queued = false;
-            }
+        if !is_current(&navigators, &active) {
+            planner.main.active = None;
+            release(&mut navigators, active.entity);
             continue;
         }
-        let before = budget;
-        let status = planner
-            .pathfinder
-            .step(&mut world.view(active.dimension, &chunks), &mut budget);
-        stats.expanded_last_tick += before - budget;
-        stats.expanded += (before - budget) as u64;
+        let status = advance(
+            &mut planner.main.pathfinder,
+            world,
+            &chunks,
+            active.dimension,
+            &mut budget,
+            stats,
+        );
         if status == SearchStatus::Pending {
             break;
         }
-        planner.active = None;
-        let Ok(mut navigator) = navigators.get_mut(active.entity) else {
+        planner.main.active = None;
+        conclude(
+            status,
+            active,
+            &mut planner.main.pathfinder,
+            &mut planner.cache,
+            world,
+            &chunks,
+            &bodies,
+            &mut navigators,
+            &settings,
+            stats,
+        );
+    }
+    if planner.main.active.is_some()
+        && let Some(lane) = planner.long.iter_mut().find(|lane| lane.active.is_none())
+    {
+        std::mem::swap(&mut planner.main, lane);
+    }
+
+    let mut long_budget = long_share + budget;
+    let lanes = planner
+        .long
+        .iter()
+        .filter(|lane| lane.active.is_some())
+        .count() as u32;
+    for lane in &mut planner.long {
+        let Some(active) = lane.active else {
             continue;
         };
-        navigator.queued = false;
-        if navigator.search_ticket != active.ticket {
+        if !is_current(&navigators, &active) {
+            lane.active = None;
+            release(&mut navigators, active.entity);
             continue;
         }
-        let navigator = navigator.as_mut();
-        if status.found_path() {
-            planner.pathfinder.write_path(
-                &mut world.view(active.dimension, &chunks),
-                &mut navigator.path,
+        let mut slice = (long_budget / lanes.max(1)).max(1).min(long_budget);
+        if slice == 0 {
+            break;
+        }
+        long_budget -= slice;
+        let status = advance(
+            &mut lane.pathfinder,
+            world,
+            &chunks,
+            active.dimension,
+            &mut slice,
+            stats,
+        );
+        long_budget += slice;
+        if status != SearchStatus::Pending {
+            lane.active = None;
+            conclude(
+                status,
+                active,
+                &mut lane.pathfinder,
+                &mut planner.cache,
+                world,
+                &chunks,
+                &bodies,
+                &mut navigators,
+                &settings,
+                stats,
             );
-            navigator.origin = active.origin;
-            navigator.path_changed();
-        }
-        let progress = match (status, navigator.path.end(), locate(&bodies, active.entity)) {
-            (SearchStatus::Partial, Some(end), Some((me, _))) => end.horizontal_distance(me) > 1.0,
-            (status, _, _) => status == SearchStatus::Complete,
-        };
-        if progress {
-            if status == SearchStatus::Complete {
-                stats.complete += 1;
-                if let Some(key) = active.key {
-                    if planner.cache.len() >= PATH_CACHE_CAPACITY {
-                        planner.cache.clear();
-                    }
-                    match planner.cache.get_mut(&key) {
-                        Some(cached) => {
-                            cached.path.copy_from(&navigator.path);
-                            cached.epoch = active.epoch;
-                        }
-                        None => {
-                            planner.cache.insert(
-                                key,
-                                CachedPath {
-                                    path: navigator.path.clone(),
-                                    epoch: active.epoch,
-                                },
-                            );
-                        }
-                    }
-                }
-            } else {
-                stats.partial += 1;
-            }
-            navigator.phase = Phase::Following;
-        } else {
-            stats.unreachable += 1;
-            unreachable(&settings, navigator);
         }
     }
     stats.queued = planner.queued();
     stats.planning_micros_last_tick = started.elapsed().as_micros() as u64;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn conclude(
+    status: SearchStatus,
+    active: ActiveSearch,
+    pathfinder: &mut Pathfinder,
+    cache: &mut FastMap<PathKey, CachedPath>,
+    world: &mut NavigationWorld,
+    chunks: &ChunkCells,
+    bodies: &Bodies,
+    navigators: &mut Query<&mut Navigator>,
+    settings: &NavigationSettings,
+    stats: &mut NavigationStats,
+) {
+    let Ok(mut navigator) = navigators.get_mut(active.entity) else {
+        return;
+    };
+    navigator.queued = false;
+    if navigator.search_ticket != active.ticket {
+        return;
+    }
+    let navigator = navigator.as_mut();
+    if status.found_path() {
+        pathfinder.write_path(
+            &mut world.view(active.dimension, chunks),
+            &mut navigator.path,
+        );
+        navigator.origin = active.origin;
+        navigator.path_changed();
+    }
+    let progress = match (status, navigator.path.end(), locate(bodies, active.entity)) {
+        (SearchStatus::Partial, Some(end), Some((me, _))) => end.horizontal_distance(me) > 1.0,
+        (status, _, _) => status == SearchStatus::Complete,
+    };
+    if !progress {
+        stats.unreachable += 1;
+        unreachable(settings, navigator);
+        return;
+    }
+    navigator.phase = Phase::Following;
+    if status != SearchStatus::Complete {
+        stats.partial += 1;
+        return;
+    }
+    stats.complete += 1;
+    let Some(key) = active.key else {
+        return;
+    };
+    if cache.len() >= PATH_CACHE_CAPACITY {
+        cache.clear();
+    }
+    let (min, max) = chunk_box(active.origin, &navigator.path);
+    match cache.get_mut(&key) {
+        Some(cached) => {
+            cached.path.copy_from(&navigator.path);
+            cached.stamp = active.stamp;
+            cached.min = min;
+            cached.max = max;
+        }
+        None => {
+            cache.insert(
+                key,
+                CachedPath {
+                    path: navigator.path.clone(),
+                    stamp: active.stamp,
+                    min,
+                    max,
+                },
+            );
+        }
+    }
 }
 
 fn unreachable(settings: &NavigationSettings, navigator: &mut Navigator) {

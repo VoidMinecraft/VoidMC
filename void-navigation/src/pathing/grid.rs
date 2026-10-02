@@ -116,6 +116,11 @@ impl CellCache {
 
     /// Patches one cell of a cached section; uncached sections are left to be
     /// filled fresh. Returns whether a cached section was touched.
+    pub fn cached(&self, pos: BlockPos) -> Option<Cell> {
+        let slot = *self.index.get(&SectionPos::of(pos))?;
+        Some(self.slots[slot as usize][cell_index(pos)])
+    }
+
     pub fn set_cell(&mut self, pos: BlockPos, cell: Cell) -> bool {
         match self.index.get(&SectionPos::of(pos)) {
             Some(&slot) => {

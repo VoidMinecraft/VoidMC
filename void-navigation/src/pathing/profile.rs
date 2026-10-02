@@ -151,7 +151,7 @@ impl NavigationProfile {
             step: sixteenths(self.step_height),
             rise: sixteenths(self.step_height.max(self.jump_height)),
             max_fall: self.max_fall as i32 * 16,
-            radius: if half_width <= 0.5 { 0 } else { 1 },
+            radius: (half_width - 0.5).max(0.0).ceil() as i32,
             half_width,
             water: self.water_cost,
             hazard: self.hazard_cost,
@@ -250,5 +250,20 @@ mod tests {
         let model = NavigationProfile::walker().size(1.4, 2.7).compile();
         assert_eq!(model.radius, 1);
         assert_eq!(model.head, 44);
+    }
+
+    #[test]
+    fn footprint_radius_grows_with_width() {
+        let radius = |width: f64| {
+            NavigationProfile::walker()
+                .size(width, 2.0)
+                .compile()
+                .radius
+        };
+        assert_eq!(radius(0.6), 0);
+        assert_eq!(radius(1.0), 0);
+        assert_eq!(radius(1.4), 1);
+        assert_eq!(radius(3.0), 1);
+        assert_eq!(radius(3.6), 2);
     }
 }

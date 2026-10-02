@@ -39,24 +39,24 @@ fn server() -> Server {
     let (kick_tx, kick_rx) = flume::unbounded::<u32>();
     let (connected_tx, connected_rx) = flume::unbounded::<ClientConnected>();
     let mut app = App::new();
-    app.add_plugins(NetworkPlugin::new(
-        incoming_rx,
-        outgoing_tx,
-        disconnect_rx,
-        kick_tx,
-        connected_rx,
-    ))
-    .add_plugins(DefaultPlugins)
-    .add_plugins(CommandPlugin)
-    .add_plugins(GameSystemsPlugin)
-    .insert_resource(RegistryDataStore::default())
-    .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
-    .insert_resource(WorldGen(Box::new(DefaultWorldGenerator::default())))
-    .init_resource::<ChunkIndex>()
-    .add_plugins((
-        NavigationPlugin::new(),
-        NavRemotePlugin::default().access(RemoteAccess::Everyone),
-    ));
+    app.add_plugins(NavRemotePlugin::default().access(RemoteAccess::Everyone))
+        .add_plugins(NetworkPlugin::new(
+            incoming_rx,
+            outgoing_tx,
+            disconnect_rx,
+            kick_tx,
+            connected_rx,
+        ))
+        .add_plugins(DefaultPlugins)
+        .add_plugins(CommandPlugin)
+        .add_plugins(GameSystemsPlugin)
+        .insert_resource(RegistryDataStore::default())
+        .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
+        .insert_resource(WorldGen(Box::new(DefaultWorldGenerator::default())))
+        .init_resource::<ChunkIndex>()
+        .add_plugins(NavigationPlugin::new());
+    app.finish();
+    app.cleanup();
     for x in -2..2 {
         for z in -2..2 {
             let mut sections: Vec<ChunkSection> = (0..4)
@@ -124,6 +124,15 @@ fn the_watcher_sees_the_path_marker_and_waypoints_and_nothing_lingers() {
         )
         .spawn_in(world)
         .id();
+    let nav = world.resource_scope(
+        |world, registry: bevy_ecs::prelude::Mut<voidmc::CommandRegistry>| {
+            registry.complete("/nav ", world)
+        },
+    );
+    assert!(
+        nav.is_some(),
+        "/nav is registered whatever the plugin order"
+    );
     assert!(select(world, operator, Some(mob)));
 
     let mut spawned = Vec::new();
@@ -180,4 +189,12 @@ fn the_watcher_sees_the_path_marker_and_waypoints_and_nothing_lingers() {
     )));
     server.app.update();
     assert!(received(&server).is_empty(), "an idle remote sends nothing");
+    assert!(
+        server
+            .app
+            .world()
+            .get::<voidmc_navigation::NavRemote>(operator)
+            .is_none(),
+        "a released remote leaves no component behind"
+    );
 }

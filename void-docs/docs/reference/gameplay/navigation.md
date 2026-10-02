@@ -139,7 +139,7 @@ active one, the nearest ready players, and a per-entity `random(salt)`.
 | Field | Walker default | Meaning |
 |---|---|---|
 | `mobility` | `Walk` | `Walk`, `Fly` or `Swim` (swimmers stay in water) |
-| `width`, `height` | `0.6`, `1.8` | Body size. A body wider than one block also checks the neighbouring columns. |
+| `width`, `height` | `0.6`, `1.8` | Body size. A body wider than one block also checks the columns it overlaps: one ring for up to 3 blocks wide, two rings up to 5. |
 | `step_height`, `jump_height` | `0.6`, `1.25` | Rises up to the step height are walked; higher ones are jumped and cost extra. |
 | `max_fall` | `3` | The longest drop allowed, in blocks. |
 | `water_cost`, `hazard_cost`, `lava_cost` | `Some(4.0)`, `None`, `None` | Cost multiplier for each terrain kind. `None` makes it impassable. |
@@ -187,24 +187,29 @@ sweet berry bushes, wither roses, powder snow, cobwebs).
 
 ## Performance
 
-Navigation is budgeted per tick. Once warm, it allocates only when the path
-cache grows.
+Navigation is budgeted per tick. Searches reuse their buffers, so once the
+terrain around the mobs is cached, planning allocates only when the path cache
+grows. The first visit to a new area allocates its cell sections.
 
 - **Cell cache.** Sections are converted to cells the first time a search
-  reads them: about 2 µs each, palette decoding included. A changed chunk
-  (`Changed<ChunkData>`) drops its cached sections. An unloaded chunk
-  (`ChunkData` removed) is evicted.
-- **One shared planner.** Every navigator queues its request in one FIFO,
-  served by a single resumable A*. `NavigationSettings::expansions_per_tick`
-  (default 2000, about 0.65 ms at most) caps the nodes all searches may expand in
-  one tick. A search that runs out of budget resumes the next tick. At most 64
-  requests are taken from the queue per tick, cache hits included. Searches
-  never allocate: the open set, the node arena and a dense 128×32×128 node
-  window are reused, with a hash map fallback outside the window.
+  reads them: about 2 µs each, palette decoding included. A block changed
+  through the engine (`BlockChangeEvent`) patches that one cell. Any other
+  change to `ChunkData` drops the chunk's cached sections. An unloaded chunk is
+  evicted.
+- **Shared planner.** Every navigator queues its request in one FIFO.
+  `NavigationSettings::expansions_per_tick` (default 2000, about 0.65 ms)
+  caps the nodes all searches may expand in one tick. Cache hits are served
+  first, at most 64 per tick. A search that is still running at the end of a
+  tick moves to one of two long lanes, which share a quarter of the budget and
+  resume where they stopped. The main lane is then free for everyone else the
+  next tick, so one huge search cannot hold up the queue. Searches reuse the
+  open set, the node arena and a dense 128×32×128 node window (a hash map
+  covers nodes outside it).
 - **Path cache.** Paths to fixed goals (`MoveTo`, patrol points) are cached by
-  start block, goal block and profile. An entry is valid until a cached chunk
-  changes. Patrols re-plan their legs almost for free.
-- **Following** costs about 12 ns per mob per tick.
+  start block, goal block and profile. An entry stays valid until a cached
+  cell changes in a chunk the path crosses, so digging elsewhere does not
+  affect it. Patrols re-plan their legs almost for free.
+- **Following** costs about 11 ns per mob per tick.
 
 `NavigationStats` (a resource) reports searches, complete, partial and
 unreachable counts, cache hits, nodes expanded, the planning time of the last
@@ -223,9 +228,10 @@ Measured on an Apple M-series laptop with `cargo bench -p voidmc-navigation`
 | 164-block maze (22,862 nodes, run uncapped) | 6.6 ms in total, spread over about 12 ticks by the budget |
 | Unreachable goal 41 blocks away (distance-scaled cap of 1312 nodes) | 376 µs |
 | Section fill (chunk palette to 4096 cells) | 1.8 µs |
-| 500 path followers, one tick | 5.0 µs |
+| 500 path followers, one tick | 5.4 µs |
 | 500 wandering mobs on generated terrain: whole tick, physics included | 322 µs (204 µs of it planning, about 5 searches per tick) |
 | 500 patrolling mobs: whole tick, physics included | 217 µs (79 µs of it planning, path-cache hits) |
+| The same 500 patrollers while a block changes every tick | 219 µs |
 | 1000 wandering mobs / 1000 patrolling mobs | 633 µs / 430 µs |
 | Physics alone for 1000 idle mobs, for comparison | 105 µs |
 

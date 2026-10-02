@@ -277,20 +277,22 @@ fn follow_benches(c: &mut Criterion) {
             SearchRequest::new(feet_on(&world, x, z), feet_on(&world, x + 20, z + 10)),
             &mut path,
         );
-        paths.push((feet_on(&world, x, z), path, PathFollower::default()));
+        let start = feet_on(&world, x, z);
+        paths.push((start, start, path, PathFollower::default()));
     }
     let mut group = c.benchmark_group("follow");
     group.throughput(Throughput::Elements(paths.len() as u64));
     group.bench_function("500_followers_one_tick", |b| {
         b.iter(|| {
             let mut moving = 0u32;
-            for (position, path, follower) in paths.iter_mut() {
+            for (start, position, path, follower) in paths.iter_mut() {
                 if let FollowStatus::Moving(steering) =
                     follower.tick(path, *position, true, 0.1, &model)
                 {
                     *position += steering.velocity;
                     moving += 1;
                 } else {
+                    *position = *start;
                     follower.reset();
                 }
             }

@@ -18,6 +18,7 @@ const THICKNESS: f32 = 0.07;
 const LIFT: f64 = 0.12;
 const MARKER_SIZE: f32 = 0.35;
 const WAYPOINT_REFRESH_TICKS: u64 = 5;
+const GLOW_REFRESH_TICKS: u64 = 20;
 const COMPLETE_BEAM: i32 = blocks::LIME_CONCRETE;
 const PARTIAL_BEAM: i32 = blocks::ORANGE_CONCRETE;
 const MARKER: i32 = blocks::GOLD_BLOCK;
@@ -31,6 +32,7 @@ pub(crate) struct Frame<'a> {
     pub network_id: i32,
     pub uuid: Uuid,
     pub flags: i8,
+    pub metadata_changed: bool,
     pub position: Vec3,
     pub origin: Vec3,
     pub path: &'a [Vec3],
@@ -52,6 +54,7 @@ pub(crate) struct Scene {
     cleared: usize,
     marker: Option<i32>,
     glow: Option<(i32, i8)>,
+    glow_sent: u64,
     mob_waypoint: Option<(Uuid, [i32; 3])>,
     goal_waypoint: Option<[i32; 3]>,
     goal_id: Uuid,
@@ -67,6 +70,7 @@ impl Default for Scene {
             cleared: 0,
             marker: None,
             glow: None,
+            glow_sent: 0,
             mob_waypoint: None,
             goal_waypoint: None,
             goal_id: Uuid::new_v4(),
@@ -76,6 +80,7 @@ impl Default for Scene {
 }
 
 impl Scene {
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.target.is_none()
             && self.segments.len() == self.cleared
@@ -93,12 +98,18 @@ impl Scene {
         if self.target != Some(frame.target) {
             self.clear(out);
             self.target = Some(frame.target);
+            self.revision = frame.revision.wrapping_sub(1);
+        }
+        let stale = self.glow != Some((frame.network_id, frame.flags))
+            || frame.metadata_changed
+            || frame.tick.saturating_sub(self.glow_sent) >= GLOW_REFRESH_TICKS;
+        if stale {
             self.glow = Some((frame.network_id, frame.flags));
+            self.glow_sent = frame.tick;
             out.push(glow_packet(
                 frame.network_id,
                 frame.flags | entity_flag::GLOWING as i8,
             ));
-            self.revision = frame.revision.wrapping_sub(1);
         }
         if self.revision != frame.revision {
             self.redraw(frame, out);
@@ -414,6 +425,7 @@ mod tests {
             network_id: 7,
             uuid: Uuid::from_u128(9),
             flags: 0,
+            metadata_changed: false,
             position: Vec3::new(0.5, 64.0, 0.5),
             origin: Vec3::new(0.5, 64.0, 0.5),
             path,
@@ -493,6 +505,55 @@ mod tests {
         assert!(out.is_empty(), "{out:?}");
         scene.sync(None, &mut out);
         assert_eq!(removed(&out), 2);
+    }
+
+    fn glows(out: &[ClientboundPacket]) -> Vec<i8> {
+        out.iter()
+            .filter_map(|packet| match packet {
+                ClientboundPacket::Play(
+                    voidmc_protocol::clientbound::PlayPacket::SetEntityData(data),
+                ) if data.entity_id == 7 => match data.entries.first()?.value {
+                    EntityMetadataValue::Byte(flags) => Some(flags),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn glow_follows_the_current_flags_and_is_refreshed() {
+        let glowing = entity_flag::GLOWING as i8;
+        let path = [Vec3::new(4.5, 64.0, 0.5)];
+        let mut scene = Scene::default();
+        let mut out = Vec::new();
+        scene.sync(Some(&frame(&path, 0, 1, 100)), &mut out);
+        assert_eq!(glows(&out), vec![glowing]);
+
+        out.clear();
+        let mut sneaking = frame(&path, 0, 1, 101);
+        sneaking.flags = 0x02;
+        scene.sync(Some(&sneaking), &mut out);
+        assert_eq!(glows(&out), vec![0x02 | glowing]);
+
+        out.clear();
+        sneaking.tick = 102;
+        sneaking.metadata_changed = true;
+        scene.sync(Some(&sneaking), &mut out);
+        assert_eq!(glows(&out), vec![0x02 | glowing]);
+
+        out.clear();
+        sneaking.metadata_changed = false;
+        sneaking.tick = 110;
+        scene.sync(Some(&sneaking), &mut out);
+        assert!(glows(&out).is_empty());
+        sneaking.tick = 122;
+        scene.sync(Some(&sneaking), &mut out);
+        assert_eq!(glows(&out), vec![0x02 | glowing]);
+
+        out.clear();
+        scene.sync(None, &mut out);
+        assert_eq!(glows(&out), vec![0x02]);
     }
 
     #[test]

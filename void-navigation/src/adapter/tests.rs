@@ -493,3 +493,125 @@ fn a_failed_follow_replan_keeps_the_current_path() {
     let navigator = app.world().get::<Navigator>(wolf).expect("navigator");
     assert!(!navigator.path().is_empty() || navigator.is_moving());
 }
+
+#[test]
+fn a_huge_unreachable_search_does_not_stall_other_navigators() {
+    let mut app = app(NavigationSettings {
+        expansions_per_tick: 400,
+        ..NavigationSettings::default()
+    });
+    for x in 30..=34 {
+        for z in -2..=2 {
+            for y in 1..=3 {
+                let shell = x == 30 || x == 34 || z == -2 || z == 2 || y == 3;
+                set_block(
+                    &mut app,
+                    x,
+                    y,
+                    z,
+                    if shell { blocks::STONE } else { blocks::AIR },
+                );
+            }
+        }
+    }
+    let profile = NavigationProfile::walker()
+        .size(0.6, 1.95)
+        .step_height(1.0)
+        .search_limit(200_000)
+        .nodes_per_block(0)
+        .allow_partial(false);
+    let mut hogs = Vec::new();
+    for z in [-10.5, 10.5] {
+        hogs.push(mob(
+            &mut app,
+            -20.5,
+            z,
+            Navigator::new(profile.clone()).with_goal(Goal::move_to([32.5, 1.0, 0.5])),
+        ));
+    }
+    app.update();
+    let others: Vec<Entity> = (0..6)
+        .map(|i| {
+            let z = -15.5 + i as f64 * 6.0;
+            mob(
+                &mut app,
+                0.5,
+                z,
+                walker().with_goal(Goal::move_to([8.5, 1.0, z])),
+            )
+        })
+        .collect();
+    run(&mut app, 10);
+    for &other in &others {
+        assert!(
+            app.world()
+                .get::<Navigator>(other)
+                .expect("navigator")
+                .is_moving(),
+            "a navigator waited behind the huge searches"
+        );
+    }
+    for &hog in &hogs {
+        assert!(outcomes(&app, hog).is_empty());
+    }
+    run(&mut app, 400);
+    for &other in &others {
+        assert_eq!(outcomes(&app, other), vec![NavigationOutcome::Reached]);
+    }
+    for &hog in &hogs {
+        assert_eq!(outcomes(&app, hog), vec![NavigationOutcome::Unreachable]);
+    }
+}
+
+fn change_block(app: &mut App, x: i32, y: i32, z: i32, state: i32) {
+    set_block(app, x, y, z, state);
+    app.world_mut().trigger(voidmc::events::BlockChangeEvent {
+        dimension: DimensionId::Overworld,
+        position: voidmc_protocol::types::BlockPosition { x, y: y as i16, z },
+        old_state: blocks::AIR,
+        new_state: state,
+        source: None,
+    });
+}
+
+#[test]
+fn a_block_change_patches_one_cell_and_keeps_distant_paths_cached() {
+    let mut app = app(NavigationSettings::default());
+    let goal = [10.5, 1.0, 0.5];
+    let send = |app: &mut App| {
+        let mob = mob(app, 0.5, 0.5, walker().with_goal(Goal::move_to(goal)));
+        run(app, 2);
+        app.world_mut().entity_mut(mob).despawn();
+        *app.world().resource::<NavigationStats>()
+    };
+    let before = send(&mut app);
+    let sections = app.world().resource::<NavigationWorld>().cached_sections();
+
+    change_block(&mut app, 40, 1, 40, blocks::STONE);
+    run(&mut app, 1);
+    let after_far = send(&mut app);
+    assert_eq!(after_far.cache_hits, before.cache_hits + 1);
+    assert_eq!(after_far.searches, before.searches);
+    assert_eq!(
+        app.world().resource::<NavigationWorld>().cached_sections(),
+        sections
+    );
+
+    for y in 1..=3 {
+        for z in -3..=3 {
+            change_block(&mut app, 5, y, z, blocks::STONE);
+        }
+    }
+    run(&mut app, 1);
+    let world = app.world().resource::<NavigationWorld>();
+    assert_eq!(world.cached_sections(), sections);
+    assert_eq!(
+        world
+            .cache(DimensionId::Overworld)
+            .and_then(|cache| cache.cached(crate::pathing::BlockPos::new(5, 2, 0))),
+        Some(world.table().get(blocks::STONE))
+    );
+    let after_near = send(&mut app);
+    assert_eq!(after_near.searches, after_far.searches + 1);
+    assert_eq!(after_near.cache_hits, after_far.cache_hits);
+}

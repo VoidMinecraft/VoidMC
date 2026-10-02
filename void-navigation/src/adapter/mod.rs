@@ -73,6 +73,7 @@ impl Plugin for NavigationPlugin {
             .init_resource::<NavigationStats>()
             .init_resource::<behaviour::PlayerSnapshot>()
             .add_observer(world::evict_unloaded_chunk)
+            .add_observer(world::patch_changed_block)
             .add_observer(systems::release_velocity)
             .add_observer(behaviour::stagger_behaviours)
             .configure_sets(

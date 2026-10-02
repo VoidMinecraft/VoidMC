@@ -5,15 +5,18 @@ use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemState;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use voidmc::events::BlockChangeEvent;
 use voidmc::systems::physics::apply_spawned_entity_physics;
 use voidmc::world::generation::{generate_chunk, surface_height_at};
 use voidmc::world::{ChunkData, ChunkDimension, ChunkIndex, ChunkPos, ChunkPosition, DimensionId};
 use voidmc::{EntityBuilder, EntityKind};
+use voidmc_data::v26_1_2::blocks;
 use voidmc_navigation::pathing::{BlockPos, NavWorld};
 use voidmc_navigation::{
     Behaviour, Behaviours, ChunkCells, Goal, NavigationPlugin, NavigationProfile, NavigationStats,
     NavigationSystems, NavigationWorld, Navigator,
 };
+use voidmc_protocol::types::BlockPosition;
 
 const RADIUS_CHUNKS: i32 = 6;
 const WARMUP_TICKS: usize = 100;
@@ -138,7 +141,47 @@ fn tick_benches(c: &mut Criterion) {
             b.iter(|| app.update())
         });
     }
+    let mut app = world(true);
+    populate(&mut app, 500, Load::Patrol, true);
+    let initial = *app.world().resource::<NavigationStats>();
+    let mut toggle = false;
+    group.throughput(Throughput::Elements(500));
+    group.bench_function(BenchmarkId::new("patrol_while_digging", 500), |b| {
+        b.iter(|| {
+            toggle = !toggle;
+            dig(&mut app, toggle);
+            app.update();
+            black_box(app.world().resource::<NavigationStats>().moving)
+        })
+    });
+    let stats = *app.world().resource::<NavigationStats>();
+    eprintln!(
+        "patrol_while_digging/500: {} searches, {} cache hits",
+        stats.searches - initial.searches,
+        stats.cache_hits - initial.cache_hits,
+    );
     group.finish();
+}
+
+fn dig(app: &mut App, solid: bool) {
+    let (x, z) = (RADIUS_CHUNKS * 16 - 4, RADIUS_CHUNKS * 16 - 4);
+    let y = surface_height_at(x, z);
+    let state = if solid { blocks::STONE } else { blocks::AIR };
+    let pos = ChunkPos::new(x >> 4, z >> 4);
+    let entity = app.world().resource::<ChunkIndex>().0[&(DimensionId::Overworld, pos)];
+    let old = app
+        .world_mut()
+        .get_mut::<ChunkData>(entity)
+        .expect("chunk")
+        .set_block((x & 15) as u8, y, (z & 15) as u8, state)
+        .unwrap_or(0);
+    app.world_mut().trigger(BlockChangeEvent {
+        dimension: DimensionId::Overworld,
+        position: BlockPosition { x, y: y as i16, z },
+        old_state: old,
+        new_state: state,
+        source: None,
+    });
 }
 
 fn fill_benches(c: &mut Criterion) {

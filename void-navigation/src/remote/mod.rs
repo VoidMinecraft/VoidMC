@@ -83,15 +83,17 @@ pub fn select(world: &mut World, operator: Entity, target: Option<Entity>) -> bo
     let Ok(mut player) = world.get_entity_mut(operator) else {
         return false;
     };
-    match player.get_mut::<NavRemote>() {
-        Some(mut remote) => remote.selected = target,
-        None if target.is_some() => {
+    match (player.get_mut::<NavRemote>(), target) {
+        (_, None) => {
+            player.remove::<NavRemote>();
+        }
+        (Some(mut remote), Some(_)) => remote.selected = target,
+        (None, Some(_)) => {
             player.insert(NavRemote {
                 selected: target,
                 ..NavRemote::default()
             });
         }
-        None => {}
     }
     true
 }
@@ -146,14 +148,19 @@ impl Plugin for NavRemotePlugin {
                 .after(NavigationSystems)
                 .run_if(any_with_component::<NavRemote>),
         );
-        let world = app.world_mut();
-        world
+    }
+
+    fn finish(&self, app: &mut App) {
+        let wand = app.world().resource::<RemoteSettings>().wand;
+        app.world_mut()
             .get_resource_or_insert_with(ItemBehaviorRegistry::default)
             .register(wand, control::RemoteWand);
-        if self.command
-            && let Some(mut registry) = world.get_resource_mut::<CommandRegistry>()
-        {
-            registry.register(nav_command());
+        if !self.command {
+            return;
+        }
+        match app.world_mut().get_resource_mut::<CommandRegistry>() {
+            Some(mut registry) => registry.register(nav_command()),
+            None => tracing::warn!("no CommandRegistry: the /nav command is not registered"),
         }
     }
 }
@@ -166,7 +173,7 @@ type Watched<'w, 's> = Query<
         &'static Position,
         &'static MinecraftEntityId,
         &'static EntityUuid,
-        Option<&'static EntityMetadata>,
+        Option<Ref<'static, EntityMetadata>>,
         Option<&'static EntityDimension>,
     ),
 >;
@@ -177,10 +184,11 @@ fn frame_of<'a>(
     tick: u64,
 ) -> Option<(Frame<'a>, DimensionId)> {
     let (navigator, position, network_id, uuid, metadata, dimension) = watched.get(target).ok()?;
-    let flags = match metadata.and_then(|m| m.get(entity_index::FLAGS)) {
+    let flags = match metadata.as_ref().and_then(|m| m.get(entity_index::FLAGS)) {
         Some(EntityMetadataValue::Byte(flags)) => *flags,
         _ => 0,
     };
+    let metadata_changed = metadata.is_some_and(|m| m.is_changed());
     let path = navigator.path();
     let dimension = dimension.map_or(DimensionId::Overworld, |d| d.0);
     let frame = Frame {
@@ -188,6 +196,7 @@ fn frame_of<'a>(
         network_id: network_id.0,
         uuid: uuid.0,
         flags,
+        metadata_changed,
         position: Vec3::new(position.x, position.y, position.z),
         origin: navigator.path_origin(),
         path: path.points(),
@@ -204,6 +213,7 @@ fn render_scenes(
     players: Players,
     watched: Watched,
     mut remotes: Query<(Entity, &mut NavRemote, Option<&PlayerDimension>)>,
+    mut commands: Commands,
     mut packets: Local<Vec<ClientboundPacket>>,
     mut tick: Local<u64>,
 ) {
@@ -211,17 +221,14 @@ fn render_scenes(
     for (watcher, mut remote, watcher_dimension) in &mut remotes {
         let remote = remote.bypass_change_detection();
         remote.used_this_tick = false;
-        if remote.selected.is_none() && remote.scene.is_empty() {
-            continue;
-        }
         let watcher_dimension = watcher_dimension.map_or(DimensionId::Overworld, |d| d.0);
         let found = remote
             .selected
             .and_then(|target| frame_of(&watched, target, *tick));
         match &found {
             None => {
-                remote.selected = None;
-                remote.scene.clear(&mut packets);
+                commands.entity(watcher).try_remove::<NavRemote>();
+                continue;
             }
             Some((_, dimension)) if *dimension != watcher_dimension => {
                 remote.scene.clear(&mut packets)
