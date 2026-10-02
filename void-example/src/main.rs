@@ -11,6 +11,7 @@ use voidmc::{
     Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
     ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
+use voidmc_navigation::{NavRemotePlugin, NavigationPlugin, RemoteAccess};
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
 mod biome;
@@ -20,6 +21,7 @@ mod effects;
 mod entities;
 mod environment;
 mod menu;
+mod navigation;
 mod particle;
 mod scoreboard;
 mod sidebar;
@@ -133,6 +135,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sidebar::altitude_system,
                 ),
             );
+        })
+        .add_plugin(|app| {
+            app.add_plugins((
+                NavigationPlugin::new(),
+                NavRemotePlugin::default().access(RemoteAccess::Everyone),
+            ));
+            app.init_resource::<navigation::DemoSpawned>();
+            app.add_observer(navigation::spawn_on_first_join);
+            app.world_mut()
+                .resource_mut::<CommandRegistry>()
+                .register(navigation::navdemo_command());
         })
         .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",
@@ -271,6 +284,7 @@ fn give_starter_kit(event: On<PlayerReadyEvent>, mut inventories: Query<&mut Inv
         "minecraft:glass",
         "minecraft:glowstone",
         "minecraft:stick",
+        "minecraft:blaze_rod",
     ] {
         if let Some(stack) = ItemStack::of(name, 64) {
             inventory.give(stack);

@@ -170,6 +170,7 @@ const SPECS: &[EnumSpec] = &[
             ("RemoveMobEffect", "minecraft:remove_mob_effect"),
             ("UpdateAttributes", "minecraft:update_attributes"),
             ("UpdateMobEffect", "minecraft:update_mob_effect"),
+            ("TrackedWaypoint", "minecraft:waypoint"),
         ],
     },
     EnumSpec {
