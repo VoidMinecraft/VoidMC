@@ -16,6 +16,7 @@ engine = ["dep:voidmc", "dep:voidmc-protocol", "dep:bevy_ecs", "dep:bevy_app", "
 [dependencies]
 voidmc-data = { version = "0.1.2", path = "../void-data" }
 ussr-nbt = "0.2.1"
+simd_cesu8 = "1.0.1"
 flate2 = "1"
 tracing = "0.1.44"
 voidmc = { version = "0.2.0", path = "../void", optional = true }

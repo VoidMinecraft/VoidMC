@@ -50,7 +50,8 @@ pub struct WorldEditConfig {
     pub history_size: usize,
     pub history_bytes: usize,
     pub schematic_dir: PathBuf,
-    /// Memory one schematic load may use, decompressed file and NBT tree each.
+    /// Memory one schematic load may allocate in total; also the largest file,
+    /// compressed or decompressed, it reads.
     pub schematic_memory: u64,
     pub show_selection: bool,
     pub brush_preview: bool,

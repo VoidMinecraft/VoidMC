@@ -53,7 +53,7 @@ WorldEditPlugin::default()
 | `max_volume` | 33,554,432 | Largest region (bounding box) one command may touch. |
 | `history` | 25 entries, 128 MiB | Per-player undo history limits. An edit whose undo data alone exceeds the memory limit is not recorded, and the player is told it cannot be undone. |
 | `schematic_dir` | `schematics` | Where `/schem` reads and writes `.schem` files. |
-| `schematic_memory` | 256 MiB | Memory one `/schem load` may use, for the decompressed file and for the NBT tree; larger files are refused before parsing. |
+| `schematic_memory` | 256 MiB | Memory one `/schem load` may allocate in total, and the largest file (compressed or decompressed) it reads. |
 | `show_selection` | `true` | Draw the selection outline. |
 | `brush_preview` | `true` | Show where the held brush would land. |
 
@@ -164,9 +164,15 @@ Saving, loading, `//rotate` and `//flip` run on a background thread, so a
 large clipboard never stalls the tick; the result is applied on a later tick.
 Until then your other edits are refused with "Your previous edit is still
 running", and at most four such tasks run at once across the server. A load
-works out how much memory the file's NBT would need before parsing it and
-refuses anything over `schematic_memory`. Saves go to a temporary file that
-is renamed into place, so a reader never sees a half-written schematic.
+streams the file instead of building its whole NBT tree: fields the clipboard
+does not use (biomes, entities, block entities, anything unknown) are skipped
+without being stored, and the block data is decoded straight into the
+clipboard. Everything the load allocates (decompression state, the decoded
+blocks, the palette) counts against one `schematic_memory` budget, the file
+may not decompress to more than that, and data after the root compound is
+rejected; a crafted file is refused within about a second whatever its shape.
+Saves go to a temporary file that is renamed into place, so a reader never
+sees a half-written schematic.
 
 ```rust
 use voidmc_worldedit::Schematic;

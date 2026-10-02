@@ -1,5 +1,5 @@
 use std::fmt;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -68,37 +68,34 @@ impl Schematic {
         Self::read_with_limits(reader, max_volume, DEFAULT_MAX_MEMORY)
     }
 
-    /// `max_memory` bounds both the decompressed file and the NBT tree built
-    /// from it; a file that would need more is rejected before parsing.
+    /// `max_memory` bounds everything one load allocates together:
+    /// decompression state, the decoded blocks, the palette and the names of
+    /// unknown blocks. It also caps the file and its decompressed size. Fields
+    /// the clipboard does not use are skipped without being stored, and a
+    /// file with data after its root compound is rejected.
     pub fn read_with_limits(
         reader: impl Read,
         max_volume: u64,
         max_memory: u64,
     ) -> Result<Self, SchematicError> {
-        let mut bytes = Vec::new();
-        BufReader::new(reader)
-            .take(max_memory.saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        if bytes.starts_with(&[0x1f, 0x8b]) {
-            let mut inflated = Vec::new();
-            GzDecoder::new(bytes.as_slice())
-                .take(max_memory.saturating_add(1))
-                .read_to_end(&mut inflated)?;
-            bytes = inflated;
-        }
-        if bytes.len() as u64 > max_memory {
-            return Err(SchematicError::Nbt(
-                "the file is larger than the memory limit".to_string(),
-            ));
-        }
-        check_nbt(&bytes, max_memory)?;
-        let nbt =
-            Nbt::read(&mut bytes.as_slice()).map_err(|e| SchematicError::Nbt(format!("{e:?}")))?;
-        let root = match get(&nbt.compound, "Schematic") {
-            Some(Tag::Compound(inner)) => inner,
-            _ => &nbt.compound,
+        let mut memory = MemoryBudget {
+            used: 0,
+            limit: max_memory,
         };
-        decode(root, max_volume)
+        let mut reader = Capped {
+            inner: reader,
+            remaining: max_memory,
+        };
+        let mut magic = [0u8; 2];
+        let len = read_up_to(&mut reader, &mut magic)?;
+        let gzip = magic[..len] == [0x1f, 0x8b];
+        let reader = (&magic[..len]).chain(reader);
+        if gzip {
+            memory.charge(GZIP_WORKING_SET)?;
+            parse(GzDecoder::new(reader), max_volume, max_memory, memory)
+        } else {
+            parse(reader, max_volume, max_memory, memory)
+        }
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self, SchematicError> {
@@ -219,16 +216,60 @@ impl Schematic {
     }
 }
 
-fn decode(root: &Compound, max_volume: u64) -> Result<Schematic, SchematicError> {
-    let version = int(root, "Version").unwrap_or(1);
-    let dimension = |key: &'static str| match get(root, key) {
-        Some(Tag::Short(value)) => Ok(i32::from(*value as u16)),
-        _ => Err(SchematicError::Missing(key)),
+const INPUT_BUFFER: usize = 64 * 1024;
+const GZIP_WORKING_SET: usize = 384 * 1024;
+const MAX_NBT_DEPTH: u16 = 512;
+
+fn parse<R: Read>(
+    reader: R,
+    max_volume: u64,
+    max_memory: u64,
+    mut memory: MemoryBudget,
+) -> Result<Schematic, SchematicError> {
+    memory.charge(INPUT_BUFFER)?;
+    let mut parser = Parser {
+        input: Input {
+            reader,
+            buffer: vec![0; INPUT_BUFFER],
+            start: 0,
+            end: 0,
+            remaining: max_memory,
+        },
+        memory,
+        max_volume,
+        name: Vec::new(),
     };
+    if parser.input.byte()? != 10 {
+        return Err(SchematicError::Nbt("root is not a compound".to_string()));
+    }
+    let name_len = parser.input.u16()?;
+    parser.input.skip(u64::from(name_len))?;
+    let root = parser.fields(0, true)?;
+    if !parser.input.at_end()? {
+        return Err(SchematicError::Nbt(
+            "data after the root compound".to_string(),
+        ));
+    }
+    let fields = match root.inner {
+        Field::Value(inner) => *inner,
+        _ => root,
+    };
+    decode(fields, max_volume, &mut parser.memory)
+}
+
+fn decode(
+    fields: Fields,
+    max_volume: u64,
+    memory: &mut MemoryBudget,
+) -> Result<Schematic, SchematicError> {
+    let version = fields.version.value().unwrap_or(1);
+    let [width, height, length] = fields.size;
+    let dimension =
+        |field: Field<i32>, key: &'static str| field.value().ok_or(SchematicError::Missing(key));
     let size = BlockPos::new(
-        dimension("Width")?,
-        dimension("Height")?,
-        dimension("Length")?,
+        dimension(width, "Width")?,
+        dimension(height, "Height")?,
+        dimension(length, "Length")?,
     );
     let volume = size.x as u64 * size.y as u64 * size.z as u64;
     if volume > max_volume {
@@ -241,258 +282,710 @@ fn decode(root: &Compound, max_volume: u64) -> Result<Schematic, SchematicError>
         return Err(SchematicError::Invalid("empty dimensions"));
     }
 
-    let (palette_tag, data) = if version >= 3 {
-        let Some(Tag::Compound(blocks)) = get(root, "Blocks") else {
+    let (palette, entries) = if version >= 3 {
+        let Some(blocks) = fields.blocks.value() else {
             return Err(SchematicError::Missing("Blocks"));
         };
-        (get(blocks, "Palette"), get(blocks, "Data"))
+        (blocks.palette, blocks.data)
     } else {
-        (get(root, "Palette"), get(root, "BlockData"))
+        (fields.palette, fields.block_data)
     };
-    let Some(Tag::Compound(palette_tag)) = palette_tag else {
+    let Some(palette) = palette.value() else {
         return Err(SchematicError::Missing("Palette"));
     };
-    let Some(Tag::ByteArray(data)) = data else {
+    let Some(mut entries) = entries.value() else {
         return Err(SchematicError::Missing("Data"));
     };
-
-    let mut unknown_blocks = Vec::new();
-    let mut by_entry: Vec<Option<BlockState>> = Vec::new();
-    for (key, value) in &palette_tag.tags {
-        let Tag::Int(entry) = value else {
-            return Err(SchematicError::Invalid("palette entry"));
-        };
-        let entry =
-            usize::try_from(*entry).map_err(|_| SchematicError::Invalid("palette index"))?;
-        if entry >= usize::from(u16::MAX) {
-            return Err(SchematicError::Invalid("palette index"));
-        }
-        let key = key
-            .decode()
-            .map_err(|_| SchematicError::Invalid("palette name"))?;
-        let state = BlockState::parse_lenient(&key).unwrap_or_else(|| {
-            unknown_blocks.push(key.to_string());
-            BlockState::AIR
-        });
-        if by_entry.len() <= entry {
-            by_entry.resize(entry + 1, None);
-        }
-        by_entry[entry] = Some(state);
+    if let Some(error) = palette.error {
+        return Err(SchematicError::Invalid(error));
     }
 
-    let mut entries = Vec::with_capacity(volume as usize);
-    let mut cursor = data.as_slice();
-    for _ in 0..volume {
-        let entry = read_varint(&mut cursor).ok_or(SchematicError::Invalid("block data"))? as usize;
-        if by_entry.get(entry).copied().flatten().is_none() {
+    let volume = volume as usize;
+    for entry in entries.iter().take(volume) {
+        if palette
+            .by_entry
+            .get(usize::from(*entry))
+            .copied()
+            .flatten()
+            .is_none()
+        {
             return Err(SchematicError::Invalid("block data palette index"));
         }
-        entries.push(entry as u16);
     }
-    let palette = by_entry
-        .into_iter()
+    if entries.len() < volume {
+        return Err(SchematicError::Invalid("block data"));
+    }
+    entries.truncate(volume);
+    if entries.capacity() > volume {
+        let before = entries.capacity() * size_of::<u16>();
+        memory.charge(volume * size_of::<u16>())?;
+        entries.shrink_to_fit();
+        memory.release(before);
+    }
+    memory.charge(palette.by_entry.len() * size_of::<BlockState>())?;
+    let states = palette
+        .by_entry
+        .iter()
         .map(|state| state.unwrap_or(BlockState::AIR))
         .collect();
-    let clipboard = Clipboard::from_parts(size, schematic_offset(root, version), palette, entries);
-    unknown_blocks.sort();
+    let offset = if version >= 3 {
+        fields.offset.value().unwrap_or(BlockPos::ZERO)
+    } else {
+        match fields.metadata.value() {
+            Some([x, y, z]) => BlockPos::new(
+                x.value().unwrap_or(0),
+                y.value().unwrap_or(0),
+                z.value().unwrap_or(0),
+            )
+            .clamped(),
+            None => BlockPos::ZERO,
+        }
+    };
+    let mut unknown_blocks = palette.unknown;
+    unknown_blocks.sort_unstable();
     unknown_blocks.dedup();
     Ok(Schematic {
-        clipboard,
-        data_version: int(root, "DataVersion").unwrap_or(0),
+        clipboard: Clipboard::from_parts(size, offset, states, entries),
+        data_version: fields.data_version.value().unwrap_or(0),
         unknown_blocks,
     })
 }
 
-/// The offset from the paste origin to the minimum corner. v3 stores it in
-/// `Offset`; v1/v2 store the world minimum there and WorldEdit adds the
-/// relative offset as `Metadata.WEOffset{X,Y,Z}`.
-fn schematic_offset(root: &Compound, version: i32) -> BlockPos {
-    if version >= 3 {
-        return match get(root, "Offset") {
-            Some(Tag::IntArray(values)) => {
-                let values = values.to_vec();
-                match values.as_slice() {
-                    [x, y, z] => BlockPos::new(*x, *y, *z).clamped(),
-                    _ => BlockPos::ZERO,
-                }
-            }
-            _ => BlockPos::ZERO,
-        };
+/// The first occurrence of a key wins; `Other` is a first occurrence of the
+/// wrong type, which hides any later one.
+#[derive(Default)]
+enum Field<T> {
+    #[default]
+    Absent,
+    Other,
+    Value(T),
+}
+
+impl<T> Field<T> {
+    fn is_absent(&self) -> bool {
+        matches!(self, Field::Absent)
     }
-    match get(root, "Metadata") {
-        Some(Tag::Compound(metadata)) => BlockPos::new(
-            int(metadata, "WEOffsetX").unwrap_or(0),
-            int(metadata, "WEOffsetY").unwrap_or(0),
-            int(metadata, "WEOffsetZ").unwrap_or(0),
-        )
-        .clamped(),
-        _ => BlockPos::ZERO,
+
+    fn value(self) -> Option<T> {
+        match self {
+            Field::Value(value) => Some(value),
+            _ => None,
+        }
     }
 }
 
-const MAX_NBT_DEPTH: u16 = 512;
+#[derive(Default)]
+struct Fields {
+    version: Field<i32>,
+    data_version: Field<i32>,
+    size: [Field<i32>; 3],
+    offset: Field<BlockPos>,
+    metadata: Field<[Field<i32>; 3]>,
+    blocks: Field<Blocks>,
+    palette: Field<Palette>,
+    block_data: Field<Vec<u16>>,
+    inner: Field<Box<Fields>>,
+}
 
-/// The NBT reader allocates whatever length a list or array claims before
-/// reading it, sized by the in-memory element type. Every length is checked
-/// against the bytes left, and the memory the whole tree would take is
-/// summed against `max_memory`.
-fn check_nbt(bytes: &[u8], max_memory: u64) -> Result<(), SchematicError> {
-    let mut check = NbtCheck {
-        input: bytes,
-        memory: 0,
-        max_memory,
+#[derive(Default)]
+struct Blocks {
+    palette: Field<Palette>,
+    data: Field<Vec<u16>>,
+}
+
+#[derive(Default)]
+struct Palette {
+    by_entry: Vec<Option<BlockState>>,
+    unknown: Vec<String>,
+    error: Option<&'static str>,
+}
+
+impl Fields {
+    fn version(&self) -> Option<i32> {
+        match &self.version {
+            Field::Absent => None,
+            Field::Other => Some(1),
+            Field::Value(version) => Some(*version),
+        }
+    }
+
+    fn volume(&self) -> Option<u64> {
+        self.size.iter().try_fold(1u64, |volume, side| match side {
+            Field::Value(side) => Some(volume * *side as u64),
+            _ => None,
+        })
+    }
+}
+
+/// Live bytes a load holds, each allocation rounded up the way malloc does
+/// and growth counted with the old and new buffers both alive.
+struct MemoryBudget {
+    used: u64,
+    limit: u64,
+}
+
+fn allocation_cost(bytes: usize) -> u64 {
+    if bytes == 0 {
+        return 0;
+    }
+    let quantum = match bytes {
+        0..=1024 => 16,
+        1025..=131_072 => 512,
+        _ => 16 * 1024,
     };
-    if check.take(1)? != [10] {
-        return Err(SchematicError::Nbt("root is not a compound".to_string()));
+    (bytes as u64).saturating_add(16).next_multiple_of(quantum)
+}
+
+impl MemoryBudget {
+    fn exceeded(&self) -> SchematicError {
+        SchematicError::Nbt(format!(
+            "the schematic needs more than {} bytes of memory",
+            self.limit
+        ))
     }
-    let name_len = check.u16()?;
-    check.take(usize::from(name_len))?;
-    check.payload(10, 0)
+
+    fn charge(&mut self, bytes: usize) -> Result<(), SchematicError> {
+        let used = self.used.saturating_add(allocation_cost(bytes));
+        if used > self.limit {
+            return Err(self.exceeded());
+        }
+        self.used = used;
+        Ok(())
+    }
+
+    fn release(&mut self, bytes: usize) {
+        self.used = self.used.saturating_sub(allocation_cost(bytes));
+    }
+
+    fn reserve<T>(
+        &mut self,
+        vec: &mut Vec<T>,
+        len: usize,
+        max: usize,
+    ) -> Result<(), SchematicError> {
+        let old = vec.capacity();
+        if len <= old {
+            return Ok(());
+        }
+        let capacity = len.max(old.saturating_mul(2)).max(4).min(max.max(len));
+        self.charge(capacity.saturating_mul(size_of::<T>()))?;
+        vec.try_reserve_exact(capacity - vec.len())
+            .map_err(|_| self.exceeded())?;
+        self.release(old * size_of::<T>());
+        Ok(())
+    }
 }
 
-struct NbtCheck<'a> {
-    input: &'a [u8],
-    memory: u64,
-    max_memory: u64,
+struct Capped<R> {
+    inner: R,
+    remaining: u64,
 }
 
-fn oversized() -> SchematicError {
+impl<R: Read> Read for Capped<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        if self.remaining == 0 {
+            return match self.inner.read(&mut [0])? {
+                0 => Ok(0),
+                _ => Err(io::ErrorKind::FileTooLarge.into()),
+            };
+        }
+        let len = buf
+            .len()
+            .min(self.remaining.min(usize::MAX as u64) as usize);
+        let read = self.inner.read(&mut buf[..len])?;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
+}
+
+fn read_up_to(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(filled)
+}
+
+fn file_too_large() -> SchematicError {
+    SchematicError::Nbt("the file is larger than the memory limit".to_string())
+}
+
+fn truncated() -> SchematicError {
     SchematicError::Nbt("truncated or oversized length".to_string())
 }
 
-fn encoded_size(id: u8) -> Option<usize> {
+struct Input<R> {
+    reader: R,
+    buffer: Vec<u8>,
+    start: usize,
+    end: usize,
+    remaining: u64,
+}
+
+impl<R: Read> Input<R> {
+    fn fill(&mut self) -> Result<&[u8], SchematicError> {
+        if self.start == self.end {
+            let read = loop {
+                match self.reader.read(&mut self.buffer) {
+                    Ok(read) => break read,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                        return Err(file_too_large());
+                    }
+                    Err(error) => return Err(SchematicError::Io(error)),
+                }
+            };
+            if read as u64 > self.remaining {
+                return Err(file_too_large());
+            }
+            self.remaining -= read as u64;
+            self.start = 0;
+            self.end = read;
+        }
+        Ok(&self.buffer[self.start..self.end])
+    }
+
+    fn available(&mut self) -> Result<&[u8], SchematicError> {
+        let chunk = self.fill()?;
+        if chunk.is_empty() {
+            return Err(truncated());
+        }
+        Ok(chunk)
+    }
+
+    fn at_end(&mut self) -> Result<bool, SchematicError> {
+        Ok(self.fill()?.is_empty())
+    }
+
+    #[inline]
+    fn byte(&mut self) -> Result<u8, SchematicError> {
+        if let Some(&byte) = self.buffer[..self.end].get(self.start) {
+            self.start += 1;
+            return Ok(byte);
+        }
+        let byte = self.available()?[0];
+        self.start += 1;
+        Ok(byte)
+    }
+
+    #[inline]
+    fn read_into(&mut self, out: &mut [u8]) -> Result<(), SchematicError> {
+        if let Some(bytes) = self.buffer[..self.end].get(self.start..self.start + out.len()) {
+            out.copy_from_slice(bytes);
+            self.start += out.len();
+            return Ok(());
+        }
+        let mut filled = 0;
+        while filled < out.len() {
+            let chunk = self.available()?;
+            let len = chunk.len().min(out.len() - filled);
+            out[filled..filled + len].copy_from_slice(&chunk[..len]);
+            self.start += len;
+            filled += len;
+        }
+        Ok(())
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], SchematicError> {
+        let mut out = [0; N];
+        self.read_into(&mut out)?;
+        Ok(out)
+    }
+
+    fn u16(&mut self) -> Result<u16, SchematicError> {
+        Ok(u16::from_be_bytes(self.array()?))
+    }
+
+    fn i32(&mut self) -> Result<i32, SchematicError> {
+        Ok(i32::from_be_bytes(self.array()?))
+    }
+
+    #[inline]
+    fn skip(&mut self, mut len: u64) -> Result<(), SchematicError> {
+        if len <= (self.end - self.start) as u64 {
+            self.start += len as usize;
+            return Ok(());
+        }
+        while len > 0 {
+            let step = (self.available()?.len() as u64).min(len);
+            self.start += step as usize;
+            len -= step;
+        }
+        Ok(())
+    }
+}
+
+fn fixed_size(id: u8) -> Option<u64> {
     Some(match id {
-        1 | 10 => 1,
-        2 | 8 => 2,
-        3 | 5 | 7 | 11 => 4,
-        4 | 6 | 12 => 8,
-        9 => 5,
+        1 => 1,
+        2 => 2,
+        3 | 5 => 4,
+        4 | 6 => 8,
         _ => return None,
     })
 }
 
-fn memory_size(id: u8) -> usize {
-    use std::mem::size_of;
-    match id {
-        7 => size_of::<Vec<u8>>(),
-        8 => size_of::<MString>(),
-        9 => size_of::<ussr_nbt::owned::List>(),
-        10 => size_of::<Compound>(),
-        11 => size_of::<RawVec<i32>>(),
-        12 => size_of::<RawVec<i64>>(),
-        id => encoded_size(id).unwrap_or(0),
+enum Key {
+    Version,
+    DataVersion,
+    Size(usize),
+    Offset,
+    Metadata,
+    Blocks,
+    Palette,
+    BlockData,
+    Schematic,
+    Other,
+}
+
+fn key(name: &[u8]) -> Key {
+    match name {
+        b"Version" => Key::Version,
+        b"DataVersion" => Key::DataVersion,
+        b"Width" => Key::Size(0),
+        b"Height" => Key::Size(1),
+        b"Length" => Key::Size(2),
+        b"Offset" => Key::Offset,
+        b"Metadata" => Key::Metadata,
+        b"Blocks" => Key::Blocks,
+        b"Palette" => Key::Palette,
+        b"BlockData" => Key::BlockData,
+        b"Schematic" => Key::Schematic,
+        _ => Key::Other,
     }
 }
 
-impl<'a> NbtCheck<'a> {
-    fn take(&mut self, len: usize) -> Result<&'a [u8], SchematicError> {
-        if self.input.len() < len {
-            return Err(oversized());
-        }
-        let (head, rest) = self.input.split_at(len);
-        self.input = rest;
-        Ok(head)
-    }
+/// Reads NBT straight from the (decompressed) stream. Nothing is allocated
+/// from a length the file claims: skipped values are consumed in place, and
+/// the block data is decoded into one `u16` per block as it streams by.
+struct Parser<R> {
+    input: Input<R>,
+    memory: MemoryBudget,
+    max_volume: u64,
+    name: Vec<u8>,
+}
 
-    fn u16(&mut self) -> Result<u16, SchematicError> {
-        Ok(u16::from_be_bytes(self.take(2)?.try_into().unwrap()))
-    }
-
-    fn i32(&mut self) -> Result<i32, SchematicError> {
-        Ok(i32::from_be_bytes(self.take(4)?.try_into().unwrap()))
-    }
-
-    fn reserve(&mut self, len: usize, encoded: usize, memory: usize) -> Result<(), SchematicError> {
-        if len.saturating_mul(encoded) > self.input.len() {
-            return Err(oversized());
-        }
-        self.memory = self
-            .memory
-            .saturating_add((len as u64).saturating_mul(memory as u64));
-        if self.memory > self.max_memory {
-            return Err(SchematicError::Nbt(format!(
-                "the schematic needs more than {} bytes of memory",
-                self.max_memory
-            )));
-        }
-        Ok(())
-    }
-
-    fn array(&mut self, element: usize) -> Result<(), SchematicError> {
-        let len = self.i32()?.max(0) as usize;
-        self.reserve(len, element, element)?;
-        self.take(len * element)?;
-        Ok(())
-    }
-
-    fn payload(&mut self, id: u8, depth: u16) -> Result<(), SchematicError> {
+impl<R: Read> Parser<R> {
+    fn descend(&self, depth: u16) -> Result<(), SchematicError> {
         if depth >= MAX_NBT_DEPTH {
             return Err(SchematicError::Nbt("nested too deeply".to_string()));
         }
-        match id {
-            1..=6 => {
-                self.take(encoded_size(id).unwrap())?;
-            }
-            7 => self.array(1)?,
-            8 => {
-                let len = self.u16()?;
-                self.array_bytes(usize::from(len))?;
-            }
-            9 => {
-                let element = self.take(1)?[0];
-                let len = self.i32()?;
-                if len > 0 {
-                    let encoded = encoded_size(element)
-                        .ok_or_else(|| SchematicError::Nbt(format!("invalid tag {element}")))?;
-                    self.reserve(len as usize, encoded, memory_size(element))?;
-                    for _ in 0..len {
-                        self.payload(element, depth + 1)?;
-                    }
-                }
-            }
-            10 => loop {
-                let tag = self.take(1)?[0];
-                if tag == 0 {
-                    break;
-                }
-                self.reserve(1, 0, 2 * std::mem::size_of::<(MString, Tag)>())?;
-                let name_len = self.u16()?;
-                self.array_bytes(usize::from(name_len))?;
-                self.payload(tag, depth + 1)?;
-            },
-            11 => self.array(4)?,
-            12 => self.array(8)?,
-            _ => return Err(SchematicError::Nbt(format!("invalid tag {id}"))),
-        }
         Ok(())
     }
 
-    fn array_bytes(&mut self, len: usize) -> Result<(), SchematicError> {
-        self.reserve(len, 1, 1)?;
-        self.take(len)?;
-        Ok(())
+    fn read_name(&mut self) -> Result<(), SchematicError> {
+        let len = usize::from(self.input.u16()?);
+        self.memory.reserve(&mut self.name, len, len)?;
+        self.name.resize(len, 0);
+        self.input.read_into(&mut self.name)
+    }
+
+    fn fields(&mut self, depth: u16, top: bool) -> Result<Fields, SchematicError> {
+        self.descend(depth)?;
+        let mut fields = Fields::default();
+        loop {
+            let id = self.input.byte()?;
+            if id == 0 {
+                return Ok(fields);
+            }
+            self.read_name()?;
+            let child = depth + 1;
+            let modern = fields.version().is_none_or(|version| version >= 3);
+            let legacy = fields.version().is_none_or(|version| version < 3);
+            match key(&self.name) {
+                Key::Version if fields.version.is_absent() => {
+                    fields.version = self.int(id, child)?;
+                }
+                Key::DataVersion if fields.data_version.is_absent() => {
+                    fields.data_version = self.int(id, child)?;
+                }
+                Key::Size(axis) if fields.size[axis].is_absent() => {
+                    fields.size[axis] = if id == 2 {
+                        Field::Value(i32::from(i16::from_be_bytes(self.input.array()?) as u16))
+                    } else {
+                        self.other(id, child)?
+                    };
+                }
+                Key::Offset if fields.offset.is_absent() => {
+                    fields.offset = self.offset(id, child)?;
+                }
+                Key::Metadata if fields.metadata.is_absent() => {
+                    fields.metadata = if id == 10 {
+                        Field::Value(self.metadata(child)?)
+                    } else {
+                        self.other(id, child)?
+                    };
+                }
+                Key::Blocks if fields.blocks.is_absent() => {
+                    fields.blocks = if id == 10 && modern {
+                        Field::Value(self.blocks(child, fields.volume())?)
+                    } else {
+                        self.other(id, child)?
+                    };
+                }
+                Key::Palette if fields.palette.is_absent() => {
+                    fields.palette = if id == 10 && legacy {
+                        Field::Value(self.palette(child)?)
+                    } else {
+                        self.other(id, child)?
+                    };
+                }
+                Key::BlockData if fields.block_data.is_absent() => {
+                    fields.block_data = if id == 7 && legacy {
+                        Field::Value(self.block_data(fields.volume())?)
+                    } else {
+                        self.other(id, child)?
+                    };
+                }
+                Key::Schematic if top && fields.inner.is_absent() => {
+                    fields.inner = if id == 10 {
+                        Field::Value(Box::new(self.fields(child, false)?))
+                    } else {
+                        self.other(id, child)?
+                    };
+                }
+                _ => self.skip(id, child)?,
+            }
+        }
+    }
+
+    fn other<T>(&mut self, id: u8, depth: u16) -> Result<Field<T>, SchematicError> {
+        self.skip(id, depth)?;
+        Ok(Field::Other)
+    }
+
+    fn int(&mut self, id: u8, depth: u16) -> Result<Field<i32>, SchematicError> {
+        Ok(Field::Value(match id {
+            1 => i32::from(self.input.byte()?),
+            2 => i32::from(i16::from_be_bytes(self.input.array()?)),
+            3 => self.input.i32()?,
+            _ => return self.other(id, depth),
+        }))
+    }
+
+    fn offset(&mut self, id: u8, depth: u16) -> Result<Field<BlockPos>, SchematicError> {
+        if id != 11 {
+            return self.other(id, depth);
+        }
+        let len = self.input.i32()?;
+        if len != 3 {
+            self.input.skip(len.max(0) as u64 * 4)?;
+            return Ok(Field::Other);
+        }
+        let (x, y, z) = (self.input.i32()?, self.input.i32()?, self.input.i32()?);
+        Ok(Field::Value(BlockPos::new(x, y, z).clamped()))
+    }
+
+    fn metadata(&mut self, depth: u16) -> Result<[Field<i32>; 3], SchematicError> {
+        self.descend(depth)?;
+        let mut offset: [Field<i32>; 3] = Default::default();
+        loop {
+            let id = self.input.byte()?;
+            if id == 0 {
+                return Ok(offset);
+            }
+            self.read_name()?;
+            let axis = match self.name.as_slice() {
+                b"WEOffsetX" => Some(0),
+                b"WEOffsetY" => Some(1),
+                b"WEOffsetZ" => Some(2),
+                _ => None,
+            };
+            match axis {
+                Some(axis) if offset[axis].is_absent() => {
+                    offset[axis] = self.int(id, depth + 1)?;
+                }
+                _ => self.skip(id, depth + 1)?,
+            }
+        }
+    }
+
+    fn blocks(&mut self, depth: u16, volume: Option<u64>) -> Result<Blocks, SchematicError> {
+        self.descend(depth)?;
+        let mut blocks = Blocks::default();
+        loop {
+            let id = self.input.byte()?;
+            if id == 0 {
+                return Ok(blocks);
+            }
+            self.read_name()?;
+            match self.name.as_slice() {
+                b"Palette" if blocks.palette.is_absent() => {
+                    blocks.palette = if id == 10 {
+                        Field::Value(self.palette(depth + 1)?)
+                    } else {
+                        self.other(id, depth + 1)?
+                    };
+                }
+                b"Data" if blocks.data.is_absent() => {
+                    blocks.data = if id == 7 {
+                        Field::Value(self.block_data(volume)?)
+                    } else {
+                        self.other(id, depth + 1)?
+                    };
+                }
+                _ => self.skip(id, depth + 1)?,
+            }
+        }
+    }
+
+    fn palette(&mut self, depth: u16) -> Result<Palette, SchematicError> {
+        self.descend(depth)?;
+        let mut palette = Palette::default();
+        loop {
+            let id = self.input.byte()?;
+            if id == 0 {
+                return Ok(palette);
+            }
+            self.read_name()?;
+            if palette.error.is_some() || id != 3 {
+                palette.error.get_or_insert("palette entry");
+                self.skip(id, depth + 1)?;
+                continue;
+            }
+            let entry = self.input.i32()?;
+            let Some(entry) = usize::try_from(entry)
+                .ok()
+                .filter(|entry| *entry < usize::from(u16::MAX))
+            else {
+                palette.error = Some("palette index");
+                continue;
+            };
+            let scratch = 2 * self.name.len() + 64;
+            self.memory.charge(scratch)?;
+            let Ok(key) = simd_cesu8::mutf8::decode(&self.name) else {
+                self.memory.release(scratch);
+                palette.error = Some("palette name");
+                continue;
+            };
+            let state = match BlockState::parse_lenient(&key) {
+                Some(state) => state,
+                None => {
+                    self.memory.charge(key.len())?;
+                    let len = palette.unknown.len() + 1;
+                    self.memory.reserve(&mut palette.unknown, len, usize::MAX)?;
+                    palette.unknown.push(key.to_string());
+                    BlockState::AIR
+                }
+            };
+            self.memory.release(scratch);
+            self.memory
+                .reserve(&mut palette.by_entry, entry + 1, usize::from(u16::MAX))?;
+            if palette.by_entry.len() <= entry {
+                palette.by_entry.resize(entry + 1, None);
+            }
+            palette.by_entry[entry] = Some(state);
+        }
+    }
+
+    /// Decodes the varint palette indices into at most `volume` (or, before
+    /// the dimensions are known, `max_volume`) entries; an index too large
+    /// for a palette becomes `u16::MAX`, which no palette entry can be.
+    fn block_data(&mut self, volume: Option<u64>) -> Result<Vec<u16>, SchematicError> {
+        let len = self.input.i32()?.max(0) as u64;
+        let limit = match volume {
+            Some(volume) if volume > self.max_volume => 0,
+            Some(volume) => volume,
+            None => self.max_volume,
+        }
+        .min(len) as usize;
+        let mut entries: Vec<u16> = Vec::new();
+        if volume.is_some() {
+            self.memory.reserve(&mut entries, limit, limit)?;
+        }
+        let (mut value, mut shift, mut broken) = (0u32, 0u32, false);
+        let mut left = len;
+        while left > 0 {
+            let chunk = self.input.available()?;
+            let step = chunk.len().min(left.min(usize::MAX as u64) as usize);
+            for &byte in &chunk[..step] {
+                if broken || entries.len() >= limit {
+                    break;
+                }
+                value |= u32::from(byte & 0x7f) << shift;
+                if byte & 0x80 == 0 {
+                    let len = entries.len() + 1;
+                    self.memory.reserve(&mut entries, len, limit)?;
+                    entries.push(u16::try_from(value).unwrap_or(u16::MAX));
+                    value = 0;
+                    shift = 0;
+                } else {
+                    shift += 7;
+                    broken = shift >= 35;
+                }
+            }
+            self.input.start += step;
+            left -= step as u64;
+        }
+        Ok(entries)
+    }
+
+    fn skip(&mut self, id: u8, depth: u16) -> Result<(), SchematicError> {
+        match id {
+            1..=6 => self.input.skip(fixed_size(id).unwrap_or(0)),
+            7 => {
+                let len = self.input.i32()?;
+                self.input.skip(len.max(0) as u64)
+            }
+            8 => {
+                let len = self.input.u16()?;
+                self.input.skip(u64::from(len))
+            }
+            9 => {
+                self.descend(depth)?;
+                let element = self.input.byte()?;
+                let len = self.input.i32()?;
+                if len <= 0 {
+                    return Ok(());
+                }
+                match element {
+                    1..=6 => self
+                        .input
+                        .skip(len as u64 * fixed_size(element).unwrap_or(0)),
+                    7..=12 => {
+                        for _ in 0..len {
+                            self.skip(element, depth + 1)?;
+                        }
+                        Ok(())
+                    }
+                    _ => Err(SchematicError::Nbt(format!("invalid tag {element}"))),
+                }
+            }
+            10 => {
+                self.descend(depth)?;
+                loop {
+                    let id = self.input.byte()?;
+                    if id == 0 {
+                        return Ok(());
+                    }
+                    let len = self.input.u16()?;
+                    self.input.skip(u64::from(len))?;
+                    self.skip(id, depth + 1)?;
+                }
+            }
+            11 => {
+                let len = self.input.i32()?;
+                self.input.skip(len.max(0) as u64 * 4)
+            }
+            12 => {
+                let len = self.input.i32()?;
+                self.input.skip(len.max(0) as u64 * 8)
+            }
+            _ => Err(SchematicError::Nbt(format!("invalid tag {id}"))),
+        }
     }
 }
 
 fn name(text: &str) -> MString {
     MString::from_string(text.to_string())
-}
-
-fn get<'a>(compound: &'a Compound, key: &str) -> Option<&'a Tag> {
-    compound
-        .tags
-        .iter()
-        .find(|(name, _)| name.decode().is_ok_and(|n| n == key))
-        .map(|(_, tag)| tag)
-}
-
-fn int(compound: &Compound, key: &str) -> Option<i32> {
-    match get(compound, key)? {
-        Tag::Int(value) => Some(*value),
-        Tag::Short(value) => Some(i32::from(*value)),
-        Tag::Byte(value) => Some(i32::from(*value)),
-        _ => None,
-    }
 }
 
 fn write_varint(out: &mut Vec<u8>, mut value: u32) {
@@ -507,24 +1000,41 @@ fn write_varint(out: &mut Vec<u8>, mut value: u32) {
     }
 }
 
-fn read_varint(input: &mut &[u8]) -> Option<u32> {
-    let mut value = 0u32;
-    for shift in (0..35).step_by(7) {
-        let (&byte, rest) = input.split_first()?;
-        *input = rest;
-        value |= u32::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
-            return Some(value);
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::extent::MemoryExtent;
     use crate::region::Cuboid;
+
+    fn get<'a>(compound: &'a Compound, key: &str) -> Option<&'a Tag> {
+        compound
+            .tags
+            .iter()
+            .find(|(name, _)| name.decode().is_ok_and(|n| n == key))
+            .map(|(_, tag)| tag)
+    }
+
+    fn int(compound: &Compound, key: &str) -> Option<i32> {
+        match get(compound, key)? {
+            Tag::Int(value) => Some(*value),
+            Tag::Short(value) => Some(i32::from(*value)),
+            Tag::Byte(value) => Some(i32::from(*value)),
+            _ => None,
+        }
+    }
+
+    fn read_varint(input: &mut &[u8]) -> Option<u32> {
+        let mut value = 0u32;
+        for shift in (0..35).step_by(7) {
+            let (&byte, rest) = input.split_first()?;
+            *input = rest;
+            value |= u32::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some(value);
+            }
+        }
+        None
+    }
 
     fn state(input: &str) -> BlockState {
         BlockState::parse(input).unwrap()
@@ -772,23 +1282,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_trees_that_would_outgrow_the_memory_limit() {
-        let count: u32 = 200_000;
-        let mut raw = vec![0x0a, 0x00, 0x00, 0x09, 0x00, 0x00, 0x0a];
-        raw.extend(count.to_be_bytes());
-        raw.extend(std::iter::repeat_n(0x00, count as usize));
+    fn rejects_schematics_that_would_outgrow_the_memory_limit() {
+        let clipboard = Clipboard::new(BlockPos::new(128, 64, 128), BlockPos::ZERO);
+        let mut gzip = Vec::new();
+        Schematic::write(&clipboard, &mut gzip).unwrap();
+        assert!(Schematic::read_with_limits(gzip.as_slice(), DEFAULT_MAX_VOLUME, 4 << 20).is_ok());
+        let error =
+            Schematic::read_with_limits(gzip.as_slice(), DEFAULT_MAX_VOLUME, 3 << 19).unwrap_err();
+        assert!(error.to_string().contains("needs more than"), "{error}");
+
+        let mut raw = vec![0x0a, 0x00, 0x00, 0x07, 0x00, 0x00];
+        raw.extend((2u32 << 20).to_be_bytes());
+        raw.resize(raw.len() + (2 << 20), 0);
         raw.push(0x00);
         let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
         gzip.write_all(&raw).unwrap();
         let gzip = gzip.finish().unwrap();
-        assert!(gzip.len() < raw.len() / 50);
-        let error = Schematic::read_with_limits(gzip.as_slice(), DEFAULT_MAX_VOLUME, 1024 * 1024)
-            .unwrap_err();
-        assert!(error.to_string().contains("memory"), "{error}");
-
         let inflated =
-            Schematic::read_with_limits(gzip.as_slice(), DEFAULT_MAX_VOLUME, 1024).unwrap_err();
+            Schematic::read_with_limits(gzip.as_slice(), DEFAULT_MAX_VOLUME, 1 << 20).unwrap_err();
         assert!(inflated.to_string().contains("memory limit"), "{inflated}");
+        let file =
+            Schematic::read_with_limits(raw.as_slice(), DEFAULT_MAX_VOLUME, 1 << 20).unwrap_err();
+        assert!(file.to_string().contains("memory limit"), "{file}");
     }
 
     #[test]
