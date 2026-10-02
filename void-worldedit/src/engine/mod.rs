@@ -50,6 +50,8 @@ pub struct WorldEditConfig {
     pub history_size: usize,
     pub history_bytes: usize,
     pub schematic_dir: PathBuf,
+    /// Memory one schematic load may use, decompressed file and NBT tree each.
+    pub schematic_memory: u64,
     pub show_selection: bool,
     pub brush_preview: bool,
 }
@@ -65,6 +67,7 @@ impl Default for WorldEditConfig {
             history_size: 25,
             history_bytes: 128 * 1024 * 1024,
             schematic_dir: PathBuf::from("schematics"),
+            schematic_memory: crate::schematic::DEFAULT_MAX_MEMORY,
             show_selection: true,
             brush_preview: true,
         }
@@ -121,6 +124,11 @@ impl WorldEditPlugin {
 
     pub fn schematic_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.config.schematic_dir = dir.into();
+        self
+    }
+
+    pub fn schematic_memory(mut self, bytes: u64) -> Self {
+        self.config.schematic_memory = bytes;
         self
     }
 

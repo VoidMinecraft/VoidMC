@@ -1,6 +1,7 @@
 use std::fmt;
 use std::io::{self, BufReader, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -14,7 +15,7 @@ use crate::clipboard::Clipboard;
 use crate::math::BlockPos;
 
 pub const DEFAULT_MAX_VOLUME: u64 = 64 * 1024 * 1024;
-const MAX_INFLATED_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_MEMORY: u64 = 256 * 1024 * 1024;
 
 /// A Sponge schematic (`.schem`) loaded into a clipboard. Versions 1–3 are
 /// read, version 3 is written; block entities, entities and biomes are not
@@ -64,16 +65,33 @@ impl Schematic {
     }
 
     pub fn read_with_limit(reader: impl Read, max_volume: u64) -> Result<Self, SchematicError> {
+        Self::read_with_limits(reader, max_volume, DEFAULT_MAX_MEMORY)
+    }
+
+    /// `max_memory` bounds both the decompressed file and the NBT tree built
+    /// from it; a file that would need more is rejected before parsing.
+    pub fn read_with_limits(
+        reader: impl Read,
+        max_volume: u64,
+        max_memory: u64,
+    ) -> Result<Self, SchematicError> {
         let mut bytes = Vec::new();
-        BufReader::new(reader).read_to_end(&mut bytes)?;
+        BufReader::new(reader)
+            .take(max_memory.saturating_add(1))
+            .read_to_end(&mut bytes)?;
         if bytes.starts_with(&[0x1f, 0x8b]) {
             let mut inflated = Vec::new();
             GzDecoder::new(bytes.as_slice())
-                .take(MAX_INFLATED_BYTES)
+                .take(max_memory.saturating_add(1))
                 .read_to_end(&mut inflated)?;
             bytes = inflated;
         }
-        check_nbt(&bytes)?;
+        if bytes.len() as u64 > max_memory {
+            return Err(SchematicError::Nbt(
+                "the file is larger than the memory limit".to_string(),
+            ));
+        }
+        check_nbt(&bytes, max_memory)?;
         let nbt =
             Nbt::read(&mut bytes.as_slice()).map_err(|e| SchematicError::Nbt(format!("{e:?}")))?;
         let root = match get(&nbt.compound, "Schematic") {
@@ -170,9 +188,34 @@ impl Schematic {
         Ok(())
     }
 
+    /// Writes to a temporary file next to `path` and renames it into place,
+    /// so readers and concurrent saves never see a partial file.
     pub fn save(clipboard: &Clipboard, path: impl AsRef<Path>) -> Result<(), SchematicError> {
-        let file = std::fs::File::create(path)?;
-        Self::write(clipboard, io::BufWriter::new(file))
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = path.as_ref();
+        let mut temp = path.as_os_str().to_owned();
+        temp.push(format!(
+            ".{}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let temp = std::path::PathBuf::from(temp);
+        let written = std::fs::File::create(&temp)
+            .map_err(SchematicError::from)
+            .and_then(|file| {
+                let mut writer = io::BufWriter::new(file);
+                Self::write(clipboard, &mut writer)?;
+                writer
+                    .into_inner()
+                    .map_err(|e| e.into_error())?
+                    .sync_all()?;
+                Ok(())
+            })
+            .and_then(|()| Ok(std::fs::rename(&temp, path)?));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        written
     }
 }
 
@@ -290,39 +333,34 @@ fn schematic_offset(root: &Compound, version: i32) -> BlockPos {
 const MAX_NBT_DEPTH: u16 = 512;
 
 /// The NBT reader allocates whatever length a list or array claims before
-/// reading it, so every length is checked against the bytes actually left.
-fn check_nbt(bytes: &[u8]) -> Result<(), SchematicError> {
-    let mut input = bytes;
-    if take(&mut input, 1)? != [10] {
+/// reading it, sized by the in-memory element type. Every length is checked
+/// against the bytes left, and the memory the whole tree would take is
+/// summed against `max_memory`.
+fn check_nbt(bytes: &[u8], max_memory: u64) -> Result<(), SchematicError> {
+    let mut check = NbtCheck {
+        input: bytes,
+        memory: 0,
+        max_memory,
+    };
+    if check.take(1)? != [10] {
         return Err(SchematicError::Nbt("root is not a compound".to_string()));
     }
-    let name_len = u16::from_be_bytes(take(&mut input, 2)?.try_into().unwrap());
-    take(&mut input, usize::from(name_len))?;
-    skip_payload(&mut input, 10, 0)
+    let name_len = check.u16()?;
+    check.take(usize::from(name_len))?;
+    check.payload(10, 0)
 }
 
-fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8], SchematicError> {
-    if input.len() < len {
-        return Err(SchematicError::Nbt(
-            "truncated or oversized length".to_string(),
-        ));
-    }
-    let (head, rest) = input.split_at(len);
-    *input = rest;
-    Ok(head)
+struct NbtCheck<'a> {
+    input: &'a [u8],
+    memory: u64,
+    max_memory: u64,
 }
 
-fn length(input: &mut &[u8], element: usize) -> Result<usize, SchematicError> {
-    let len = i32::from_be_bytes(take(input, 4)?.try_into().unwrap()).max(0) as usize;
-    if len.saturating_mul(element) > input.len() {
-        return Err(SchematicError::Nbt(
-            "truncated or oversized length".to_string(),
-        ));
-    }
-    Ok(len)
+fn oversized() -> SchematicError {
+    SchematicError::Nbt("truncated or oversized length".to_string())
 }
 
-fn smallest_payload(id: u8) -> Option<usize> {
+fn encoded_size(id: u8) -> Option<usize> {
     Some(match id {
         1 | 10 => 1,
         2 | 8 => 2,
@@ -333,58 +371,107 @@ fn smallest_payload(id: u8) -> Option<usize> {
     })
 }
 
-fn skip_payload(input: &mut &[u8], id: u8, depth: u16) -> Result<(), SchematicError> {
-    if depth >= MAX_NBT_DEPTH {
-        return Err(SchematicError::Nbt("nested too deeply".to_string()));
-    }
+fn memory_size(id: u8) -> usize {
+    use std::mem::size_of;
     match id {
-        1..=6 => {
-            take(input, smallest_payload(id).unwrap())?;
-        }
-        7 => {
-            let len = length(input, 1)?;
-            take(input, len)?;
-        }
-        8 => {
-            let len = u16::from_be_bytes(take(input, 2)?.try_into().unwrap());
-            take(input, usize::from(len))?;
-        }
-        9 => {
-            let element = take(input, 1)?[0];
-            let len = i32::from_be_bytes(take(input, 4)?.try_into().unwrap());
-            if len > 0 {
-                let size = smallest_payload(element)
-                    .ok_or_else(|| SchematicError::Nbt(format!("invalid tag {element}")))?;
-                if (len as usize).saturating_mul(size) > input.len() {
-                    return Err(SchematicError::Nbt(
-                        "truncated or oversized length".to_string(),
-                    ));
-                }
-                for _ in 0..len {
-                    skip_payload(input, element, depth + 1)?;
-                }
-            }
-        }
-        10 => loop {
-            let tag = take(input, 1)?[0];
-            if tag == 0 {
-                break;
-            }
-            let name_len = u16::from_be_bytes(take(input, 2)?.try_into().unwrap());
-            take(input, usize::from(name_len))?;
-            skip_payload(input, tag, depth + 1)?;
-        },
-        11 => {
-            let len = length(input, 4)?;
-            take(input, len * 4)?;
-        }
-        12 => {
-            let len = length(input, 8)?;
-            take(input, len * 8)?;
-        }
-        _ => return Err(SchematicError::Nbt(format!("invalid tag {id}"))),
+        7 => size_of::<Vec<u8>>(),
+        8 => size_of::<MString>(),
+        9 => size_of::<ussr_nbt::owned::List>(),
+        10 => size_of::<Compound>(),
+        11 => size_of::<RawVec<i32>>(),
+        12 => size_of::<RawVec<i64>>(),
+        id => encoded_size(id).unwrap_or(0),
     }
-    Ok(())
+}
+
+impl<'a> NbtCheck<'a> {
+    fn take(&mut self, len: usize) -> Result<&'a [u8], SchematicError> {
+        if self.input.len() < len {
+            return Err(oversized());
+        }
+        let (head, rest) = self.input.split_at(len);
+        self.input = rest;
+        Ok(head)
+    }
+
+    fn u16(&mut self) -> Result<u16, SchematicError> {
+        Ok(u16::from_be_bytes(self.take(2)?.try_into().unwrap()))
+    }
+
+    fn i32(&mut self) -> Result<i32, SchematicError> {
+        Ok(i32::from_be_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    fn reserve(&mut self, len: usize, encoded: usize, memory: usize) -> Result<(), SchematicError> {
+        if len.saturating_mul(encoded) > self.input.len() {
+            return Err(oversized());
+        }
+        self.memory = self
+            .memory
+            .saturating_add((len as u64).saturating_mul(memory as u64));
+        if self.memory > self.max_memory {
+            return Err(SchematicError::Nbt(format!(
+                "the schematic needs more than {} bytes of memory",
+                self.max_memory
+            )));
+        }
+        Ok(())
+    }
+
+    fn array(&mut self, element: usize) -> Result<(), SchematicError> {
+        let len = self.i32()?.max(0) as usize;
+        self.reserve(len, element, element)?;
+        self.take(len * element)?;
+        Ok(())
+    }
+
+    fn payload(&mut self, id: u8, depth: u16) -> Result<(), SchematicError> {
+        if depth >= MAX_NBT_DEPTH {
+            return Err(SchematicError::Nbt("nested too deeply".to_string()));
+        }
+        match id {
+            1..=6 => {
+                self.take(encoded_size(id).unwrap())?;
+            }
+            7 => self.array(1)?,
+            8 => {
+                let len = self.u16()?;
+                self.array_bytes(usize::from(len))?;
+            }
+            9 => {
+                let element = self.take(1)?[0];
+                let len = self.i32()?;
+                if len > 0 {
+                    let encoded = encoded_size(element)
+                        .ok_or_else(|| SchematicError::Nbt(format!("invalid tag {element}")))?;
+                    self.reserve(len as usize, encoded, memory_size(element))?;
+                    for _ in 0..len {
+                        self.payload(element, depth + 1)?;
+                    }
+                }
+            }
+            10 => loop {
+                let tag = self.take(1)?[0];
+                if tag == 0 {
+                    break;
+                }
+                self.reserve(1, 0, 2 * std::mem::size_of::<(MString, Tag)>())?;
+                let name_len = self.u16()?;
+                self.array_bytes(usize::from(name_len))?;
+                self.payload(tag, depth + 1)?;
+            },
+            11 => self.array(4)?,
+            12 => self.array(8)?,
+            _ => return Err(SchematicError::Nbt(format!("invalid tag {id}"))),
+        }
+        Ok(())
+    }
+
+    fn array_bytes(&mut self, len: usize) -> Result<(), SchematicError> {
+        self.reserve(len, 1, 1)?;
+        self.take(len)?;
+        Ok(())
+    }
 }
 
 fn name(text: &str) -> MString {
@@ -658,6 +745,50 @@ mod tests {
             Schematic::read(nested.as_slice()),
             Err(SchematicError::Nbt(_))
         ));
+    }
+
+    #[test]
+    fn saves_replace_the_file_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hut.schem");
+        let first = sample();
+        let second = first.rotated(1);
+        let saves: Vec<_> = [first.clone(), second.clone(), first, second.clone()]
+            .into_iter()
+            .map(|clipboard| {
+                let path = path.clone();
+                std::thread::spawn(move || Schematic::save(&clipboard, path))
+            })
+            .collect();
+        for save in saves {
+            save.join().unwrap().unwrap();
+        }
+        let loaded = Schematic::load(&path).unwrap().clipboard;
+        assert!(loaded == second || loaded == sample());
+        Schematic::save(&second, &path).unwrap();
+        assert_eq!(Schematic::load(&path).unwrap().clipboard, second);
+        let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn rejects_trees_that_would_outgrow_the_memory_limit() {
+        let count: u32 = 200_000;
+        let mut raw = vec![0x0a, 0x00, 0x00, 0x09, 0x00, 0x00, 0x0a];
+        raw.extend(count.to_be_bytes());
+        raw.extend(std::iter::repeat_n(0x00, count as usize));
+        raw.push(0x00);
+        let mut gzip = GzEncoder::new(Vec::new(), Compression::default());
+        gzip.write_all(&raw).unwrap();
+        let gzip = gzip.finish().unwrap();
+        assert!(gzip.len() < raw.len() / 50);
+        let error = Schematic::read_with_limits(gzip.as_slice(), DEFAULT_MAX_VOLUME, 1024 * 1024)
+            .unwrap_err();
+        assert!(error.to_string().contains("memory"), "{error}");
+
+        let inflated =
+            Schematic::read_with_limits(gzip.as_slice(), DEFAULT_MAX_VOLUME, 1024).unwrap_err();
+        assert!(inflated.to_string().contains("memory limit"), "{inflated}");
     }
 
     #[test]

@@ -39,6 +39,7 @@ WorldEditPlugin::default()
     .max_volume(32 * 1024 * 1024)
     .history(25, 128 * 1024 * 1024)
     .schematic_dir("schematics")
+    .schematic_memory(256 * 1024 * 1024)
     .show_selection(true)
     .brush_preview(true);
 ```
@@ -52,6 +53,7 @@ WorldEditPlugin::default()
 | `max_volume` | 33,554,432 | Largest region (bounding box) one command may touch. |
 | `history` | 25 entries, 128 MiB | Per-player undo history limits. An edit whose undo data alone exceeds the memory limit is not recorded, and the player is told it cannot be undone. |
 | `schematic_dir` | `schematics` | Where `/schem` reads and writes `.schem` files. |
+| `schematic_memory` | 256 MiB | Memory one `/schem load` may use, for the decompressed file and for the NBT tree; larger files are refused before parsing. |
 | `show_selection` | `true` | Draw the selection outline. |
 | `brush_preview` | `true` | Show where the held brush would land. |
 
@@ -63,7 +65,8 @@ operator while testing locally.
 
 Coordinates are clamped to the world border (±30,000,000). Commands that
 edit the world or use the clipboard (`//set`, `//paste`, `//copy`, `//undo`,
-…) are refused while your previous edit is still running.
+`//rotate`, `/schem save`, …) are refused while your previous edit is still
+running.
 
 Commands follow WorldEdit: most start with a double slash because the
 command itself is named `/set`, `/copy`, …
@@ -158,9 +161,12 @@ unknown to this server become air and are listed. Block entities, entities
 and biomes are not carried over.
 
 Saving, loading, `//rotate` and `//flip` run on a background thread, so a
-large clipboard never stalls the tick; the result is applied on a later tick
-and your other edits wait for it like for any running edit. Lists and arrays
-in a file are checked against its size before anything is allocated.
+large clipboard never stalls the tick; the result is applied on a later tick.
+Until then your other edits are refused with "Your previous edit is still
+running", and at most four such tasks run at once across the server. A load
+works out how much memory the file's NBT would need before parsing it and
+refuses anything over `schematic_memory`. Saves go to a temporary file that
+is renamed into place, so a reader never sees a half-written schematic.
 
 ```rust
 use voidmc_worldedit::Schematic;

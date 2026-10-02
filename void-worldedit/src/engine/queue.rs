@@ -17,6 +17,8 @@ use crate::math::BlockPos;
 use crate::operation::{Fill, Operation, Paste, Sequence};
 use crate::region::Region;
 
+const MAX_BACKGROUND_TASKS: usize = 4;
+
 pub(crate) const HEIGHT: (i32, i32) = (CHUNK_MIN_Y, CHUNK_MAX_Y);
 
 /// An edit waiting for the queue: an operation in a dimension, optionally
@@ -152,11 +154,17 @@ impl EditQueue {
         &mut self,
         owner: Entity,
         work: impl FnOnce() -> Result<Finished, String> + Send + 'static,
-    ) {
+    ) -> Result<(), String> {
+        if self.background.len() >= MAX_BACKGROUND_TASKS {
+            return Err(
+                "The server is busy with other schematic work; try again shortly.".to_string(),
+            );
+        }
         self.background.push(Background {
             owner: Some(owner),
             handle: std::thread::spawn(work),
         });
+        Ok(())
     }
 
     pub fn len(&self) -> usize {
@@ -412,4 +420,34 @@ pub(crate) fn reply(world: &World, player: Entity, message: &str, color: TextCol
         .message(player, message)
         .color(color)
         .send();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn background_tasks_are_capped_across_players() {
+        let mut world = World::new();
+        let mut queue = EditQueue::default();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Arc::new(std::sync::Mutex::new(wait));
+        for _ in 0..MAX_BACKGROUND_TASKS {
+            let wait = wait.clone();
+            let player = world.spawn_empty().id();
+            queue
+                .spawn(player, move || {
+                    let _ = wait.lock().unwrap().recv();
+                    Err(String::new())
+                })
+                .unwrap();
+        }
+        let late = world.spawn_empty().id();
+        assert!(queue.spawn(late, || Err(String::new())).is_err());
+        assert!(!queue.is_busy(late));
+        drop(release);
+        for task in queue.background.drain(..) {
+            let _ = task.handle.join();
+        }
+    }
 }

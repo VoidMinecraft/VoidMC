@@ -119,7 +119,9 @@ fn background(
     actor: &Actor,
     work: impl FnOnce() -> Result<Finished, String> + Send + 'static,
 ) -> Outcome {
-    world.resource_mut::<EditQueue>().spawn(actor.player, work);
+    world
+        .resource_mut::<EditQueue>()
+        .spawn(actor.player, work)?;
     Ok(String::new())
 }
 
@@ -836,12 +838,13 @@ fn schematic() -> Command {
                         })
                     }
                     SchematicAction::Load => {
-                        let limit = world.resource::<WorldEditConfig>().max_volume;
+                        let config = world.resource::<WorldEditConfig>();
+                        let (limit, memory) = (config.max_volume, config.schematic_memory);
                         let origin = actor.feet;
                         background(world, actor, move || {
                             let file = std::fs::File::open(&path)
                                 .map_err(|_| format!("No schematic named '{name}'."))?;
-                            let loaded = Schematic::read_with_limit(file, limit)
+                            let loaded = Schematic::read_with_limits(file, limit, memory)
                                 .map_err(|e| e.to_string())?;
                             let count = loaded.clipboard.block_count();
                             let mut message = format!(
