@@ -81,8 +81,7 @@ mod tests {
     fn test_f32_exact_bytes_pi() {
         let mut buf = Vec::new();
         (std::f32::consts::PI).encode(&mut buf);
-        let pi_bytes = std::f32::consts::PI.to_be_bytes();
-        assert_eq!(buf, pi_bytes.to_vec());
+        assert_eq!(buf, vec![0x40, 0x49, 0x0F, 0xDB]);
     }
 
     #[test]
@@ -124,8 +123,7 @@ mod tests {
     fn test_f64_exact_bytes_pi() {
         let mut buf = Vec::new();
         (std::f64::consts::PI).encode(&mut buf);
-        let pi_bytes = std::f64::consts::PI.to_be_bytes();
-        assert_eq!(buf, pi_bytes.to_vec());
+        assert_eq!(buf, vec![0x40, 0x09, 0x21, 0xFB, 0x54, 0x44, 0x2D, 0x18]);
     }
 
     #[test]

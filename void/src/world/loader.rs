@@ -51,13 +51,22 @@ pub fn load_or_generate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::generation::DefaultWorldGenerator;
+    use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
     use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData};
 
     fn marker_chunk(block_state_id: i32) -> ChunkData {
         let mut sections: Vec<ChunkSection> = (0..24).map(|_| ChunkSection::empty()).collect();
         sections[0].set_block_state(0, 0, 0, block_state_id);
         ChunkData::new(sections, ChunkHeightmaps::empty(), LightData::empty())
+    }
+
+    fn assert_generated(data: &ChunkData) {
+        let surface = DefaultWorldGenerator::default().surface_height_at(0, 0);
+        assert_eq!(
+            data.get_block(0, surface - 1, 0),
+            Some(voidmc_protocol::clientbound::chunk::blocks::GRASS_BLOCK)
+        );
+        assert_eq!(data.get_block(0, surface, 0), Some(0));
     }
 
     struct StubLoader(i32);
@@ -83,8 +92,7 @@ mod tests {
             DimensionId::Overworld,
             &ChunkPos::new(0, 0),
         );
-        // The default generator produces the standard 24 sections.
-        assert_eq!(data.sections.len(), 24);
+        assert_generated(&data);
     }
 
     #[test]
@@ -97,7 +105,7 @@ mod tests {
             DimensionId::Overworld,
             &ChunkPos::new(0, 0),
         );
-        assert_eq!(data.sections.len(), 24);
+        assert_generated(&data);
     }
 
     #[test]

@@ -22,6 +22,7 @@ bevy_ecs = "0.18.0"
 bevy_app = "0.18.0"
 flume = "0.12.0"
 rand = "0.8"
+socket2 = "0.5.8"
 
 [dev-dependencies]
 flate2 = "1"

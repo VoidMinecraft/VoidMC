@@ -9,7 +9,8 @@ pub trait WorldGenerator: Send + Sync {
     /// Generates a full chunk at the given position.
     fn generate_chunk(&self, pos: &ChunkPos) -> ProtocolChunk;
 
-    /// Returns the terrain surface Y at a given block coordinate.
+    /// Returns the Y of the first air block above the terrain at a given block
+    /// coordinate: where an entity standing on the surface has its feet.
     fn surface_height_at(&self, block_x: i32, block_z: i32) -> i32;
 
     /// Biome of the 4×4×4 cell whose lowest corner is at these block

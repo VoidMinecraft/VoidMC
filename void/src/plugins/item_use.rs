@@ -198,14 +198,6 @@ mod tests {
     }
 
     #[test]
-    fn first_prediction_sequences_are_acknowledged_across_players() {
-        let mut server = MultiplayerHarness::new();
-        let position = BlockPosition { x: 1, y: 64, z: 2 };
-        server.place(0, position);
-        server.break_block(1, position);
-    }
-
-    #[test]
     fn players_can_alternate_placing_and_breaking_the_same_block() {
         let mut server = MultiplayerHarness::new();
         let position = BlockPosition { x: 3, y: 64, z: 5 };

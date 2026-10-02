@@ -16,6 +16,11 @@
   },
   {
     "type": "file",
+    "name": "testing-end-to-end",
+    "label": "Testing End to End"
+  },
+  {
+    "type": "file",
     "name": "development",
     "label": "Development"
   }

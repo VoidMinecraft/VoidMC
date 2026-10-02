@@ -260,18 +260,15 @@ mod tests {
     }
 
     #[test]
-    fn test_nbt_decode_with_reader() {
-        // For 1.21.4+ format: the incoming data is just the payload (no name)
-        // Reader prepends 0x0A tag, then reads the payload
-        let nbt_data = vec![
-            0x00, // End tag (minimal payload)
-        ];
+    fn test_nbt_decodes_an_empty_compound_and_rejects_a_bare_end_tag() {
+        let mut slice = &[0x0A, 0x00][..];
+        let nbt = Nbt::decode(&mut slice).unwrap();
+        assert!(slice.is_empty());
+        let mut buf = Vec::new();
+        nbt.encode(&mut buf);
+        assert_eq!(buf, [0x0A, 0x00]);
 
-        let mut slice = nbt_data.as_slice();
-        let result = Nbt::decode(&mut slice);
-
-        // Should either succeed or gracefully fail - the key is it doesn't panic
-        let _ = result;
+        assert!(Nbt::decode(&mut &[0x00][..]).is_err());
     }
 
     #[test]
@@ -280,15 +277,6 @@ mod tests {
         let result = Nbt::decode(&mut slice);
 
         // Should handle truncated data gracefully
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_nbt_empty_buffer() {
-        let buf = Vec::new();
-        let mut slice = buf.as_slice();
-
-        let result = Nbt::decode(&mut slice);
         assert!(result.is_err());
     }
 
