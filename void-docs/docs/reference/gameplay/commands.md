@@ -376,7 +376,8 @@ Flags are parsed in a pre-pass before positional arguments:
 A command (or subcommand path) that declares no flags skips the pre-pass, so
 `-blue` or `--` are ordinary arguments. When the last argument is variadic,
 flags are only read before it starts: once the earlier arguments are filled,
-the rest of the line, dashes included, belongs to it.
+the rest of the line, dashes included, belongs to it. A flag right before the
+first word of that argument still counts (`/sign -g hello`).
 
 Example:
 

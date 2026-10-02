@@ -18,7 +18,7 @@ use crate::messages::{TextColor, WorldMessages};
 use crate::players::WorldPlayers;
 
 pub use error::ParseError;
-pub use flags::{FlagDefinition, FlagSet, extract_flags_before};
+pub use flags::{FlagDefinition, FlagSet};
 pub use parser::{ArgParser, ParseContext};
 
 // ---------------------------------------------------------------------------
@@ -380,6 +380,7 @@ struct ResolveResult {
     flag_definitions: Vec<FlagDefinition>,
     usage: String,
     tokens: Vec<String>,
+    after_separator: Vec<String>,
     unknown_subcommand: Option<String>,
     subcommands: String,
     requirements: Vec<Requirement>,
@@ -395,7 +396,12 @@ enum Resolved {
 struct Walk<'a> {
     path: Vec<&'a Command>,
     literals: Vec<usize>,
+    separator: Option<usize>,
     unknown: Option<usize>,
+}
+
+fn declares_flags(command: &Command) -> bool {
+    !command.flag_definitions.is_empty() || command.subcommands.iter().any(declares_flags)
 }
 
 impl<'a> Walk<'a> {
@@ -403,22 +409,25 @@ impl<'a> Walk<'a> {
         let mut walk = Walk {
             path: vec![root],
             literals: Vec::new(),
+            separator: None,
             unknown: None,
         };
         let mut index = 0;
-        let mut flags_allowed = true;
         loop {
             let node = walk.node();
             if node.subcommands.is_empty() {
                 break;
             }
             let flags = walk.flags();
+            let separates = !flags.is_empty() || declares_flags(node);
             let mut needed = node.argument_tokens();
             while index < tokens.len() {
-                if flags_allowed && !flags.is_empty() && tokens[index].as_ref() == "--" {
-                    flags_allowed = false;
+                if walk.separator.is_none() && separates && tokens[index].as_ref() == "--" {
+                    walk.separator = Some(index);
                     index += 1;
-                } else if let Some(next) = flags_allowed
+                } else if let Some(next) = walk
+                    .separator
+                    .is_none()
                     .then(|| skip_flag(tokens, index, &flags))
                     .flatten()
                 {
@@ -466,6 +475,18 @@ impl<'a> Walk<'a> {
                 .as_ref()
                 .is_none_or(|requirement| requirement(world, executor))
         })
+    }
+
+    fn greedy_start(&self) -> Option<usize> {
+        self.node().arguments.last().filter(|arg| arg.variadic)?;
+        Some(
+            self.path
+                .iter()
+                .flat_map(|command| &command.arguments)
+                .filter(|arg| !arg.variadic)
+                .map(|arg| arg.parser.token_count())
+                .sum(),
+        )
     }
 
     fn start(&self) -> usize {
@@ -668,14 +689,25 @@ fn flag_completions(definitions: &[FlagDefinition], partial: &str) -> Vec<String
         .collect()
 }
 
-fn positional_count(tokens: &[&str], definitions: &[FlagDefinition]) -> usize {
+/// Counts positional tokens the way dispatch splits them, and tells whether a
+/// flag may still follow: flags stop at `--` and once a trailing variadic
+/// argument has begun.
+fn scan_positionals(
+    tokens: &[&str],
+    definitions: &[FlagDefinition],
+    greedy_start: Option<usize>,
+) -> (usize, bool) {
     let mut count = 0;
     let mut index = 0;
-    let mut flags_allowed = true;
+    let mut flags_allowed = !definitions.is_empty();
+    let greedy_begun = |count: usize| greedy_start.is_some_and(|start| count > start);
     while index < tokens.len() {
         let token = tokens[index];
         index += 1;
-        if flags_allowed && !definitions.is_empty() && token == "--" {
+        if greedy_begun(count) {
+            flags_allowed = false;
+        }
+        if flags_allowed && token == "--" {
             flags_allowed = false;
             continue;
         }
@@ -696,7 +728,7 @@ fn positional_count(tokens: &[&str], definitions: &[FlagDefinition]) -> usize {
             None => count += 1,
         }
     }
-    count
+    (count, flags_allowed && !greedy_begun(count))
 }
 
 fn is_combined_short_flags(token: &str, definitions: &[FlagDefinition]) -> bool {
@@ -783,16 +815,30 @@ impl CommandRegistry {
         let walk = Walk::new(cmd, completed);
         let node = walk.node();
         let flags = walk.flags();
+        let rest = &completed[walk.start()..];
+        let (positional, flags_allowed) = match walk.separator {
+            Some(separator) if separator >= walk.start() => {
+                let split = separator - walk.start();
+                let (before, _) = scan_positionals(&rest[..split], &flags, walk.greedy_start());
+                (before + rest.len() - split - 1, false)
+            }
+            Some(_) => (rest.len(), false),
+            None => scan_positionals(rest, &flags, walk.greedy_start()),
+        };
         let mut matches = if walk.unknown.is_some() || !walk.permits(world, executor) {
             Vec::new()
-        } else if partial.starts_with('-') && !flags.is_empty() {
+        } else if partial.starts_with('-') && flags_allowed {
             flag_completions(&flags, partial)
         } else {
-            let positional = positional_count(&completed[walk.start()..], &flags);
             let mut matches =
                 if !node.subcommands.is_empty() && positional >= node.argument_tokens() {
                     node.subcommands
                         .iter()
+                        .filter(|sub| {
+                            sub.requirement
+                                .as_ref()
+                                .is_none_or(|requirement| requirement(world, executor))
+                        })
                         .flat_map(|sub| std::iter::once(&sub.name).chain(&sub.aliases))
                         .filter(|literal| parser::starts_with_ignore_case(literal, partial))
                         .cloned()
@@ -853,12 +899,15 @@ impl CommandRegistry {
                 )
             })
             .collect();
-        let tokens = args
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| !walk.literals.contains(index))
-            .map(|(_, token)| token.clone())
-            .collect();
+        let separator = walk.separator.unwrap_or(args.len());
+        let kept = |range: std::ops::Range<usize>| -> Vec<String> {
+            range
+                .filter(|index| !walk.literals.contains(index))
+                .map(|index| args[index].clone())
+                .collect()
+        };
+        let tokens = kept(0..separator);
+        let after_separator = kept((separator + 1).min(args.len())..args.len());
         let subcommands = node.subcommand_names();
         Resolved::Found(ResolveResult {
             handler: node.handler.clone(),
@@ -866,6 +915,7 @@ impl CommandRegistry {
             flag_definitions: walk.flags(),
             usage: walk.usage(),
             tokens,
+            after_separator,
             unknown_subcommand: walk.unknown.map(|index| {
                 format!(
                     "Unknown subcommand '{}' (expected {})",
@@ -878,14 +928,7 @@ impl CommandRegistry {
                 .iter()
                 .filter_map(|command| command.requirement.clone())
                 .collect(),
-            positional_limit: node.arguments.last().filter(|arg| arg.variadic).map(|_| {
-                walk.path
-                    .iter()
-                    .flat_map(|command| &command.arguments)
-                    .filter(|arg| !arg.variadic)
-                    .map(|arg| arg.parser.token_count())
-                    .sum()
-            }),
+            positional_limit: walk.greedy_start(),
         })
     }
 
@@ -1194,7 +1237,7 @@ pub fn dispatch_command(
         world,
         executor: entity,
     };
-    let (positional, flags, flag_errors) = flags::extract_flags_before(
+    let (mut positional, flags, flag_errors) = flags::extract_flags_before(
         &res.tokens,
         &res.flag_definitions,
         &ctx,
@@ -1205,6 +1248,7 @@ pub fn dispatch_command(
         fail(world, &errors);
         return;
     }
+    positional.extend(res.after_separator.iter().cloned());
 
     match parse_positional(&positional, &res.arguments, &ctx) {
         Ok(parsed_args) => {
@@ -1763,7 +1807,8 @@ mod tests {
         run(&mut world, player, "list reds");
         run(&mut world, player, "modify reds color gold -q");
         run(&mut world, player, "modify reds member Alice");
-        run(&mut world, player, "modify reds color -- gold");
+        run(&mut world, player, "modify -- reds color gold");
+        run(&mut world, player, "modify -- reds member Alice");
 
         assert_eq!(
             *calls.lock().unwrap(),
@@ -1775,6 +1820,7 @@ mod tests {
                 "color club=reds color=gold quiet",
                 "member club=reds member=Alice",
                 "color club=reds color=gold",
+                "member club=reds member=Alice",
             ]
         );
         assert_eq!(chats(&rx), 0);
@@ -1975,7 +2021,7 @@ mod tests {
                 "red|\"Red -big team\"",
                 "-abc|--",
                 "red|a --b -c|loud",
-                "red|-- -x",
+                "red|-x",
             ]
         );
     }
@@ -2028,6 +2074,63 @@ mod tests {
                 .complete("/secret ", &world, player)
                 .unwrap()
                 .matches,
+            vec!["open"]
+        );
+    }
+
+    #[test]
+    fn a_leading_flag_still_reaches_a_greedy_only_command() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let sign = CommandBuilder::new("sign")
+            .arg_variadic_required("text", StringArg::greedy())
+            .flag("glow", Some('g'), "")
+            .handler(move |ctx| {
+                let text = ctx.get::<String>("text").cloned().unwrap_or_default();
+                record.lock().unwrap().push((text, ctx.flag("glow")));
+            })
+            .build();
+        let (mut world, player) = echo_world(sign);
+        for line in [
+            "-g hello",
+            "--glow hello there",
+            "hello -g",
+            "hello --glow x",
+        ] {
+            let args = line.split_whitespace().map(String::from).collect();
+            dispatch_command(&mut world, 1, player, "sign", args);
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ("hello".to_string(), true),
+                ("hello there".to_string(), true),
+                ("hello -g".to_string(), false),
+                ("hello --glow x".to_string(), false),
+            ]
+        );
+
+        let registry = world.resource::<CommandRegistry>();
+        let complete = |line: &str| registry.complete(line, &world, player).unwrap().matches;
+        assert_eq!(complete("/sign -"), vec!["--glow", "-g"]);
+        assert_eq!(complete("/sign -g hi -"), Vec::<String>::new());
+        assert_eq!(complete("/sign hello -"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn completion_hides_subcommands_the_executor_may_not_run() {
+        let gate = CommandBuilder::new("gate")
+            .subcommand(CommandBuilder::new("open").handler(|_| {}))
+            .subcommand(
+                CommandBuilder::new("admin")
+                    .requires(|_, _| false)
+                    .handler(|_| {}),
+            )
+            .build();
+        let (world, player) = echo_world(gate);
+        let registry = world.resource::<CommandRegistry>();
+        assert_eq!(
+            registry.complete("/gate ", &world, player).unwrap().matches,
             vec!["open"]
         );
     }

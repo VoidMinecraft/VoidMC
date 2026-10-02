@@ -94,14 +94,14 @@ pub fn extract_flags(
     extract_flags_before(tokens, definitions, ctx, None)
 }
 
-/// Like [`extract_flags`], but every token after the first `positional_limit`
-/// positionals is positional too, so a trailing greedy argument keeps its
+/// Like [`extract_flags`], but once more than `greedy_start` positionals were
+/// read every token is positional, so a trailing greedy argument keeps its
 /// `-words`. Commands without flags never lose a token.
-pub fn extract_flags_before(
+pub(crate) fn extract_flags_before(
     tokens: &[String],
     definitions: &[FlagDefinition],
     ctx: &ParseContext<'_>,
-    positional_limit: Option<usize>,
+    greedy_start: Option<usize>,
 ) -> (Vec<String>, FlagSet, Vec<ParseError>) {
     let mut positional = Vec::new();
     let mut flags = FlagSet::new();
@@ -115,7 +115,7 @@ pub fn extract_flags_before(
     while i < tokens.len() {
         let token = &tokens[i];
 
-        if positional_limit.is_some_and(|limit| positional.len() >= limit) {
+        if greedy_start.is_some_and(|start| positional.len() > start) {
             stop_parsing = true;
         }
 
