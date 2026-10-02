@@ -118,6 +118,11 @@ impl TestServerBuilder {
     }
 
     pub async fn start(self) -> TestServer {
+        assert_eq!(
+            azalea_protocol::packets::PROTOCOL_VERSION,
+            voidmc_protocol::PROTOCOL_VERSION,
+            "Azalea and VoidMC speak different protocol versions: bump azalea-protocol in void-e2e/Cargo.toml"
+        );
         let turn = tokio::time::timeout(
             Duration::from_secs(120),
             ONE_SERVER_AT_A_TIME.clone().lock_owned(),
