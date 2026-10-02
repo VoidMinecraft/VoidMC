@@ -7,6 +7,16 @@ const MAX_SHORTCUT: usize = 32;
 const CLEARANCE_MARGIN: f64 = 0.1;
 const PROBE_SPACING: f64 = 0.25;
 
+impl MoveModel {
+    /// The horizontal distance from a path point, or from the line between two
+    /// points, beyond which no cell affects whether this body can walk the
+    /// path: the smoothing probes' reach plus the footprint scanned around each
+    /// probed column.
+    pub fn path_reach(&self) -> f64 {
+        self.half_width.max(0.05) + CLEARANCE_MARGIN + self.radius as f64
+    }
+}
+
 /// A followable path: feet positions from the start (excluded) to the end.
 /// `complete` is false when the search stopped at its node budget or could
 /// not reach the goal and returned the closest point instead.

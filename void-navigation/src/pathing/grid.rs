@@ -76,6 +76,7 @@ pub struct CellCache {
     slots: Vec<Box<SectionCells>>,
     free: Vec<u32>,
     index: FastMap<SectionPos, u32>,
+    columns: FastMap<(i32, i32), Vec<i32>>,
     recent: [(SectionPos, u32); RECENT],
     fills: u64,
     unloaded_queries: u64,
@@ -87,6 +88,7 @@ impl Default for CellCache {
             slots: Vec::new(),
             free: Vec::new(),
             index: FastMap::default(),
+            columns: FastMap::default(),
             recent: [NO_RECENT; RECENT],
             fills: 0,
             unloaded_queries: 0,
@@ -134,6 +136,7 @@ impl CellCache {
     pub fn invalidate_section(&mut self, section: SectionPos) {
         if let Some(slot) = self.index.remove(&section) {
             self.free.push(slot);
+            self.forget_column(section);
             self.forget_recent();
         }
     }
@@ -141,22 +144,70 @@ impl CellCache {
     /// Drops every cached section of the 16-wide column `(x, z)` in section
     /// coordinates, e.g. when its chunk unloads.
     pub fn invalidate_column(&mut self, x: i32, z: i32) -> usize {
-        let before = self.free.len();
-        let free = &mut self.free;
-        self.index.retain(|section, slot| {
-            let keep = section.x != x || section.z != z;
-            if !keep {
-                free.push(*slot);
+        let Some(ys) = self.columns.remove(&(x, z)) else {
+            return 0;
+        };
+        for &y in &ys {
+            if let Some(slot) = self.index.remove(&SectionPos::new(x, y, z)) {
+                self.free.push(slot);
             }
-            keep
-        });
+        }
         self.forget_recent();
-        self.free.len() - before
+        ys.len()
+    }
+
+    /// Re-reads every cached section of the column `(x, z)` from `source`,
+    /// replacing those whose cells differ and dropping those it no longer
+    /// provides. Returns whether any cached cell changed.
+    pub fn refresh_column<S: CellSource>(&mut self, x: i32, z: i32, source: S) -> bool {
+        let Some(mut ys) = self.columns.remove(&(x, z)) else {
+            return false;
+        };
+        let mut changed = false;
+        ys.retain(|&y| {
+            let section = SectionPos::new(x, y, z);
+            let Some(&slot) = self.index.get(&section) else {
+                return false;
+            };
+            let fresh = self.take_slot();
+            if !source.fill_section(section, &mut self.slots[fresh as usize]) {
+                self.free.extend([fresh, slot]);
+                self.index.remove(&section);
+                changed = true;
+                return false;
+            }
+            if self.slots[fresh as usize] == self.slots[slot as usize] {
+                self.free.push(fresh);
+            } else {
+                self.fills += 1;
+                self.index.insert(section, fresh);
+                self.free.push(slot);
+                changed = true;
+            }
+            true
+        });
+        if changed {
+            self.forget_recent();
+        }
+        if !ys.is_empty() {
+            self.columns.insert((x, z), ys);
+        }
+        changed
     }
 
     pub fn clear(&mut self) {
         self.free.extend(self.index.drain().map(|(_, slot)| slot));
+        self.columns.clear();
         self.forget_recent();
+    }
+
+    fn forget_column(&mut self, section: SectionPos) {
+        if let Some(ys) = self.columns.get_mut(&(section.x, section.z)) {
+            ys.retain(|&y| y != section.y);
+            if ys.is_empty() {
+                self.columns.remove(&(section.x, section.z));
+            }
+        }
     }
 
     pub fn stats(&self) -> CacheStats {
@@ -201,6 +252,11 @@ impl<S: CellSource> CachedWorld<'_, S> {
         {
             self.cache.fills += 1;
             self.cache.index.insert(section, slot);
+            self.cache
+                .columns
+                .entry((section.x, section.z))
+                .or_default()
+                .push(section.y);
             self.cache.recent[recent_slot(section)] = (section, slot);
             self.cache.slots[slot as usize][cell_index(pos)]
         } else {
@@ -363,6 +419,26 @@ mod tests {
             cache.memory_bytes(),
             4 * std::mem::size_of::<SectionCells>()
         );
+    }
+
+    #[test]
+    fn refreshing_a_column_replaces_changed_sections_only() {
+        let mut world = ArrayWorld::new(BlockPos::new(0, 0, 0), 32, 32, 16);
+        let mut cache = CellCache::new();
+        for (x, y) in [(0, 0), (0, 16), (16, 0)] {
+            cache.view(&world).cell(BlockPos::new(x, y, 0));
+        }
+        assert!(!cache.refresh_column(0, 0, &world));
+        world.set(BlockPos::new(3, 20, 7), Cell::FULL);
+        assert!(cache.refresh_column(0, 0, &world));
+        assert_eq!(cache.cached(BlockPos::new(3, 20, 7)), Some(Cell::FULL));
+        assert!(!cache.refresh_column(0, 0, &world));
+        assert_eq!(cache.stats().sections, 3);
+        let smaller = ArrayWorld::new(BlockPos::new(0, 0, 0), 16, 16, 16);
+        assert!(cache.refresh_column(0, 0, &smaller));
+        assert_eq!(cache.stats().sections, 2);
+        assert_eq!(cache.invalidate_column(0, 0), 1);
+        assert_eq!(cache.stats().sections, 1);
     }
 
     #[test]

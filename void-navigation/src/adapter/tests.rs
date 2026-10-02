@@ -8,7 +8,7 @@ use voidmc_data::v26_1_2::blocks;
 use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData};
 
 use super::*;
-use crate::pathing::{NavigationProfile, SectionPos, Vec3};
+use crate::pathing::{NavigationProfile, Path, Vec3};
 
 #[derive(Resource, Default)]
 struct Outcomes(Vec<(Entity, NavigationOutcome)>);
@@ -331,27 +331,30 @@ fn tiny_budgets_spread_searches_over_ticks() {
 }
 
 #[test]
-fn block_changes_invalidate_cached_sections() {
+fn direct_chunk_edits_refresh_cached_cells() {
     let mut app = app(NavigationSettings::default());
-    let zombie = mob(
+    mob(
         &mut app,
         0.5,
         0.5,
         walker().with_goal(Goal::move_to([4.5, 1.0, 0.5])),
     );
     run(&mut app, 2);
-    let section = SectionPos::new(0, 0, 0);
-    let cached = |app: &App| {
+    let cell = |app: &App| {
         app.world()
             .resource::<NavigationWorld>()
             .cache(DimensionId::Overworld)
-            .is_some_and(|cache| cache.is_cached(section))
+            .and_then(|cache| cache.cached(crate::pathing::BlockPos::new(3, 1, 3)))
     };
-    assert!(cached(&app));
+    assert_eq!(cell(&app), Some(crate::pathing::Cell::EMPTY));
     set_block(&mut app, 3, 1, 3, blocks::STONE);
     app.update();
-    let _ = zombie;
-    assert!(!cached(&app) || app.world().resource::<NavigationStats>().searches > 1);
+    let stone = app
+        .world()
+        .resource::<NavigationWorld>()
+        .table()
+        .get(blocks::STONE);
+    assert_eq!(cell(&app), Some(stone));
 }
 
 #[test]
@@ -500,35 +503,8 @@ fn a_huge_unreachable_search_does_not_stall_other_navigators() {
         expansions_per_tick: 400,
         ..NavigationSettings::default()
     });
-    for x in 30..=34 {
-        for z in -2..=2 {
-            for y in 1..=3 {
-                let shell = x == 30 || x == 34 || z == -2 || z == 2 || y == 3;
-                set_block(
-                    &mut app,
-                    x,
-                    y,
-                    z,
-                    if shell { blocks::STONE } else { blocks::AIR },
-                );
-            }
-        }
-    }
-    let profile = NavigationProfile::walker()
-        .size(0.6, 1.95)
-        .step_height(1.0)
-        .search_limit(200_000)
-        .nodes_per_block(0)
-        .allow_partial(false);
-    let mut hogs = Vec::new();
-    for z in [-10.5, 10.5] {
-        hogs.push(mob(
-            &mut app,
-            -20.5,
-            z,
-            Navigator::new(profile.clone()).with_goal(Goal::move_to([32.5, 1.0, 0.5])),
-        ));
-    }
+    seal_goal(&mut app);
+    let hogs = [hog(&mut app, -10.5), hog(&mut app, 10.5)];
     app.update();
     let others: Vec<Entity> = (0..6)
         .map(|i| {
@@ -575,7 +551,7 @@ fn change_block(app: &mut App, x: i32, y: i32, z: i32, state: i32) {
 }
 
 #[test]
-fn a_block_change_patches_one_cell_and_keeps_distant_paths_cached() {
+fn a_block_change_refreshes_its_cell_and_keeps_distant_paths_cached() {
     let mut app = app(NavigationSettings::default());
     let goal = [10.5, 1.0, 0.5];
     let send = |app: &mut App| {
@@ -614,4 +590,279 @@ fn a_block_change_patches_one_cell_and_keeps_distant_paths_cached() {
     let after_near = send(&mut app);
     assert_eq!(after_near.searches, after_far.searches + 1);
     assert_eq!(after_near.cache_hits, after_far.cache_hits);
+}
+
+fn seal_goal(app: &mut App) {
+    for x in 30..=34 {
+        for z in -2..=2 {
+            for y in 1..=3 {
+                let shell = x == 30 || x == 34 || z == -2 || z == 2 || y == 3;
+                set_block(
+                    app,
+                    x,
+                    y,
+                    z,
+                    if shell { blocks::STONE } else { blocks::AIR },
+                );
+            }
+        }
+    }
+}
+
+fn hog(app: &mut App, z: f64) -> Entity {
+    let profile = NavigationProfile::walker()
+        .size(0.6, 1.95)
+        .step_height(1.0)
+        .search_limit(200_000)
+        .nodes_per_block(0)
+        .allow_partial(false);
+    mob(
+        app,
+        -20.5,
+        z,
+        Navigator::new(profile).with_goal(Goal::move_to([32.5, 1.0, 0.5])),
+    )
+}
+
+fn started(app: &App, entity: Entity) -> bool {
+    app.world()
+        .get::<Navigator>(entity)
+        .is_some_and(|navigator| navigator.is_moving())
+        || !outcomes(app, entity).is_empty()
+}
+
+fn short_walkers_behind_hogs(count: usize) -> (usize, usize) {
+    let mut app = app(NavigationSettings {
+        expansions_per_tick: 400,
+        ..NavigationSettings::default()
+    });
+    seal_goal(&mut app);
+    let hogs: Vec<Entity> = (0..count)
+        .map(|i| hog(&mut app, -30.5 + i as f64 * 6.0))
+        .collect();
+    let walkers: Vec<Entity> = (0..6)
+        .map(|i| {
+            let z = -15.5 + i as f64 * 6.0;
+            mob(
+                &mut app,
+                0.5,
+                z,
+                walker().with_goal(Goal::move_to([8.5, 1.0, z])),
+            )
+        })
+        .collect();
+    let mut tick = 0;
+    while !walkers.iter().all(|&walker| started(&app, walker)) {
+        assert!(tick < 100, "{count} hogs held the walkers for 100 ticks");
+        app.update();
+        tick += 1;
+    }
+    let moving = tick;
+    while !hogs.iter().all(|&hog| !outcomes(&app, hog).is_empty()) {
+        assert!(tick < 20_000, "{count} hogs never finished");
+        app.update();
+        tick += 1;
+    }
+    for &hog in &hogs {
+        assert_eq!(outcomes(&app, hog), vec![NavigationOutcome::Unreachable]);
+    }
+    run(&mut app, 60);
+    for &walker in &walkers {
+        assert_eq!(outcomes(&app, walker), vec![NavigationOutcome::Reached]);
+    }
+    (moving, tick)
+}
+
+#[test]
+fn short_searches_are_never_held_up_by_any_number_of_huge_ones() {
+    for hogs in [1, 3, 10] {
+        let (moving, finished) = short_walkers_behind_hogs(hogs);
+        assert!(moving <= 3, "{hogs} hogs: walkers moved at tick {moving}");
+        assert!(finished > moving);
+    }
+}
+
+#[test]
+fn a_waiting_long_search_given_a_short_goal_moves_at_once() {
+    let mut app = app(NavigationSettings {
+        expansions_per_tick: 400,
+        ..NavigationSettings::default()
+    });
+    seal_goal(&mut app);
+    let hogs: Vec<Entity> = (0..3)
+        .map(|i| hog(&mut app, -30.5 + i as f64 * 6.0))
+        .collect();
+    run(&mut app, 3);
+    assert_eq!(app.world().resource::<NavigationStats>().queued, 3);
+    let waiting = hogs[2];
+    app.world_mut()
+        .get_mut::<Navigator>(waiting)
+        .expect("navigator")
+        .move_to([-16.5, 1.0, -18.5]);
+    run(&mut app, 2);
+    assert!(started(&app, waiting));
+    assert_eq!(
+        outcomes(&app, waiting),
+        vec![NavigationOutcome::Interrupted]
+    );
+}
+
+#[test]
+fn a_one_expansion_budget_still_serves_the_main_lane() {
+    let mut app = app(NavigationSettings {
+        expansions_per_tick: 1,
+        ..NavigationSettings::default()
+    });
+    seal_goal(&mut app);
+    let hog = hog(&mut app, 0.5);
+    run(&mut app, 40);
+    let quick = mob(
+        &mut app,
+        0.5,
+        10.5,
+        walker().with_goal(Goal::move_to([1.5, 1.0, 10.5])),
+    );
+    run(&mut app, 20);
+    assert!(started(&app, quick));
+    assert!(outcomes(&app, hog).is_empty());
+}
+
+#[test]
+fn a_cache_hit_deep_in_the_queue_is_served_at_once() {
+    let mut app = app(NavigationSettings {
+        expansions_per_tick: 50,
+        ..NavigationSettings::default()
+    });
+    seal_goal(&mut app);
+    let goal = [10.5, 1.0, 0.5];
+    let scout = mob(&mut app, 0.5, 0.5, walker().with_goal(Goal::move_to(goal)));
+    run(&mut app, 3);
+    assert!(started(&app, scout));
+    app.world_mut().entity_mut(scout).despawn();
+    for z in [-30.5, -24.5, -18.5] {
+        hog(&mut app, z);
+    }
+    for i in 0..100 {
+        let (x, z) = (-40.5 + (i % 10) as f64 * 8.0, 6.5 + (i / 10) as f64 * 4.0);
+        mob(
+            &mut app,
+            x,
+            z,
+            walker().with_goal(Goal::move_to([x + 6.0, 1.0, z - 3.0])),
+        );
+    }
+    app.update();
+    assert!(app.world().resource::<NavigationStats>().queued > 64);
+    let hits = app.world().resource::<NavigationStats>().cache_hits;
+    let late = mob(&mut app, 0.5, 0.5, walker().with_goal(Goal::move_to(goal)));
+    app.update();
+    assert_eq!(
+        app.world().resource::<NavigationStats>().cache_hits,
+        hits + 1
+    );
+    assert!(started(&app, late));
+}
+
+fn send(
+    app: &mut App,
+    from: [f64; 2],
+    goal: [f64; 3],
+    navigator: Navigator,
+) -> (NavigationStats, Path) {
+    let mob = mob(
+        app,
+        from[0],
+        from[1],
+        navigator.with_goal(Goal::move_to(goal)),
+    );
+    run(app, 2);
+    let path = app
+        .world()
+        .get::<Navigator>(mob)
+        .expect("navigator")
+        .path()
+        .clone();
+    app.world_mut().entity_mut(mob).despawn();
+    (*app.world().resource::<NavigationStats>(), path)
+}
+
+fn mixed_mutations_never_leave_stale_cells(event_first: bool) {
+    let mut app = app(NavigationSettings::default());
+    let goal = [10.5, 1.0, 0.5];
+    let (before, _) = send(&mut app, [0.5, 0.5], goal, walker());
+    if event_first {
+        change_block(&mut app, 3, 1, 12, blocks::STONE);
+        wall(&mut app, 5, -6, 6);
+    } else {
+        wall(&mut app, 5, -6, 6);
+        change_block(&mut app, 3, 1, 12, blocks::STONE);
+    }
+    run(&mut app, 1);
+    let world = app.world().resource::<NavigationWorld>();
+    let cache = world.cache(DimensionId::Overworld).expect("cache");
+    for z in -6..=6 {
+        for y in 1..=3 {
+            let cell = cache.cached(crate::pathing::BlockPos::new(5, y, z));
+            assert!(
+                cell.is_none() || cell == Some(world.table().get(blocks::STONE)),
+                "stale cell at 5 {y} {z}"
+            );
+        }
+    }
+    let (after, path) = send(&mut app, [0.5, 0.5], goal, walker());
+    assert_eq!(after.cache_hits, before.cache_hits);
+    assert_eq!(after.searches, before.searches + 1);
+    assert!(path.points().iter().any(|point| point.z.abs() > 6.0));
+}
+
+#[test]
+fn an_event_then_a_direct_edit_in_one_tick_leaves_no_stale_cell() {
+    mixed_mutations_never_leave_stale_cells(true);
+}
+
+#[test]
+fn a_direct_edit_then_an_event_in_one_tick_leaves_no_stale_cell() {
+    mixed_mutations_never_leave_stale_cells(false);
+}
+
+#[test]
+fn replacing_a_chunk_refreshes_its_cells_and_paths() {
+    let mut app = app(NavigationSettings::default());
+    let goal = [10.5, 1.0, 0.5];
+    let (before, _) = send(&mut app, [0.5, 0.5], goal, walker());
+    let entity =
+        app.world().resource::<ChunkIndex>().0[&(DimensionId::Overworld, ChunkPos::new(0, 0))];
+    let mut walled = flat_chunk();
+    for z in 0..16 {
+        for y in 1..=3 {
+            walled.set_block(5, y, z, blocks::STONE);
+        }
+    }
+    app.world_mut().entity_mut(entity).insert(walled);
+    run(&mut app, 1);
+    let world = app.world().resource::<NavigationWorld>();
+    assert_eq!(
+        world
+            .cache(DimensionId::Overworld)
+            .and_then(|cache| cache.cached(crate::pathing::BlockPos::new(5, 1, 0))),
+        Some(world.table().get(blocks::STONE))
+    );
+    let (after, _) = send(&mut app, [0.5, 0.5], goal, walker());
+    assert_eq!(after.cache_hits, before.cache_hits);
+}
+
+#[test]
+fn a_wide_body_path_is_invalidated_by_a_block_in_the_next_chunk() {
+    let mut app = app(NavigationSettings::default());
+    let wide = || Navigator::new(NavigationProfile::walker().size(6.0, 1.95).step_height(1.0));
+    let goal = [12.5, 1.0, 13.5];
+    let (first, path) = send(&mut app, [4.5, 13.5], goal, wide());
+    assert!(path.is_complete());
+    let (cached, _) = send(&mut app, [4.5, 13.5], goal, wide());
+    assert_eq!(cached.cache_hits, first.cache_hits + 1);
+    change_block(&mut app, 8, 1, 16, blocks::STONE);
+    run(&mut app, 1);
+    let (after, _) = send(&mut app, [4.5, 13.5], goal, wide());
+    assert_eq!(after.cache_hits, cached.cache_hits);
+    assert_eq!(after.searches, cached.searches + 1);
 }

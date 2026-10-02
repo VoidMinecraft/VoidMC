@@ -192,23 +192,30 @@ terrain around the mobs is cached, planning allocates only when the path cache
 grows. The first visit to a new area allocates its cell sections.
 
 - **Cell cache.** Sections are converted to cells the first time a search
-  reads them: about 2 µs each, palette decoding included. A block changed
-  through the engine (`BlockChangeEvent`) patches that one cell. Any other
-  change to `ChunkData` drops the chunk's cached sections. An unloaded chunk is
-  evicted.
+  reads them: about 2 µs each, palette decoding included. Before each planning
+  pass, every cached section of a chunk whose `ChunkData` changed since the
+  last pass is decoded again and compared, so any mix of engine block changes,
+  direct `ChunkData` edits, bulk section writes and component replacement is
+  picked up before the next search. An unloaded chunk is evicted.
 - **Shared planner.** Every navigator queues its request in one FIFO.
   `NavigationSettings::expansions_per_tick` (default 2000, about 0.65 ms)
-  caps the nodes all searches may expand in one tick. Cache hits are served
-  first, at most 64 per tick. A search that is still running at the end of a
-  tick moves to one of two long lanes, which share a quarter of the budget and
-  resume where they stopped. The main lane is then free for everyone else the
-  next tick, so one huge search cannot hold up the queue. Searches reuse the
-  open set, the node arena and a dense 128×32×128 node window (a hash map
-  covers nodes outside it).
+  caps the nodes all searches may expand in one tick. A request whose path is
+  cached is served the tick it is made, wherever it sits in the queue. Every
+  search starts in the main lane, which spends at most an eighth of the budget
+  (at least 32 nodes) on it in total. A search still running past that is
+  long: it moves to one of two long lanes, which share a quarter of the budget
+  (plus whatever the main lane leaves) and resume where they stopped. When
+  both are busy, further long searches wait their turn in order and restart
+  from scratch, so every one of them eventually completes or reports
+  `Unreachable`. A long search therefore costs the others one eighth of a
+  tick's budget, once per request, however large its search limit and however
+  many of them run. Searches reuse the open set, the node arena and a dense
+  128×32×128 node window (a hash map covers nodes outside it).
 - **Path cache.** Paths to fixed goals (`MoveTo`, patrol points) are cached by
   start block, goal block and profile. An entry stays valid until a cached
-  cell changes in a chunk the path crosses, so digging elsewhere does not
-  affect it. Patrols re-plan their legs almost for free.
+  cell changes in a chunk within reach of the path: its points widened by the
+  body's half width and footprint, so wide bodies are covered too. Digging
+  elsewhere does not affect it. Patrols re-plan their legs almost for free.
 - **Following** costs about 11 ns per mob per tick.
 
 `NavigationStats` (a resource) reports searches, complete, partial and
@@ -231,7 +238,7 @@ Measured on an Apple M-series laptop with `cargo bench -p voidmc-navigation`
 | 500 path followers, one tick | 5.4 µs |
 | 500 wandering mobs on generated terrain: whole tick, physics included | 322 µs (204 µs of it planning, about 5 searches per tick) |
 | 500 patrolling mobs: whole tick, physics included | 217 µs (79 µs of it planning, path-cache hits) |
-| The same 500 patrollers while a block changes every tick | 219 µs |
+| The same 500 patrollers while a block changes every tick | 213 µs |
 | 1000 wandering mobs / 1000 patrolling mobs | 633 µs / 430 µs |
 | Physics alone for 1000 idle mobs, for comparison | 105 µs |
 

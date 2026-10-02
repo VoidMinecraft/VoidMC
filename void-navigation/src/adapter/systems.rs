@@ -22,7 +22,7 @@ const FLEE_MARGIN: f64 = 2.0;
 const PATH_CACHE_CAPACITY: usize = 2048;
 const MAX_REQUESTS_PER_TICK: u32 = 64;
 const LONG_LANES: usize = 2;
-const CACHE_MARGIN: f64 = 2.0;
+const MIN_PROBE: u32 = 32;
 
 /// Tunables shared by every navigator.
 #[derive(Resource, Clone, Debug, PartialEq)]
@@ -69,6 +69,7 @@ struct ActiveSearch {
     origin: Vec3,
     key: Option<PathKey>,
     stamp: u64,
+    reach: f64,
 }
 
 /// Identifies a search whose result can be reused: same body, same start
@@ -93,17 +94,25 @@ struct CachedPath {
 struct Lane {
     pathfinder: Pathfinder,
     active: Option<ActiveSearch>,
+    spent: u32,
 }
 
-/// The shared pathfinders and the FIFO of navigators waiting for a path. A
-/// search still running at the end of a tick moves to a long lane, which
-/// shares a quarter of the budget, so it never holds up everyone else.
+/// The shared pathfinders and the FIFO of navigators waiting for a path.
+/// Every search starts in the main lane, which may spend at most an eighth of
+/// the tick budget on it in total. A search still running past that leaves
+/// the main lane for one of two long lanes, sharing a quarter of the budget;
+/// when both are busy it waits its turn, in order, and restarts from scratch.
 #[derive(Resource, Default)]
 pub struct PathPlanner {
     main: Lane,
     long: [Lane; LONG_LANES],
     queue: VecDeque<Entity>,
+    unchecked: usize,
+    parked: VecDeque<(Entity, u32)>,
     cache: FastMap<PathKey, CachedPath>,
+    generation: u64,
+    checked_generation: u64,
+    long_credit: u32,
 }
 
 impl PathPlanner {
@@ -112,7 +121,7 @@ impl PathPlanner {
             .chain(&self.long)
             .filter(|lane| lane.active.is_some())
             .count();
-        self.queue.len() + running
+        self.queue.len() + self.parked.len() + running
     }
 }
 
@@ -226,6 +235,7 @@ pub(crate) fn schedule_searches(
         if navigator.wants_path && !navigator.queued && !navigator.is_paused() {
             navigator.queued = true;
             planner.queue.push_back(entity);
+            planner.unchecked += 1;
         }
     }
 }
@@ -341,16 +351,17 @@ fn prepare(
     }
 }
 
-fn chunk_box(origin: Vec3, path: &Path) -> (ChunkPos, ChunkPos) {
-    let (mut lo, mut hi) = (origin, origin);
+fn chunk_box(origin: Vec3, path: &Path, reach: f64) -> (ChunkPos, ChunkPos) {
+    let start = Vec3::new(origin.x.floor(), 0.0, origin.z.floor());
+    let (mut lo, mut hi) = (start, start + Vec3::new(1.0, 0.0, 1.0));
     for point in path.points() {
         lo = Vec3::new(lo.x.min(point.x), 0.0, lo.z.min(point.z));
         hi = Vec3::new(hi.x.max(point.x), 0.0, hi.z.max(point.z));
     }
     let chunk = |v: f64| (v.floor() as i32) >> 4;
     (
-        ChunkPos::new(chunk(lo.x - CACHE_MARGIN), chunk(lo.z - CACHE_MARGIN)),
-        ChunkPos::new(chunk(hi.x + CACHE_MARGIN), chunk(hi.z + CACHE_MARGIN)),
+        ChunkPos::new(chunk(lo.x - reach), chunk(lo.z - reach)),
+        ChunkPos::new(chunk(hi.x + reach), chunk(hi.z + reach)),
     )
 }
 
@@ -381,6 +392,40 @@ fn advance(
     status
 }
 
+fn launch(
+    lane: &mut Lane,
+    entity: Entity,
+    navigator: &Navigator,
+    search: Request,
+    world: &mut NavigationWorld,
+    chunks: &ChunkCells,
+    stats: &mut NavigationStats,
+) {
+    let Request::Search {
+        me,
+        dimension,
+        request,
+        key,
+    } = search
+    else {
+        return;
+    };
+    let model = navigator.model;
+    lane.pathfinder
+        .start(&mut world.view(dimension, chunks), &model, request);
+    stats.searches += 1;
+    lane.spent = 0;
+    lane.active = Some(ActiveSearch {
+        entity,
+        ticket: navigator.search_ticket,
+        dimension,
+        origin: me,
+        key,
+        stamp: world.stamp(),
+        reach: model.path_reach(),
+    });
+}
+
 pub(crate) fn run_planner(
     settings: Res<NavigationSettings>,
     mut planner: ResMut<PathPlanner>,
@@ -395,14 +440,43 @@ pub(crate) fn run_planner(
     let world = world.as_mut();
     let stats = stats.as_mut();
     stats.expanded_last_tick = 0;
+    world.refresh_changed(&chunks);
 
-    let mut scanned = 0;
-    let PathPlanner { queue, cache, .. } = planner;
-    queue.retain(|&entity| {
-        if scanned >= MAX_REQUESTS_PER_TICK {
+    let PathPlanner {
+        queue,
+        unchecked,
+        parked,
+        ..
+    } = planner;
+    parked.retain(|&(entity, ticket)| {
+        let Ok(mut navigator) = navigators.get_mut(entity) else {
+            return false;
+        };
+        if navigator.search_ticket == ticket {
             return true;
         }
-        scanned += 1;
+        if navigator.wants_path && !navigator.is_paused() {
+            queue.push_back(entity);
+            *unchecked += 1;
+        } else {
+            navigator.queued = false;
+        }
+        false
+    });
+
+    let full = planner.generation != planner.checked_generation;
+    let first = if full {
+        0
+    } else {
+        planner.queue.len().saturating_sub(planner.unchecked)
+    };
+    let mut position = 0;
+    let PathPlanner { queue, cache, .. } = planner;
+    queue.retain(|&entity| {
+        position += 1;
+        if position <= first {
+            return true;
+        }
         let Ok(mut navigator) = navigators.get_mut(entity) else {
             return false;
         };
@@ -411,103 +485,123 @@ pub(crate) fn run_planner(
             Request::Search { .. }
         )
     });
+    planner.unchecked = 0;
+    planner.checked_generation = planner.generation;
+
+    for lane in &mut planner.long {
+        while lane.active.is_none() {
+            let Some((entity, _)) = planner.parked.pop_front() else {
+                break;
+            };
+            let Ok(mut navigator) = navigators.get_mut(entity) else {
+                continue;
+            };
+            let search = prepare(
+                entity,
+                &mut navigator,
+                &planner.cache,
+                world,
+                &bodies,
+                stats,
+                true,
+            );
+            launch(lane, entity, &navigator, search, world, &chunks, stats);
+        }
+    }
 
     let total = settings.expansions_per_tick;
-    let long_running = planner
-        .long
-        .iter()
-        .filter(|lane| lane.active.is_some())
-        .count();
-    let long_share = if long_running > 0 {
-        (total / 4).max(1).min(total)
+    let probe = (total / 8).max(MIN_PROBE);
+    let long_share = if planner.long.iter().any(|lane| lane.active.is_some()) {
+        planner.long_credit += total;
+        let share = planner.long_credit / 4;
+        planner.long_credit %= 4;
+        share
     } else {
+        planner.long_credit = 0;
         0
     };
     let mut budget = total - long_share;
     let mut requests = 0;
     while budget > 0 {
-        let active = match planner.main.active {
-            Some(active) => active,
-            None => {
-                if requests >= MAX_REQUESTS_PER_TICK {
-                    break;
-                }
-                let Some(entity) = planner.queue.pop_front() else {
-                    break;
-                };
-                requests += 1;
-                let Ok(mut navigator) = navigators.get_mut(entity) else {
-                    continue;
-                };
-                let Request::Search {
-                    me,
-                    dimension,
-                    request,
-                    key,
-                } = prepare(
-                    entity,
-                    &mut navigator,
-                    &planner.cache,
-                    world,
-                    &bodies,
-                    stats,
-                    true,
-                )
-                else {
-                    continue;
-                };
-                let model = navigator.model;
-                planner
-                    .main
-                    .pathfinder
-                    .start(&mut world.view(dimension, &chunks), &model, request);
-                stats.searches += 1;
-                let active = ActiveSearch {
-                    entity,
-                    ticket: navigator.search_ticket,
-                    dimension,
-                    origin: me,
-                    key,
-                    stamp: world.stamp(),
-                };
-                planner.main.active = Some(active);
-                active
+        let Some(active) = planner.main.active else {
+            if requests >= MAX_REQUESTS_PER_TICK {
+                break;
             }
+            let Some(entity) = planner.queue.pop_front() else {
+                break;
+            };
+            let Ok(mut navigator) = navigators.get_mut(entity) else {
+                continue;
+            };
+            let search = prepare(
+                entity,
+                &mut navigator,
+                &planner.cache,
+                world,
+                &bodies,
+                stats,
+                true,
+            );
+            if matches!(search, Request::Search { .. }) {
+                requests += 1;
+            }
+            launch(
+                &mut planner.main,
+                entity,
+                &navigator,
+                search,
+                world,
+                &chunks,
+                stats,
+            );
+            continue;
         };
         if !is_current(&navigators, &active) {
             planner.main.active = None;
             release(&mut navigators, active.entity);
             continue;
         }
+        let mut slice = budget.min(probe.saturating_sub(planner.main.spent).max(1));
+        let before = slice;
         let status = advance(
             &mut planner.main.pathfinder,
             world,
             &chunks,
             active.dimension,
-            &mut budget,
+            &mut slice,
             stats,
         );
-        if status == SearchStatus::Pending {
+        budget -= before - slice;
+        planner.main.spent += before - slice;
+        if status != SearchStatus::Pending {
+            planner.main.active = None;
+            planner.generation += conclude(
+                status,
+                active,
+                &mut planner.main.pathfinder,
+                &mut planner.cache,
+                world,
+                &chunks,
+                &bodies,
+                &mut navigators,
+                &settings,
+                stats,
+            ) as u64;
+            continue;
+        }
+        if planner.main.spent < probe {
             break;
         }
-        planner.main.active = None;
-        conclude(
-            status,
-            active,
-            &mut planner.main.pathfinder,
-            &mut planner.cache,
-            world,
-            &chunks,
-            &bodies,
-            &mut navigators,
-            &settings,
-            stats,
-        );
-    }
-    if planner.main.active.is_some()
-        && let Some(lane) = planner.long.iter_mut().find(|lane| lane.active.is_none())
-    {
-        std::mem::swap(&mut planner.main, lane);
+        match planner.long.iter_mut().find(|lane| lane.active.is_none()) {
+            Some(lane) => std::mem::swap(&mut planner.main, lane),
+            None => {
+                planner.main.active = None;
+                if let Ok(mut navigator) = navigators.get_mut(active.entity) {
+                    navigator.wants_path = true;
+                    planner.parked.push_back((active.entity, active.ticket));
+                }
+            }
+        }
     }
 
     let mut long_budget = long_share + budget;
@@ -541,7 +635,7 @@ pub(crate) fn run_planner(
         long_budget += slice;
         if status != SearchStatus::Pending {
             lane.active = None;
-            conclude(
+            planner.generation += conclude(
                 status,
                 active,
                 &mut lane.pathfinder,
@@ -552,7 +646,7 @@ pub(crate) fn run_planner(
                 &mut navigators,
                 &settings,
                 stats,
-            );
+            ) as u64;
         }
     }
     stats.queued = planner.queued();
@@ -571,13 +665,13 @@ fn conclude(
     navigators: &mut Query<&mut Navigator>,
     settings: &NavigationSettings,
     stats: &mut NavigationStats,
-) {
+) -> bool {
     let Ok(mut navigator) = navigators.get_mut(active.entity) else {
-        return;
+        return false;
     };
     navigator.queued = false;
     if navigator.search_ticket != active.ticket {
-        return;
+        return false;
     }
     let navigator = navigator.as_mut();
     if status.found_path() {
@@ -595,21 +689,21 @@ fn conclude(
     if !progress {
         stats.unreachable += 1;
         unreachable(settings, navigator);
-        return;
+        return false;
     }
     navigator.phase = Phase::Following;
     if status != SearchStatus::Complete {
         stats.partial += 1;
-        return;
+        return false;
     }
     stats.complete += 1;
     let Some(key) = active.key else {
-        return;
+        return false;
     };
     if cache.len() >= PATH_CACHE_CAPACITY {
         cache.clear();
     }
-    let (min, max) = chunk_box(active.origin, &navigator.path);
+    let (min, max) = chunk_box(active.origin, &navigator.path, active.reach);
     match cache.get_mut(&key) {
         Some(cached) => {
             cached.path.copy_from(&navigator.path);
@@ -629,6 +723,7 @@ fn conclude(
             );
         }
     }
+    true
 }
 
 fn unreachable(settings: &NavigationSettings, navigator: &mut Navigator) {
