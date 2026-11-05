@@ -94,6 +94,9 @@ const SPECS: &[EnumSpec] = &[
         names: &[
             ("SpawnEntity", "minecraft:add_entity"),
             ("ClearDialog", "minecraft:clear_dialog"),
+            ("Respawn", "minecraft:respawn"),
+            ("PlayerRotation", "minecraft:player_rotation"),
+            ("SetCamera", "minecraft:set_camera"),
             ("ResourcePackPush", "minecraft:resource_pack_push"),
             ("ShowDialog", "minecraft:show_dialog"),
             ("BlockChangedAck", "minecraft:block_changed_ack"),
@@ -180,6 +183,7 @@ const SPECS: &[EnumSpec] = &[
         names: &[
             ("ConfirmTeleportation", "minecraft:accept_teleportation"),
             ("CustomClickAction", "minecraft:custom_click_action"),
+            ("SpectateEntity", "minecraft:spectate_entity"),
             ("ResourcePackResponse", "minecraft:resource_pack"),
             ("ChatCommand", "minecraft:chat_command"),
             ("SignedChatCommand", "minecraft:chat_command_signed"),

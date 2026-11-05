@@ -21,6 +21,7 @@ mod set_player_pos;
 mod set_player_pos_and_rot;
 mod set_player_rotation;
 mod signed_chat_command;
+mod spectate_entity;
 mod swing_arm;
 mod tick_end;
 mod use_item;
@@ -49,6 +50,7 @@ pub use set_player_pos::*;
 pub use set_player_pos_and_rot::*;
 pub use set_player_rotation::*;
 pub use signed_chat_command::*;
+pub use spectate_entity::*;
 pub use swing_arm::*;
 pub use tick_end::*;
 pub use use_item::*;
@@ -104,6 +106,8 @@ pub enum PlayPacket {
     SetHeldItem(SetHeldItem),
     #[codec(packet_id = 0x38)]
     SetCreativeModeSlot(SetCreativeModeSlot),
+    #[codec(packet_id = 0x3E)]
+    SpectateEntity(SpectateEntity),
     #[codec(packet_id = 0x3F)]
     SwingArm(SwingArm),
     #[codec(packet_id = 0x42)]

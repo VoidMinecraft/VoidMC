@@ -18,7 +18,7 @@ This file gives AI coding agents the minimum project context needed to make safe
 - `void-demo/`: Alpine Rush racing demo (lib + bin), a consumer of the public APIs
 - `void-ui/`: vanilla client UI: dialogs, glyph grids, generated resource packs
 - `void-checkers/`: checkers demo built on `void-ui` (lib + bin)
-- `void-map/`: server map shown in a dialog, with seeded markers (lib + bin)
+- `void-map/`: full-screen server map, a block model driven by the mouse (lib + bin)
 - `void-net/`: async networking layer
 - `void-protocol/`: protocol packet types and related tests
 - `void-codec/`: encode/decode primitives and tests

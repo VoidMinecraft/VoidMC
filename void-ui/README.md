@@ -57,23 +57,6 @@ let map = glyph_grid(&font_id, 8, 8, |column, row| {
 });
 ```
 
-## Pictures that change
-
-`Pixmap` paints an `Image` at runtime, with no new pack: each cell is a white
-swatch tinted by its text color, and neighbours of one color merge. Clicks are per
-square zone, to keep the packet small. `Stamp`s go on top, with their own click
-and hover, and `beside` adds a column of text.
-
-```rust
-use voidmc_ui::{Pixmap, Stamp};
-
-let pixmap = Pixmap::new(&mut font, 2, 72, 7); // 2px cells, 72 rows, 7px stamps
-let picture = pixmap.paint(&image, 8, |col, row| Some(format!("map:{col}/{row}")), &[
-    Stamp::new(10, 20, [255, 200, 0]).on_click("map:home").on_hover(Text::new("Home")),
-]);
-let block = pixmap.beside(picture, image.width(), 8, 100, vec![Text::new("Legend")]);
-```
-
 ## Following the mouse
 
 The server never sees the mouse. `FontBuilder::cursor` makes a picture for

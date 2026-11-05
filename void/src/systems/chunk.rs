@@ -3,8 +3,8 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{
-    ChunkSendBudget, ChunkStreamBacklog, ClientSettings, CurrentChunkPos, EffectiveViewDistance,
-    LoadedChunks, PlayerDimension, PlayerReady, Position,
+    ChunkSendBudget, ChunkStreamBacklog, ChunkStreamingPaused, ClientSettings, CurrentChunkPos,
+    EffectiveViewDistance, LoadedChunks, PlayerDimension, PlayerReady, Position,
 };
 use crate::config::ServerConfigResource;
 use crate::players::Players;
@@ -49,7 +49,7 @@ pub fn stream_chunks(
                 Option<&ChunkSendBudget>,
                 Option<&mut ChunkStreamBacklog>,
             ),
-            With<PlayerReady>,
+            (With<PlayerReady>, Without<ChunkStreamingPaused>),
         >,
         Players,
     )>,

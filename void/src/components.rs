@@ -105,6 +105,11 @@ pub struct ChunkStreamBacklog {
     pub(crate) pending: Vec<ChunkPos>,
 }
 
+/// Stops chunk streaming for this player, whose chunks are managed by hand:
+/// a plugin showing them a level of its own keeps `LoadedChunks` up to date.
+#[derive(Component, Default)]
+pub struct ChunkStreamingPaused;
+
 /// Caps how many chunk packets stream to this player per tick, cached chunks
 /// included; at least one is always sent. Absent means unlimited, which is the
 /// default for every player.

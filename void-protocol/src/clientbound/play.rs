@@ -21,10 +21,13 @@ mod ping;
 mod player_abilities;
 mod player_info_remove;
 mod player_info_update;
+mod player_rotation;
 mod remove_entities;
 mod remove_mob_effect;
 mod reset_score;
 mod resource_pack_push;
+mod respawn;
+mod set_camera;
 mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
@@ -83,10 +86,13 @@ pub use ping::*;
 pub use player_abilities::*;
 pub use player_info_remove::*;
 pub use player_info_update::*;
+pub use player_rotation::*;
 pub use remove_entities::*;
 pub use remove_mob_effect::*;
 pub use reset_score::*;
 pub use resource_pack_push::*;
+pub use respawn::*;
+pub use set_camera::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
@@ -176,12 +182,16 @@ pub enum PlayPacket {
     PlayerAbilities(PlayerAbilities),
     #[codec(packet_id = 0x48)]
     SynchronizePlayerPosition(SynchronizePlayerPosition),
+    #[codec(packet_id = 0x49)]
+    PlayerRotation(PlayerRotation),
     #[codec(packet_id = 0x4F)]
     ResetScore(ResetScore),
     #[codec(packet_id = 0x4E)]
     RemoveMobEffect(RemoveMobEffect),
     #[codec(packet_id = 0x51)]
     ResourcePackPush(ResourcePackPush),
+    #[codec(packet_id = 0x52)]
+    Respawn(Respawn),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x58)]
@@ -194,6 +204,8 @@ pub enum PlayPacket {
     SetBorderWarningDelay(SetBorderWarningDelay),
     #[codec(packet_id = 0x5C)]
     SetBorderWarningDistance(SetBorderWarningDistance),
+    #[codec(packet_id = 0x5D)]
+    SetCamera(SetCamera),
     #[codec(packet_id = 0x5E)]
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]

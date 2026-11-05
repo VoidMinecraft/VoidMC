@@ -2142,10 +2142,10 @@ dependencies = [
  "flume",
  "tracing",
  "tracing-subscriber",
+ "ussr-nbt",
  "voidmc",
- "voidmc-codec",
+ "voidmc-data",
  "voidmc-protocol",
- "voidmc-ui",
 ]
 
 [[package]]
