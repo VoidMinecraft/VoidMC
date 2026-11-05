@@ -3,6 +3,7 @@
 //! compulsory, a capture chain must be finished and promotion ends it.
 
 pub const SIZE: u8 = 8;
+const PIECES_PER_SIDE: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
@@ -66,6 +67,11 @@ impl Square {
 
     pub fn col(self) -> u8 {
         self.col
+    }
+
+    /// Board notation: columns from `a`, rows from 1 at the white side.
+    pub fn name(self) -> String {
+        format!("{}{}", char::from(b'a' + self.col), SIZE - self.row)
     }
 
     fn offset(self, rows: i8, cols: i8) -> Option<Self> {
@@ -150,6 +156,12 @@ impl Game {
 
     pub fn selected(&self) -> Option<Square> {
         self.selected
+    }
+
+    /// How many pieces of this color the opponent has taken.
+    pub fn captured(&self, color: Color) -> usize {
+        let left = self.squares.iter().flatten().filter(|p| p.color == color);
+        PIECES_PER_SIDE - left.count()
     }
 
     /// Whether the selected piece is locked in an unfinished capture chain.
@@ -396,6 +408,21 @@ mod tests {
         };
         assert_eq!(step.captured, Some(sq(4, 3)));
         assert!(game.piece(sq(4, 3)).is_none());
+    }
+
+    #[test]
+    fn captured_pieces_are_counted_per_color() {
+        let mut game = Game::default();
+        assert_eq!(game.captured(Color::Black), 0);
+        game.put(sq(0, 1), None);
+        assert_eq!(game.captured(Color::Black), 1);
+        assert_eq!(game.captured(Color::White), 0);
+    }
+
+    #[test]
+    fn squares_are_named_from_the_white_side() {
+        assert_eq!(sq(7, 0).name(), "a1");
+        assert_eq!(sq(0, 7).name(), "h8");
     }
 
     #[test]

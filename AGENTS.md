@@ -16,7 +16,8 @@ This file gives AI coding agents the minimum project context needed to make safe
 - `void/`: core server framework (Bevy ECS app, systems, plugins, commands, world)
 - `void-example/`: runnable example server and logging setup reference
 - `void-demo/`: Alpine Rush racing demo (lib + bin), a consumer of the public APIs
-- `void-checkers/`: checkers POC on a 3D board of display entities (lib + bin)
+- `void-ui/`: vanilla client UI: dialogs, glyph grids, generated resource packs
+- `void-checkers/`: checkers demo built on `void-ui` (lib + bin)
 - `void-net/`: async networking layer
 - `void-protocol/`: protocol packet types and related tests
 - `void-codec/`: encode/decode primitives and tests

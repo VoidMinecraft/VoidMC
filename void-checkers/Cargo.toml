@@ -3,20 +3,18 @@ name = "voidmc-checkers"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Checkers POC: a 3D board of display entities, played with the crosshair"
+description = "Checkers POC: a 2.5D board drawn as clickable text in a vanilla dialog"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
 [dependencies]
 voidmc = { version = "0.2.0", path = "../void" }
-voidmc-data = { version = "0.1.2", path = "../void-data" }
-voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
+voidmc-ui = { version = "0.1.0", path = "../void-ui" }
 bevy_app = "0.18.0"
 bevy_ecs = "0.18.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
-uuid = "1.16.0"
 
 [dev-dependencies]
 flume = "0.12.0"

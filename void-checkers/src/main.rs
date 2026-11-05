@@ -1,7 +1,6 @@
-use voidmc::{ServerConfigBuilder, SpawnPosition, VoidServer};
-use voidmc_checkers::{geometry, pack, plugin::CheckersPlugin};
-
-const ADVENTURE: u8 = 2;
+use voidmc::{ServerConfigBuilder, TextColor, VoidServer};
+use voidmc_checkers::{art::Art, plugin::CheckersPlugin};
+use voidmc_ui::{PackServer, ResourcePack, Text, UiPlugin};
 
 fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.into())
@@ -19,18 +18,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "VOID_CHECKERS_PACK_URL",
         &format!("http://{pack_address}/checkers.zip"),
     );
-    pack::serve(&pack_address)?;
+
+    let mut pack = ResourcePack::new("VoidMC checkers board");
+    let art = Art::new(&mut pack);
+    let server = PackServer::start(pack.build(), &pack_address, pack_url.clone())?;
     tracing::info!(%address, %pack_url, "Dames - Java 26.1.2");
-    let [x, y, z] = geometry::seat();
+
     let config = ServerConfigBuilder::new()
         .address(address)
-        .game_mode(ADVENTURE)
-        .spawn_position(SpawnPosition { x, z, y: Some(y) })
+        .tick_rate(20)
         .motd("Dames | Void")
         .build();
+    let prompt = Text::new("Le plateau de dames est dessine par ce pack.").color(TextColor::Yellow);
     VoidServer::new(config)
         .add_plugin(move |app| {
-            app.add_plugins(CheckersPlugin { pack_url });
+            app.insert_resource(art)
+                .add_plugins(UiPlugin::new(server, prompt).required())
+                .add_plugins(CheckersPlugin);
         })
         .run();
     Ok(())

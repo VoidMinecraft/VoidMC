@@ -8,6 +8,7 @@ members = [
   "void-example",
   "void-net",
   "void-protocol",
+  "void-ui",
   "void-codec",
   "void-codec-macros",
   "void-world-io"
