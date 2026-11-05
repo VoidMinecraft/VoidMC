@@ -136,7 +136,7 @@ impl FontBuilder {
     }
 
     /// A blank character that moves the pen by `pixels`, which may be negative.
-    fn advance(&mut self, pixels: i32) -> char {
+    pub fn advance(&mut self, pixels: i32) -> char {
         if let Some(glyph) = self.advances.get(&pixels) {
             return *glyph;
         }
@@ -174,6 +174,22 @@ impl FontBuilder {
         Tile {
             lines: glyphs.iter().map(|glyph| format!("{glyph}{gap}")).collect(),
         }
+    }
+
+    /// Adds a white rectangle, which takes the color of its text: a picture that
+    /// changes at runtime can be painted with these, without a new pack. `ascent`
+    /// sets its height above the baseline, so one line of text can draw any row.
+    pub fn swatch(&mut self, width: u32, height: u32, ascent: i32) -> char {
+        let glyph = self.glyph();
+        let file = self.add_image(Image::filled(width, height, [255; 4]));
+        self.providers.push(json!({
+            "type": "bitmap",
+            "file": file,
+            "height": height,
+            "ascent": ascent,
+            "chars": [glyph.to_string()],
+        }));
+        glyph
     }
 
     /// Adds a picture centred on the mouse.
@@ -327,6 +343,15 @@ mod tests {
         assert!(font.advances.contains_key(&-21));
         assert!(font.advances.contains_key(&2));
         assert_eq!(font.providers[0]["ascent"], 4);
+    }
+
+    #[test]
+    fn a_swatch_is_white_at_the_requested_height() {
+        let mut font = font();
+        let glyph = font.swatch(2, 2, 5);
+        assert_eq!(font.providers[0]["ascent"], 5);
+        assert_eq!(font.providers[0]["chars"][0], glyph.to_string());
+        assert_eq!(font.images[0].1.pixel(1, 1), [255; 4]);
     }
 
     #[test]
