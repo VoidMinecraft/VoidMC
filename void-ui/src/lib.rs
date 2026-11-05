@@ -11,11 +11,13 @@
 pub mod dialog;
 pub mod glyph;
 pub mod pack;
+pub mod pixmap;
 pub mod plugin;
 pub mod text;
 
 pub use dialog::{Button, Dialog};
 pub use glyph::{Cell, Cursor, FontBuilder, Image, Tile, glyph_grid};
 pub use pack::{BuiltPack, ResourcePack};
+pub use pixmap::{Pixmap, Stamp};
 pub use plugin::{PackServer, PackSettled, UiClick, UiPlugin};
 pub use text::Text;

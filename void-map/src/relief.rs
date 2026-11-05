@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU8;
 
 use voidmc::BiomeId;
+use voidmc_ui::Image;
 
 use crate::terrain::Terrain;
 
@@ -128,39 +129,6 @@ fn mix(from: [f32; 3], to: [f32; 3], amount: f32) -> [f32; 3] {
     std::array::from_fn(|i| from[i] + (to[i] - from[i]) * amount)
 }
 
-/// Opaque RGBA pixels, row by row from the north-west corner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Image {
-    width: u16,
-    height: u16,
-    rgba: Vec<u8>,
-}
-
-impl Image {
-    pub fn width(&self) -> u16 {
-        self.width
-    }
-
-    pub fn height(&self) -> u16 {
-        self.height
-    }
-
-    /// `width * height * 4` bytes.
-    pub fn rgba(&self) -> &[u8] {
-        &self.rgba
-    }
-
-    pub fn pixel(&self, col: u16, row: u16) -> [u8; 4] {
-        let start = (usize::from(row) * usize::from(self.width) + usize::from(col)) * 4;
-        [
-            self.rgba[start],
-            self.rgba[start + 1],
-            self.rgba[start + 2],
-            self.rgba[start + 3],
-        ]
-    }
-}
-
 /// Light on a cell lit from the north-west: 1.0 on flat ground, more on a
 /// slope that faces the light.
 fn shade(terrain: &Terrain, col: u16, row: u16) -> f32 {
@@ -170,9 +138,10 @@ fn shade(terrain: &Terrain, col: u16, row: u16) -> f32 {
     1.0 + (slope * SHADE_GAIN).clamp(-SHADE_LIMIT, SHADE_LIMIT)
 }
 
+/// One opaque pixel per cell.
 pub fn render(terrain: &Terrain, style: &Style) -> Image {
     let (width, height) = (terrain.window().cols(), terrain.window().rows());
-    let mut rgba = Vec::with_capacity(usize::from(width) * usize::from(height) * 4);
+    let mut image = Image::new(u32::from(width), u32::from(height));
     for row in 0..height {
         for col in 0..width {
             let surface = terrain.height(col, row);
@@ -184,15 +153,11 @@ pub fn render(terrain: &Terrain, style: &Style) -> Image {
                     .land(terrain.biome(col, row), surface)
                     .map(|channel| channel * light)
             };
-            rgba.extend(color.map(|channel| style.round(channel)));
-            rgba.push(OPAQUE);
+            let [red, green, blue] = color.map(|channel| style.round(channel));
+            image.set(u32::from(col), u32::from(row), [red, green, blue, OPAQUE]);
         }
     }
-    Image {
-        width,
-        height,
-        rgba,
-    }
+    image
 }
 
 #[cfg(test)]
@@ -217,6 +182,13 @@ mod tests {
         draw(&Flat::new(height, biome), 1, 1).pixel(0, 0)
     }
 
+    fn pixels(image: &Image) -> Vec<[u8; 4]> {
+        (0..image.height())
+            .flat_map(|row| (0..image.width()).map(move |col| (col, row)))
+            .map(|(col, row)| image.pixel(col, row))
+            .collect()
+    }
+
     fn brightness(pixel: [u8; 4]) -> u32 {
         pixel[..3].iter().copied().map(u32::from).sum()
     }
@@ -225,8 +197,7 @@ mod tests {
     fn every_cell_gets_one_opaque_pixel() {
         let image = draw(&DefaultWorldGenerator::default(), 12, 7);
         assert_eq!((image.width(), image.height()), (12, 7));
-        assert_eq!(image.rgba().len(), 12 * 7 * 4);
-        assert!(image.rgba().chunks(4).all(|pixel| pixel[3] == OPAQUE));
+        assert!(pixels(&image).iter().all(|pixel| pixel[3] == OPAQUE));
     }
 
     #[test]
@@ -239,7 +210,7 @@ mod tests {
         let is_water = |pixel: [u8; 4]| pixel[2] > pixel[1];
         assert!(is_water(image.pixel(0, 1)));
         assert!(!is_water(image.pixel(3, 1)));
-        assert_eq!(&image.rgba()[12..16], image.pixel(3, 0));
+        assert_eq!(pixels(&image)[3], image.pixel(3, 0));
     }
 
     #[test]
@@ -313,7 +284,7 @@ mod tests {
     #[test]
     fn the_default_world_shows_land_water_and_relief() {
         let image = draw(&DefaultWorldGenerator::default(), 96, 80);
-        let colors: HashSet<_> = image.rgba().chunks(4).collect();
+        let colors: HashSet<_> = pixels(&image).into_iter().collect();
         assert!(colors.len() > 8, "{} colours", colors.len());
         assert!(colors.iter().any(|pixel| pixel[2] > pixel[1]));
         assert!(colors.iter().any(|pixel| pixel[1] > pixel[2]));
@@ -325,7 +296,7 @@ mod tests {
         let terrain = Terrain::sample(&generator, &window(0, 0, 32, 32, 4));
         let quantum = NonZeroU8::new(32).unwrap();
         let image = render(&terrain, &Style::new(SEA).quantum(quantum));
-        for pixel in image.rgba().chunks(4) {
+        for pixel in pixels(&image) {
             assert!(pixel[..3].iter().all(|c| c % 32 == 0 || *c == 255));
         }
     }

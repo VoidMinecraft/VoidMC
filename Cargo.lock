@@ -2137,8 +2137,15 @@ dependencies = [
 name = "voidmc-map"
 version = "0.1.0"
 dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "flume",
+ "tracing",
+ "tracing-subscriber",
  "voidmc",
+ "voidmc-codec",
  "voidmc-protocol",
+ "voidmc-ui",
 ]
 
 [[package]]
