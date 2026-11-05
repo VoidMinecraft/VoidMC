@@ -48,7 +48,7 @@ fn dimension_type() -> Nbt {
             ("has_ceiling", Tag::Byte(0)),
             ("has_ender_dragon_fight", Tag::Byte(0)),
             ("has_fixed_time", Tag::Byte(1)),
-            ("has_skylight", Tag::Byte(1)),
+            ("has_skylight", Tag::Byte(0)),
             ("height", Tag::Int(HEIGHT)),
             ("infiniburn", string("#minecraft:infiniburn_overworld")),
             ("logical_height", Tag::Int(HEIGHT)),

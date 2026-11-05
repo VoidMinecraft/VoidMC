@@ -1,7 +1,7 @@
 use voidmc::{ServerConfigBuilder, VoidServer};
 use voidmc_map::plugin::MapPlugin;
 
-/// Wide enough for the model seen from the camera, which stands off its centre.
+/// More than a client needs around the camera, so that the server never limits it.
 const VIEW_DISTANCE: i32 = 12;
 
 fn main() {
