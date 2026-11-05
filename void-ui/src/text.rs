@@ -18,6 +18,7 @@ pub(crate) fn compound(tags: Vec<(&str, Tag)>) -> Compound {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Text {
     content: String,
+    keybind: Option<String>,
     color: Option<TextColor>,
     font: Option<String>,
     shadow: bool,
@@ -30,6 +31,16 @@ impl Text {
     pub fn new(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
+            shadow: true,
+            ..Self::default()
+        }
+    }
+
+    /// The key a player has bound to `action`, such as `key.jump`, in their own
+    /// layout and language: no text written on the server can know it.
+    pub fn keybind(action: impl Into<String>) -> Self {
+        Self {
+            keybind: Some(action.into()),
             shadow: true,
             ..Self::default()
         }
@@ -72,7 +83,10 @@ impl Text {
     }
 
     pub fn to_compound(&self) -> Compound {
-        let mut tags = vec![("text", string(&self.content))];
+        let mut tags = match &self.keybind {
+            Some(action) => vec![("keybind", string(action))],
+            None => vec![("text", string(&self.content))],
+        };
         if let Some(color) = self.color {
             tags.push(("color", string(&color.to_string())));
         }
@@ -112,6 +126,15 @@ impl Text {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_keybind_names_an_action_and_no_text() {
+        let compound = Text::keybind("key.jump").to_compound();
+        assert!(
+            matches!(tag(&compound, "keybind"), Some(Tag::String(key)) if key.to_string() == "key.jump")
+        );
+        assert!(tag(&compound, "text").is_none());
+    }
 
     pub(crate) fn tag<'a>(compound: &'a Compound, name: &str) -> Option<&'a Tag> {
         compound

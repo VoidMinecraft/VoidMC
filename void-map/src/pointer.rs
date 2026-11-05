@@ -3,42 +3,46 @@
 //! The overview stands south of the model and well above it. Aiming straight down
 //! is then off the model, so no one needs the angle where a look spins on itself.
 
-use crate::scene::{DETAIL, SEA_Y};
+use crate::scene::SEA_Y;
 
 /// How steeply the overview looks down. Everything about it follows from this.
-pub const REST_PITCH: f32 = 45.0;
+pub const REST_PITCH: f32 = 55.0;
 /// North.
 pub const REST_YAW: f32 = 180.0;
 /// South of the model's centre, past its rim: aiming straight down is off the land.
 pub const OVERVIEW_Z: f64 = 65.0;
 /// Where the land ends, whatever the rim does.
 const LAND_RADIUS: f64 = 54.0;
+/// Where a look can land, around this point of the model. Things stand up, so a look at
+/// the far rim lands past it, while the near rim needs no such room.
+const STOP_CENTRE_Z: f64 = -5.0;
+const STOP_RADIUS: f64 = 52.0;
+/// A look held on the stop must count as inside it, or holding it would never end.
+const STOP_SLACK: f64 = 0.01;
 pub const SPECTATOR_EYE_HEIGHT: f64 = 1.62;
 
 /// The detail view is close to straight down and low, because a far look runs out of
 /// what a render distance of 8 shows.
-pub const DETAIL_PITCH: f32 = 78.0;
-/// Heights of the detail view above the sea, from close to far. Past the last one
-/// the fog that ends a render distance of 8 darkens the whole view.
-pub const ZOOMS: [f64; 3] = [65.0, 85.0, 105.0];
-pub const DEFAULT_ZOOM: usize = 2;
+/// An entity's rotation travels as 1/256 of a turn: this is what the camera really has.
+pub const DETAIL_PITCH: f32 = 56.0 * 360.0 / 256.0;
+/// Heights of the detail view above the sea, from close to far. The first clears the
+/// tallest column of the model. Past the last one the fog that ends a render distance
+/// of 8 darkens the whole view.
+pub const ZOOMS: [f64; 7] = [40.0, 50.0, 60.0, 72.0, 84.0, 95.0, 105.0];
+pub const DEFAULT_ZOOM: usize = 5;
 
-/// Nothing on the model can reach the eye, whatever the terrain.
-const _: () = assert!(ZOOMS[0] + SEA_Y as f64 > DETAIL.max_y as f64 + 8.0);
-
-const YAW_LIMIT: f32 = 66.0;
-/// As far as the far rim's tallest marker and the near rim. Rest is between the two.
-const PITCH_LIMITS: [f32; 2] = [REST_PITCH - 33.0, REST_PITCH + 33.0];
+/// The flattest look a stop ever works out, whose landing is still a long way off.
+const FLATTEST_PITCH: f32 = 1.0;
 
 /// Past this pitch a rider is turned back, well before the ±90° stop that would
 /// swallow mouse movement.
 const RECENTRE_PITCH: f32 = 45.0;
 /// Where a rider is turned back to. The client answers at once with exactly this.
 pub const RECENTRED_PITCH: f32 = 0.0;
-const BLOCKS_PER_DEGREE: f64 = 3.0;
-const PAN_LIMIT: f64 = DETAIL.radius as f64 * 0.8;
+/// How fast the mouse pans, the same at any speed.
+const BLOCKS_PER_DEGREE: f64 = 8.0;
 /// As far as a report can move the view: chunks can follow, and the model stays whole.
-const MAX_PAN_STEP: f64 = 12.0;
+pub const MAX_PAN_STEP: f64 = 40.0;
 
 /// How far off the middle of the screen a marker gets picked up, and let go of.
 const AIM_ENTER: f64 = 4.0;
@@ -111,17 +115,33 @@ pub fn aimed(
     }
 }
 
-/// The absolute `[yaw, pitch]` that brings a free look back on the model, for the
-/// axes past a stop. Reports can be late, so answering one must not depend on
-/// what was answered before: an absolute angle stays right if sent twice.
-pub fn stop(yaw: f32, pitch: f32) -> [Option<f32>; 2] {
-    let off_yaw = shortest_turn(REST_YAW, yaw);
-    let held_yaw = off_yaw.clamp(-YAW_LIMIT, YAW_LIMIT);
-    let held_pitch = pitch.clamp(PITCH_LIMITS[0], PITCH_LIMITS[1]);
+/// Where a free look meets the sea, from the model's centre.
+fn landing(yaw: f32, pitch: f32) -> [f64; 2] {
+    let direction = look_direction(yaw, pitch.max(FLATTEST_PITCH));
+    let distance = overview_eye_height() / -direction[1];
     [
-        (held_yaw != off_yaw).then_some(REST_YAW + held_yaw),
-        (held_pitch != pitch).then_some(held_pitch),
+        direction[0] * distance,
+        OVERVIEW_Z + direction[2] * distance,
     ]
+}
+
+/// The absolute `[yaw, pitch]` that brings a free look back on the land, for the axes
+/// that change. The stop is the land's own shape: a look past it is pulled back to the
+/// closest point of the rim, so the middle of the screen never leaves the island.
+/// Reports can be late, so answering one must not depend on what was answered before:
+/// an absolute angle stays right if sent twice.
+pub fn stop(yaw: f32, pitch: f32) -> [Option<f32>; 2] {
+    let [x, z] = landing(yaw, pitch);
+    let from_centre = z - STOP_CENTRE_Z;
+    let reach = x.hypot(from_centre);
+    if reach <= STOP_RADIUS + STOP_SLACK && pitch >= FLATTEST_PITCH {
+        return [None, None];
+    }
+    let pull = (STOP_RADIUS / reach).min(1.0);
+    let (x, z) = (x * pull, from_centre * pull + STOP_CENTRE_Z - OVERVIEW_Z);
+    let held_yaw = (-x).atan2(z).to_degrees() as f32;
+    let held_pitch = overview_eye_height().atan2(x.hypot(z)).to_degrees() as f32;
+    [Some(held_yaw), Some(held_pitch)]
 }
 
 /// What one rotation report amounts to.
@@ -162,17 +182,28 @@ impl Mouse {
 pub struct Pan([f64; 2]);
 
 impl Pan {
+    pub fn at(offset: [f64; 2]) -> Self {
+        Self(offset)
+    }
+
     /// The view looks north: turning right is east, looking down is south.
-    pub fn apply(&mut self, delta: [f32; 2]) {
+    /// Moves the view axis by axis and only over what `on_model` accepts, so that the
+    /// aim follows the real rim, wherever it runs, and slides along it.
+    pub fn apply(&mut self, delta: [f32; 2], on_model: impl Fn([f64; 2]) -> bool) {
         let step = delta.map(|degrees| f64::from(degrees) * BLOCKS_PER_DEGREE);
         let length = step[0].hypot(step[1]);
         let slowed = (MAX_PAN_STEP / length.max(f64::EPSILON)).min(1.0);
-        for (offset, step) in self.0.iter_mut().zip(step) {
-            *offset += step * slowed;
-        }
-        let distance = self.0[0].hypot(self.0[1]);
-        if distance > PAN_LIMIT {
-            self.0 = self.0.map(|offset| offset * PAN_LIMIT / distance);
+        for (axis, step) in step.into_iter().enumerate() {
+            let step = step * slowed;
+            let moves = step.abs().ceil().max(1.0) as u32;
+            for _ in 0..moves {
+                let mut next = self.0;
+                next[axis] += step / f64::from(moves);
+                if !on_model(next) {
+                    break;
+                }
+                self.0 = next;
+            }
         }
     }
 
@@ -186,8 +217,9 @@ mod tests {
     use voidmc::DefaultWorldGenerator;
 
     use super::*;
+    use crate::plugin::CHUNKS_PER_TICK;
     use crate::regions::Regions;
-    use crate::scene::{OVERVIEW, Scene};
+    use crate::scene::{DETAIL, OVERVIEW, Scene};
     use crate::terrain::Terrain;
 
     fn overview() -> Scene {
@@ -197,16 +229,6 @@ mod tests {
 
     fn close(a: [f64; 3], b: [f64; 3]) -> bool {
         (0..3).all(|axis| (a[axis] - b[axis]).abs() < 1e-9)
-    }
-
-    /// Where a look from the resting place meets the sea, from the model's centre.
-    fn landing(yaw: f32, pitch: f32) -> [f64; 2] {
-        let direction = look_direction(yaw, pitch);
-        let distance = overview_eye_height() / -direction[1];
-        [
-            direction[0] * distance,
-            OVERVIEW_Z + direction[2] * distance,
-        ]
     }
 
     #[test]
@@ -236,11 +258,12 @@ mod tests {
                     let (dx, dz) = (f64::from(x) - eye[0], f64::from(z) - eye[2]);
                     let pitch = ((eye[1] - f64::from(top)) / dx.hypot(dz))
                         .atan()
-                        .to_degrees();
-                    let yaw = dx.atan2(-dz).to_degrees();
-                    assert!(pitch > f64::from(PITCH_LIMITS[0]), "{x} {z}");
-                    assert!(pitch < f64::from(PITCH_LIMITS[1]), "{x} {z}");
-                    assert!(yaw.abs() < f64::from(YAW_LIMIT), "{x} {z}");
+                        .to_degrees() as f32;
+                    let yaw = (-dx).atan2(dz).to_degrees() as f32;
+                    let [held_yaw, held_pitch] = stop(yaw, pitch);
+                    let off_yaw = held_yaw.map_or(0.0, |held| shortest_turn(yaw, held));
+                    let off_pitch = held_pitch.map_or(0.0, |held| held - pitch);
+                    assert!(off_yaw.hypot(off_pitch) < AIM_ENTER as f32, "{x} {z}");
                 }
             }
         }
@@ -343,25 +366,52 @@ mod tests {
         assert_eq!(stop(REST_YAW, REST_PITCH), [None, None]);
     }
 
+    /// The view used to leave the island at both ends of the pitch and of the yaw:
+    /// rectangular stops knew nothing of the land, so a look could end on the black sky.
     #[test]
-    fn a_stop_only_holds_the_axis_past_it() {
-        assert_eq!(stop(REST_YAW, 90.0), [None, Some(PITCH_LIMITS[1])]);
-        assert_eq!(stop(REST_YAW, 10.0), [None, Some(PITCH_LIMITS[0])]);
-        let past = REST_YAW + YAW_LIMIT + 4.0;
-        assert_eq!(stop(past, 60.0), [Some(REST_YAW + YAW_LIMIT), None]);
+    fn no_look_ends_off_the_land() {
+        for yaw in (0..360).step_by(5) {
+            for pitch in (-90..=90).step_by(5) {
+                let (yaw, pitch) = (yaw as f32, pitch as f32);
+                let [held_yaw, held_pitch] = stop(yaw, pitch);
+                let (yaw, pitch) = (held_yaw.unwrap_or(yaw), held_pitch.unwrap_or(pitch));
+                let [x, z] = landing(yaw, pitch);
+                let reach = x.hypot(z - STOP_CENTRE_Z);
+                assert!(reach <= STOP_RADIUS + STOP_SLACK, "{yaw} {pitch}: {x} {z}");
+                assert!(pitch > FLATTEST_PITCH, "{yaw} {pitch}");
+            }
+        }
+    }
+
+    /// A held look that still counted as past the stop was answered at every report,
+    /// and each answer swallowed the mouse: the view froze on the rim.
+    #[test]
+    fn a_look_held_on_the_stop_is_left_alone() {
+        for yaw in (0..360).step_by(7) {
+            for pitch in (-90..=90).step_by(7) {
+                if let [Some(yaw), Some(pitch)] = stop(yaw as f32, pitch as f32) {
+                    assert_eq!(stop(yaw, pitch), [None, None], "{yaw} {pitch}");
+                }
+            }
+        }
     }
 
     #[test]
-    fn a_stop_takes_the_short_way_round() {
-        assert_eq!(stop(-110.0, 60.0), [Some(REST_YAW + YAW_LIMIT), None]);
+    fn a_stop_slides_along_the_rim_instead_of_centring() {
+        let [yaw, _] = stop(REST_YAW + 70.0, REST_PITCH).map(Option::unwrap);
+        assert!(shortest_turn(REST_YAW, yaw) > 30.0, "{yaw}");
+    }
+
+    #[test]
+    fn straight_down_and_straight_up_stay_on_the_land() {
+        assert!(stop(REST_YAW, 90.0)[1].is_some());
+        assert!(stop(REST_YAW, -90.0)[1].is_some());
     }
 
     #[test]
     fn a_burst_of_late_reports_asks_for_the_same_angle() {
-        let answers: Vec<_> = (0..5)
-            .map(|_| stop(REST_YAW, PITCH_LIMITS[0] - 5.0))
-            .collect();
-        assert!(answers.iter().all(|a| *a == [None, Some(PITCH_LIMITS[0])]));
+        let answers: Vec<_> = (0..5).map(|_| stop(REST_YAW, 5.0)).collect();
+        assert!(answers.iter().all(|a| *a == answers[0]));
     }
 
     /// Whether a point shows in a window of this shape, at the default field of view.
@@ -463,7 +513,7 @@ mod tests {
     #[test]
     fn a_pan_has_a_top_speed() {
         let mut pan = Pan::default();
-        pan.apply([150.0, 0.0]);
+        pan.apply([150.0, 0.0], |_| true);
         assert_eq!(pan.offset(), [MAX_PAN_STEP, 0.0]);
     }
 
@@ -471,32 +521,96 @@ mod tests {
     fn a_pan_stays_in_the_chunks_it_streams_at_top_speed() {
         const CHUNKS_RING_PER_CHUNK_MOVED: f64 = 19.0;
         let chunks_per_tick = MAX_PAN_STEP / 16.0 * CHUNKS_RING_PER_CHUNK_MOVED;
-        assert!(chunks_per_tick < 24.0);
+        assert!(chunks_per_tick < CHUNKS_PER_TICK as f64);
     }
 
     #[test]
     fn the_zooms_all_aim_at_the_same_place_from_above_the_terrain() {
-        for zoom in 0..ZOOMS.len() {
-            assert!(detail_y(zoom) > f64::from(DETAIL.max_y));
-            assert!(detail_back(zoom) > 0.0);
-        }
+        let scene = detail();
+        let reach = DETAIL.radius + 16;
+        let tallest = (-reach..reach)
+            .flat_map(|x| (-reach..reach).map(move |z| (x, z)))
+            .filter_map(|(x, z)| scene.top(x, z))
+            .max()
+            .expect("a model with land");
+        assert!(detail_y(0) > f64::from(tallest) + 8.0, "{tallest}");
+        assert!(detail_back(0) > 0.0);
         assert!(ZOOMS.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    /// A pan is linear: twice the mouse is twice the distance, up to the top speed.
+    #[test]
+    fn a_pan_has_no_acceleration() {
+        let moved = |degrees: f32| {
+            let mut pan = Pan::default();
+            pan.apply([degrees, 0.0], |_| true);
+            pan.offset()[0]
+        };
+        assert_eq!(moved(2.0), 2.0 * moved(1.0));
     }
 
     #[test]
     fn a_pan_follows_the_mouse() {
         let mut pan = Pan::default();
-        pan.apply([2.0, 1.0]);
-        assert_eq!(pan.offset(), [6.0, 3.0]);
+        pan.apply([2.0, 1.0], |_| true);
+        let gain = BLOCKS_PER_DEGREE;
+        assert_eq!(pan.offset(), [2.0 * gain, gain]);
+    }
+
+    fn detail() -> Scene {
+        let terrain = Terrain::sample(&DefaultWorldGenerator::default(), &DETAIL.window());
+        Scene::new(&terrain, 62, DETAIL, &Regions::demo())
+    }
+
+    fn over(scene: &Scene, [x, z]: [f64; 2]) -> bool {
+        scene.top(x.floor() as i32, z.floor() as i32).is_some()
+    }
+
+    /// The rim is no circle around the origin: it wanders and it is not even centred.
+    /// A view must reach it wherever it runs, and never go past it.
+    #[test]
+    fn a_pan_reaches_the_rim_in_every_direction_and_stops_there() {
+        let scene = detail();
+        for step in 0..32 {
+            let angle = f64::from(step) * std::f64::consts::TAU / 32.0;
+            let delta = [angle.cos() as f32 * 2.0, angle.sin() as f32 * 2.0];
+            let mut pan = Pan::default();
+            for _ in 0..1000 {
+                pan.apply(delta, |at| over(&scene, at));
+                assert!(over(&scene, pan.offset()), "{angle} went off the model");
+            }
+            let [x, z] = pan.offset();
+            let on_the_rim = [[2.0, 0.0], [-2.0, 0.0], [0.0, 2.0], [0.0, -2.0]]
+                .iter()
+                .any(|[dx, dz]| !over(&scene, [x + dx, z + dz]));
+            assert!(on_the_rim, "{angle} stopped short at {x} {z}");
+        }
     }
 
     #[test]
-    fn a_pan_stays_over_the_model() {
+    fn a_pan_slides_along_the_rim_instead_of_sticking_to_it() {
         let mut pan = Pan::default();
-        for _ in 0..1000 {
-            pan.apply([4.0, 4.0]);
-        }
+        pan.apply([1.0, 3.0], |[x, _]| x < 2.0);
         let [x, z] = pan.offset();
-        assert!((x.hypot(z) - PAN_LIMIT).abs() < 1e-6);
+        assert!(x < 2.0 && z == 3.0 * BLOCKS_PER_DEGREE, "{x} {z}");
+    }
+
+    #[test]
+    fn the_detail_pitch_is_what_an_entity_rotation_can_carry() {
+        let steps = f64::from(DETAIL_PITCH) * 256.0 / 360.0;
+        assert_eq!(steps, steps.round());
+    }
+
+    /// The aim is the point on the sea the middle of the screen falls on, so the rim
+    /// and the markers line up with what the player sees, at every height.
+    #[test]
+    fn the_middle_of_the_screen_falls_on_the_pan_offset_at_every_zoom() {
+        let look = look_direction(REST_YAW, DETAIL_PITCH);
+        for (zoom, height) in ZOOMS.iter().enumerate() {
+            let eye = [30.0, detail_y(zoom), -20.0 + detail_back(zoom)];
+            let distance = height / -look[1];
+            assert!((eye[0] + look[0] * distance - 30.0).abs() < 1e-6);
+            assert!((eye[2] + look[2] * distance + 20.0).abs() < 1e-6);
+        }
     }
 }

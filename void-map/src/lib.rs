@@ -8,6 +8,7 @@
 //! what a player knows of each place, and [`art`] draws the info cards.
 //! [`plugin`] moves players in and out of the map.
 
+pub mod alphabet;
 pub mod art;
 pub mod buildings;
 pub mod dimension;

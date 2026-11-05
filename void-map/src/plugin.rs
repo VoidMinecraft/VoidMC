@@ -7,19 +7,18 @@
 //! of the screen is the pointer.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::prelude::*;
 use voidmc::{
     Billboard, BossBar, BossBarColor, Command, CommandBuilder, CommandContext, CommandRegistry,
-    Display, DisplayTransform, EntityBuilder, EntityKind, EntityShownEvent, Glowing,
-    GreedyStringArg, ItemDisplay, ItemDisplayContext, ItemStack, Messages, Passengers,
-    PlayerAbilities, Players, RegistryDataStore, ServerConfigResource, TabEntry, Teleport,
-    TextAlignment, TextDisplay, WorldGen, WorldGenerator,
+    Display, DisplayTransform, EntityBuilder, EntityKind, EntityShownEvent, EnumArg, Glowing,
+    ItemDisplay, ItemDisplayContext, ItemStack, Messages, Passengers, PlayerAbilities, Players,
+    RegistryDataStore, ServerConfigResource, TabEntry, Teleport, TextColor, TextDisplay, WorldGen,
+    WorldGenerator,
     components::{
         ChunkStreamBacklog, ChunkStreamingPaused, ClientId, EffectiveViewDistance, LoadedChunks,
-        MinecraftEntityId, Position, Rotation, ServerControlledPosition,
+        MinecraftEntityId, PlayerUuid, Position, Rotation, ServerControlledPosition,
     },
     events::{PlayerInputEvent, PlayerQuitEvent},
     network::PacketEvent,
@@ -29,13 +28,14 @@ use voidmc_codec::Encode;
 use voidmc_protocol::{
     clientbound::{
         Chunk, GameEvent, GameEventType, PlayerRotation, Respawn, SetCamera, SetCenterChunk,
-        UnloadChunk,
+        SystemChat, UnloadChunk,
     },
     serverbound::{Interact, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation, SpectateEntity},
+    slot::{DataComponent, component_ids},
 };
-use voidmc_ui::PackSettled;
+use voidmc_ui::{PackSettled, Text};
 
-use crate::art::{CARD_WIDTH, Card, Subject};
+use crate::art::{Card, Style, Subject};
 use crate::dimension::{self, DIMENSION, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::pointer::{
@@ -66,27 +66,42 @@ const OVERVIEW_REACH: i32 = (OVERVIEW.radius + 15) / 16 + 1;
 /// Chunks sent around a panning camera, and how far they stay before being unloaded.
 const DETAIL_SEND_RADIUS: i32 = 9;
 const DETAIL_KEEP_RADIUS: i32 = 11;
-const CHUNKS_PER_TICK: usize = 24;
+pub(crate) const CHUNKS_PER_TICK: usize = 64;
 
-const CAMERA_GLIDE_TICKS: u8 = 3;
+/// A longer glide overshoots: the client adds what the entity moved on its own to the
+/// target of a glide, so that a fast pan ended past the rim, off by tens of blocks and
+/// out of step with the server until the next long move. Entities still move smoothly
+/// between ticks with one.
+const CAMERA_GLIDE_TICKS: u8 = 1;
 
 /// Above the tallest landmark, in its blocks.
 const ICON_LIFT: f64 = 10.0;
-const LABEL_LIFT: f64 = 6.0;
 const ICON_SCALE: f32 = 5.0;
 const ICON_HOVER_GROWTH: f32 = 1.6;
-const LABEL_SCALE: f32 = 6.0;
+/// The head floats over the player's spot, on a pin always drawn right under it.
+const HEAD_LIFT: f64 = 7.0;
+const HEAD_SCALE: f32 = 6.0;
+/// How much of its scale it takes to reach the edge of a head.
+const HEAD_HALF: f32 = 0.22;
+const PIN_SCALE: f32 = 8.0;
+const PIN: &str = "§c▼";
+/// A pan starts this far north of the player, for each block of height, to keep their
+/// marker off the middle of the screen.
+const PAN_START_NORTH: f64 = 0.25;
 /// A display's text is 40 pixels to the block, before its scale.
-const PIXELS_PER_BLOCK: f64 = 40.0;
-/// Between a card and its marker, in blocks.
-const CARD_GAP: f64 = 6.0;
-/// Wide enough that the card's lines never wrap.
-const CARD_LINE_WIDTH: i32 = 240;
+const PIXELS_PER_BLOCK: f32 = 40.0;
+/// How much of an icon's scale it takes to reach its top.
+const ICON_HALF: f32 = 0.4;
+/// Between a card and its marker, in pixels of the card.
+const CARD_GAP: f32 = 3.0;
+/// A text display's line stands this many pixels above the entity.
+const LINE_HEIGHT: f32 = 9.0;
+/// So that the drawn line, which can walk far, never wraps.
+const CARD_LINE_WIDTH: i32 = 4096;
 /// Keeps a card the same size on screen, from how far away it is seen.
-const CARD_SCALE_PER_BLOCK: f64 = 0.115;
+const CARD_SCALE_PER_BLOCK: f64 = 0.09;
 const PLAIN_CARD_BACKGROUND: i32 = 0xD8_10_14_1C_u32 as i32;
 const CLEAR: i32 = 0;
-const LABEL_BACKGROUND: i32 = 0x8000_0000_u32 as i32;
 
 /// A spectator only clicks when the look hits an entity, and only sees the
 /// crosshair when that entity has a menu. A chest minecart around the eye is always
@@ -99,7 +114,6 @@ const GLOW: i32 = 0xFFE9A0;
 const HINT_PERIOD: u32 = 30;
 /// A right click sends one packet per hand.
 const CLICK_COOLDOWN: u32 = 3;
-const HINT: &str = "Espace : changer de vue   |   Q/D : zoom   |   S'accroupir : fermer";
 /// Too close to where players start for a marker to tell from the "you" pin.
 const CLEAR_AROUND_ORIGIN: f64 = 64.0;
 
@@ -285,9 +299,26 @@ struct Rig {
 #[derive(Debug, Default)]
 struct Pins {
     icons: Vec<Entity>,
-    /// The "you" pin, with where it stands on the model.
-    you: Option<(Entity, [f64; 3])>,
-    card: Option<Entity>,
+    you: Option<You>,
+    card: Option<ShownCard>,
+}
+
+/// The player's own marker.
+#[derive(Debug, Clone, Copy)]
+struct You {
+    head: Entity,
+    pin: Entity,
+    /// Where they stand on the model.
+    at: [f64; 3],
+}
+
+/// The card on screen, and what it was drawn from, to tell when it has to change.
+#[derive(Debug)]
+struct ShownCard {
+    entity: Entity,
+    text: String,
+    hover: Hover,
+    zoom: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +342,10 @@ pub struct MapSession {
     mouse: Mouse,
     pan: Pan,
     zoom: usize,
+    /// The zoom the markers are sized for.
+    sized_for: usize,
+    /// The player's head, as an item.
+    head: ItemStack,
     /// Jump, left and right as last reported, to act on a press and not on a repeat.
     keys: [bool; 3],
     /// Where the look is, in the middle of the screen.
@@ -364,7 +399,7 @@ impl MapSession {
     }
 
     /// Takes in a rotation the client reports, and says how to correct it, if at all.
-    fn turn(&mut self, yaw: f32, pitch: f32) -> Option<PlayerRotation> {
+    fn turn(&mut self, yaw: f32, pitch: f32, atlas: &Atlas) -> Option<PlayerRotation> {
         self.rig?;
         match self.mode {
             MapMode::Look => {
@@ -380,7 +415,10 @@ impl MapSession {
             MapMode::Pan => {
                 let turn = self.mouse.report(yaw, pitch);
                 if turn.delta != [0.0, 0.0] {
-                    self.pan.apply(turn.delta);
+                    let scene = &atlas.level(self.mode)?.scene;
+                    self.pan.apply(turn.delta, |[x, z]| {
+                        scene.top(x.floor() as i32, z.floor() as i32).is_some()
+                    });
                 }
                 turn.recentre.then_some(PlayerRotation {
                     yaw: 0.0,
@@ -408,13 +446,54 @@ impl MapSession {
         ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32)
     }
 
+    /// Far markers are large and near ones smaller, so that they keep their size on screen.
+    fn marker_scale(&self) -> f32 {
+        let zoom = match self.mode {
+            MapMode::Look => 1.0,
+            MapMode::Pan => ZOOMS[self.zoom] / ZOOMS[ZOOMS.len() - 1],
+        };
+        self.mode.scale().build as f32 * zoom as f32
+    }
+
     fn icon_scale(&self, index: usize) -> f32 {
-        let base = ICON_SCALE * self.mode.scale().build as f32;
+        let base = ICON_SCALE * self.marker_scale();
         let hovered = self.hovered == Some(Hover::Waypoint(index));
         if hovered || self.selected == Some(index) {
             base * ICON_HOVER_GROWTH
         } else {
             base
+        }
+    }
+
+    fn head_scale(&self) -> f32 {
+        let base = HEAD_SCALE * self.marker_scale();
+        if self.hovered == Some(Hover::You) {
+            base * ICON_HOVER_GROWTH
+        } else {
+            base
+        }
+    }
+
+    fn pin_transform(&self) -> DisplayTransform {
+        pin_transform(self.head_scale(), PIN_SCALE * self.marker_scale())
+    }
+
+    fn place_pan(&mut self, atlas: &Atlas) {
+        if let (MapMode::Pan, Some(level)) = (self.mode, atlas.level(self.mode)) {
+            self.pan = self.pan_start(&level.scene);
+        }
+    }
+
+    /// Where a pan starts: near the player, with their marker off the middle.
+    fn pan_start(&self, scene: &Scene) -> Pan {
+        let Some(you) = self.pins.you else {
+            return Pan::default();
+        };
+        let [x, _, z] = you.at;
+        let z = z - PAN_START_NORTH * ZOOMS[self.zoom];
+        match scene.top(x.floor() as i32, z.floor() as i32) {
+            Some(_) => Pan::at([x, z]),
+            None => Pan::default(),
         }
     }
 }
@@ -443,6 +522,7 @@ impl Plugin for MapPlugin {
         .add_observer(right_click)
         .add_observer(read_keys)
         .add_observer(note_pack)
+        .add_observer(choose_style)
         .add_observer(player_left);
         app.world_mut()
             .resource_mut::<CommandRegistry>()
@@ -477,31 +557,75 @@ fn display(scale: f32) -> Display {
 }
 
 fn spawn_icon(commands: &mut Commands, at: Position, item: ItemStack, scale: f32) -> Entity {
+    spawn_item(commands, at, item, ItemDisplayContext::Gui, scale)
+}
+
+fn spawn_item(
+    commands: &mut Commands,
+    at: Position,
+    item: ItemStack,
+    context: ItemDisplayContext,
+    scale: f32,
+) -> Entity {
     EntityBuilder::new(EntityKind::ItemDisplay)
         .position(at)
+        .with_bundle((display(scale), ItemDisplay::new(item).context(context)))
+        .spawn(commands)
+        .id()
+}
+
+/// Under the head in the plane of the screen, from any angle.
+fn pin_transform(head_scale: f32, pin_scale: f32) -> DisplayTransform {
+    let drop = head_scale * HEAD_HALF + pin_scale * LINE_HEIGHT / PIXELS_PER_BLOCK;
+    DisplayTransform::default()
+        .translation(0.0, -drop, 0.0)
+        .uniform_scale(pin_scale)
+}
+
+fn spawn_pin(commands: &mut Commands, at: Position, transform: DisplayTransform) -> Entity {
+    EntityBuilder::new(EntityKind::TextDisplay)
+        .position(at)
         .with_bundle((
-            display(scale),
-            ItemDisplay::new(item).context(ItemDisplayContext::Gui),
+            display(1.0).transform(transform),
+            TextDisplay::new(PIN).background_color(CLEAR),
         ))
         .spawn(commands)
         .id()
 }
 
-fn spawn_label(commands: &mut Commands, at: Position, text: &str) -> Entity {
-    EntityBuilder::new(EntityKind::TextDisplay)
-        .position(at)
-        .with_bundle((
-            display(LABEL_SCALE),
-            TextDisplay::new(text).background_color(LABEL_BACKGROUND),
-        ))
-        .spawn(commands)
-        .id()
+/// The player's head. Only an id goes out, so the client looks up the skin itself: an
+/// offline account has none, and shows the default skin of its id.
+fn player_head(id: Option<&PlayerUuid>) -> ItemStack {
+    let head = item("minecraft:player_head");
+    let Some(id) = id else {
+        return head;
+    };
+    // An unresolved profile with no name, then an empty list of properties and no skin
+    // patch, whose four parts are all optional.
+    let mut body = vec![0, 0, 1];
+    body.extend_from_slice(id.0.as_bytes());
+    body.extend_from_slice(&[0, 0, 0, 0, 0]);
+    head.with_component(DataComponent::Raw {
+        type_id: component_ids::PROFILE,
+        body,
+    })
 }
 
-fn spawn_card(commands: &mut Commands, at: Position, text: TextDisplay, scale: f32) -> Entity {
+/// A card, moved in the plane of the screen so that it stays on top of its marker
+/// wherever the view looks at it from.
+fn spawn_card(
+    commands: &mut Commands,
+    at: Position,
+    text: TextDisplay,
+    scale: f32,
+    lift: f32,
+) -> Entity {
+    let transform = DisplayTransform::default()
+        .translation(0.0, lift, 0.0)
+        .uniform_scale(scale);
     EntityBuilder::new(EntityKind::TextDisplay)
         .position(at)
-        .with_bundle((display(scale), text))
+        .with_bundle((display(scale).transform(transform), text))
         .spawn(commands)
         .id()
 }
@@ -510,43 +634,40 @@ fn waypoint_card(atlas: &Atlas, waypoint: &Waypoint, player: &Position) -> Card 
     let marker = &waypoint.marker;
     let region = atlas.regions.at(f64::from(marker.x), f64::from(marker.z));
     let distance = (f64::from(marker.x) - player.x).hypot(f64::from(marker.z) - player.z) as i64;
-    let (state, action) = match region.state {
-        RegionState::Discovered => ("§a", "Clic gauche : selectionner"),
-        RegionState::Undiscovered => ("§7", "Region a explorer"),
-        RegionState::Locked => ("§c", "Region fermee pour l'instant"),
+    let state = match region.state {
+        RegionState::Discovered => "§a",
+        RegionState::Undiscovered => "§7",
+        RegionState::Locked => "§c",
     };
     Card {
         subject: Subject::Place(marker.kind),
         title: marker.name.clone(),
-        kicker: format!("{} - {}", marker.kind.label(), region.name),
-        status: format!("{state}{}§7 - {distance} blocs", region.state.label()),
+        kind: marker.kind.label().into(),
+        info: format!("{} · {distance} blocs", marker.kind.label()),
+        status: format!("{state}{}", region.name),
         description: marker.kind.description().into(),
-        action: action.into(),
+        open: false,
     }
 }
 
 fn you_card() -> Card {
     Card {
         subject: Subject::You,
-        title: "Vous etes ici".into(),
-        kicker: "Votre position".into(),
-        status: "§7Sur la carte du monde".into(),
-        description: "Le monde vous attend.".into(),
-        action: "S'accroupir : fermer la carte".into(),
+        title: "Vous êtes ici".into(),
+        kind: "Vous".into(),
+        info: "Votre position".into(),
+        status: String::new(),
+        description: String::new(),
+        open: false,
     }
 }
 
 /// How a client shows a card, with the pack or without.
-fn card_display(card: &Card, drawn: bool) -> TextDisplay {
-    let (text, background) = if drawn {
-        (card.drawn(), CLEAR)
-    } else {
-        (card.plain(), PLAIN_CARD_BACKGROUND)
-    };
+fn card_display(text: String, drawn: bool) -> TextDisplay {
+    let background = if drawn { CLEAR } else { PLAIN_CARD_BACKGROUND };
     TextDisplay::new(text)
         .line_width(CARD_LINE_WIDTH)
         .background_color(background)
-        .alignment(TextAlignment::Left)
         .see_through()
 }
 
@@ -560,12 +681,23 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
     for waypoint in &level.waypoints {
         let [x, y, z] = waypoint.at;
         let at = session.on_model(x, y + ICON_LIFT * build, z);
-        let scale = ICON_SCALE * build as f32;
+        let scale = ICON_SCALE * session.marker_scale();
         icons.push(spawn_icon(commands, at, icon(waypoint.marker.kind), scale));
     }
-    let you = model_spot(level, &session.position).map(|[x, y, z]| {
-        let at = session.on_model(x, y + LABEL_LIFT * build, z);
-        (spawn_label(commands, at, "VOUS"), [x, y, z])
+    let head = session.head.clone();
+    let head_scale = session.head_scale();
+    let pin = session.pin_transform();
+    let you = model_spot(level, &session.position).map(|at @ [x, y, z]| You {
+        head: spawn_item(
+            commands,
+            session.on_model(x, y + HEAD_LIFT * build, z),
+            head,
+            // Facing the camera: as an icon, a head shows its hair more than its face.
+            ItemDisplayContext::Fixed,
+            head_scale,
+        ),
+        pin: spawn_pin(commands, session.on_model(x, y + HEAD_LIFT * build, z), pin),
+        at,
     });
     session.pins = Pins {
         icons,
@@ -587,6 +719,7 @@ type EntrantState<'a> = (
     &'a Rotation,
     Option<&'a PlayerAbilities>,
     Option<&'a mut TabEntry>,
+    Option<&'a PlayerUuid>,
 );
 
 fn enter(
@@ -601,7 +734,7 @@ fn enter(
     if atlas.level(mode).is_none() {
         return;
     }
-    let Ok((client, position, rotation, abilities, tab)) = states.get_mut(player) else {
+    let Ok((client, position, rotation, abilities, tab, id)) = states.get_mut(player) else {
         return;
     };
     // The client asks this entry, not `Respawn`, whether it is a spectator.
@@ -656,6 +789,8 @@ fn enter(
         mouse: Mouse::default(),
         pan: Pan::default(),
         zoom: DEFAULT_ZOOM,
+        sized_for: DEFAULT_ZOOM,
+        head: player_head(id),
         keys: [false; 3],
         look: Rotation {
             yaw: REST_YAW,
@@ -669,6 +804,7 @@ fn enter(
         last_click: 0,
     };
     spawn_pins(&atlas, &mut session, &mut commands);
+    session.place_pan(&atlas);
     session.look = session.rest();
     let home = session.camera_position();
     let rest = session.look;
@@ -698,8 +834,8 @@ fn despawn_pins(session: &mut MapSession, commands: &mut Commands) {
     let entities = pins
         .icons
         .into_iter()
-        .chain(pins.you.map(|(entity, _)| entity))
-        .chain(pins.card);
+        .chain(pins.you.into_iter().flat_map(|you| [you.head, you.pin]))
+        .chain(pins.card.map(|card| card.entity));
     for entity in entities {
         commands.entity(entity).try_despawn();
     }
@@ -745,11 +881,13 @@ fn switch_mode(
     session.pan = Pan::default();
     session.mouse = Mouse::default();
     session.zoom = DEFAULT_ZOOM;
+    session.sized_for = DEFAULT_ZOOM;
     session.look = session.rest();
     session.hovered = None;
     session.selected = None;
     session.centre = None;
     spawn_pins(&atlas, &mut session, &mut commands);
+    session.place_pan(&atlas);
     let home = session.camera_position();
     let rest = session.look;
     commands.entity(player).insert((
@@ -913,10 +1051,11 @@ fn look_through_camera(
 fn read_mouse(
     event: On<PacketEvent<SetPlayerRotation>>,
     mut sessions: Query<&mut MapSession>,
+    atlas: Res<Atlas>,
     players: Players,
 ) {
     if let Ok(mut session) = sessions.get_mut(event.entity)
-        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch)
+        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch, &atlas)
     {
         players.send(event.entity, correction);
     }
@@ -927,10 +1066,11 @@ fn read_mouse(
 fn read_mouse_with_position(
     event: On<PacketEvent<SetPlayerPosAndRot>>,
     mut sessions: Query<&mut MapSession>,
+    atlas: Res<Atlas>,
     players: Players,
 ) {
     if let Ok(mut session) = sessions.get_mut(event.entity)
-        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch)
+        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch, &atlas)
     {
         players.send(event.entity, correction);
     }
@@ -963,6 +1103,27 @@ fn set_scale(displays: &mut Query<&mut Display>, entity: Entity, scale: f32) {
     }
 }
 
+/// Sizes a marker for the zoom and for whether the look is on it.
+fn resize(session: &MapSession, marker: Hover, displays: &mut Query<&mut Display>) {
+    match marker {
+        Hover::Waypoint(index) => {
+            set_scale(
+                displays,
+                session.pins.icons[index],
+                session.icon_scale(index),
+            );
+        }
+        Hover::You => {
+            if let Some(you) = session.pins.you {
+                set_scale(displays, you.head, session.head_scale());
+                if let Ok(mut pin) = displays.get_mut(you.pin) {
+                    pin.transform = session.pin_transform();
+                }
+            }
+        }
+    }
+}
+
 fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
     let build = f64::from(session.mode.scale().build);
     let icons = level
@@ -973,7 +1134,7 @@ fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
         .pins
         .you
         .iter()
-        .map(|(_, [x, y, z])| [*x, y + LABEL_LIFT * build, *z]);
+        .map(|you| [you.at[0], you.at[1] + HEAD_LIFT * build, you.at[2]]);
     let points: Vec<_> = icons.chain(you).collect();
     let count = level.waypoints.len();
     let current = session.hovered.map(|hover| match hover {
@@ -989,15 +1150,96 @@ fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
     })
 }
 
-fn card_of(atlas: &Atlas, level: &Level, session: &MapSession, hover: Hover) -> (Card, [f64; 3]) {
+/// What the panel talks about: what the look is on, or else what stays selected.
+fn subject(session: &MapSession) -> Option<Hover> {
+    session.hovered.or(session.selected.map(Hover::Waypoint))
+}
+
+fn card_of(atlas: &Atlas, level: &Level, session: &MapSession, hover: Hover) -> Card {
+    match hover {
+        Hover::Waypoint(index) => Card {
+            open: session.selected == Some(index),
+            ..waypoint_card(atlas, &level.waypoints[index], &session.position)
+        },
+        Hover::You => you_card(),
+    }
+}
+
+/// Where a marker's icon stands on the model, with how far up from there it reaches.
+fn marker_top(level: &Level, session: &MapSession, hover: Hover) -> Option<([f64; 3], f32)> {
+    let build = f64::from(session.mode.scale().build);
     match hover {
         Hover::Waypoint(index) => {
-            let waypoint = &level.waypoints[index];
-            let card = waypoint_card(atlas, waypoint, &session.position);
-            (card, waypoint.at)
+            let [x, y, z] = level.waypoints[index].at;
+            let scale = session.icon_scale(index);
+            Some(([x, y + ICON_LIFT * build, z], scale * ICON_HALF))
         }
-        Hover::You => (you_card(), session.pins.you.map_or([0.0; 3], |(_, at)| at)),
+        Hover::You => {
+            let [x, y, z] = session.pins.you?.at;
+            Some((
+                [x, y + HEAD_LIFT * build, z],
+                session.head_scale() * HEAD_HALF,
+            ))
+        }
     }
+}
+
+/// Keeps the card of the current subject on screen, and only that one.
+fn show_card(
+    atlas: &Atlas,
+    level: &Level,
+    session: &mut MapSession,
+    style: Style,
+    drawn: bool,
+    commands: &mut Commands,
+) {
+    let wanted = subject(session).map(|hover| {
+        let card = card_of(atlas, level, session, hover);
+        let text = if drawn {
+            card.drawn(style)
+        } else {
+            card.plain()
+        };
+        (hover, card.depth(style), text)
+    });
+    let zoom = session.zoom;
+    let same = match (&session.pins.card, &wanted) {
+        (Some(shown), Some((hover, _, text))) => {
+            shown.hover == *hover && shown.zoom == zoom && shown.text == *text
+        }
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        return;
+    }
+    if let Some(shown) = session.pins.card.take() {
+        commands.entity(shown.entity).try_despawn();
+    }
+    let Some((hover, depth, text)) = wanted else {
+        return;
+    };
+    let Some(([x, y, z], icon_half)) = marker_top(level, session, hover) else {
+        return;
+    };
+    let eye = session.eye();
+    let distance = (eye[0] - x).hypot(eye[1] - y).hypot(eye[2] - z);
+    let scale = (distance * CARD_SCALE_PER_BLOCK) as f32;
+    // The drawing hangs under the line: its foot has to clear the top of the icon.
+    let hanging = if drawn {
+        depth as f32 - LINE_HEIGHT
+    } else {
+        0.0
+    };
+    let lift = icon_half + (hanging + CARD_GAP) * scale / PIXELS_PER_BLOCK;
+    let at = session.on_model(x, y, z);
+    let display = card_display(text.clone(), drawn);
+    session.pins.card = Some(ShownCard {
+        entity: spawn_card(commands, at, display, scale, lift),
+        text,
+        hover,
+        zoom,
+    });
 }
 
 fn bar_title(level: &Level, session: &MapSession) -> String {
@@ -1012,14 +1254,14 @@ fn bar_title(level: &Level, session: &MapSession) -> String {
 }
 
 fn follow_view(
-    mut sessions: Query<(&mut MapSession, Has<PackLoaded>)>,
+    mut sessions: Query<(&mut MapSession, Has<PackLoaded>, Option<&MapStyle>)>,
     mut positions: Query<&mut Position, Without<MapSession>>,
     atlas: Res<Atlas>,
     mut displays: Query<&mut Display>,
     mut bars: Query<&mut BossBar>,
     mut commands: Commands,
 ) {
-    for (mut session, drawn) in &mut sessions {
+    for (mut session, drawn, style) in &mut sessions {
         let (Some(rig), Some(level)) = (session.rig, atlas.level(session.mode)) else {
             continue;
         };
@@ -1039,35 +1281,28 @@ fn follow_view(
             let previous = std::mem::replace(&mut session.hovered, hovered);
             tracing::info!(?hovered, "map hover");
             for hover in [previous, hovered].into_iter().flatten() {
-                if let Hover::Waypoint(index) = hover {
-                    let scale = session.icon_scale(index);
-                    set_scale(&mut displays, session.pins.icons[index], scale);
-                }
+                resize(&session, hover, &mut displays);
             }
             if let Some(Hover::Waypoint(index)) = previous {
                 commands
                     .entity(session.pins.icons[index])
-                    .remove::<Glowing>();
+                    .try_remove::<Glowing>();
             }
-            if let Some(card) = session.pins.card.take() {
-                commands.entity(card).try_despawn();
-            }
-            if let Some(hover) = hovered {
-                if let Hover::Waypoint(index) = hover {
-                    commands.entity(session.pins.icons[index]).insert(Glowing);
-                }
-                let (card, [x, y, z]) = card_of(&atlas, level, &session, hover);
-                let build = f64::from(session.mode.scale().build);
-                let eye = session.eye();
-                let lifted = y + ICON_LIFT * build;
-                let scale = (eye[1] - lifted).hypot(eye[2] - z) * CARD_SCALE_PER_BLOCK;
-                let side = if x > eye[0] { -1.0 } else { 1.0 };
-                let half = f64::from(CARD_WIDTH) / PIXELS_PER_BLOCK * scale / 2.0;
-                let at = session.on_model(x + side * (half + CARD_GAP), lifted, z);
-                let text = card_display(&card, drawn);
-                session.pins.card = Some(spawn_card(&mut commands, at, text, scale as f32));
+            if let Some(Hover::Waypoint(index)) = hovered {
+                commands
+                    .entity(session.pins.icons[index])
+                    .try_insert(Glowing);
             }
         }
+        if session.sized_for != session.zoom {
+            session.sized_for = session.zoom;
+            for index in 0..session.pins.icons.len() {
+                resize(&session, Hover::Waypoint(index), &mut displays);
+            }
+            resize(&session, Hover::You, &mut displays);
+        }
+        let style = style.map_or(Style::default(), |style| style.0);
+        show_card(&atlas, level, &mut session, style, drawn, &mut commands);
         let title = bar_title(level, &session);
         if let Ok(mut bar) = bars.get_mut(session.bar)
             && bar.title != title
@@ -1080,8 +1315,7 @@ fn follow_view(
 fn select(session: &mut MapSession, choice: Option<usize>, displays: &mut Query<&mut Display>) {
     let previous = std::mem::replace(&mut session.selected, choice);
     if let Some(old) = previous.filter(|old| Some(*old) != choice) {
-        let scale = session.icon_scale(old);
-        set_scale(displays, session.pins.icons[old], scale);
+        resize(session, Hover::Waypoint(old), displays);
     }
 }
 
@@ -1127,7 +1361,7 @@ fn left_click(
     if region.state == RegionState::Discovered {
         select(&mut session, Some(index), &mut displays);
         messages
-            .message(player, format!("{} selectionne.", marker.name))
+            .message(player, format!("{} sélectionné.", marker.name))
             .send();
     } else {
         let message = format!("{} : {}.", region.name, region.state.label());
@@ -1152,11 +1386,32 @@ fn right_click(
     }
 }
 
-fn show_hint(mut sessions: Query<(Entity, &mut MapSession)>, messages: Messages) {
+/// What each key does, named as the player has them bound.
+fn hint() -> Text {
+    let key = Text::keybind;
+    Text::new("")
+        .color(TextColor::White)
+        .append(key("key.jump"))
+        .append(Text::new(" : changer de vue   |   "))
+        .append(key("key.left"))
+        .append(Text::new(" / "))
+        .append(key("key.right"))
+        .append(Text::new(" : zoom   |   "))
+        .append(key("key.sneak"))
+        .append(Text::new(" : fermer"))
+}
+
+fn show_hint(mut sessions: Query<(Entity, &mut MapSession)>, players: Players) {
     for (player, mut session) in &mut sessions {
         session.ticks += 1;
         if session.ticks.is_multiple_of(HINT_PERIOD) {
-            messages.action_bar(player, HINT).send();
+            players.send(
+                player,
+                SystemChat {
+                    content: hint().to_nbt(),
+                    overlay: true,
+                },
+            );
         }
     }
 }
@@ -1182,6 +1437,29 @@ fn read_keys(
             .saturating_sub(usize::from(closer))
             .min(ZOOMS.len() - 1);
     }
+}
+
+/// The look of a player's cards, kept between sessions.
+#[derive(Component, Debug, Clone, Copy)]
+struct MapStyle(Style);
+
+/// Sets a player's style of card, or moves on to the next one.
+#[derive(Event, Debug, Clone, Copy)]
+pub struct ChooseStyle(pub Entity, pub Option<Style>);
+
+fn choose_style(
+    event: On<ChooseStyle>,
+    styles: Query<&MapStyle>,
+    messages: Messages,
+    mut commands: Commands,
+) {
+    let player = event.0;
+    let current = styles.get(player).map_or(Style::default(), |style| style.0);
+    let style = event.1.unwrap_or(current.next());
+    commands.entity(player).insert(MapStyle(style));
+    messages
+        .message(player, format!("Panneau : {}", style.label()))
+        .send();
 }
 
 /// The client has the pack, so it can draw cards.
@@ -1266,22 +1544,50 @@ fn player_left(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MapAction {
+    Look,
+    Pan,
+    Stop,
+    Style,
+}
+
 fn map_command() -> Command {
     CommandBuilder::new("map")
-        .description("Ouvre la carte du monde : /map [look|pan|stop]")
-        .arg_optional("mode", Arc::new(GreedyStringArg))
-        .handler(open_map)
+        .description("Ouvre la carte du monde")
+        .arg_optional(
+            "action",
+            EnumArg::new([
+                ("look", MapAction::Look),
+                ("pan", MapAction::Pan),
+                ("stop", MapAction::Stop),
+                ("style", MapAction::Style),
+            ]),
+        )
+        .arg_optional(
+            "style",
+            EnumArg::new([("1", Style::Card), ("2", Style::Band), ("3", Style::Tag)]),
+        )
+        .handler(run_map)
         .build()
 }
 
-fn open_map(ctx: &mut CommandContext) {
+/// The engine's arguments form one chain, so a style can follow any action.
+fn run_map(ctx: &mut CommandContext) {
     let player = ctx.entity;
-    match ctx.get::<String>("mode").map(String::as_str) {
-        None | Some("look") => ctx.with_world_mut(|w| w.trigger(OpenMap(player, MapMode::Look))),
-        Some("pan") => ctx.with_world_mut(|w| w.trigger(OpenMap(player, MapMode::Pan))),
-        Some("stop") => ctx.with_world_mut(|w| w.trigger(CloseMap(player))),
-        Some(_) => ctx.reply("Usage : /map [look|pan|stop]"),
-    }
+    let action = ctx.get::<MapAction>("action").copied();
+    let style = ctx.get::<Style>("style").copied();
+    ctx.with_world_mut(|world| {
+        match action.unwrap_or(MapAction::Look) {
+            MapAction::Look => world.trigger(OpenMap(player, MapMode::Look)),
+            MapAction::Pan => world.trigger(OpenMap(player, MapMode::Pan)),
+            MapAction::Stop => world.trigger(CloseMap(player)),
+            MapAction::Style => {}
+        }
+        if style.is_some() || action == Some(MapAction::Style) {
+            world.trigger(ChooseStyle(player, style));
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1340,6 +1646,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_hint_names_the_player_s_own_keys() {
+        let hint = format!("{:?}", hint().to_compound());
+        for action in ["key.jump", "key.left", "key.right", "key.sneak"] {
+            assert!(hint.contains(action), "{action}: {hint}");
+        }
+    }
+
+    fn map_registry() -> CommandRegistry {
+        let mut registry = CommandRegistry::new();
+        registry.register(map_command());
+        registry
+    }
+
+    #[test]
+    fn map_completes_its_actions_and_its_styles() {
+        let world = World::new();
+        let registry = map_registry();
+        let actions = registry.complete("map ", &world).expect("actions");
+        assert_eq!(actions.matches, ["look", "pan", "stop", "style"]);
+        let styles = registry.complete("map style ", &world).expect("styles");
+        assert_eq!(styles.matches, ["1", "2", "3"]);
+    }
+
     /// A look that stopped on the client's position tick used to go unseen, so that
     /// the marker under the crosshair stayed unhovered until the mouse moved again.
     #[test]
@@ -1370,6 +1700,8 @@ mod tests {
             mouse: Mouse::default(),
             pan: Pan::default(),
             zoom: DEFAULT_ZOOM,
+            sized_for: DEFAULT_ZOOM,
+            head: item("minecraft:player_head"),
             keys: [false; 3],
             look: Rotation {
                 yaw: REST_YAW,
@@ -1463,15 +1795,12 @@ mod tests {
             y: 64.0,
             z: 40.0,
         };
-        let card = waypoint_card(&atlas, &waypoint, &player).plain();
-        for part in [
-            "Port-Noir",
-            "Phare",
-            "Confins de l'Est",
-            "100 blocs",
-            "Verrouillee",
-            "fermee",
-        ] {
+        let card = Card {
+            open: true,
+            ..waypoint_card(&atlas, &waypoint, &player)
+        }
+        .plain();
+        for part in ["Port-Noir", "Phare", "Confins de l'Est", "100 blocs"] {
             assert!(card.contains(part), "{part}: {card}");
         }
     }

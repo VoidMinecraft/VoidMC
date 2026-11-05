@@ -38,9 +38,9 @@ impl MarkerKind {
     /// A line about what stands there.
     pub fn description(self) -> &'static str {
         match self {
-            Self::Village => "Des maisons, un marche, du monde.",
+            Self::Village => "Des maisons, un marché, du monde.",
             Self::Ruins => "Il ne reste que des pierres.",
-            Self::Mine => "Une galerie encore etayee.",
+            Self::Mine => "Une galerie encore étayée.",
             Self::Lighthouse => "Son feu se voit de loin.",
         }
     }

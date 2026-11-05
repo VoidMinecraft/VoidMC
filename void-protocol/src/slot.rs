@@ -39,6 +39,7 @@ pub mod component_ids {
     pub const MAX_DAMAGE: i32 = 2;
     pub const DAMAGE: i32 = 3;
     pub const REPAIR_COST: i32 = 19;
+    pub const PROFILE: i32 = 70;
 }
 
 /// A single structured data component carried by an [`ItemStack`](Slot).

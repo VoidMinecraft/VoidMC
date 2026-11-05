@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .motd("Carte | Void")
         .build();
     let prompt =
-        Text::new("Les fiches de la carte sont dessinees par ce pack.").color(TextColor::Yellow);
+        Text::new("Les fiches de la carte sont dessinées par ce pack.").color(TextColor::Yellow);
     VoidServer::new(config)
         .add_plugin(move |app| {
             app.add_plugins(UiPlugin::new(server, prompt))

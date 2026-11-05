@@ -21,9 +21,9 @@ impl RegionState {
     /// Name shown to players.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Discovered => "Decouverte",
-            Self::Undiscovered => "Non decouverte",
-            Self::Locked => "Verrouillee",
+            Self::Discovered => "Découverte",
+            Self::Undiscovered => "Non découverte",
+            Self::Locked => "Verrouillée",
         }
     }
 
@@ -83,7 +83,7 @@ impl Regions {
         let region = |name, site, state| Region { name, site, state };
         Self::new(vec![
             region("Terres du Centre", [0.0, 60.0], RegionState::Discovered),
-            region("Cote Ouest", [-300.0, 40.0], RegionState::Discovered),
+            region("Côte Ouest", [-300.0, 40.0], RegionState::Discovered),
             region("Cap Sud", [80.0, 340.0], RegionState::Discovered),
             region("Marches du Nord", [40.0, -340.0], RegionState::Undiscovered),
             region("Confins de l'Est", [340.0, -60.0], RegionState::Locked),
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn a_site_belongs_to_its_own_region() {
         let regions = Regions::demo();
-        assert_eq!(regions.at(-300.0, 40.0).name, "Cote Ouest");
+        assert_eq!(regions.at(-300.0, 40.0).name, "Côte Ouest");
         assert_eq!(regions.at(340.0, -60.0).state, RegionState::Locked);
     }
 
