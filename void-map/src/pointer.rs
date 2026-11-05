@@ -13,26 +13,34 @@ pub const REST_YAW: f32 = 180.0;
 pub const OVERVIEW_Z: f64 = 65.0;
 /// Where the land ends, whatever the rim does.
 const LAND_RADIUS: f64 = 54.0;
-/// Where a look can land, around this point of the model. Things stand up, so a look at
-/// the far rim lands past it, while the near rim needs no such room.
-const STOP_CENTRE_Z: f64 = -5.0;
-const STOP_RADIUS: f64 = 52.0;
-/// A look held on the stop must count as inside it, or holding it would never end.
-const STOP_SLACK: f64 = 0.01;
 pub const SPECTATOR_EYE_HEIGHT: f64 = 1.62;
 
 /// The detail view is close to straight down and low, because a far look runs out of
 /// what a render distance of 8 shows.
 /// An entity's rotation travels as 1/256 of a turn: this is what the camera really has.
 pub const DETAIL_PITCH: f32 = 56.0 * 360.0 / 256.0;
-/// Heights of the detail view above the sea, from close to far. The first clears the
-/// tallest column of the model. Past the last one the fog that ends a render distance
-/// of 8 darkens the whole view.
-pub const ZOOMS: [f64; 7] = [40.0, 50.0, 60.0, 72.0, 84.0, 95.0, 105.0];
-pub const DEFAULT_ZOOM: usize = 5;
+/// Heights of the view above the sea, in blocks of the detail model. Past
+/// [`COARSE_ABOVE`] the view moves to the coarser model and stays under the fog that
+/// ends a render distance of 8: a height there is one the detail model would have.
+pub const CLOSEST_ZOOM: f64 = 40.0;
+pub const FARTHEST_ZOOM: f64 = 280.0;
+pub const DEFAULT_ZOOM: f64 = 95.0;
+pub const COARSE_ABOVE: f64 = 105.0;
+/// Back to the detail model. The gap stops a held height from flipping between the two.
+pub const DETAIL_BELOW: f64 = 96.0;
+/// What a tick with the key held multiplies the height by. It feels the same at any height.
+const ZOOM_PER_TICK: f64 = 1.03;
 
-/// The flattest look a stop ever works out, whose landing is still a long way off.
-const FLATTEST_PITCH: f32 = 1.0;
+/// Where the look comes back to once the mouse rests. It goes past these while moving.
+const LOOK_YAW_LIMIT: f32 = 95.0;
+const LOOK_PITCH_LIMITS: [f32; 2] = [15.0, 90.0];
+/// How long the mouse has to rest before the view drifts back, in ticks.
+const SETTLE_TICKS: u32 = 10;
+/// How much of what is left the look drifts back by in a tick, and in degrees at most.
+const LOOK_DRIFT_SHARE: f32 = 0.12;
+const LOOK_DRIFT_MOST: f32 = 1.2;
+/// Under this, the look has arrived.
+const LOOK_DRIFT_LEAST: f32 = 0.1;
 
 /// Past this pitch a rider is turned back, well before the ±90° stop that would
 /// swallow mouse movement.
@@ -40,9 +48,18 @@ const RECENTRE_PITCH: f32 = 45.0;
 /// Where a rider is turned back to. The client answers at once with exactly this.
 pub const RECENTRED_PITCH: f32 = 0.0;
 /// How fast the mouse pans, the same at any speed.
-const BLOCKS_PER_DEGREE: f64 = 8.0;
+const BLOCKS_PER_DEGREE: f64 = 5.0;
 /// As far as a report can move the view: chunks can follow, and the model stays whole.
 pub const MAX_PAN_STEP: f64 = 40.0;
+/// How far past the rim a pan can stretch. The further out, the harder it pulls.
+const PAN_MARGIN: i32 = 28;
+/// How much of what is left a pan comes back by in a tick, once the mouse rests.
+const PAN_RETURN_SHARE: f64 = 0.15;
+const PAN_RETURN_LEAST: f64 = 0.3;
+/// How much of the way to the aim the view covers in a tick. It ends on a long tail of
+/// short moves: a client gliding to the last one has nothing left to overshoot with.
+const VIEW_SHARE: f64 = 0.45;
+const VIEW_ARRIVED: f64 = 0.01;
 
 /// How far off the middle of the screen a marker gets picked up, and let go of.
 const AIM_ENTER: f64 = 4.0;
@@ -64,13 +81,9 @@ pub fn overview_y() -> f64 {
     f64::from(SEA_Y) + overview_eye_height() - SPECTATOR_EYE_HEIGHT
 }
 
-pub fn detail_y(zoom: usize) -> f64 {
-    f64::from(SEA_Y) + ZOOMS[zoom]
-}
-
-/// How far south of the point it aims at the detail view stands.
-pub fn detail_back(zoom: usize) -> f64 {
-    ZOOMS[zoom] / f64::from(DETAIL_PITCH).to_radians().tan()
+/// How far south of the point it aims at the detail view stands, from a height.
+pub fn detail_back(height: f64) -> f64 {
+    height / f64::from(DETAIL_PITCH).to_radians().tan()
 }
 
 fn shortest_turn(from: f32, to: f32) -> f32 {
@@ -115,33 +128,119 @@ pub fn aimed(
     }
 }
 
-/// Where a free look meets the sea, from the model's centre.
-fn landing(yaw: f32, pitch: f32) -> [f64; 2] {
-    let direction = look_direction(yaw, pitch.max(FLATTEST_PITCH));
-    let distance = overview_eye_height() / -direction[1];
+/// Where a look comes back to, as the nearest angles within the limits.
+pub fn resting_look(yaw: f32, pitch: f32) -> [f32; 2] {
+    let off = shortest_turn(REST_YAW, yaw);
+    let held = off.clamp(-LOOK_YAW_LIMIT, LOOK_YAW_LIMIT);
     [
-        direction[0] * distance,
-        OVERVIEW_Z + direction[2] * distance,
+        yaw + (held - off),
+        pitch.clamp(LOOK_PITCH_LIMITS[0], LOOK_PITCH_LIMITS[1]),
     ]
 }
 
-/// The absolute `[yaw, pitch]` that brings a free look back on the land, for the axes
-/// that change. The stop is the land's own shape: a look past it is pulled back to the
-/// closest point of the rim, so the middle of the screen never leaves the island.
-/// Reports can be late, so answering one must not depend on what was answered before:
-/// an absolute angle stays right if sent twice.
-pub fn stop(yaw: f32, pitch: f32) -> [Option<f32>; 2] {
-    let [x, z] = landing(yaw, pitch);
-    let from_centre = z - STOP_CENTRE_Z;
-    let reach = x.hypot(from_centre);
-    if reach <= STOP_RADIUS + STOP_SLACK && pitch >= FLATTEST_PITCH {
-        return [None, None];
+/// Follows a free look, which the mouse alone moves. The client turns it many times
+/// between two server ticks, so correcting a look in motion can only fight the mouse.
+/// Past its limits a look drifts back in small steps, and only once the mouse rests.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FreeLook {
+    last: Option<[f32; 2]>,
+    /// Ticks since the mouse last moved.
+    still: u32,
+    /// Where the last step should put the look: reaching it is no mouse movement.
+    awaited: Option<[f32; 2]>,
+}
+
+fn same_look(a: [f32; 2], b: [f32; 2]) -> bool {
+    shortest_turn(a[0], b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01
+}
+
+impl FreeLook {
+    pub fn report(&mut self, yaw: f32, pitch: f32) {
+        let look = [yaw, pitch];
+        let last = self.last.replace(look);
+        if self.awaited.is_some_and(|awaited| same_look(awaited, look)) {
+            self.awaited = None;
+        } else if last.is_none_or(|last| !same_look(last, look)) {
+            self.still = 0;
+            self.awaited = None;
+        }
     }
-    let pull = (STOP_RADIUS / reach).min(1.0);
-    let (x, z) = (x * pull, from_centre * pull + STOP_CENTRE_Z - OVERVIEW_Z);
-    let held_yaw = (-x).atan2(z).to_degrees() as f32;
-    let held_pitch = overview_eye_height().atan2(x.hypot(z)).to_degrees() as f32;
-    [Some(held_yaw), Some(held_pitch)]
+
+    /// Whether the look stands past its limits.
+    pub fn is_past(&self) -> bool {
+        self.last
+            .is_some_and(|[yaw, pitch]| !same_look(resting_look(yaw, pitch), [yaw, pitch]))
+    }
+
+    /// The step to add to the look on this tick, as `[yaw, pitch]`.
+    pub fn tick(&mut self) -> Option<[f32; 2]> {
+        self.still = self.still.saturating_add(1);
+        let [yaw, pitch] = self.last?;
+        if self.still < SETTLE_TICKS || self.awaited.is_some() {
+            return None;
+        }
+        let [to_yaw, to_pitch] = resting_look(yaw, pitch);
+        let left = [shortest_turn(yaw, to_yaw), to_pitch - pitch];
+        if left[0].hypot(left[1]) < 0.01 {
+            return None;
+        }
+        let step = left.map(|left| {
+            let wanted = (left * LOOK_DRIFT_SHARE).clamp(-LOOK_DRIFT_MOST, LOOK_DRIFT_MOST);
+            if left.abs() < LOOK_DRIFT_LEAST {
+                left
+            } else if wanted.abs() < LOOK_DRIFT_LEAST {
+                LOOK_DRIFT_LEAST.copysign(left)
+            } else {
+                wanted
+            }
+        });
+        self.awaited = Some([yaw + step[0], pitch + step[1]]);
+        Some(step)
+    }
+}
+
+/// A height of the view that follows a key held down, and the height shown on its way.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Zoom {
+    wanted: f64,
+    shown: f64,
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self {
+            wanted: DEFAULT_ZOOM,
+            shown: DEFAULT_ZOOM,
+        }
+    }
+}
+
+impl Zoom {
+    /// Takes one tick with these keys held.
+    pub fn tick(&mut self, out: bool, closer: bool) {
+        if out != closer {
+            let change = if out {
+                ZOOM_PER_TICK
+            } else {
+                1.0 / ZOOM_PER_TICK
+            };
+            self.wanted = (self.wanted * change).clamp(CLOSEST_ZOOM, FARTHEST_ZOOM);
+        }
+        self.shown = glide(self.shown, self.wanted);
+    }
+
+    pub fn height(self) -> f64 {
+        self.shown
+    }
+}
+
+fn glide(from: f64, to: f64) -> f64 {
+    let left = to - from;
+    if left.abs() < VIEW_ARRIVED {
+        to
+    } else {
+        from + left * VIEW_SHARE
+    }
 }
 
 /// What one rotation report amounts to.
@@ -177,19 +276,58 @@ impl Mouse {
     }
 }
 
+const AROUND: [[f64; 2]; 8] = [
+    [1.0, 0.0],
+    [-1.0, 0.0],
+    [0.0, 1.0],
+    [0.0, -1.0],
+    [0.707, 0.707],
+    [0.707, -0.707],
+    [-0.707, 0.707],
+    [-0.707, -0.707],
+];
+
+/// How far off the model a point is, at most [`PAN_MARGIN`], and the way back to it.
+fn off_model(at: [f64; 2], on_model: &impl Fn([f64; 2]) -> bool) -> (f64, [f64; 2]) {
+    if on_model(at) {
+        return (0.0, [0.0; 2]);
+    }
+    for distance in 1..PAN_MARGIN {
+        let blocks = f64::from(distance);
+        let way = AROUND
+            .iter()
+            .find(|[x, z]| on_model([at[0] + x * blocks, at[1] + z * blocks]));
+        if let Some(way) = way {
+            return (blocks, *way);
+        }
+    }
+    (f64::from(PAN_MARGIN), [0.0; 2])
+}
+
 /// Where the mouse has moved a panning view, in blocks from its resting place.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Pan([f64; 2]);
+pub struct Pan {
+    aim: [f64; 2],
+    /// Where the view is on its way to the aim.
+    view: [f64; 2],
+    /// Ticks since the mouse last moved.
+    still: u32,
+}
 
 impl Pan {
     pub fn at(offset: [f64; 2]) -> Self {
-        Self(offset)
+        Self {
+            aim: offset,
+            view: offset,
+            still: 0,
+        }
     }
 
     /// The view looks north: turning right is east, looking down is south.
-    /// Moves the view axis by axis and only over what `on_model` accepts, so that the
-    /// aim follows the real rim, wherever it runs, and slides along it.
+    /// Past the rim of what `on_model` accepts, moving out gets harder and harder, up to
+    /// a margin that nothing goes past. Moving back stays free.
     pub fn apply(&mut self, delta: [f32; 2], on_model: impl Fn([f64; 2]) -> bool) {
+        self.still = 0;
         let step = delta.map(|degrees| f64::from(degrees) * BLOCKS_PER_DEGREE);
         let length = step[0].hypot(step[1]);
         let slowed = (MAX_PAN_STEP / length.max(f64::EPSILON)).min(1.0);
@@ -197,18 +335,44 @@ impl Pan {
             let step = step * slowed;
             let moves = step.abs().ceil().max(1.0) as u32;
             for _ in 0..moves {
-                let mut next = self.0;
+                let mut next = self.aim;
                 next[axis] += step / f64::from(moves);
-                if !on_model(next) {
-                    break;
-                }
-                self.0 = next;
+                let (before, _) = off_model(self.aim, &on_model);
+                let (after, _) = off_model(next, &on_model);
+                let give = if after > 0.0 && after >= before {
+                    1.0 - after / f64::from(PAN_MARGIN)
+                } else {
+                    1.0
+                };
+                self.aim[axis] += step / f64::from(moves) * give;
             }
         }
     }
 
+    /// Glides the view to the aim, and brings an aim past the rim back once the mouse rests.
+    pub fn tick(&mut self, on_model: impl Fn([f64; 2]) -> bool) {
+        self.still = self.still.saturating_add(1);
+        if self.still >= SETTLE_TICKS {
+            let (distance, way) = off_model(self.aim, &on_model);
+            let back = (distance * PAN_RETURN_SHARE)
+                .max(PAN_RETURN_LEAST)
+                .min(distance);
+            self.aim = [self.aim[0] + way[0] * back, self.aim[1] + way[1] * back];
+        }
+        self.view = [
+            glide(self.view[0], self.aim[0]),
+            glide(self.view[1], self.aim[1]),
+        ];
+    }
+
+    /// Where the middle of the screen is headed.
     pub fn offset(self) -> [f64; 2] {
-        self.0
+        self.aim
+    }
+
+    /// Where the middle of the screen is.
+    pub fn view(self) -> [f64; 2] {
+        self.view
     }
 }
 
@@ -233,7 +397,12 @@ mod tests {
 
     #[test]
     fn at_rest_the_view_aims_near_the_centre() {
-        let [x, z] = landing(REST_YAW, REST_PITCH);
+        let direction = look_direction(REST_YAW, REST_PITCH);
+        let distance = overview_eye_height() / -direction[1];
+        let [x, z] = [
+            direction[0] * distance,
+            OVERVIEW_Z + direction[2] * distance,
+        ];
         assert!(x.hypot(z) < f64::from(OVERVIEW.radius) / 2.0, "{x} {z}");
     }
 
@@ -249,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn the_stops_let_the_aim_reach_all_the_land() {
+    fn the_limits_let_the_aim_rest_on_all_the_land() {
         let scene = overview();
         let eye = [0.0, overview_y() + SPECTATOR_EYE_HEIGHT, OVERVIEW_Z];
         for x in -OVERVIEW.radius..OVERVIEW.radius {
@@ -260,10 +429,7 @@ mod tests {
                         .atan()
                         .to_degrees() as f32;
                     let yaw = (-dx).atan2(dz).to_degrees() as f32;
-                    let [held_yaw, held_pitch] = stop(yaw, pitch);
-                    let off_yaw = held_yaw.map_or(0.0, |held| shortest_turn(yaw, held));
-                    let off_pitch = held_pitch.map_or(0.0, |held| held - pitch);
-                    assert!(off_yaw.hypot(off_pitch) < AIM_ENTER as f32, "{x} {z}");
+                    assert_eq!(resting_look(yaw, pitch), [yaw, pitch], "{x} {z}");
                 }
             }
         }
@@ -355,63 +521,97 @@ mod tests {
         assert_eq!(aimed(EYE, DOWN, [at_angle(1.0)], Some(4)), Some(0));
     }
 
-    #[test]
-    fn inside_the_stops_a_look_stays_free() {
-        assert_eq!(stop(REST_YAW + 10.0, REST_PITCH), [None, None]);
-        assert_eq!(stop(-170.0, 50.0), [None, None]);
+    fn settle(look: &mut FreeLook) -> Option<[f32; 2]> {
+        (0..SETTLE_TICKS).find_map(|_| look.tick())
     }
 
+    /// Answering a look in motion made it stutter: the client turns between ticks.
     #[test]
-    fn rest_is_inside_the_stops() {
-        assert_eq!(stop(REST_YAW, REST_PITCH), [None, None]);
-    }
-
-    /// The view used to leave the island at both ends of the pitch and of the yaw:
-    /// rectangular stops knew nothing of the land, so a look could end on the black sky.
-    #[test]
-    fn no_look_ends_off_the_land() {
-        for yaw in (0..360).step_by(5) {
-            for pitch in (-90..=90).step_by(5) {
-                let (yaw, pitch) = (yaw as f32, pitch as f32);
-                let [held_yaw, held_pitch] = stop(yaw, pitch);
-                let (yaw, pitch) = (held_yaw.unwrap_or(yaw), held_pitch.unwrap_or(pitch));
-                let [x, z] = landing(yaw, pitch);
-                let reach = x.hypot(z - STOP_CENTRE_Z);
-                assert!(reach <= STOP_RADIUS + STOP_SLACK, "{yaw} {pitch}: {x} {z}");
-                assert!(pitch > FLATTEST_PITCH, "{yaw} {pitch}");
-            }
-        }
-    }
-
-    /// A held look that still counted as past the stop was answered at every report,
-    /// and each answer swallowed the mouse: the view froze on the rim.
-    #[test]
-    fn a_look_held_on_the_stop_is_left_alone() {
-        for yaw in (0..360).step_by(7) {
-            for pitch in (-90..=90).step_by(7) {
-                if let [Some(yaw), Some(pitch)] = stop(yaw as f32, pitch as f32) {
-                    assert_eq!(stop(yaw, pitch), [None, None], "{yaw} {pitch}");
-                }
-            }
+    fn a_moving_look_is_never_corrected_however_far_it_goes() {
+        let mut look = FreeLook::default();
+        for tick in 0..100 {
+            look.report(REST_YAW + tick as f32 * 3.0, -40.0 + tick as f32);
+            assert_eq!(look.tick(), None);
         }
     }
 
     #[test]
-    fn a_stop_slides_along_the_rim_instead_of_centring() {
-        let [yaw, _] = stop(REST_YAW + 70.0, REST_PITCH).map(Option::unwrap);
-        assert!(shortest_turn(REST_YAW, yaw) > 30.0, "{yaw}");
+    fn a_look_inside_its_limits_is_left_alone_at_rest() {
+        let mut look = FreeLook::default();
+        look.report(REST_YAW + 40.0, 30.0);
+        assert_eq!(settle(&mut look), None);
     }
 
     #[test]
-    fn straight_down_and_straight_up_stay_on_the_land() {
-        assert!(stop(REST_YAW, 90.0)[1].is_some());
-        assert!(stop(REST_YAW, -90.0)[1].is_some());
+    fn a_look_past_its_limits_drifts_back_in_small_steps_once_at_rest() {
+        let mut look = FreeLook::default();
+        let (mut yaw, mut pitch) = (REST_YAW + 170.0, -30.0);
+        look.report(yaw, pitch);
+        assert!(look.is_past());
+        let mut step = settle(&mut look).expect("a first step");
+        for _ in 0..500 {
+            assert!(step[0].hypot(step[1]) <= 2.0 * LOOK_DRIFT_MOST, "{step:?}");
+            (yaw, pitch) = (yaw + step[0], pitch + step[1]);
+            look.report(yaw, pitch);
+            match look.tick() {
+                Some(next) => step = next,
+                None => break,
+            }
+        }
+        assert!(!look.is_past(), "{yaw} {pitch}");
     }
 
     #[test]
-    fn a_burst_of_late_reports_asks_for_the_same_angle() {
-        let answers: Vec<_> = (0..5).map(|_| stop(REST_YAW, 5.0)).collect();
-        assert!(answers.iter().all(|a| *a == answers[0]));
+    fn the_mouse_takes_over_from_a_drift_at_once() {
+        let mut look = FreeLook::default();
+        look.report(REST_YAW, -30.0);
+        let step = settle(&mut look).expect("a first step");
+        look.report(REST_YAW + 5.0, -30.0 + step[1]);
+        assert_eq!(look.tick(), None);
+    }
+
+    /// The answer to a step comes back as a rotation report, and must not pass for the
+    /// mouse, or a drift would stop after one step.
+    #[test]
+    fn the_answer_to_a_step_is_not_the_mouse() {
+        let mut look = FreeLook::default();
+        look.report(REST_YAW, -30.0);
+        let step = settle(&mut look).expect("a first step");
+        look.report(REST_YAW + step[0], -30.0 + step[1]);
+        assert!(look.tick().is_some());
+    }
+
+    #[test]
+    fn the_zoom_moves_for_as_long_as_a_key_is_held_and_stays_within_bounds() {
+        let mut zoom = Zoom::default();
+        let start = zoom.height();
+        zoom.tick(true, false);
+        zoom.tick(true, false);
+        assert!(zoom.height() > start);
+        for _ in 0..2000 {
+            zoom.tick(true, false);
+        }
+        assert!((zoom.height() - FARTHEST_ZOOM).abs() < 0.1);
+        for _ in 0..2000 {
+            zoom.tick(false, true);
+        }
+        assert!((zoom.height() - CLOSEST_ZOOM).abs() < 0.1);
+    }
+
+    #[test]
+    fn releasing_the_keys_ends_on_the_height_reached() {
+        let mut zoom = Zoom::default();
+        zoom.tick(true, false);
+        let wanted = zoom.wanted;
+        for _ in 0..40 {
+            zoom.tick(false, false);
+        }
+        assert_eq!(zoom.height(), wanted);
+    }
+
+    #[test]
+    fn the_gap_between_the_models_holds_a_steady_zoom() {
+        assert!(DETAIL_BELOW < COARSE_ABOVE);
     }
 
     /// Whether a point shows in a window of this shape, at the default field of view.
@@ -533,9 +733,10 @@ mod tests {
             .filter_map(|(x, z)| scene.top(x, z))
             .max()
             .expect("a model with land");
-        assert!(detail_y(0) > f64::from(tallest) + 8.0, "{tallest}");
-        assert!(detail_back(0) > 0.0);
-        assert!(ZOOMS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            CLOSEST_ZOOM + f64::from(SEA_Y) > f64::from(tallest) + 8.0,
+            "{tallest}"
+        );
     }
 
     /// A pan is linear: twice the mouse is twice the distance, up to the top speed.
@@ -567,9 +768,9 @@ mod tests {
     }
 
     /// The rim is no circle around the origin: it wanders and it is not even centred.
-    /// A view must reach it wherever it runs, and never go past it.
+    /// A view must reach it wherever it runs, stretch a little past it and no further.
     #[test]
-    fn a_pan_reaches_the_rim_in_every_direction_and_stops_there() {
+    fn a_pan_reaches_the_rim_in_every_direction_and_stretches_past_it() {
         let scene = detail();
         for step in 0..32 {
             let angle = f64::from(step) * std::f64::consts::TAU / 32.0;
@@ -577,22 +778,70 @@ mod tests {
             let mut pan = Pan::default();
             for _ in 0..1000 {
                 pan.apply(delta, |at| over(&scene, at));
-                assert!(over(&scene, pan.offset()), "{angle} went off the model");
             }
-            let [x, z] = pan.offset();
-            let on_the_rim = [[2.0, 0.0], [-2.0, 0.0], [0.0, 2.0], [0.0, -2.0]]
-                .iter()
-                .any(|[dx, dz]| !over(&scene, [x + dx, z + dz]));
-            assert!(on_the_rim, "{angle} stopped short at {x} {z}");
+            let (past, _) = off_model(pan.offset(), &|at| over(&scene, at));
+            assert!(past > 0.0, "{angle} stopped short");
+            assert!(past < f64::from(PAN_MARGIN), "{angle} went too far: {past}");
         }
+    }
+
+    #[test]
+    fn a_pan_past_the_rim_gets_harder_as_it_goes() {
+        let inside = |[x, _]: [f64; 2]| x < 0.0;
+        let mut pan = Pan::default();
+        let mut moves = Vec::new();
+        for _ in 0..12 {
+            let before = pan.offset()[0];
+            pan.apply([0.4, 0.0], inside);
+            moves.push(pan.offset()[0] - before);
+        }
+        assert!(moves.windows(2).all(|pair| pair[1] <= pair[0]), "{moves:?}");
+        assert!(moves[0] > 0.0);
+    }
+
+    #[test]
+    fn a_pan_past_the_rim_only_comes_back_once_the_mouse_rests() {
+        let inside = |[x, _]: [f64; 2]| x < 0.0;
+        let mut pan = Pan::default();
+        for _ in 0..10 {
+            pan.apply([1.0, 0.0], inside);
+            pan.tick(inside);
+        }
+        let stretched = pan.offset()[0];
+        assert!(stretched > 0.0);
+        for _ in 0..SETTLE_TICKS - 2 {
+            pan.tick(inside);
+        }
+        assert_eq!(pan.offset()[0], stretched);
+        for _ in 0..200 {
+            pan.tick(inside);
+        }
+        assert!(pan.offset()[0] < 0.0);
     }
 
     #[test]
     fn a_pan_slides_along_the_rim_instead_of_sticking_to_it() {
         let mut pan = Pan::default();
         pan.apply([1.0, 3.0], |[x, _]| x < 2.0);
-        let [x, z] = pan.offset();
-        assert!(x < 2.0 && z == 3.0 * BLOCKS_PER_DEGREE, "{x} {z}");
+        let [_, z] = pan.offset();
+        assert!(z > 2.0 * BLOCKS_PER_DEGREE, "{z}");
+    }
+
+    /// The client adds the motion of a glide to its target. A view that stops dead
+    /// overshoots by tens of blocks; one that ends on a tail of tiny steps cannot.
+    #[test]
+    fn a_stopping_view_ends_on_steps_too_short_to_overshoot() {
+        let mut pan = Pan::default();
+        pan.apply([8.0, 0.0], |_| true);
+        let mut last = 0.0;
+        let mut step = f64::MAX;
+        for _ in 0..40 {
+            pan.tick(|_| true);
+            step = pan.view()[0] - last;
+            last = pan.view()[0];
+        }
+        assert!(step.abs() < 0.05, "{step}");
+        assert_eq!(pan.view(), pan.offset());
     }
 
     #[test]
@@ -606,8 +855,8 @@ mod tests {
     #[test]
     fn the_middle_of_the_screen_falls_on_the_pan_offset_at_every_zoom() {
         let look = look_direction(REST_YAW, DETAIL_PITCH);
-        for (zoom, height) in ZOOMS.iter().enumerate() {
-            let eye = [30.0, detail_y(zoom), -20.0 + detail_back(zoom)];
+        for height in [CLOSEST_ZOOM, DEFAULT_ZOOM, COARSE_ABOVE] {
+            let eye = [30.0, height, -20.0 + detail_back(height)];
             let distance = height / -look[1];
             assert!((eye[0] + look[0] * distance - 30.0).abs() < 1e-6);
             assert!((eye[2] + look[2] * distance + 20.0).abs() < 1e-6);

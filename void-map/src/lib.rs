@@ -18,6 +18,7 @@ pub mod plugin;
 pub mod pointer;
 pub mod regions;
 pub mod scene;
+pub mod telemetry;
 pub mod terrain;
 pub mod window;
 

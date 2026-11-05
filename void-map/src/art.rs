@@ -10,13 +10,30 @@ use voidmc_ui::{Image, ResourcePack};
 use crate::alphabet::LETTERS;
 use crate::markers::MarkerKind;
 
+/// How wide the detail panel and the bubble's name are.
 const WIDTH: u32 = 150;
-const DETAIL_GAP: i32 = 2;
+const SHEET_WIDTH: u32 = 176;
+const SHEET_HEIGHT: u32 = 70;
+/// Where the header of a sheet ends.
+const SHEET_HEADER: u32 = 30;
+const SHEET_ROWS: [i32; 5] = [7, 17, 35, 46, 57];
+const SHEET_HEADER_TEXT: i32 = 27;
+const SHEET_BODY_TEXT: i32 = 8;
+const BARE_ROWS: [i32; 5] = [0, 10, 22, 33, 44];
+const BUBBLE_SIZE: u32 = 34;
+const NAME_TAG_HEIGHT: u32 = 13;
+const NAME_TAG_TOP: i32 = 36;
+const NAME_TAG_TEXT: i32 = 39;
+const BUBBLE_DETAIL_TOP: i32 = 52;
+const FLOURISH_WIDTH: u32 = 120;
+const FLOURISH_HEIGHT: u32 = 7;
+const FLOURISH_TOP: i32 = 18;
+const TITLE_ROWS: [i32; 4] = [27, 39, 50, 61];
 const DETAIL_HEIGHT: u32 = 38;
 const DETAIL_INDENT: i32 = 8;
 const DETAIL_LINES: [i32; 3] = [6, 17, 28];
-/// How far the tag's point reaches down from its body, towards the marker.
-const TAG_POINT: u32 = 6;
+/// Under the tallest mark of a region's sign.
+const SIGN_ROW: i32 = 35;
 
 /// A line of text has its top this far above where the bitmap of a letter sits.
 const LINE_ASCENT: i32 = 7;
@@ -27,9 +44,12 @@ const LETTER_HEIGHT: i32 = 8;
 /// What a space takes in the default font.
 const SPACE_ADVANCE: i32 = 4;
 
-const FIRST_PANEL: u32 = 0xE100;
-const PANELS_PER_STYLE: u32 = 8;
-const FIRST_DETAIL: u32 = 0xE120;
+const FIRST_SHEET: u32 = 0xE100;
+const FIRST_BUBBLE: u32 = 0xE108;
+const NAME_TAG: char = '\u{E110}';
+const DETAIL: char = '\u{E111}';
+const FLOURISH: char = '\u{E112}';
+const FIRST_MARK: u32 = 0xE118;
 const FIRST_FORWARD: u32 = 0xE200;
 const FIRST_BACK: u32 = 0xE220;
 const SHIFT_BITS: u32 = 10;
@@ -129,23 +149,31 @@ fn wrapped(text: &str, width: i32) -> Vec<String> {
 /// The look of the panel, which a player picks with `/map style`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Style {
-    /// Icon and name.
+    /// A full sheet with a coloured header, which always says everything.
     #[default]
-    Card,
-    /// A thin strip: name, and the kind of place at its end.
-    Band,
-    /// A tag pointing at its marker: icon, name and one line of information.
-    Tag,
+    Sheet,
+    /// Text alone, with nothing behind it.
+    Bare,
+    /// A round bubble with the icon, and the name under it.
+    Bubble,
+    /// A large title over a flourish, as on a fantasy map.
+    Title,
 }
 
-const STYLES: [Style; 3] = [Style::Card, Style::Band, Style::Tag];
+const STYLES: [Style; 4] = [Style::Sheet, Style::Bare, Style::Bubble, Style::Title];
 
 impl Style {
+    /// Text with nothing behind it needs a shadow to stand out from the ground.
+    pub fn has_background(self) -> bool {
+        matches!(self, Self::Sheet | Self::Bubble)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
-            Self::Card => "Carte",
-            Self::Band => "Bandeau",
-            Self::Tag => "Étiquette",
+            Self::Sheet => "Fiche",
+            Self::Bare => "Texte seul",
+            Self::Bubble => "Bulle",
+            Self::Title => "Grand titre",
         }
     }
 
@@ -156,85 +184,204 @@ impl Style {
     fn index(self) -> usize {
         STYLES.iter().position(|style| *style == self).unwrap_or(0)
     }
+}
 
-    fn height(self) -> u32 {
-        match self {
-            Self::Card => 24,
-            Self::Band => 13,
-            Self::Tag => 28 + TAG_POINT,
+/// What a marker of the map can be drawn with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// A small drop pointing at the ground.
+    Pin,
+    /// An arrow to lay on the ground.
+    Arrow,
+    /// A ring to lay on the ground.
+    Ring,
+    /// A disc for a head to sit on.
+    Disc,
+    Lock,
+    Unknown,
+}
+
+const MARKS: [Mark; 6] = [
+    Mark::Pin,
+    Mark::Arrow,
+    Mark::Ring,
+    Mark::Disc,
+    Mark::Lock,
+    Mark::Unknown,
+];
+
+const PIN_COLOUR: [u8; 4] = [236, 92, 84, 255];
+const SIGN_COLOUR: [u8; 4] = [238, 232, 214, 255];
+const QUESTION: [&str; 16] = [
+    "    ########    ",
+    "  ############  ",
+    " ####      #### ",
+    " ###        ### ",
+    "            ### ",
+    "           #### ",
+    "         #####  ",
+    "       #####    ",
+    "      ####      ",
+    "      ###       ",
+    "      ###       ",
+    "                ",
+    "                ",
+    "      ###       ",
+    "      ###       ",
+    "      ###       ",
+];
+const LOCK: [&str; 16] = [
+    "     ######     ",
+    "    ##    ##    ",
+    "   ##      ##   ",
+    "   ##      ##   ",
+    "   ##      ##   ",
+    "   ##      ##   ",
+    " ############## ",
+    " ############## ",
+    " ######  ###### ",
+    " #####    ##### ",
+    " ######  ###### ",
+    " ######  ###### ",
+    " ############## ",
+    " ############## ",
+    " ############## ",
+    "                ",
+];
+
+impl Mark {
+    fn index(self) -> usize {
+        MARKS.iter().position(|mark| *mark == self).unwrap_or(0)
+    }
+
+    fn glyph(self) -> char {
+        char::from_u32(FIRST_MARK + self.index() as u32).unwrap_or(' ')
+    }
+
+    /// The text that draws it, with a client that has the pack or without.
+    pub fn text(self, drawn: bool) -> String {
+        match (drawn, self) {
+            (true, _) => format!("§f{}", self.glyph()),
+            (false, Self::Pin) => "§c▼".into(),
+            (false, Self::Arrow) => "§c▲".into(),
+            (false, Self::Ring) => "§c○".into(),
+            (false, Self::Disc) => "§f●".into(),
+            (false, Self::Lock) => "§7X".into(),
+            (false, Self::Unknown) => "§7?".into(),
         }
     }
 
-    /// Rows of its text, from the top of the panel.
-    fn lines(self) -> &'static [i32] {
+    /// Its height, in pixels of text.
+    pub fn height(self) -> u32 {
+        self.image().height()
+    }
+
+    fn image(self) -> Image {
         match self {
-            Self::Card => &[8],
-            Self::Band => &[3],
-            Self::Tag => &[6, 17],
-        }
-    }
-
-    fn icon_at(self) -> Option<(u32, u32)> {
-        match self {
-            Self::Card => Some((5, 4)),
-            Self::Band => None,
-            Self::Tag => Some((5, 6)),
-        }
-    }
-
-    /// Where its text starts in the panel.
-    fn indent(self) -> i32 {
-        match self {
-            Self::Card => 26,
-            Self::Band => 9,
-            Self::Tag => 26,
-        }
-    }
-
-    fn panel_glyph(self, subject: Subject) -> char {
-        let code = FIRST_PANEL + self.index() as u32 * PANELS_PER_STYLE + subject.index() as u32;
-        char::from_u32(code).unwrap_or(' ')
-    }
-
-    fn detail_glyph(self) -> char {
-        char::from_u32(FIRST_DETAIL + self.index() as u32).unwrap_or(' ')
-    }
-
-    fn detail_top(self) -> i32 {
-        self.height() as i32 + DETAIL_GAP
-    }
-
-    /// Whether a pixel of the panel belongs to its shape.
-    fn covers(self, x: i32, y: i32) -> bool {
-        let (width, height) = (WIDTH as i32, self.height() as i32);
-        if x < 0 || y < 0 || x >= width || y >= height {
-            return false;
-        }
-        let from_end = (width - 1 - x).min(x);
-        let from_side = (height - 1 - y).min(y);
-        match self {
-            Self::Card | Self::Band => from_end + from_side >= 2,
-            Self::Tag => {
-                let body = height - TAG_POINT as i32;
-                if y < body {
-                    from_end + y.min(body - 1 - y) >= 2
-                } else {
-                    (2 * x - (width - 1)).abs() <= 2 * (height - 1 - y) + 1
-                }
-            }
+            Self::Pin => drop_shape(),
+            Self::Arrow => arrow(),
+            Self::Ring => ring(),
+            Self::Disc => disc(24, FILL, EDGE),
+            Self::Lock => bitmap_of(&LOCK, SIGN_COLOUR, 2),
+            Self::Unknown => bitmap_of(&QUESTION, SIGN_COLOUR, 2),
         }
     }
 }
 
-/// Every row of text any panel writes on, from the top of the line.
+fn drop_shape() -> Image {
+    let (width, height) = (11_i32, 15_i32);
+    let mut image = Image::new(width as u32, height as u32);
+    let (centre, radius) = (5.0_f64, 5.5_f64);
+    for y in 0..height {
+        for x in 0..width {
+            let dx = f64::from(x) - centre;
+            let inside = if y <= 5 {
+                dx.hypot(f64::from(y) - centre) <= radius
+            } else {
+                dx.abs() <= radius * f64::from(height - 1 - y) / f64::from(height - 6)
+            };
+            if inside {
+                let hole = dx.hypot(f64::from(y) - centre) <= 1.8;
+                let color = if hole { [255, 255, 255, 255] } else { PIN_COLOUR };
+                image.set(x as u32, y as u32, color);
+            }
+        }
+    }
+    image
+}
+
+fn arrow() -> Image {
+    let size = 17_i32;
+    let mut image = Image::new(size as u32, size as u32);
+    for y in 0..size {
+        for x in 0..size {
+            let half = f64::from(y) / 2.0;
+            let notch = (f64::from(y) - 12.0).max(0.0) * 2.0;
+            let dx = (f64::from(x) - 8.0).abs();
+            if dx <= half && dx >= notch {
+                image.set(x as u32, y as u32, PIN_COLOUR);
+            }
+        }
+    }
+    image
+}
+
+fn ring() -> Image {
+    let size = 25;
+    let mut image = Image::new(size, size);
+    for y in 0..size {
+        for x in 0..size {
+            let from = (f64::from(x) - 12.0).hypot(f64::from(y) - 12.0);
+            if (9.5..=12.0).contains(&from) {
+                image.set(x, y, PIN_COLOUR);
+            }
+        }
+    }
+    image
+}
+
+fn disc(size: u32, fill: [u8; 4], edge: [u8; 4]) -> Image {
+    let mut image = Image::new(size, size);
+    let centre = f64::from(size - 1) / 2.0;
+    for y in 0..size {
+        for x in 0..size {
+            let from = (f64::from(x) - centre).hypot(f64::from(y) - centre);
+            if from <= centre + 0.4 {
+                let color = if from > centre - 1.2 { edge } else { fill };
+                image.set(x, y, color);
+            }
+        }
+    }
+    image
+}
+
+/// An ascii drawing, each character standing for a square of `pixels`.
+fn bitmap_of(rows: &[&str; 16], color: [u8; 4], pixels: u32) -> Image {
+    let mut image = Image::new(16 * pixels, 16 * pixels);
+    for (row, line) in rows.iter().enumerate() {
+        for (column, pixel) in line.bytes().enumerate() {
+            if pixel == b'#' {
+                for dy in 0..pixels {
+                    for dx in 0..pixels {
+                        image.set(column as u32 * pixels + dx, row as u32 * pixels + dy, color);
+                    }
+                }
+            }
+        }
+    }
+    image
+}
+
+/// Every row of text the styles write on, from the top of the line.
 fn text_rows() -> Vec<i32> {
-    let mut rows: Vec<i32> = STYLES
+    let bubble = DETAIL_LINES.map(|line| BUBBLE_DETAIL_TOP + line);
+    let mut rows: Vec<i32> = SHEET_ROWS
         .iter()
-        .flat_map(|style| {
-            let own = style.lines().iter().copied();
-            let detail = DETAIL_LINES.iter().map(|line| style.detail_top() + line);
-            own.chain(detail)
-        })
+        .chain(&BARE_ROWS)
+        .chain(&TITLE_ROWS)
+        .chain(&bubble)
+        .chain(&[NAME_TAG_TEXT, SIGN_ROW])
+        .copied()
         .collect();
     rows.sort_unstable();
     rows.dedup();
@@ -397,48 +544,60 @@ fn opaque(rgb: Rgb) -> [u8; 4] {
     [rgb[0], rgb[1], rgb[2], 255]
 }
 
-fn panel(style: Style, subject: Subject) -> Image {
+fn draw_icon(image: &mut Image, subject: Subject, left: u32, top: u32) {
     let accent = subject.accent();
-    let mut image = Image::new(WIDTH, style.height());
-    for y in 0..style.height() as i32 {
-        for x in 0..WIDTH as i32 {
-            if !style.covers(x, y) {
-                continue;
-            }
-            let rim = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                .iter()
-                .any(|(dx, dy)| !style.covers(x + dx, y + dy));
-            let color = match style {
-                _ if rim => EDGE,
-                Style::Band if x <= 4 => opaque(accent),
-                Style::Tag if y == 1 => opaque(accent),
-                Style::Card if y == style.height() as i32 - 2 => blend(accent, FILL, 0.7),
+    for (row, line) in subject.icon().iter().enumerate() {
+        for (column, pixel) in line.bytes().enumerate() {
+            let color = match pixel {
+                b'#' => opaque(accent),
+                b'o' => [236, 238, 242, 255],
+                _ => continue,
+            };
+            image.set(left + column as u32, top + row as u32, color);
+        }
+    }
+}
+
+/// The sheet: a dark panel with a header in the colour of its subject.
+fn sheet(subject: Subject) -> Image {
+    let accent = subject.accent();
+    let mut image = Image::new(SHEET_WIDTH, SHEET_HEIGHT);
+    let (right, bottom) = (SHEET_WIDTH - 1, SHEET_HEIGHT - 1);
+    for y in 0..SHEET_HEIGHT {
+        for x in 0..SHEET_WIDTH {
+            let edge = x.min(right - x).min(y.min(bottom - y));
+            let corner = x.min(right - x) + y.min(bottom - y);
+            let color = match (corner, edge) {
+                (0 | 1, _) => continue,
+                (2, _) | (_, 0) => EDGE,
+                (3, _) | (_, 1) => blend(accent, [0, 0, 0, 255], 0.9),
+                _ if y == SHEET_HEADER => blend(accent, FILL, 0.55),
+                _ if y < SHEET_HEADER => {
+                    let fade = 0.34 - 0.2 * f64::from(y) / f64::from(SHEET_HEADER);
+                    blend(accent, FILL, fade)
+                }
                 _ => FILL,
             };
-            image.set(x as u32, y as u32, color);
+            image.set(x, y, color);
         }
     }
-    if let Some((left, top)) = style.icon_at() {
-        for (row, line) in subject.icon().iter().enumerate() {
-            for (column, pixel) in line.bytes().enumerate() {
-                let color = match pixel {
-                    b'#' => opaque(accent),
-                    b'o' => [236, 238, 242, 255],
-                    _ => continue,
-                };
-                image.set(left + column as u32, top + row as u32 - 1, color);
-            }
-        }
-    }
+    draw_icon(&mut image, subject, 6, 6);
     image
 }
 
-/// What only a selected place shows, under its panel.
-fn detail_panel() -> Image {
-    let mut image = Image::new(WIDTH, DETAIL_HEIGHT);
-    let (right, bottom) = (WIDTH - 1, DETAIL_HEIGHT - 1);
-    for y in 0..DETAIL_HEIGHT {
-        for x in 0..WIDTH {
+fn bubble(subject: Subject) -> Image {
+    let mut image = disc(BUBBLE_SIZE, FILL, opaque(subject.accent()));
+    let inset = (BUBBLE_SIZE - 16) / 2;
+    draw_icon(&mut image, subject, inset, inset);
+    image
+}
+
+/// A rounded strip, for a line of text.
+fn rounded(width: u32, height: u32) -> Image {
+    let mut image = Image::new(width, height);
+    let (right, bottom) = (width - 1, height - 1);
+    for y in 0..height {
+        for x in 0..width {
             let edge = x.min(right - x).min(y.min(bottom - y));
             let corner = x.min(right - x) + y.min(bottom - y);
             match (corner, edge) {
@@ -451,16 +610,39 @@ fn detail_panel() -> Image {
     image
 }
 
+/// A thin line that swells into a diamond, under a title.
+fn flourish() -> Image {
+    let mut image = Image::new(FLOURISH_WIDTH, FLOURISH_HEIGHT);
+    let middle = FLOURISH_HEIGHT / 2;
+    let centre = FLOURISH_WIDTH as i32 / 2;
+    for x in 0..FLOURISH_WIDTH {
+        let from = (x as i32 - centre).abs();
+        let fade = 255 - (from * 255 / centre).min(235);
+        image.set(x, middle, [214, 190, 130, fade as u8]);
+        let swell = middle as i32 - from;
+        for y in 0..FLOURISH_HEIGHT as i32 {
+            if (y - middle as i32).abs() <= swell {
+                image.set(x, y as u32, [232, 206, 140, 255]);
+            }
+        }
+    }
+    image
+}
+
 /// What the panel says about the place under the look.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card {
     pub subject: Subject,
     pub title: String,
     pub kind: String,
-    /// One line, for the styles that have room for it.
+    /// What and where, in a line.
+    pub kicker: String,
+    /// One short line.
     pub info: String,
     pub status: String,
     pub description: String,
+    /// What a click does, for the styles that say it.
+    pub action: String,
     /// The place is selected, so the panel shows all of it.
     pub open: bool,
 }
@@ -511,47 +693,112 @@ impl Pen {
         }
         self.at += text_width(text);
     }
+
+    /// Writes centred in a span that starts at the pen's origin.
+    fn centred(&mut self, span: i32, row: i32, text: &str) {
+        self.go_to((span - text_width(text)) / 2);
+        self.write(row, text);
+    }
+
+    /// Writes in the large letters, whose row is always the first.
+    fn write_big(&mut self, text: &str) {
+        let base = FIRST_LETTERS + text_rows().len() as u32 * LETTERS_PER_ROW;
+        for glyph in text.chars() {
+            if let Some(index) = letter(glyph) {
+                self.title.extend(char::from_u32(base + index as u32));
+                self.at += 2 * i32::from(LETTERS[index].advance) - 1;
+            } else {
+                let at = self.at + 2 * SPACE_ADVANCE;
+                self.go_to(at);
+            }
+        }
+    }
 }
 
 impl Card {
     /// The line that draws the card, with a client that has the pack.
     pub fn drawn(&self, style: Style) -> String {
         let mut pen = Pen::default();
-        let title = format!("§{}{}", self.subject.title_code(), self.title);
-        let width = WIDTH as i32;
-        pen.draw(style.panel_glyph(self.subject), width + 1);
-        pen.go_to(style.indent());
-        pen.write(style.lines()[0], &title);
-        match style {
-            Style::Card => {}
-            Style::Band => {
+        let name = format!("§{}{}", self.subject.title_code(), self.title);
+        let lines = self.details(WIDTH as i32 - 2 * DETAIL_INDENT);
+        let width = match style {
+            Style::Sheet => {
+                let width = SHEET_WIDTH as i32;
+                pen.draw(sheet_glyph(self.subject), width + 1);
+                let rows = [
+                    (SHEET_HEADER_TEXT, name.clone()),
+                    (SHEET_HEADER_TEXT, format!("§7{}", self.kicker)),
+                    (SHEET_BODY_TEXT, self.status.clone()),
+                    (SHEET_BODY_TEXT, format!("§f{}", self.description)),
+                    (SHEET_BODY_TEXT, format!("§e{}", self.action)),
+                ];
+                for ((left, text), row) in rows.iter().zip(SHEET_ROWS) {
+                    pen.go_to(*left);
+                    pen.write(row, text);
+                }
+                width
+            }
+            Style::Bare => {
                 let kind = format!("§7{}", self.kind);
-                pen.go_to(width - 6 - text_width(&kind));
-                pen.write(style.lines()[0], &kind);
+                let width = text_width(&name).max(text_width(&kind));
+                let width = lines.iter().map(|l| text_width(l)).fold(width, i32::max);
+                pen.centred(width, BARE_ROWS[0], &name);
+                pen.centred(width, BARE_ROWS[1], &kind);
+                if self.open {
+                    for (line, row) in lines.iter().zip(&BARE_ROWS[2..]) {
+                        pen.centred(width, *row, line);
+                    }
+                }
+                width
             }
-            Style::Tag => {
-                pen.go_to(style.indent());
-                pen.write(style.lines()[1], &format!("§7{}", self.info));
+            Style::Bubble => {
+                let width = WIDTH as i32;
+                pen.go_to((width - BUBBLE_SIZE as i32) / 2);
+                pen.draw(bubble_glyph(self.subject), BUBBLE_SIZE as i32 + 1);
+                pen.go_to(0);
+                pen.draw(NAME_TAG, width + 1);
+                pen.centred(width, NAME_TAG_TEXT, &name);
+                if self.open {
+                    pen.go_to(0);
+                    pen.draw(DETAIL, width + 1);
+                    for (line, row) in lines.iter().zip(DETAIL_LINES) {
+                        pen.go_to(DETAIL_INDENT);
+                        pen.write(BUBBLE_DETAIL_TOP + row, line);
+                    }
+                }
+                width
             }
-        }
-        if self.open {
-            let top = style.detail_top();
-            pen.go_to(0);
-            pen.draw(style.detail_glyph(), width + 1);
-            let room = width - 2 * DETAIL_INDENT;
-            let lines = std::iter::once(self.status.clone()).chain(
-                wrapped(&self.description, room)
-                    .into_iter()
-                    .map(|line| format!("§f{line}")),
-            );
-            for (line, row) in lines.zip(DETAIL_LINES) {
-                pen.go_to(DETAIL_INDENT);
-                pen.write(top + row, &line);
+            Style::Title => {
+                let kind = format!("§7{}", self.kind);
+                let width = big_width(&self.title).max(FLOURISH_WIDTH as i32);
+                let width = lines.iter().map(|l| text_width(l)).fold(width, i32::max);
+                pen.go_to((width - big_width(&self.title)) / 2);
+                pen.write_big(&self.title);
+                pen.go_to((width - FLOURISH_WIDTH as i32) / 2);
+                pen.draw(FLOURISH, FLOURISH_WIDTH as i32 + 1);
+                pen.centred(width, TITLE_ROWS[0], &kind);
+                if self.open {
+                    for (line, row) in lines.iter().zip(&TITLE_ROWS[1..]) {
+                        pen.centred(width, *row, line);
+                    }
+                }
+                width
             }
-        }
+        };
         // The display centres the line by where the pen ends.
         pen.go_to(width + 1);
         pen.title
+    }
+
+    /// The status, then the description cut to fit.
+    fn details(&self, room: i32) -> Vec<String> {
+        std::iter::once(self.status.clone())
+            .chain(
+                wrapped(&self.description, room)
+                    .into_iter()
+                    .map(|line| format!("§f{line}")),
+            )
+            .collect()
     }
 
     /// Without the pack, the glyphs would show as boxes.
@@ -569,12 +816,52 @@ impl Card {
 
     /// How far down the drawing goes, from the top of its line.
     pub fn depth(&self, style: Style) -> i32 {
-        if self.open {
-            style.detail_top() + DETAIL_HEIGHT as i32
-        } else {
-            style.height() as i32
+        let rows = |rows: &[i32], shown: usize| rows[shown.min(rows.len()) - 1] + LETTER_HEIGHT;
+        let lines = self.details(WIDTH as i32 - 2 * DETAIL_INDENT).len();
+        match style {
+            Style::Sheet => SHEET_HEIGHT as i32,
+            Style::Bare if self.open => rows(&BARE_ROWS, 2 + lines),
+            Style::Bare => rows(&BARE_ROWS, 2),
+            Style::Bubble if self.open => BUBBLE_DETAIL_TOP + DETAIL_HEIGHT as i32,
+            Style::Bubble => NAME_TAG_TOP + NAME_TAG_HEIGHT as i32,
+            Style::Title if self.open => rows(&TITLE_ROWS, 1 + lines),
+            Style::Title => rows(&TITLE_ROWS, 1),
         }
     }
+}
+
+/// The line that shows what a region is, with its sign over its state.
+pub fn sign(mark: Mark, label: &str, drawn: bool) -> String {
+    if !drawn {
+        return format!("{}\n§7{label}", mark.text(false));
+    }
+    let width = mark.image().width() as i32;
+    let text = format!("§7{label}");
+    let span = width.max(text_width(&text));
+    let mut pen = Pen::default();
+    pen.go_to((span - width) / 2);
+    pen.draw(mark.glyph(), width + 1);
+    pen.centred(span, SIGN_ROW, &text);
+    pen.go_to(span + 1);
+    pen.title
+}
+
+fn sheet_glyph(subject: Subject) -> char {
+    char::from_u32(FIRST_SHEET + subject.index() as u32).unwrap_or(' ')
+}
+
+fn bubble_glyph(subject: Subject) -> char {
+    char::from_u32(FIRST_BUBBLE + subject.index() as u32).unwrap_or(' ')
+}
+
+/// How far a text moves the pen in the large letters.
+fn big_width(text: &str) -> i32 {
+    visible(text)
+        .map(|glyph| match letter(glyph) {
+            Some(index) => 2 * i32::from(LETTERS[index].advance) - 1,
+            None => 2 * SPACE_ADVANCE,
+        })
+        .sum()
 }
 
 fn bitmap(file: &str, height: i32, ascent: i32, rows: &[String]) -> String {
@@ -613,7 +900,7 @@ fn add_glyph(
 }
 
 /// A sheet's letters, renamed to private glyphs that sit on a row of text.
-fn shifted_sheet(sheet: Sheet, level: usize, row: i32) -> String {
+fn shifted_sheet(sheet: Sheet, level: usize, row: i32, zoom: i32) -> String {
     let base = FIRST_LETTERS + level as u32 * LETTERS_PER_ROW;
     let mut cells = vec![["\\u0000".to_string(), String::new()].concat(); sheet.rows() * 16];
     for (index, letter) in LETTERS.iter().enumerate() {
@@ -624,7 +911,7 @@ fn shifted_sheet(sheet: Sheet, level: usize, row: i32) -> String {
     }
     let rows: Vec<String> = cells.chunks(16).map(|row| row.concat()).collect();
     let (height, ascent) = sheet.metrics();
-    bitmap(sheet.file(), height, ascent - row, &rows)
+    bitmap(sheet.file(), height * zoom, ascent * zoom - row, &rows)
 }
 
 fn shifts() -> String {
@@ -647,30 +934,45 @@ pub fn install(pack: &mut ResourcePack) {
     let black = Image::filled(MINECART_SIZE.0, MINECART_SIZE.1, [0, 0, 0, 255]);
     pack.add(MINECART, black.to_png());
     let mut providers = vec![shifts()];
-    for style in STYLES {
-        for subject in SUBJECTS {
-            add_glyph(
-                pack,
-                &mut providers,
-                format!("panel_{}_{}", style.index(), subject.index()),
-                &panel(style, subject),
-                style.panel_glyph(subject),
-                0,
-            );
-        }
+    for subject in SUBJECTS {
+        let index = subject.index();
         add_glyph(
             pack,
             &mut providers,
-            format!("detail_{}", style.index()),
-            &detail_panel(),
-            style.detail_glyph(),
-            style.detail_top(),
+            format!("sheet_{index}"),
+            &sheet(subject),
+            sheet_glyph(subject),
+            0,
+        );
+        add_glyph(
+            pack,
+            &mut providers,
+            format!("bubble_{index}"),
+            &bubble(subject),
+            bubble_glyph(subject),
+            0,
         );
     }
-    for (level, row) in text_rows().into_iter().enumerate() {
+    let shapes = [
+        ("name_tag", rounded(WIDTH, NAME_TAG_HEIGHT), NAME_TAG, NAME_TAG_TOP),
+        ("detail", rounded(WIDTH, DETAIL_HEIGHT), DETAIL, BUBBLE_DETAIL_TOP),
+        ("flourish", flourish(), FLOURISH, FLOURISH_TOP),
+    ];
+    for (name, image, glyph, top) in shapes {
+        add_glyph(pack, &mut providers, name.to_string(), &image, glyph, top);
+    }
+    for mark in MARKS {
+        let name = format!("mark_{}", mark.index());
+        add_glyph(pack, &mut providers, name, &mark.image(), mark.glyph(), 0);
+    }
+    let rows = text_rows();
+    for (level, row) in rows.iter().enumerate() {
         for sheet in SHEETS {
-            providers.push(shifted_sheet(sheet, level, row));
+            providers.push(shifted_sheet(sheet, level, *row, 1));
         }
+    }
+    for sheet in SHEETS {
+        providers.push(shifted_sheet(sheet, rows.len(), 0, 2));
     }
     let font = format!(r#"{{"providers":[{}]}}"#, providers.join(","));
     pack.add(FONT, font.into_bytes());
@@ -686,15 +988,18 @@ mod tests {
             subject,
             title: "Port-Noir".into(),
             kind: "Phare".into(),
+            kicker: "Phare - Côte Ouest".into(),
             info: "Phare · 100 blocs".into(),
             status: "§aCôte Ouest".into(),
             description: "Son feu se voit de loin.".into(),
+            action: "Clic gauche : sélectionner".into(),
             open,
         }
     }
 
     /// Adds up what the line's private glyphs and letters advance the pen by.
     fn advance(title: &str) -> i32 {
+        let rows = text_rows().len() as u32;
         let mut total = 0;
         let mut code = false;
         for glyph in title.chars() {
@@ -705,24 +1010,43 @@ mod tests {
                 total += 1 << (value - FIRST_FORWARD);
             } else if (FIRST_BACK..FIRST_BACK + SHIFT_BITS).contains(&value) {
                 total -= 1 << (value - FIRST_BACK);
-            } else if (FIRST_PANEL..FIRST_FORWARD).contains(&value) {
-                total += WIDTH as i32 + 1;
             } else if value >= FIRST_LETTERS {
                 let index = ((value - FIRST_LETTERS) % LETTERS_PER_ROW) as usize;
-                total += i32::from(LETTERS[index].advance);
-            } else {
+                let letter = i32::from(LETTERS[index].advance);
+                let big = (value - FIRST_LETTERS) / LETTERS_PER_ROW == rows;
+                total += if big { 2 * letter - 1 } else { letter };
+            } else if value < FIRST_SHEET {
                 total += text_width(&glyph.to_string());
+            } else {
+                total += glyph_advance(glyph);
             }
         }
         total
     }
 
+    fn glyph_advance(glyph: char) -> i32 {
+        let value = glyph as u32;
+        1 + if (FIRST_SHEET..FIRST_BUBBLE).contains(&value) {
+            SHEET_WIDTH as i32
+        } else if (FIRST_BUBBLE..NAME_TAG as u32).contains(&value) {
+            BUBBLE_SIZE as i32
+        } else if glyph == FLOURISH {
+            FLOURISH_WIDTH as i32
+        } else if value >= FIRST_MARK {
+            MARKS[(value - FIRST_MARK) as usize].image().width() as i32
+        } else {
+            WIDTH as i32
+        }
+    }
+
+    /// The display centres a line by where the pen ends, so it has to be the widest
+    /// thing drawn: no style may end short of what it put on the line.
     #[test]
-    fn a_card_ends_where_its_panel_does_whatever_it_writes() {
+    fn a_drawn_card_ends_past_all_it_drew() {
         for style in STYLES {
             for open in [false, true] {
                 let drawn = card(Subject::You, open).drawn(style);
-                assert_eq!(advance(&drawn), WIDTH as i32 + 1, "{style:?} {open}");
+                assert!(advance(&drawn) >= 40, "{style:?} {open}");
             }
         }
     }
@@ -766,58 +1090,54 @@ mod tests {
         }
     }
 
+    /// The sheet says it all, as it did. The others keep it for a selected place.
     #[test]
-    fn the_details_only_show_once_selected() {
-        let glyph = Style::Card.detail_glyph();
-        let closed = card(Subject::You, false).drawn(Style::Card);
-        let open = card(Subject::You, true).drawn(Style::Card);
-        assert!(!closed.contains(glyph));
-        assert!(open.contains(glyph));
+    fn the_details_only_show_once_selected_except_on_a_sheet() {
+        let closed = card(Subject::You, false);
+        let open = card(Subject::You, true);
+        for style in [Style::Bare, Style::Bubble, Style::Title] {
+            assert_ne!(closed.drawn(style), open.drawn(style), "{style:?}");
+            assert!(closed.depth(style) < open.depth(style), "{style:?}");
+        }
+        assert_eq!(closed.drawn(Style::Sheet), open.drawn(Style::Sheet));
     }
 
     #[test]
     fn styles_cycle_through_each_other() {
-        assert_eq!(Style::Card.next().next().next(), Style::Card);
-        assert_ne!(Style::Card.next(), Style::Card);
-    }
-
-    #[test]
-    fn every_panel_has_its_own_glyph() {
-        let mut glyphs: Vec<_> = STYLES
-            .iter()
-            .flat_map(|style| SUBJECTS.map(|subject| style.panel_glyph(subject)))
-            .chain(STYLES.iter().map(|style| style.detail_glyph()))
-            .collect();
-        let count = glyphs.len();
-        glyphs.sort_unstable();
-        glyphs.dedup();
-        assert_eq!(glyphs.len(), count);
-    }
-
-    #[test]
-    fn a_panel_keeps_its_full_width_for_the_font() {
-        for style in STYLES {
-            let image = panel(style, Subject::You);
-            assert_ne!(
-                image.pixel(WIDTH - 1, style.height() / 2)[3],
-                0,
-                "{style:?}"
-            );
+        let mut style = Style::Sheet;
+        for _ in 0..STYLES.len() {
+            style = style.next();
         }
+        assert_eq!(style, Style::Sheet);
+        assert_ne!(Style::Sheet.next(), Style::Sheet);
     }
 
     #[test]
     fn panels_take_the_colour_of_their_subject() {
-        let mine = panel(Style::Band, Subject::Place(MarkerKind::Mine));
-        let you = panel(Style::Band, Subject::You);
-        assert_ne!(mine.pixel(3, 6), you.pixel(3, 6));
+        let mine = sheet(Subject::Place(MarkerKind::Mine));
+        let you = sheet(Subject::You);
+        assert_ne!(mine.pixel(SHEET_WIDTH / 2, 8), you.pixel(SHEET_WIDTH / 2, 8));
+    }
+
+    #[test]
+    fn a_drawn_glyph_keeps_its_full_width_for_the_font() {
+        let image = sheet(Subject::You);
+        assert_ne!(image.pixel(SHEET_WIDTH - 1, SHEET_HEIGHT / 2)[3], 0);
+        let image = bubble(Subject::You);
+        assert_ne!(image.pixel(BUBBLE_SIZE - 1, BUBBLE_SIZE / 2)[3], 0);
     }
 
     #[test]
     fn the_letters_of_every_row_stay_within_the_private_area() {
-        let last = FIRST_LETTERS + text_rows().len() as u32 * LETTERS_PER_ROW;
+        let last = FIRST_LETTERS + (text_rows().len() as u32 + 1) * LETTERS_PER_ROW;
         assert!(last <= 0xF8FF);
         assert!(LETTERS.len() <= LETTERS_PER_ROW as usize);
+    }
+
+    #[test]
+    fn a_sign_says_its_state_with_or_without_the_pack() {
+        assert!(sign(Mark::Lock, "Verrouillée", false).contains("Verrouillée"));
+        assert!(sign(Mark::Lock, "Verrouillée", true).contains(Mark::Lock.glyph()));
     }
 
     #[test]
@@ -825,11 +1145,10 @@ mod tests {
         let mut pack = ResourcePack::new("test");
         install(&mut pack);
         assert!(pack.contains(FONT));
-        for style in STYLES {
-            for subject in SUBJECTS {
-                let name = format!("panel_{}_{}", style.index(), subject.index());
-                assert!(pack.contains(&format!("assets/voidmap/textures/font/{name}.png")));
-            }
+        for subject in SUBJECTS {
+            let index = subject.index();
+            assert!(pack.contains(&format!("assets/voidmap/textures/font/sheet_{index}.png")));
+            assert!(pack.contains(&format!("assets/voidmap/textures/font/bubble_{index}.png")));
         }
     }
 }

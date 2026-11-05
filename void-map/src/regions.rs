@@ -49,6 +49,16 @@ fn muted(block: i32) -> i32 {
     }
 }
 
+/// The grey standing for a block, whatever its colour.
+pub fn faded(block: i32) -> i32 {
+    match block {
+        b::LIGHT_BLUE_CONCRETE | b::CYAN_CONCRETE => b::GRAY_CONCRETE,
+        b::WHITE_CONCRETE | b::SMOOTH_SANDSTONE => b::WHITE_CONCRETE,
+        b::BLACK_CONCRETE | b::GRAY_CONCRETE => block,
+        _ => b::LIGHT_GRAY_CONCRETE,
+    }
+}
+
 /// A shade under a muted colour.
 fn dimmed(block: i32) -> i32 {
     match block {
@@ -57,6 +67,40 @@ fn dimmed(block: i32) -> i32 {
         b::WHITE_CONCRETE => b::LIGHT_GRAY_CONCRETE,
         b::LIGHT_GRAY_CONCRETE => b::GRAY_CONCRETE,
         other => other,
+    }
+}
+
+/// How the model shows a region that is not open yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ZoneLook {
+    /// Clouds of blocks hang over it.
+    Clouds,
+    /// Diagonal stripes on the ground.
+    Hatching,
+    /// A fence along its border, with a lock over it.
+    #[default]
+    Palisade,
+    /// Its colours drained, with a large question mark over it.
+    Faded,
+}
+
+impl ZoneLook {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Clouds => "Nuages",
+            Self::Hatching => "Hachures",
+            Self::Palisade => "Palissade",
+            Self::Faded => "Couleurs éteintes",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Clouds => Self::Hatching,
+            Self::Hatching => Self::Palisade,
+            Self::Palisade => Self::Faded,
+            Self::Faded => Self::Clouds,
+        }
     }
 }
 
@@ -88,6 +132,13 @@ impl Regions {
             region("Marches du Nord", [40.0, -340.0], RegionState::Undiscovered),
             region("Confins de l'Est", [340.0, -60.0], RegionState::Locked),
         ])
+    }
+
+    /// Those that are not open yet.
+    pub fn closed(&self) -> impl Iterator<Item = &Region> {
+        self.0
+            .iter()
+            .filter(|region| region.state != RegionState::Discovered)
     }
 
     pub fn at(&self, x: f64, z: f64) -> &Region {

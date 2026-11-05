@@ -14,7 +14,7 @@ use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData};
 use crate::buildings::landmark;
 use crate::markers::MarkerKind;
 use crate::noise::fractal;
-use crate::regions::{RegionState, Regions};
+use crate::regions::{Region, RegionState, Regions, ZoneLook, faded};
 use crate::terrain::Terrain;
 use crate::window::Window;
 
@@ -95,6 +95,14 @@ const SAND: i32 = b::SMOOTH_SANDSTONE;
 const SOIL: i32 = b::BROWN_TERRACOTTA;
 const PATH: i32 = b::BROWN_CONCRETE;
 const BRIDGE: i32 = b::SPRUCE_PLANKS;
+const CLOUD_SEED: u32 = 70;
+/// In world blocks.
+const CLOUD_SIZE: f64 = 60.0;
+const CLOUD_DENSITY: f64 = 0.05;
+const CLOUD_Y: i32 = 100;
+const CLOUD_THICKNESS: i32 = 2;
+const HATCH_WIDTH: i32 = 3;
+const PALISADE_HEIGHT: i32 = 3;
 const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
 const DEEP_WATER: i32 = b::LIGHT_BLUE_CONCRETE;
 
@@ -141,6 +149,8 @@ struct Column {
     /// What covers the ground up to the sea.
     water: i32,
     state: RegionState,
+    /// Next to a region in another state.
+    border: bool,
 }
 
 impl Column {
@@ -250,10 +260,30 @@ impl Scene {
                 state,
             ));
         }
+        Self::mark_borders(&mut columns, size, scale.build as usize);
         Self {
             scale,
             columns,
             buildings: HashMap::new(),
+        }
+    }
+
+    fn mark_borders(columns: &mut [Option<Column>], size: usize, reach: usize) {
+        let states: Vec<_> = columns.iter().map(|c| c.map(|c| c.state)).collect();
+        for (index, column) in columns.iter_mut().enumerate() {
+            let Some(column) = column else {
+                continue;
+            };
+            let (x, z) = (index % size, index / size);
+            let around = [
+                (x.saturating_sub(reach), z),
+                ((x + reach).min(size - 1), z),
+                (x, z.saturating_sub(reach)),
+                (x, (z + reach).min(size - 1)),
+            ];
+            column.border = around.iter().any(|(x, z)| {
+                states[z * size + x].is_some_and(|state| state != column.state)
+            });
         }
     }
 
@@ -302,6 +332,7 @@ impl Scene {
                 DEEP_WATER
             },
             state,
+            border: false,
         })
     }
 
@@ -331,10 +362,81 @@ impl Scene {
     }
 
     /// The model cell a world block falls on.
+    /// The land of a region cell closest to the middle of that land, if it has any.
+    pub fn middle_of_land(&self, regions: &Regions, region: &Region) -> Option<(i32, i32)> {
+        let radius = self.scale.radius;
+        let cells: Vec<_> = (-radius..radius)
+            .flat_map(|x| (-radius..radius).map(move |z| (x, z)))
+            .filter(|(x, z)| self.top(*x, *z).is_some_and(|top| top > SEA_Y))
+            .filter(|(x, z)| {
+                regions.at(self.scale.world(*x), self.scale.world(*z)).name == region.name
+            })
+            .collect();
+        let count = i32::try_from(cells.len()).ok().filter(|count| *count > 0)?;
+        let middle = cells.iter().fold((0, 0), |sum, cell| (sum.0 + cell.0, sum.1 + cell.1));
+        let middle = (middle.0 / count, middle.1 / count);
+        let from_middle = |cell: &&(i32, i32)| (cell.0 - middle.0).pow(2) + (cell.1 - middle.1).pow(2);
+        cells.iter().min_by_key(from_middle).copied()
+    }
+
+    /// How far from the middle the model's chunks go.
+    pub fn chunk_radius(&self) -> i32 {
+        self.scale.radius / 16 + 1
+    }
+
     pub fn cell_of(&self, x: i32, z: i32) -> Option<(i32, i32)> {
         let (col, row) = self.scale.window().cell_at(x, z)?;
         let radius = self.scale.radius;
         Some((i32::from(col) - radius, i32::from(row) - radius))
+    }
+
+    /// Adds what tells a closed region at this column.
+    fn zone_look(
+        &self,
+        look: ZoneLook,
+        x: i32,
+        z: i32,
+        column: Column,
+        set: &mut impl FnMut(i32, i32),
+    ) {
+        let build = self.scale.build;
+        let locked = column.state == RegionState::Locked;
+        match look {
+            ZoneLook::Clouds => {
+                let (world_x, world_z) = (self.scale.world(x), self.scale.world(z));
+                let cloud = fractal(CLOUD_SEED, world_x, world_z, CLOUD_SIZE);
+                if cloud > CLOUD_DENSITY {
+                    let block = if locked {
+                        b::GRAY_CONCRETE
+                    } else {
+                        b::WHITE_CONCRETE
+                    };
+                    for y in 0..CLOUD_THICKNESS * build {
+                        set(self.scale.max_y.min(CLOUD_Y) + y, block);
+                    }
+                }
+            }
+            ZoneLook::Hatching => {
+                let width = HATCH_WIDTH * build;
+                if (x + z).rem_euclid(2 * width) < width {
+                    let block = if locked {
+                        b::RED_TERRACOTTA
+                    } else {
+                        b::GRAY_TERRACOTTA
+                    };
+                    set(column.top(), block);
+                }
+            }
+            ZoneLook::Palisade => {
+                if column.border {
+                    let tall = PALISADE_HEIGHT * build + (x + z).rem_euclid(2);
+                    for y in 1..=tall {
+                        set(column.top() + y, b::SPRUCE_PLANKS);
+                    }
+                }
+            }
+            ZoneLook::Faded => {}
+        }
     }
 
     /// Levels the ground around a cell, on land, and puts a landmark on it.
@@ -393,7 +495,14 @@ impl Scene {
 
     /// One chunk of the model, centred on chunk `(0, 0)`. Off the model it is empty,
     /// which the client needs too: it only draws chunks with all their neighbours.
-    pub fn chunk(&self, chunk_x: i32, chunk_z: i32, biome: BiomeId, count: usize) -> Chunk {
+    pub fn chunk(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        biome: BiomeId,
+        count: usize,
+        look: ZoneLook,
+    ) -> Chunk {
         let mut builder = ChunkBuilder::new(chunk_x, chunk_z)
             .biome(biome.0)
             .biome_registry_size(count);
@@ -406,7 +515,14 @@ impl Scene {
                 let Some(column) = self.column(x, z) else {
                     continue;
                 };
-                let tint = |block| column.state.tint(block);
+                let closed = column.state != RegionState::Discovered;
+                let tint = |block| {
+                    if closed && look == ZoneLook::Faded {
+                        faded(block)
+                    } else {
+                        column.state.tint(block)
+                    }
+                };
                 for y in column.bottom..column.ground {
                     let block = cliff_block(column.surface, column.ground - y);
                     builder.set_block(local_x, y, local_z, tint(block));
@@ -417,6 +533,10 @@ impl Scene {
                 }
                 for (y, block) in self.buildings.get(&(x, z)).into_iter().flatten() {
                     builder.set_block(local_x, *y, local_z, tint(*block));
+                }
+                if closed {
+                    let mut set = |y, block| builder.set_block(local_x, y, local_z, block);
+                    self.zone_look(look, x, z, column, &mut set);
                 }
             }
         }

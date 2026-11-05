@@ -113,7 +113,22 @@ impl Plugin for UiPlugin {
     }
 }
 
-fn push_pack(event: On<PlayerReadyEvent>, pack: Res<Pack>, players: Players) {
+/// The player has been offered the pack. The client keeps it for the whole connection.
+#[derive(Component)]
+struct PackOffered;
+
+/// A player is ready again after every respawn, which also covers a change of dimension.
+fn push_pack(
+    event: On<PlayerReadyEvent>,
+    offered: Query<(), With<PackOffered>>,
+    pack: Res<Pack>,
+    players: Players,
+    mut commands: Commands,
+) {
+    if offered.contains(event.entity) {
+        return;
+    }
+    commands.entity(event.entity).insert(PackOffered);
     players.send(
         event.entity,
         ResourcePackPush {
@@ -157,8 +172,55 @@ fn click(event: On<PacketEvent<CustomClickAction>>, mut commands: Commands) {
 mod tests {
     use std::io::{Read, Write};
 
+    use voidmc::{
+        components::ClientId,
+        network::{IncomingPacket, NetworkChannels, OutgoingPacket},
+    };
+
     use super::*;
     use crate::ResourcePack;
+
+    fn ready(app: &mut App, entity: Entity) {
+        app.world_mut().trigger(PlayerReadyEvent {
+            client_id: 1,
+            entity,
+        });
+        app.world_mut().flush();
+    }
+
+    /// A map enters a dimension of its own, and the client reports itself ready after
+    /// each respawn. Offering the pack again made it reload at every `/map`.
+    #[test]
+    fn the_pack_is_offered_once_however_many_times_a_player_is_ready() {
+        let (incoming_tx, incoming) = flume::unbounded::<IncomingPacket>();
+        let (outgoing, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (disconnect_tx, disconnect) = flume::unbounded::<u32>();
+        let (kick, kick_rx) = flume::unbounded::<u32>();
+        let mut app = App::new();
+        app.insert_resource(NetworkChannels {
+            incoming,
+            outgoing,
+            disconnect,
+            kick,
+        });
+        app.insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx));
+        app.insert_resource(Pack {
+            server: PackServer {
+                id: Uuid::nil(),
+                hash: String::new(),
+                url: String::new(),
+            },
+            required: false,
+            prompt: Text::new("pack"),
+        });
+        app.add_observer(push_pack);
+        let player = app.world_mut().spawn(ClientId(1)).id();
+        ready(&mut app, player);
+        ready(&mut app, player);
+        ready(&mut app, player);
+        app.update();
+        assert_eq!(outgoing_rx.drain().count(), 1);
+    }
 
     #[test]
     fn the_server_answers_with_the_whole_archive() {

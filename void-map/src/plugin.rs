@@ -7,6 +7,7 @@
 //! of the screen is the pointer.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::prelude::*;
@@ -17,8 +18,8 @@ use voidmc::{
     RegistryDataStore, ServerConfigResource, TabEntry, Teleport, TextColor, TextDisplay, WorldGen,
     WorldGenerator,
     components::{
-        ChunkStreamBacklog, ChunkStreamingPaused, ClientId, EffectiveViewDistance, LoadedChunks,
-        MinecraftEntityId, PlayerUuid, Position, Rotation, ServerControlledPosition,
+        ChunkStreamBacklog, ChunkStreamingPaused, ClientId, ClientSettings, EffectiveViewDistance,
+        LoadedChunks, MinecraftEntityId, PlayerUuid, Position, Rotation, ServerControlledPosition,
     },
     events::{PlayerInputEvent, PlayerQuitEvent},
     network::PacketEvent,
@@ -27,23 +28,25 @@ use voidmc::{
 use voidmc_codec::Encode;
 use voidmc_protocol::{
     clientbound::{
-        Chunk, GameEvent, GameEventType, PlayerRotation, Respawn, SetCamera, SetCenterChunk,
-        SystemChat, UnloadChunk,
+        ChunkDataAndLight, GameEvent, GameEventType, PlayerRotation, Respawn, SetCamera,
+        SetCenterChunk, SystemChat, UnloadChunk,
     },
     serverbound::{Interact, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation, SpectateEntity},
     slot::{DataComponent, component_ids},
 };
 use voidmc_ui::{PackSettled, Text};
 
-use crate::art::{Card, Style, Subject};
+use crate::art::{Card, Mark, Style, Subject, sign};
 use crate::dimension::{self, DIMENSION, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::pointer::{
-    DEFAULT_ZOOM, DETAIL_PITCH, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH, REST_YAW,
-    SPECTATOR_EYE_HEIGHT, ZOOMS, aimed, detail_back, detail_y, look_direction, overview_y, stop,
+    COARSE_ABOVE, DETAIL_BELOW, DETAIL_PITCH, FreeLook, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH,
+    REST_PITCH, REST_YAW, SPECTATOR_EYE_HEIGHT, Zoom, aimed, detail_back, look_direction,
+    overview_y,
 };
-use crate::regions::{RegionState, Regions};
+use crate::regions::{RegionState, Regions, ZoneLook};
 use crate::scene::{self, DETAIL, OVERVIEW, Scale, Scene};
+use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 
 /// `WorldGenerator` does not expose its water level. This is the one of
@@ -63,28 +66,35 @@ const ANCHOR_SLOTS: u32 = 1024;
 /// How far the overview's chunks go, which is the model plus the empty ring the
 /// client needs to draw its last chunks.
 const OVERVIEW_REACH: i32 = (OVERVIEW.radius + 15) / 16 + 1;
-/// Chunks sent around a panning camera, and how far they stay before being unloaded.
+/// Chunks sent around a panning camera.
 const DETAIL_SEND_RADIUS: i32 = 9;
-const DETAIL_KEEP_RADIUS: i32 = 11;
+/// A client keeps a square of chunks this much wider than its view distance. Only what
+/// it would drop anyway is unloaded: the rest stays and need not be sent again.
+const CLIENT_KEEPS_PAST_VIEW: i32 = 3;
+const DEFAULT_VIEW_DISTANCE: i32 = 8;
 pub(crate) const CHUNKS_PER_TICK: usize = 64;
 
-/// A longer glide overshoots: the client adds what the entity moved on its own to the
-/// target of a glide, so that a fast pan ended past the rim, off by tens of blocks and
-/// out of step with the server until the next long move. Entities still move smoothly
-/// between ticks with one.
-const CAMERA_GLIDE_TICKS: u8 = 1;
+/// A shorter glide moves in visible steps. A longer one only overshoots if the view
+/// stops dead, because the client adds what the entity moved on its own to the target
+/// of a glide: `Pan` eases the view to a stop for that reason.
+const CAMERA_GLIDE_TICKS: u8 = 3;
 
 /// Above the tallest landmark, in its blocks.
 const ICON_LIFT: f64 = 10.0;
 const ICON_SCALE: f32 = 5.0;
 const ICON_HOVER_GROWTH: f32 = 1.6;
 /// The head floats over the player's spot, on a pin always drawn right under it.
-const HEAD_LIFT: f64 = 7.0;
-const HEAD_SCALE: f32 = 6.0;
+const MINI_HEAD_LIFT: f64 = 4.0;
+const MINI_HEAD_SCALE: f32 = 3.4;
 /// How much of its scale it takes to reach the edge of a head.
 const HEAD_HALF: f32 = 0.22;
-const PIN_SCALE: f32 = 8.0;
-const PIN: &str = "§c▼";
+const DISC_SCALE: f32 = 5.0;
+const PIN_SCALE: f32 = 7.0;
+const GROUND_MARK_SCALE: f32 = 8.0;
+/// Over the ground, in its blocks, so that it does not flicker with it.
+const GROUND_MARK_LIFT: f64 = 0.15;
+const SIGN_LIFT: f64 = 14.0;
+const SIGN_SCALE: f32 = 5.0;
 /// A pan starts this far north of the player, for each block of height, to keep their
 /// marker off the middle of the screen.
 const PAN_START_NORTH: f64 = 0.25;
@@ -112,6 +122,14 @@ const EYE_BOX_DROP: f64 = 0.02;
 const VIEW_RANGE: f32 = 8.0;
 const GLOW: i32 = 0xFFE9A0;
 const HINT_PERIOD: u32 = 30;
+const SUMMARY_PERIOD: u32 = 200;
+/// A card follows the zoom by steps of this much.
+const CARD_ZOOM_STEP: f64 = 0.12;
+/// Markers follow the zoom by steps of this much.
+const MARKER_ZOOM_STEP: f64 = 0.02;
+/// A marker keeps its size on screen from this height, in blocks of its model.
+const MARKER_FULL_HEIGHT: f64 = 105.0;
+const PAN_MARKER_SCALE: f64 = 2.0;
 /// A right click sends one packet per hand.
 const CLICK_COOLDOWN: u32 = 3;
 /// Too close to where players start for a marker to tell from the "you" pin.
@@ -150,13 +168,6 @@ pub enum MapMode {
 }
 
 impl MapMode {
-    fn scale(self) -> Scale {
-        match self {
-            Self::Look => OVERVIEW,
-            Self::Pan => DETAIL,
-        }
-    }
-
     fn other(self) -> Self {
         match self {
             Self::Look => Self::Pan,
@@ -172,6 +183,28 @@ impl MapMode {
     }
 }
 
+/// The two models of the map. A pan far from the ground uses the coarse one, whose
+/// blocks are larger, to see further than a render distance can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Model {
+    Overview,
+    Detail,
+}
+
+impl Model {
+    fn scale(self) -> Scale {
+        match self {
+            Self::Overview => OVERVIEW,
+            Self::Detail => DETAIL,
+        }
+    }
+
+    /// Blocks of this model to a block of the detail model.
+    fn ratio(self) -> f64 {
+        f64::from(DETAIL.blocks_per_cell) / f64::from(self.scale().blocks_per_cell)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Waypoint {
     marker: Marker,
@@ -183,8 +216,10 @@ struct Waypoint {
 struct Level {
     scene: Scene,
     waypoints: Vec<Waypoint>,
-    /// Each with its weight on the wire.
-    chunks: HashMap<(i32, i32), (Chunk, usize)>,
+    /// Where each closed region shows what it is, on its land, with its state.
+    signs: Vec<([f64; 3], RegionState)>,
+    /// Built and encoded once, each with its weight on the wire.
+    chunks: HashMap<((i32, i32), ZoneLook), (ChunkDataAndLight, usize)>,
 }
 
 impl Level {
@@ -220,21 +255,50 @@ impl Level {
                 }
             })
             .collect();
+        let signs = regions
+            .closed()
+            .filter_map(|region| {
+                let (x, z) = scene.middle_of_land(regions, region)?;
+                let top = scene.top(x, z)?;
+                let at = [f64::from(x) + 0.5, f64::from(top), f64::from(z) + 0.5];
+                Some((at, region.state))
+            })
+            .collect();
         Self {
             scene,
             waypoints,
+            signs,
             chunks: HashMap::new(),
         }
     }
 
-    fn chunk(&mut self, at: (i32, i32), info: MapLevel) -> &(Chunk, usize) {
-        self.chunks.entry(at).or_insert_with(|| {
-            let chunk = self.scene.chunk(at.0, at.1, info.biome, info.biome_count);
+    fn chunk(
+        &mut self,
+        at: (i32, i32),
+        look: ZoneLook,
+        info: MapLevel,
+    ) -> &(ChunkDataAndLight, usize) {
+        self.chunks.entry((at, look)).or_insert_with(|| {
+            let packet = self
+                .scene
+                .chunk(at.0, at.1, info.biome, info.biome_count, look)
+                .to_packet();
             let mut bytes = Vec::new();
-            chunk.to_packet().encode(&mut bytes);
+            packet.encode(&mut bytes);
             let weight = bytes.len();
-            (chunk, weight)
+            (packet, weight)
         })
+    }
+
+    /// Builds the island's chunks ahead of time: on a tick, it would make that tick
+    /// late. The other zone looks wait for a player to ask for them.
+    fn prepare(&mut self, info: MapLevel) {
+        let reach = self.scene.chunk_radius();
+        for x in -reach..=reach {
+            for z in -reach..=reach {
+                self.chunk((x, z), ZoneLook::default(), info);
+            }
+        }
     }
 }
 
@@ -272,17 +336,17 @@ pub struct Atlas {
 }
 
 impl Atlas {
-    fn level(&self, mode: MapMode) -> Option<&Level> {
-        match mode {
-            MapMode::Look => self.overview.as_ref(),
-            MapMode::Pan => self.detail.as_ref(),
+    fn level(&self, model: Model) -> Option<&Level> {
+        match model {
+            Model::Overview => self.overview.as_ref(),
+            Model::Detail => self.detail.as_ref(),
         }
     }
 
-    fn level_mut(&mut self, mode: MapMode) -> Option<&mut Level> {
-        match mode {
-            MapMode::Look => self.overview.as_mut(),
-            MapMode::Pan => self.detail.as_mut(),
+    fn level_mut(&mut self, model: Model) -> Option<&mut Level> {
+        match model {
+            Model::Overview => self.overview.as_mut(),
+            Model::Detail => self.detail.as_mut(),
         }
     }
 }
@@ -300,16 +364,82 @@ struct Rig {
 struct Pins {
     icons: Vec<Entity>,
     you: Option<You>,
+    /// What says a region is closed, for the looks that have it.
+    signs: Vec<Entity>,
     card: Option<ShownCard>,
 }
 
 /// The player's own marker.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct You {
-    head: Entity,
-    pin: Entity,
+    parts: Vec<(Entity, Part)>,
     /// Where they stand on the model.
     at: [f64; 3],
+}
+
+/// One entity of the player's marker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Part {
+    /// Standing on the spot, whichever way it is seen from.
+    Pin,
+    /// Lying on the ground, with its top towards this yaw.
+    Flat(Mark, f32),
+    Disc,
+    Head,
+}
+
+impl Part {
+    /// How large it is at the height the marker scale is 1.
+    fn size(self) -> f32 {
+        match self {
+            Self::Pin => PIN_SCALE,
+            Self::Flat(..) => GROUND_MARK_SCALE,
+            Self::Disc => DISC_SCALE,
+            Self::Head => MINI_HEAD_SCALE,
+        }
+    }
+
+    fn transform(self, scale: f32) -> DisplayTransform {
+        match self {
+            Self::Pin => {
+                // The tip of the drop is its lowest pixel.
+                let rise = Mark::Pin.height() as f32 - LINE_HEIGHT;
+                DisplayTransform::default()
+                    .translation(0.0, rise * scale / PIXELS_PER_BLOCK, 0.0)
+                    .uniform_scale(scale)
+            }
+            Self::Flat(mark, yaw) => flat_transform(mark, yaw, scale),
+            Self::Disc => {
+                let centre = LINE_HEIGHT - Mark::Disc.height() as f32 / 2.0;
+                DisplayTransform::default()
+                    .translation(0.0, -centre * scale / PIXELS_PER_BLOCK, 0.0)
+                    .uniform_scale(scale)
+            }
+            Self::Head => DisplayTransform::default().uniform_scale(scale),
+        }
+    }
+}
+
+/// Lays a glyph on the ground, centred on the entity. Text faces south with its top up:
+/// a quarter turn back lays it down with its top to the north, and a turn around the
+/// vertical points that top where `yaw` looks.
+fn flat_transform(mark: Mark, yaw: f32, scale: f32) -> DisplayTransform {
+    let half = |degrees: f32| degrees.to_radians() / 2.0;
+    let (tilt_sin, tilt_cos) = half(-90.0).sin_cos();
+    let (turn_sin, turn_cos) = half(180.0 - yaw).sin_cos();
+    let rotation = [
+        turn_cos * tilt_sin,
+        turn_sin * tilt_cos,
+        -turn_sin * tilt_sin,
+        turn_cos * tilt_cos,
+    ];
+    // The middle of the glyph, above the entity along the top of the text.
+    let centre = (LINE_HEIGHT - mark.height() as f32 / 2.0) * scale / PIXELS_PER_BLOCK;
+    let (sin, cos) = (180.0 - yaw).to_radians().sin_cos();
+    DisplayTransform::default()
+        .translation(centre * sin, 0.0, centre * cos)
+        .left_rotation(rotation)
+        .uniform_scale(scale)
 }
 
 /// The card on screen, and what it was drawn from, to tell when it has to change.
@@ -318,7 +448,8 @@ struct ShownCard {
     entity: Entity,
     text: String,
     hover: Hover,
-    zoom: usize,
+    /// The height of the view it was sized for.
+    zoom: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,11 +472,20 @@ pub struct MapSession {
     rig: Option<Rig>,
     mouse: Mouse,
     pan: Pan,
-    zoom: usize,
-    /// The zoom the markers are sized for.
-    sized_for: usize,
+    zoom: Zoom,
+    /// The pan is far enough to be on the coarse model.
+    coarse: bool,
+    /// The height of the view the markers are sized for.
+    sized_for: f64,
+    free: FreeLook,
+    telemetry: Telemetry,
     /// The player's head, as an item.
     head: ItemStack,
+    looks: MapLooks,
+    /// The client has the pack, so it can draw.
+    drawn: bool,
+    /// The zone look changed: the chunks have to go out again.
+    rezoned: bool,
     /// Jump, left and right as last reported, to act on a press and not on a repeat.
     keys: [bool; 3],
     /// Where the look is, in the middle of the screen.
@@ -368,13 +508,32 @@ impl MapSession {
         }
     }
 
+    fn model(&self) -> Model {
+        match self.mode {
+            MapMode::Look => Model::Overview,
+            MapMode::Pan if self.coarse => Model::Overview,
+            MapMode::Pan => Model::Detail,
+        }
+    }
+
+    /// The height of the view over the sea, in blocks of its model.
+    fn height(&self) -> f64 {
+        self.zoom.height() * self.model().ratio()
+    }
+
     /// Where the player, or the entity they see through, stands on the model.
     fn standing(&self) -> [f64; 3] {
         match self.mode {
             MapMode::Look => [0.0, overview_y(), OVERVIEW_Z],
             MapMode::Pan => {
-                let [x, z] = self.pan.offset();
-                [x, detail_y(self.zoom), z + detail_back(self.zoom)]
+                let ratio = self.model().ratio();
+                let [x, z] = self.pan.view();
+                let height = self.height();
+                [
+                    x * ratio,
+                    f64::from(scene::SEA_Y) + height,
+                    z * ratio + detail_back(height),
+                ]
             }
         }
     }
@@ -401,24 +560,19 @@ impl MapSession {
     /// Takes in a rotation the client reports, and says how to correct it, if at all.
     fn turn(&mut self, yaw: f32, pitch: f32, atlas: &Atlas) -> Option<PlayerRotation> {
         self.rig?;
+        self.telemetry.report(Instant::now());
         match self.mode {
             MapMode::Look => {
                 self.look = Rotation { yaw, pitch };
-                let [held_yaw, held_pitch] = stop(yaw, pitch);
-                (held_yaw.is_some() || held_pitch.is_some()).then_some(PlayerRotation {
-                    yaw: held_yaw.unwrap_or(0.0),
-                    relative_yaw: held_yaw.is_none(),
-                    pitch: held_pitch.unwrap_or(0.0),
-                    relative_pitch: held_pitch.is_none(),
-                })
+                self.free.report(yaw, pitch);
+                self.telemetry.past_limits(self.free.is_past(), yaw, pitch);
+                None
             }
             MapMode::Pan => {
                 let turn = self.mouse.report(yaw, pitch);
                 if turn.delta != [0.0, 0.0] {
-                    let scene = &atlas.level(self.mode)?.scene;
-                    self.pan.apply(turn.delta, |[x, z]| {
-                        scene.top(x.floor() as i32, z.floor() as i32).is_some()
-                    });
+                    let scene = &atlas.level(Model::Detail)?.scene;
+                    self.pan.apply(turn.delta, |at| on_land(scene, at));
                 }
                 turn.recentre.then_some(PlayerRotation {
                     yaw: 0.0,
@@ -448,11 +602,10 @@ impl MapSession {
 
     /// Far markers are large and near ones smaller, so that they keep their size on screen.
     fn marker_scale(&self) -> f32 {
-        let zoom = match self.mode {
+        match self.mode {
             MapMode::Look => 1.0,
-            MapMode::Pan => ZOOMS[self.zoom] / ZOOMS[ZOOMS.len() - 1],
-        };
-        self.mode.scale().build as f32 * zoom as f32
+            MapMode::Pan => (PAN_MARKER_SCALE * self.height() / MARKER_FULL_HEIGHT) as f32,
+        }
     }
 
     fn icon_scale(&self, index: usize) -> f32 {
@@ -465,8 +618,9 @@ impl MapSession {
         }
     }
 
-    fn head_scale(&self) -> f32 {
-        let base = HEAD_SCALE * self.marker_scale();
+    /// The size of a part of the player's marker.
+    fn part_scale(&self, part: Part) -> f32 {
+        let base = part.size() * self.marker_scale();
         if self.hovered == Some(Hover::You) {
             base * ICON_HOVER_GROWTH
         } else {
@@ -474,28 +628,44 @@ impl MapSession {
         }
     }
 
-    fn pin_transform(&self) -> DisplayTransform {
-        pin_transform(self.head_scale(), PIN_SCALE * self.marker_scale())
+    fn part_transform(&self, part: Part) -> DisplayTransform {
+        part.transform(self.part_scale(part))
+    }
+
+    /// How far over the ground the player's marker is aimed at, in blocks of a build.
+    fn you_lift(&self) -> f64 {
+        match self.looks.me {
+            Me::MiniHead => MINI_HEAD_LIFT,
+            Me::Pin | Me::Arrow | Me::Ring => 0.0,
+        }
+    }
+
+    fn sign_scale(&self) -> f32 {
+        SIGN_SCALE * self.marker_scale()
     }
 
     fn place_pan(&mut self, atlas: &Atlas) {
-        if let (MapMode::Pan, Some(level)) = (self.mode, atlas.level(self.mode)) {
+        if let (MapMode::Pan, Some(level)) = (self.mode, atlas.level(Model::Detail)) {
             self.pan = self.pan_start(&level.scene);
         }
     }
 
     /// Where a pan starts: near the player, with their marker off the middle.
     fn pan_start(&self, scene: &Scene) -> Pan {
-        let Some(you) = self.pins.you else {
+        let Some(you) = &self.pins.you else {
             return Pan::default();
         };
         let [x, _, z] = you.at;
-        let z = z - PAN_START_NORTH * ZOOMS[self.zoom];
+        let z = z - PAN_START_NORTH * self.zoom.height();
         match scene.top(x.floor() as i32, z.floor() as i32) {
             Some(_) => Pan::at([x, z]),
             None => Pan::default(),
         }
     }
+}
+
+fn on_land(scene: &Scene, [x, z]: [f64; 2]) -> bool {
+    scene.top(x.floor() as i32, z.floor() as i32).is_some()
 }
 
 pub struct MapPlugin;
@@ -510,7 +680,7 @@ impl Plugin for MapPlugin {
             detail: None,
         })
         .add_systems(Startup, build_atlas)
-        .add_systems(Update, (rig_up, stream_chunks, follow_view, show_hint))
+        .add_systems(Update, (rig_up, stream_chunks, follow_view, tick_sessions))
         .add_observer(enter)
         .add_observer(switch_mode)
         .add_observer(leave)
@@ -522,7 +692,7 @@ impl Plugin for MapPlugin {
         .add_observer(right_click)
         .add_observer(read_keys)
         .add_observer(note_pack)
-        .add_observer(choose_style)
+        .add_observer(choose_look)
         .add_observer(player_left);
         app.world_mut()
             .resource_mut::<CommandRegistry>()
@@ -535,6 +705,11 @@ fn build_atlas(mut atlas: ResMut<Atlas>, generator: Res<WorldGen>) {
     let overview = Level::new(generator, OVERVIEW, &atlas.regions);
     let detail = Level::new(generator, DETAIL, &atlas.regions);
     tracing::info!(waypoints = overview.waypoints.len(), "map models built");
+    let (mut overview, mut detail) = (overview, detail);
+    let started = Instant::now();
+    overview.prepare(atlas.info);
+    detail.prepare(atlas.info);
+    tracing::info!(took_ms = started.elapsed().as_millis(), "map chunks encoded");
     atlas.overview = Some(overview);
     atlas.detail = Some(detail);
 }
@@ -574,21 +749,10 @@ fn spawn_item(
         .id()
 }
 
-/// Under the head in the plane of the screen, from any angle.
-fn pin_transform(head_scale: f32, pin_scale: f32) -> DisplayTransform {
-    let drop = head_scale * HEAD_HALF + pin_scale * LINE_HEIGHT / PIXELS_PER_BLOCK;
-    DisplayTransform::default()
-        .translation(0.0, -drop, 0.0)
-        .uniform_scale(pin_scale)
-}
-
-fn spawn_pin(commands: &mut Commands, at: Position, transform: DisplayTransform) -> Entity {
+fn spawn_mark(commands: &mut Commands, at: Position, text: String, display: Display) -> Entity {
     EntityBuilder::new(EntityKind::TextDisplay)
         .position(at)
-        .with_bundle((
-            display(1.0).transform(transform),
-            TextDisplay::new(PIN).background_color(CLEAR),
-        ))
+        .with_bundle((display, TextDisplay::new(text).background_color(CLEAR)))
         .spawn(commands)
         .id()
 }
@@ -643,9 +807,11 @@ fn waypoint_card(atlas: &Atlas, waypoint: &Waypoint, player: &Position) -> Card 
         subject: Subject::Place(marker.kind),
         title: marker.name.clone(),
         kind: marker.kind.label().into(),
+        kicker: format!("{} - {distance} blocs", marker.kind.label()),
         info: format!("{} · {distance} blocs", marker.kind.label()),
         status: format!("{state}{}", region.name),
         description: marker.kind.description().into(),
+        action: "Clic gauche : sélectionner".into(),
         open: false,
     }
 }
@@ -655,28 +821,35 @@ fn you_card() -> Card {
         subject: Subject::You,
         title: "Vous êtes ici".into(),
         kind: "Vous".into(),
+        kicker: "Votre position".into(),
         info: "Votre position".into(),
         status: String::new(),
         description: String::new(),
+        action: String::new(),
         open: false,
     }
 }
 
 /// How a client shows a card, with the pack or without.
-fn card_display(text: String, drawn: bool) -> TextDisplay {
+fn card_display(text: String, drawn: bool, style: Style) -> TextDisplay {
     let background = if drawn { CLEAR } else { PLAIN_CARD_BACKGROUND };
-    TextDisplay::new(text)
+    let display = TextDisplay::new(text)
         .line_width(CARD_LINE_WIDTH)
         .background_color(background)
-        .see_through()
+        .see_through();
+    if style.has_background() {
+        display
+    } else {
+        display.shadow()
+    }
 }
 
 /// Puts the markers of the session's mode on the model.
 fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) {
-    let Some(level) = atlas.level(session.mode) else {
+    let Some(level) = atlas.level(session.model()) else {
         return;
     };
-    let build = f64::from(session.mode.scale().build);
+    let build = f64::from(session.model().scale().build);
     let mut icons = Vec::with_capacity(level.waypoints.len());
     for waypoint in &level.waypoints {
         let [x, y, z] = waypoint.at;
@@ -684,26 +857,79 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
         let scale = ICON_SCALE * session.marker_scale();
         icons.push(spawn_icon(commands, at, icon(waypoint.marker.kind), scale));
     }
-    let head = session.head.clone();
-    let head_scale = session.head_scale();
-    let pin = session.pin_transform();
-    let you = model_spot(level, &session.position).map(|at @ [x, y, z]| You {
-        head: spawn_item(
-            commands,
-            session.on_model(x, y + HEAD_LIFT * build, z),
-            head,
-            // Facing the camera: as an icon, a head shows its hair more than its face.
-            ItemDisplayContext::Fixed,
-            head_scale,
-        ),
-        pin: spawn_pin(commands, session.on_model(x, y + HEAD_LIFT * build, z), pin),
+    let you = model_spot(level, &session.position).map(|at| You {
+        parts: spawn_you(session, at, build, commands),
         at,
     });
+    let signs = spawn_signs(level, session, build, commands);
     session.pins = Pins {
         icons,
         you,
+        signs,
         card: None,
     };
+}
+
+/// The entities of the player's marker, as they chose it.
+fn spawn_you(
+    session: &MapSession,
+    [x, y, z]: [f64; 3],
+    build: f64,
+    commands: &mut Commands,
+) -> Vec<(Entity, Part)> {
+    let text = |mark: Mark| mark.text(session.drawn);
+    let drawn = |part: Part| display(1.0).transform(session.part_transform(part));
+    let ground = session.on_model(x, y + GROUND_MARK_LIFT * build, z);
+    let lying = |mark: Mark, yaw: f32, commands: &mut Commands| {
+        let part = Part::Flat(mark, yaw);
+        let display = drawn(part).billboard(Billboard::Fixed);
+        (spawn_mark(commands, ground, text(mark), display), part)
+    };
+    match session.looks.me {
+        Me::Pin => {
+            let at = session.on_model(x, y, z);
+            let entity = spawn_mark(commands, at, text(Mark::Pin), drawn(Part::Pin));
+            vec![(entity, Part::Pin)]
+        }
+        Me::Arrow => vec![lying(Mark::Arrow, session.rotation.yaw, commands)],
+        Me::Ring => vec![lying(Mark::Ring, 180.0, commands)],
+        Me::MiniHead => {
+            let at = session.on_model(x, y + MINI_HEAD_LIFT * build, z);
+            let disc = spawn_mark(commands, at, text(Mark::Disc), drawn(Part::Disc));
+            let head = spawn_item(
+                commands,
+                at,
+                session.head.clone(),
+                // Facing the camera: as an icon, a head shows its hair more than its face.
+                ItemDisplayContext::Fixed,
+                session.part_scale(Part::Head),
+            );
+            vec![(disc, Part::Disc), (head, Part::Head)]
+        }
+    }
+}
+
+/// What stands over each closed region, for the looks that say it with a sign.
+fn spawn_signs(
+    level: &Level,
+    session: &MapSession,
+    build: f64,
+    commands: &mut Commands,
+) -> Vec<Entity> {
+    let mark = match session.looks.zone {
+        ZoneLook::Palisade => Mark::Lock,
+        ZoneLook::Faded => Mark::Unknown,
+        ZoneLook::Clouds | ZoneLook::Hatching => return Vec::new(),
+    };
+    level
+        .signs
+        .iter()
+        .map(|([x, y, z], state)| {
+            let at = session.on_model(*x, y + SIGN_LIFT * build, *z);
+            let text = sign(mark, state.label(), session.drawn);
+            spawn_mark(commands, at, text, display(session.sign_scale()))
+        })
+        .collect()
 }
 
 fn model_spot(level: &Level, position: &Position) -> Option<[f64; 3]> {
@@ -720,6 +946,8 @@ type EntrantState<'a> = (
     Option<&'a PlayerAbilities>,
     Option<&'a mut TabEntry>,
     Option<&'a PlayerUuid>,
+    Option<&'a MapLooks>,
+    Has<PackLoaded>,
 );
 
 fn enter(
@@ -731,10 +959,13 @@ fn enter(
     mut commands: Commands,
 ) {
     let (player, mode) = (event.0, event.1);
-    if atlas.level(mode).is_none() {
+    if atlas.overview.is_none() || atlas.detail.is_none() {
         return;
     }
-    let Ok((client, position, rotation, abilities, tab, id)) = states.get_mut(player) else {
+    tracing::info!(?player, ?mode, "entering the map");
+    let Ok((client, position, rotation, abilities, tab, id, looks, drawn)) =
+        states.get_mut(player)
+    else {
         return;
     };
     // The client asks this entry, not `Respawn`, whether it is a spectator.
@@ -788,9 +1019,15 @@ fn enter(
         rig: None,
         mouse: Mouse::default(),
         pan: Pan::default(),
-        zoom: DEFAULT_ZOOM,
-        sized_for: DEFAULT_ZOOM,
+        zoom: Zoom::default(),
+        coarse: false,
+        sized_for: Zoom::default().height(),
+        free: FreeLook::default(),
+        telemetry: Telemetry::default(),
         head: player_head(id),
+        looks: looks.copied().unwrap_or_default(),
+        drawn,
+        rezoned: false,
         keys: [false; 3],
         look: Rotation {
             yaw: REST_YAW,
@@ -834,7 +1071,12 @@ fn despawn_pins(session: &mut MapSession, commands: &mut Commands) {
     let entities = pins
         .icons
         .into_iter()
-        .chain(pins.you.into_iter().flat_map(|you| [you.head, you.pin]))
+        .chain(
+            pins.you
+                .into_iter()
+                .flat_map(|you| you.parts.into_iter().map(|(entity, _)| entity)),
+        )
+        .chain(pins.signs)
         .chain(pins.card.map(|card| card.entity));
     for entity in entities {
         commands.entity(entity).try_despawn();
@@ -880,8 +1122,10 @@ fn switch_mode(
     session.mode = mode;
     session.pan = Pan::default();
     session.mouse = Mouse::default();
-    session.zoom = DEFAULT_ZOOM;
-    session.sized_for = DEFAULT_ZOOM;
+    session.zoom = Zoom::default();
+    session.coarse = false;
+    session.sized_for = session.zoom.height();
+    session.free = FreeLook::default();
     session.look = session.rest();
     session.hovered = None;
     session.selected = None;
@@ -899,16 +1143,16 @@ fn switch_mode(
     ));
 }
 
-/// Whether a chunk belongs on the client, from the chunk at the model's centre.
-fn wanted(mode: MapMode, chunk: (i32, i32), camera: (i32, i32), radius: i32) -> bool {
+/// Whether a chunk can stay on the client, from the chunk at the model's centre.
+fn kept(mode: MapMode, chunk: (i32, i32), camera: (i32, i32), view_distance: i32) -> bool {
     match mode {
         MapMode::Look => {
             let range = -OVERVIEW_REACH..OVERVIEW_REACH;
             range.contains(&chunk.0) && range.contains(&chunk.1)
         }
         MapMode::Pan => {
-            let (x, z) = (chunk.0 - camera.0, chunk.1 - camera.1);
-            x * x + z * z <= radius * radius
+            let reach = view_distance + CLIENT_KEEPS_PAST_VIEW;
+            (chunk.0 - camera.0).abs() <= reach && (chunk.1 - camera.1).abs() <= reach
         }
     }
 }
@@ -920,22 +1164,59 @@ fn chunks_around(mode: MapMode, camera: (i32, i32)) -> Vec<(i32, i32)> {
     };
     let mut chunks: Vec<_> = (centre.0 - reach..=centre.0 + reach)
         .flat_map(|x| (centre.1 - reach..=centre.1 + reach).map(move |z| (x, z)))
-        .filter(|chunk| wanted(mode, *chunk, camera, DETAIL_SEND_RADIUS))
+        .filter(|(x, z)| match mode {
+            MapMode::Look => kept(mode, (*x, *z), camera, DEFAULT_VIEW_DISTANCE),
+            MapMode::Pan => (x - camera.0).pow(2) + (z - camera.1).pow(2) <= reach * reach,
+        })
         .collect();
     chunks.sort_by_key(|(x, z)| (x - camera.0).pow(2) + (z - camera.1).pow(2));
     chunks
 }
 
+/// Moves a pan from one model to the other, once its height calls for it. Says so.
+fn switch_model(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) -> bool {
+    let height = session.zoom.height();
+    let coarse = match session.mode {
+        MapMode::Look => false,
+        MapMode::Pan if session.coarse => height > DETAIL_BELOW,
+        MapMode::Pan => height > COARSE_ABOVE,
+    };
+    if coarse == session.coarse {
+        return false;
+    }
+    tracing::debug!(coarse, height, "map model");
+    session.coarse = coarse;
+    session.hovered = None;
+    session.selected = None;
+    despawn_pins(session, commands);
+    spawn_pins(atlas, session, commands);
+    session.sized_for = height;
+    true
+}
+
 fn stream_chunks(
-    mut sessions: Query<(Entity, &mut MapSession, &LoadedChunks)>,
+    mut sessions: Query<(
+        Entity,
+        &mut MapSession,
+        &LoadedChunks,
+        Option<&ClientSettings>,
+    )>,
     mut atlas: ResMut<Atlas>,
     players: Players,
     mut commands: Commands,
 ) {
     let info = atlas.info;
-    for (player, mut session, loaded) in &mut sessions {
-        let (mode, anchor) = (session.mode, session.anchor);
-        let Some(level) = atlas.level_mut(mode) else {
+    for (player, mut session, loaded, settings) in &mut sessions {
+        let started = Instant::now();
+        let view_distance = settings.map_or(DEFAULT_VIEW_DISTANCE, |settings| {
+            i32::from(settings.view_distance)
+        });
+        // The other model's chunks go right over these ones, with no gap in between.
+        let rezoned = std::mem::take(&mut session.rezoned);
+        let replaced = switch_model(&atlas, &mut session, &mut commands) || rezoned;
+        let (mode, anchor, model) = (session.mode, session.anchor, session.model());
+        let zone = session.looks.zone;
+        let Some(level) = atlas.level_mut(model) else {
             continue;
         };
         let camera = session.camera_chunk();
@@ -956,11 +1237,15 @@ fn stream_chunks(
             .copied()
             .filter(|chunk| {
                 let on_model = (chunk.x - anchor[0], chunk.z - anchor[1]);
-                !wanted(mode, on_model, camera, DETAIL_KEEP_RADIUS)
+                !kept(mode, on_model, camera, view_distance)
             })
             .collect();
         // `Players` reads this component, so it is replaced rather than changed here.
-        let mut now_loaded = loaded.0.clone();
+        let mut now_loaded = if replaced {
+            HashSet::new()
+        } else {
+            loaded.0.clone()
+        };
         for chunk in &stale {
             now_loaded.remove(chunk);
             players.send(
@@ -976,15 +1261,21 @@ fn stream_chunks(
             .into_iter()
             .filter(|(x, z)| !now_loaded.contains(&ChunkPos::new(anchor[0] + x, anchor[1] + z)))
             .collect();
+        let (mut sent, mut weight_sent) = (0, 0);
         for at in missing.iter().take(CHUNKS_PER_TICK) {
-            let (chunk, weight) = level.chunk(*at, info);
+            let (chunk, weight) = level.chunk(*at, zone, info);
             let (x, z) = (anchor[0] + at.0, anchor[1] + at.1);
             let mut placed = chunk.clone();
-            (placed.x, placed.z) = (x, z);
-            players.send(player, placed.to_packet());
-            session.streamed.0 += 1;
-            session.streamed.1 += *weight;
+            (placed.chunk_x, placed.chunk_z) = (x, z);
+            weight_sent += *weight;
+            sent += 1;
+            players.send(player, placed);
             now_loaded.insert(ChunkPos::new(x, z));
+        }
+        if sent > 0 {
+            session.streamed.0 += sent;
+            session.streamed.1 += weight_sent;
+            session.telemetry.sent(sent, weight_sent, started.elapsed());
         }
         if missing.len() <= CHUNKS_PER_TICK && session.streamed.0 > 0 {
             let (chunks, bytes) = std::mem::take(&mut session.streamed);
@@ -996,7 +1287,7 @@ fn stream_chunks(
                 "map chunks sent"
             );
         }
-        if !stale.is_empty() || !missing.is_empty() {
+        if replaced || !stale.is_empty() || !missing.is_empty() {
             commands.entity(player).insert(LoadedChunks(now_loaded));
         }
     }
@@ -1114,10 +1405,9 @@ fn resize(session: &MapSession, marker: Hover, displays: &mut Query<&mut Display
             );
         }
         Hover::You => {
-            if let Some(you) = session.pins.you {
-                set_scale(displays, you.head, session.head_scale());
-                if let Ok(mut pin) = displays.get_mut(you.pin) {
-                    pin.transform = session.pin_transform();
+            for (entity, part) in session.pins.you.iter().flat_map(|you| &you.parts) {
+                if let Ok(mut display) = displays.get_mut(*entity) {
+                    display.transform = session.part_transform(*part);
                 }
             }
         }
@@ -1125,7 +1415,7 @@ fn resize(session: &MapSession, marker: Hover, displays: &mut Query<&mut Display
 }
 
 fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
-    let build = f64::from(session.mode.scale().build);
+    let build = f64::from(session.model().scale().build);
     let icons = level
         .waypoints
         .iter()
@@ -1134,7 +1424,7 @@ fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
         .pins
         .you
         .iter()
-        .map(|you| [you.at[0], you.at[1] + HEAD_LIFT * build, you.at[2]]);
+        .map(|you| [you.at[0], you.at[1] + session.you_lift() * build, you.at[2]]);
     let points: Vec<_> = icons.chain(you).collect();
     let count = level.waypoints.len();
     let current = session.hovered.map(|hover| match hover {
@@ -1167,7 +1457,7 @@ fn card_of(atlas: &Atlas, level: &Level, session: &MapSession, hover: Hover) -> 
 
 /// Where a marker's icon stands on the model, with how far up from there it reaches.
 fn marker_top(level: &Level, session: &MapSession, hover: Hover) -> Option<([f64; 3], f32)> {
-    let build = f64::from(session.mode.scale().build);
+    let build = f64::from(session.model().scale().build);
     match hover {
         Hover::Waypoint(index) => {
             let [x, y, z] = level.waypoints[index].at;
@@ -1175,11 +1465,19 @@ fn marker_top(level: &Level, session: &MapSession, hover: Hover) -> Option<([f64
             Some(([x, y + ICON_LIFT * build, z], scale * ICON_HALF))
         }
         Hover::You => {
-            let [x, y, z] = session.pins.you?.at;
-            Some((
-                [x, y + HEAD_LIFT * build, z],
-                session.head_scale() * HEAD_HALF,
-            ))
+            let [x, y, z] = session.pins.you.as_ref()?.at;
+            let scale = session.marker_scale();
+            match session.looks.me {
+                Me::Pin => {
+                    let height = Mark::Pin.height() as f32 / PIXELS_PER_BLOCK;
+                    Some(([x, y, z], height * PIN_SCALE * scale))
+                }
+                Me::Arrow | Me::Ring => Some(([x, y, z], GROUND_MARK_SCALE * scale / 4.0)),
+                Me::MiniHead => Some((
+                    [x, y + MINI_HEAD_LIFT * build, z],
+                    MINI_HEAD_SCALE * scale * HEAD_HALF * 2.0,
+                )),
+            }
         }
     }
 }
@@ -1189,10 +1487,9 @@ fn show_card(
     atlas: &Atlas,
     level: &Level,
     session: &mut MapSession,
-    style: Style,
-    drawn: bool,
     commands: &mut Commands,
 ) {
+    let (style, drawn) = (session.looks.style, session.drawn);
     let wanted = subject(session).map(|hover| {
         let card = card_of(atlas, level, session, hover);
         let text = if drawn {
@@ -1202,10 +1499,11 @@ fn show_card(
         };
         (hover, card.depth(style), text)
     });
-    let zoom = session.zoom;
+    let zoom = session.zoom.height();
     let same = match (&session.pins.card, &wanted) {
         (Some(shown), Some((hover, _, text))) => {
-            shown.hover == *hover && shown.zoom == zoom && shown.text == *text
+            let sized = (zoom / shown.zoom - 1.0).abs() < CARD_ZOOM_STEP;
+            shown.hover == *hover && sized && shown.text == *text
         }
         (None, None) => true,
         _ => false,
@@ -1233,7 +1531,7 @@ fn show_card(
     };
     let lift = icon_half + (hanging + CARD_GAP) * scale / PIXELS_PER_BLOCK;
     let at = session.on_model(x, y, z);
-    let display = card_display(text.clone(), drawn);
+    let display = card_display(text.clone(), drawn, style);
     session.pins.card = Some(ShownCard {
         entity: spawn_card(commands, at, display, scale, lift),
         text,
@@ -1254,15 +1552,15 @@ fn bar_title(level: &Level, session: &MapSession) -> String {
 }
 
 fn follow_view(
-    mut sessions: Query<(&mut MapSession, Has<PackLoaded>, Option<&MapStyle>)>,
+    mut sessions: Query<&mut MapSession>,
     mut positions: Query<&mut Position, Without<MapSession>>,
     atlas: Res<Atlas>,
     mut displays: Query<&mut Display>,
     mut bars: Query<&mut BossBar>,
     mut commands: Commands,
 ) {
-    for (mut session, drawn, style) in &mut sessions {
-        let (Some(rig), Some(level)) = (session.rig, atlas.level(session.mode)) else {
+    for mut session in &mut sessions {
+        let (Some(rig), Some(level)) = (session.rig, atlas.level(session.model())) else {
             continue;
         };
         // The box rides on the client, but the engine goes by this to keep it shown.
@@ -1294,15 +1592,17 @@ fn follow_view(
                     .try_insert(Glowing);
             }
         }
-        if session.sized_for != session.zoom {
-            session.sized_for = session.zoom;
+        if (session.zoom.height() / session.sized_for - 1.0).abs() > MARKER_ZOOM_STEP {
+            session.sized_for = session.zoom.height();
             for index in 0..session.pins.icons.len() {
                 resize(&session, Hover::Waypoint(index), &mut displays);
             }
             resize(&session, Hover::You, &mut displays);
+            for sign in &session.pins.signs {
+                set_scale(&mut displays, *sign, session.sign_scale());
+            }
         }
-        let style = style.map_or(Style::default(), |style| style.0);
-        show_card(&atlas, level, &mut session, style, drawn, &mut commands);
+        show_card(&atlas, level, &mut session, &mut commands);
         let title = bar_title(level, &session);
         if let Ok(mut bar) = bars.get_mut(session.bar)
             && bar.title != title
@@ -1352,7 +1652,7 @@ fn left_click(
         tracing::info!(?player, "map left click on no marker");
         return;
     };
-    let Some(level) = atlas.level(session.mode) else {
+    let Some(level) = atlas.level(session.model()) else {
         return;
     };
     let marker = &level.waypoints[index].marker;
@@ -1401,9 +1701,14 @@ fn hint() -> Text {
         .append(Text::new(" : fermer"))
 }
 
-fn show_hint(mut sessions: Query<(Entity, &mut MapSession)>, players: Players) {
+fn tick_sessions(
+    mut sessions: Query<(Entity, &mut MapSession)>,
+    atlas: Res<Atlas>,
+    players: Players,
+) {
     for (player, mut session) in &mut sessions {
         session.ticks += 1;
+        session.telemetry.tick(Instant::now());
         if session.ticks.is_multiple_of(HINT_PERIOD) {
             players.send(
                 player,
@@ -1412,6 +1717,35 @@ fn show_hint(mut sessions: Query<(Entity, &mut MapSession)>, players: Players) {
                     overlay: true,
                 },
             );
+        }
+        if session.ticks.is_multiple_of(SUMMARY_PERIOD) {
+            let summary = session.telemetry.summary();
+            tracing::info!(mode = ?session.mode, ?summary, "map session");
+        }
+        if session.rig.is_none() {
+            continue;
+        }
+        match session.mode {
+            MapMode::Look => {
+                if let Some([yaw, pitch]) = session.free.tick() {
+                    players.send(
+                        player,
+                        PlayerRotation {
+                            yaw,
+                            relative_yaw: true,
+                            pitch,
+                            relative_pitch: true,
+                        },
+                    );
+                }
+            }
+            MapMode::Pan => {
+                let [_, out, closer] = session.keys;
+                session.zoom.tick(out, closer);
+                if let Some(level) = atlas.level(Model::Detail) {
+                    session.pan.tick(|at| on_land(&level.scene, at));
+                }
+            }
         }
     }
 }
@@ -1425,41 +1759,103 @@ fn read_keys(
         return;
     };
     let keys = [event.jump, event.left, event.right];
-    let [jump, out, closer] = std::array::from_fn(|key| keys[key] && !session.keys[key]);
+    let jump = keys[0] && !session.keys[0];
+    if session.keys[1..] != keys[1..] {
+        tracing::debug!(height = session.zoom.height(), ?keys, "map zoom keys");
+    }
     session.keys = keys;
     if event.sneak {
         commands.trigger(CloseMap(event.entity));
     } else if jump && session.rig.is_some() {
         commands.trigger(OpenMap(event.entity, session.mode.other()));
-    } else if session.mode == MapMode::Pan {
-        let zoom = session.zoom + usize::from(out);
-        session.zoom = zoom
-            .saturating_sub(usize::from(closer))
-            .min(ZOOMS.len() - 1);
     }
 }
 
-/// The look of a player's cards, kept between sessions.
-#[derive(Component, Debug, Clone, Copy)]
-struct MapStyle(Style);
+/// How a player's map looks, kept between sessions.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MapLooks {
+    style: Style,
+    me: Me,
+    zone: ZoneLook,
+}
 
-/// Sets a player's style of card, or moves on to the next one.
+/// How the map shows the player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Me {
+    #[default]
+    Pin,
+    Arrow,
+    Ring,
+    MiniHead,
+}
+
+impl Me {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pin => "Épingle",
+            Self::Arrow => "Flèche au sol",
+            Self::Ring => "Anneau au sol",
+            Self::MiniHead => "Pastille avec tête",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Pin => Self::Arrow,
+            Self::Arrow => Self::Ring,
+            Self::Ring => Self::MiniHead,
+            Self::MiniHead => Self::Pin,
+        }
+    }
+}
+
+/// One of the looks of the map, or the next one of a kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookChoice {
+    Style(Option<Style>),
+    Me(Option<Me>),
+    Zone(Option<ZoneLook>),
+}
+
+/// Changes a player's map, at once if they are in it.
 #[derive(Event, Debug, Clone, Copy)]
-pub struct ChooseStyle(pub Entity, pub Option<Style>);
+pub struct ChooseLook(pub Entity, pub LookChoice);
 
-fn choose_style(
-    event: On<ChooseStyle>,
-    styles: Query<&MapStyle>,
+fn choose_look(
+    event: On<ChooseLook>,
+    mut players: Query<(Option<&MapLooks>, Option<&mut MapSession>)>,
+    atlas: Res<Atlas>,
     messages: Messages,
     mut commands: Commands,
 ) {
     let player = event.0;
-    let current = styles.get(player).map_or(Style::default(), |style| style.0);
-    let style = event.1.unwrap_or(current.next());
-    commands.entity(player).insert(MapStyle(style));
-    messages
-        .message(player, format!("Panneau : {}", style.label()))
-        .send();
+    let Ok((looks, session)) = players.get_mut(player) else {
+        return;
+    };
+    let mut looks = looks.copied().unwrap_or_default();
+    let said = match event.1 {
+        LookChoice::Style(style) => {
+            looks.style = style.unwrap_or(looks.style.next());
+            format!("Panneau : {}", looks.style.label())
+        }
+        LookChoice::Me(me) => {
+            looks.me = me.unwrap_or(looks.me.next());
+            format!("Marqueur : {}", looks.me.label())
+        }
+        LookChoice::Zone(zone) => {
+            looks.zone = zone.unwrap_or(looks.zone.next());
+            format!("Zones : {}", looks.zone.label())
+        }
+    };
+    tracing::debug!(?player, ?looks, "map looks");
+    commands.entity(player).insert(looks);
+    if let Some(mut session) = session {
+        session.rezoned = session.looks.zone != looks.zone;
+        session.looks = looks;
+        despawn_pins(&mut session, &mut commands);
+        spawn_pins(&atlas, &mut session, &mut commands);
+    }
+    messages.message(player, said).send();
 }
 
 /// The client has the pack, so it can draw cards.
@@ -1550,6 +1946,46 @@ enum MapAction {
     Pan,
     Stop,
     Style,
+    Me,
+    Zone,
+}
+
+/// Which option of a look, by the number a player types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    One,
+    Two,
+    Three,
+    Four,
+}
+
+impl Pick {
+    fn style(self) -> Style {
+        match self {
+            Self::One => Style::Sheet,
+            Self::Two => Style::Bare,
+            Self::Three => Style::Bubble,
+            Self::Four => Style::Title,
+        }
+    }
+
+    fn me(self) -> Me {
+        match self {
+            Self::One => Me::Pin,
+            Self::Two => Me::Arrow,
+            Self::Three => Me::Ring,
+            Self::Four => Me::MiniHead,
+        }
+    }
+
+    fn zone(self) -> ZoneLook {
+        match self {
+            Self::One => ZoneLook::Clouds,
+            Self::Two => ZoneLook::Hatching,
+            Self::Three => ZoneLook::Palisade,
+            Self::Four => ZoneLook::Faded,
+        }
+    }
 }
 
 fn map_command() -> Command {
@@ -1562,30 +1998,49 @@ fn map_command() -> Command {
                 ("pan", MapAction::Pan),
                 ("stop", MapAction::Stop),
                 ("style", MapAction::Style),
+                ("me", MapAction::Me),
+                ("zone", MapAction::Zone),
             ]),
         )
         .arg_optional(
-            "style",
-            EnumArg::new([("1", Style::Card), ("2", Style::Band), ("3", Style::Tag)]),
+            "option",
+            EnumArg::new([
+                ("1", Pick::One),
+                ("2", Pick::Two),
+                ("3", Pick::Three),
+                ("4", Pick::Four),
+            ]),
         )
         .handler(run_map)
         .build()
 }
 
-/// The engine's arguments form one chain, so a style can follow any action.
+/// The engine's arguments form one chain, so an option can follow any action. After
+/// one that opens the map, it picks the style.
 fn run_map(ctx: &mut CommandContext) {
     let player = ctx.entity;
     let action = ctx.get::<MapAction>("action").copied();
-    let style = ctx.get::<Style>("style").copied();
+    let pick = ctx.get::<Pick>("option").copied();
     ctx.with_world_mut(|world| {
-        match action.unwrap_or(MapAction::Look) {
-            MapAction::Look => world.trigger(OpenMap(player, MapMode::Look)),
-            MapAction::Pan => world.trigger(OpenMap(player, MapMode::Pan)),
-            MapAction::Stop => world.trigger(CloseMap(player)),
-            MapAction::Style => {}
-        }
-        if style.is_some() || action == Some(MapAction::Style) {
-            world.trigger(ChooseStyle(player, style));
+        let choice = match action.unwrap_or(MapAction::Look) {
+            MapAction::Look => {
+                world.trigger(OpenMap(player, MapMode::Look));
+                pick.map(|pick| LookChoice::Style(Some(pick.style())))
+            }
+            MapAction::Pan => {
+                world.trigger(OpenMap(player, MapMode::Pan));
+                pick.map(|pick| LookChoice::Style(Some(pick.style())))
+            }
+            MapAction::Stop => {
+                world.trigger(CloseMap(player));
+                None
+            }
+            MapAction::Style => Some(LookChoice::Style(pick.map(Pick::style))),
+            MapAction::Me => Some(LookChoice::Me(pick.map(Pick::me))),
+            MapAction::Zone => Some(LookChoice::Zone(pick.map(Pick::zone))),
+        };
+        if let Some(choice) = choice {
+            world.trigger(ChooseLook(player, choice));
         }
     });
 }
@@ -1665,9 +2120,16 @@ mod tests {
         let world = World::new();
         let registry = map_registry();
         let actions = registry.complete("map ", &world).expect("actions");
-        assert_eq!(actions.matches, ["look", "pan", "stop", "style"]);
-        let styles = registry.complete("map style ", &world).expect("styles");
-        assert_eq!(styles.matches, ["1", "2", "3"]);
+        assert_eq!(
+            actions.matches,
+            ["look", "pan", "stop", "style", "me", "zone"]
+        );
+        for action in ["style", "me", "zone"] {
+            let options = registry
+                .complete(&format!("map {action} "), &world)
+                .expect("options");
+            assert_eq!(options.matches, ["1", "2", "3", "4"]);
+        }
     }
 
     /// A look that stopped on the client's position tick used to go unseen, so that
@@ -1699,9 +2161,15 @@ mod tests {
             }),
             mouse: Mouse::default(),
             pan: Pan::default(),
-            zoom: DEFAULT_ZOOM,
-            sized_for: DEFAULT_ZOOM,
+            zoom: Zoom::default(),
+            coarse: false,
+            sized_for: Zoom::default().height(),
+            free: FreeLook::default(),
+            telemetry: Telemetry::default(),
             head: item("minecraft:player_head"),
+            looks: MapLooks::default(),
+            drawn: false,
+            rezoned: false,
             keys: [false; 3],
             look: Rotation {
                 yaw: REST_YAW,
@@ -1756,16 +2224,14 @@ mod tests {
         assert!(!chunks.contains(&(20 + DETAIL_SEND_RADIUS + 1, -7)));
     }
 
+    /// Unloading on the way out of the sent circle meant sending it all again on the
+    /// way back, even though the client would have kept it.
     #[test]
-    fn a_chunk_stays_until_it_is_past_the_keep_radius() {
-        let chunk = (DETAIL_SEND_RADIUS + 1, 0);
-        assert!(wanted(MapMode::Pan, chunk, (0, 0), DETAIL_KEEP_RADIUS));
-        assert!(!wanted(
-            MapMode::Pan,
-            (DETAIL_KEEP_RADIUS + 1, 0),
-            (0, 0),
-            DETAIL_KEEP_RADIUS
-        ));
+    fn a_chunk_stays_for_as_long_as_the_client_would_keep_it() {
+        let view = DEFAULT_VIEW_DISTANCE;
+        let corner = view + CLIENT_KEEPS_PAST_VIEW;
+        assert!(kept(MapMode::Pan, (corner, corner), (0, 0), view));
+        assert!(!kept(MapMode::Pan, (corner + 1, 0), (0, 0), view));
     }
 
     #[test]
