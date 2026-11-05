@@ -1,0 +1,15 @@
+[package]
+name = "voidmc-map"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Server map POC: top-down terrain pixels, a movable view and seeded markers"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+voidmc = { version = "0.2.0", path = "../void" }
+
+[dev-dependencies]
+voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }

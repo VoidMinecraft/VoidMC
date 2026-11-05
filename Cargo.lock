@@ -2134,6 +2134,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "voidmc-map"
+version = "0.1.0"
+dependencies = [
+ "voidmc",
+ "voidmc-protocol",
+]
+
+[[package]]
 name = "voidmc-net"
 version = "0.1.1"
 dependencies = [
