@@ -1,53 +1,134 @@
-//! The block model of the world: a small floating island of flat colours.
+//! The block model of the world: a floating island, drawn rather than measured.
+//!
+//! The geography is the generator's. Its land and sea stay where they are, near
+//! enough, but its waves are bent and smoothed, because a regular world reads as a
+//! chequerboard at this size.
 
+use std::collections::HashMap;
 use std::num::{NonZeroU8, NonZeroU16};
 
 use voidmc::BiomeId;
 use voidmc_data::v26_1_2::blocks as b;
-use voidmc_protocol::clientbound::{Chunk, ChunkBuilder};
+use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData};
 
-use crate::pointer::CAMERA_Z;
+use crate::buildings::landmark;
+use crate::markers::MarkerKind;
+use crate::noise::fractal;
+use crate::regions::{RegionState, Regions};
 use crate::terrain::Terrain;
 use crate::window::Window;
 
-/// Widest radius of the island in blocks. See `view` for what bounds it.
-pub const RADIUS: i32 = 56;
-const SIZE: u16 = RADIUS as u16 * 2;
-/// World blocks per model block.
-pub const BLOCKS_PER_CELL: u8 = 8;
 /// Height of the sea on the model.
 pub const SEA_Y: i32 = 64;
-const LOWEST_Y: i32 = 30;
-pub const MAX_Y: i32 = 140;
+/// The world the map covers, in blocks from the origin.
+pub const WORLD_RADIUS: f64 = 464.0;
+const LOWEST_Y: i32 = 24;
 
-/// World blocks of elevation per terrace, and blocks of model height per terrace.
-/// A terrace rises more than the land it stands for: that is the relief.
+/// How much of the world a model block stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scale {
+    /// Widest radius of the model, in blocks.
+    pub radius: i32,
+    /// World blocks per model block.
+    pub blocks_per_cell: u8,
+    /// Model blocks a terrace rises by.
+    pub rise: i32,
+    /// Model blocks per block of a landmark.
+    pub build: i32,
+    /// Highest block allowed.
+    pub max_y: i32,
+}
+
+/// The whole map on one screen.
+pub const OVERVIEW: Scale = Scale {
+    radius: 58,
+    blocks_per_cell: 8,
+    rise: 2,
+    build: 1,
+    max_y: 88,
+};
+
+/// The same map, a little under three times wider than the overview.
+pub const DETAIL: Scale = Scale {
+    radius: 155,
+    blocks_per_cell: 3,
+    rise: 3,
+    build: 2,
+    max_y: 120,
+};
+
+/// World blocks of elevation per terrace.
 const TERRACE_STEP: i32 = 3;
-const TERRACE_RISE: i32 = 2;
-/// Terraces from the sea to where land turns to dark grass, rock and snow.
-const FOREST_TERRACE: i32 = 2;
-const ROCK_TERRACE: i32 = 4;
-const SNOW_TERRACE: i32 = 6;
+const FOREST_LINE: i32 = 2;
+const ROCK_TERRACE: i32 = 5;
+const SNOW_TERRACE: i32 = 8;
 const BEACH_LINE: i32 = 1;
+const SHALLOWS: i32 = 3;
 
-/// Width of the band of land that keeps the sea from reaching the rim.
-const SHORE_WIDTH: f64 = 3.0;
-/// How far the underside drops per block from the rim, and at most.
-const UNDERSIDE_SLOPE: f64 = 1.5;
-const UNDERSIDE_DEPTH: i32 = 30;
+/// All in world blocks, so that both scales draw the same island.
+const WARP_SIZE: f64 = 150.0;
+const WARP: f64 = 90.0;
+const SMOOTHING: f64 = 16.0;
+const RELIEF_SIZE: f64 = 120.0;
+const RELIEF: f64 = 7.0;
+const RIM_SIZE: f64 = 170.0;
+const RIM_WANDER: f64 = 0.14;
+const SHORE_WIDTH: f64 = 22.0;
+const FOREST_SIZE: f64 = 90.0;
+const FOREST_DENSITY: f64 = 0.02;
+const CANOPY_SIZE: f64 = 22.0;
+
+const WARP_X_SEED: u32 = 10;
+const WARP_Z_SEED: u32 = 20;
+const RELIEF_SEED: u32 = 30;
+const RIM_SEED: u32 = 40;
+const FOREST_SEED: u32 = 60;
+const CANOPY_SEED: u32 = 70;
+const PATH_SEED: u32 = 80;
+
+const GRASS: i32 = b::LIME_CONCRETE;
+const FOREST: i32 = b::GREEN_CONCRETE;
+const CANOPY: i32 = b::LIME_TERRACOTTA;
+const ROCK: i32 = b::LIGHT_GRAY_CONCRETE;
+const SNOW: i32 = b::WHITE_CONCRETE;
+const SAND: i32 = b::SMOOTH_SANDSTONE;
+const SOIL: i32 = b::BROWN_TERRACOTTA;
+const PATH: i32 = b::BROWN_CONCRETE;
+const BRIDGE: i32 = b::SPRUCE_PLANKS;
+const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
+const DEEP_WATER: i32 = b::LIGHT_BLUE_CONCRETE;
+
 /// Blocks under the surface where cliffs turn dark, then black.
-const DARK_DEPTH: i32 = 9;
-const BLACK_DEPTH: i32 = 15;
+const SOIL_DEPTH: i32 = 2;
+const DARK_DEPTH: i32 = 10;
+const BLACK_DEPTH: i32 = 16;
+const UNDERSIDE_DEPTH: i32 = 34;
+const UNDERSIDE_SLOPE: f64 = 1.5;
 
-/// The world window the model shows: all of it, centred on the origin.
-pub fn window() -> Window {
-    Window::new(
-        0,
-        0,
-        NonZeroU16::new(SIZE).unwrap_or(NonZeroU16::MIN),
-        NonZeroU16::new(SIZE).unwrap_or(NonZeroU16::MIN),
-        NonZeroU8::new(BLOCKS_PER_CELL).unwrap_or(NonZeroU8::MIN),
-    )
+impl Scale {
+    fn size(self) -> u16 {
+        self.radius as u16 * 2
+    }
+
+    /// The world window the model shows: all of it, centred on the origin.
+    pub fn window(self) -> Window {
+        Window::new(
+            0,
+            0,
+            NonZeroU16::new(self.size()).unwrap_or(NonZeroU16::MIN),
+            NonZeroU16::new(self.size()).unwrap_or(NonZeroU16::MIN),
+            NonZeroU8::new(self.blocks_per_cell).unwrap_or(NonZeroU8::MIN),
+        )
+    }
+
+    /// The world block at the middle of a model cell.
+    fn world(self, cell: i32) -> f64 {
+        (f64::from(cell) + 0.5) * f64::from(self.blocks_per_cell)
+    }
+
+    fn cells(self, world: f64) -> f64 {
+        world / f64::from(self.blocks_per_cell)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +138,9 @@ struct Column {
     surface: i32,
     /// Lowest solid block.
     bottom: i32,
+    /// What covers the ground up to the sea.
+    water: i32,
+    state: RegionState,
 }
 
 impl Column {
@@ -72,92 +156,173 @@ impl Column {
 
 /// Columns of a block model. Coordinates are in blocks from its centre.
 pub struct Scene {
+    scale: Scale,
     columns: Vec<Option<Column>>,
+    buildings: HashMap<(i32, i32), Vec<(i32, i32)>>,
 }
 
-/// How far the rim is from the centre in a direction: a circle, but not quite.
+/// World blocks from the origin to the rim, around a place.
 fn rim_radius(x: f64, z: f64) -> f64 {
-    let angle = z.atan2(x);
-    let wobble = (angle * 2.0 + 0.7).sin() * 0.03 + (angle * 5.0).sin() * 0.03;
-    f64::from(RADIUS) * (0.93 + wobble)
+    WORLD_RADIUS * (0.9 + fractal(RIM_SEED, x, z, RIM_SIZE) * RIM_WANDER - RIM_WANDER / 2.0)
 }
 
-/// Flat colours read as a map from far away, where textures turn to noise.
 fn surface_block(biome: BiomeId, elevation: i32, terrace: i32) -> i32 {
     let is = |names: &[&str]| names.iter().any(|name| BiomeId::named(name) == Some(biome));
     if terrace >= SNOW_TERRACE || is(&["snowy_plains", "snowy_taiga", "ice_spikes"]) {
-        b::WHITE_CONCRETE
+        SNOW
     } else if terrace >= ROCK_TERRACE || is(&["stony_shore"]) {
-        b::LIGHT_GRAY_CONCRETE
+        ROCK
     } else if elevation <= BEACH_LINE || is(&["desert", "beach"]) {
-        b::SMOOTH_SANDSTONE
+        SAND
     } else if is(&["badlands"]) {
-        b::BROWN_TERRACOTTA
-    } else if terrace >= FOREST_TERRACE {
-        b::LIME_TERRACOTTA
+        SOIL
     } else {
-        b::LIME_CONCRETE
+        GRASS
     }
 }
 
-fn cliff_block(depth: i32) -> i32 {
+fn cliff_block(surface: i32, depth: i32) -> i32 {
     if depth >= BLACK_DEPTH {
         b::BLACK_CONCRETE
     } else if depth >= DARK_DEPTH {
         b::GRAY_CONCRETE
+    } else if depth <= SOIL_DEPTH && matches!(surface, GRASS | FOREST | CANOPY | PATH) {
+        SOIL
     } else {
         b::LIGHT_GRAY_CONCRETE
     }
 }
 
-impl Scene {
-    /// `terrain` must come from [`window`]: the model has one block per cell.
-    pub fn new(terrain: &Terrain, sea_level: i32) -> Self {
-        let mut columns = Vec::with_capacity(usize::from(SIZE) * usize::from(SIZE));
-        for row in 0..SIZE {
-            for col in 0..SIZE {
-                let (x, z) = (i32::from(col) - RADIUS, i32::from(row) - RADIUS);
-                let elevation = terrain.height(col, row) - sea_level;
-                let biome = terrain.biome(col, row);
-                columns.push(Self::column_at(x, z, elevation, biome));
+/// Averages each cell with its neighbours along rows, then along columns.
+fn smooth(values: &mut [f64], size: usize, reach: usize) {
+    for stride in [(1, size), (size, 1)] {
+        let source = values.to_vec();
+        for line in 0..size {
+            for along in 0..size {
+                let (from, to) = (along.saturating_sub(reach), (along + reach).min(size - 1));
+                let sum: f64 = (from..=to)
+                    .map(|at| source[at * stride.0 + line * stride.1])
+                    .sum();
+                values[along * stride.0 + line * stride.1] = sum / (to - from + 1) as f64;
             }
         }
-        Self { columns }
+    }
+}
+
+impl Scene {
+    /// `terrain` must come from `scale`'s window: there is one block per cell.
+    pub fn new(terrain: &Terrain, sea_level: i32, scale: Scale, regions: &Regions) -> Self {
+        let size = usize::from(scale.size());
+        let last = f64::from(scale.size() - 1);
+        let mut elevations = Vec::with_capacity(size * size);
+        let mut biomes = Vec::with_capacity(size * size);
+        for row in 0..scale.size() {
+            for col in 0..scale.size() {
+                let (x, z) = (
+                    scale.world(i32::from(col) - scale.radius),
+                    scale.world(i32::from(row) - scale.radius),
+                );
+                let bend = |seed, at: u16| {
+                    let moved = scale.cells(fractal(seed, x, z, WARP_SIZE) * WARP);
+                    (f64::from(at) + moved).round().clamp(0.0, last) as u16
+                };
+                let (from_col, from_row) = (bend(WARP_X_SEED, col), bend(WARP_Z_SEED, row));
+                elevations.push(f64::from(terrain.height(from_col, from_row) - sea_level));
+                biomes.push(terrain.biome(from_col, from_row));
+            }
+        }
+        smooth(&mut elevations, size, scale.cells(SMOOTHING) as usize);
+
+        let mut columns = Vec::with_capacity(size * size);
+        for (index, smoothed) in elevations.iter().enumerate() {
+            let (x, z) = (
+                (index % size) as i32 - scale.radius,
+                (index / size) as i32 - scale.radius,
+            );
+            let (world_x, world_z) = (scale.world(x), scale.world(z));
+            let relief = fractal(RELIEF_SEED, world_x, world_z, RELIEF_SIZE) * RELIEF;
+            let state = regions.at(world_x, world_z).state;
+            columns.push(Self::column_at(
+                scale,
+                [world_x, world_z],
+                smoothed + relief,
+                biomes[index],
+                state,
+            ));
+        }
+        Self {
+            scale,
+            columns,
+            buildings: HashMap::new(),
+        }
     }
 
-    fn column_at(x: i32, z: i32, elevation: i32, biome: BiomeId) -> Option<Column> {
-        let (cx, cz) = (f64::from(x) + 0.5, f64::from(z) + 0.5);
-        let from_rim = rim_radius(cx, cz) - cx.hypot(cz);
+    fn column_at(
+        scale: Scale,
+        [x, z]: [f64; 2],
+        elevation: f64,
+        biome: BiomeId,
+        state: RegionState,
+    ) -> Option<Column> {
+        let from_rim = rim_radius(x, z) - x.hypot(z);
         if from_rim < 0.0 {
             return None;
         }
+        let elevation = elevation.round() as i32;
         let elevation = if from_rim < SHORE_WIDTH {
             elevation.max(BEACH_LINE)
         } else {
             elevation
         };
         let terrace = elevation.div_euclid(TERRACE_STEP);
-        let ground = if elevation > 0 {
-            SEA_Y + 1 + terrace * TERRACE_RISE
+        let mut surface = surface_block(biome, elevation, terrace);
+        let mut ground = if elevation > 0 {
+            SEA_Y + 1 + terrace * scale.rise
         } else {
             SEA_Y - 1
         };
-        let depth = ((from_rim + 1.0) * UNDERSIDE_SLOPE) as i32;
+        if surface == GRASS
+            && elevation > FOREST_LINE
+            && fractal(FOREST_SEED, x, z, FOREST_SIZE) > FOREST_DENSITY
+        {
+            surface = FOREST;
+            if fractal(CANOPY_SEED, x, z, CANOPY_SIZE) > 0.0 {
+                surface = CANOPY;
+                ground += scale.build;
+            }
+        }
+        let depth = (scale.cells(from_rim + 8.0) * UNDERSIDE_SLOPE) as i32;
         Some(Column {
-            ground: ground.min(MAX_Y),
-            surface: surface_block(biome, elevation, terrace),
+            ground: ground.min(scale.max_y),
+            surface,
             bottom: (SEA_Y - 2 - depth.min(UNDERSIDE_DEPTH)).max(LOWEST_Y),
+            water: if elevation >= -SHALLOWS {
+                SHALLOW_WATER
+            } else {
+                DEEP_WATER
+            },
+            state,
         })
     }
 
-    fn index(x: i32, z: i32) -> Option<usize> {
-        let range = -RADIUS..RADIUS;
+    fn index(&self, x: i32, z: i32) -> Option<usize> {
+        let radius = self.scale.radius;
+        let range = -radius..radius;
         (range.contains(&x) && range.contains(&z))
-            .then(|| (z + RADIUS) as usize * usize::from(SIZE) + (x + RADIUS) as usize)
+            .then(|| (z + radius) as usize * usize::from(self.scale.size()) + (x + radius) as usize)
     }
 
     fn column(&self, x: i32, z: i32) -> Option<Column> {
-        self.columns[Self::index(x, z)?]
+        self.columns[self.index(x, z)?]
+    }
+
+    fn column_mut(&mut self, x: i32, z: i32) -> Option<&mut Column> {
+        let index = self.index(x, z)?;
+        self.columns[index].as_mut()
+    }
+
+    pub fn scale(&self) -> Scale {
+        self.scale
     }
 
     /// Highest block of a column, or `None` off the model.
@@ -166,45 +331,69 @@ impl Scene {
     }
 
     /// The model cell a world block falls on.
-    pub fn cell_of(window: &Window, x: i32, z: i32) -> Option<(i32, i32)> {
-        let (col, row) = window.cell_at(x, z)?;
-        Some((i32::from(col) - RADIUS, i32::from(row) - RADIUS))
+    pub fn cell_of(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+        let (col, row) = self.scale.window().cell_at(x, z)?;
+        let radius = self.scale.radius;
+        Some((i32::from(col) - radius, i32::from(row) - radius))
     }
 
-    /// Lays a path between two cells, over land only.
+    /// Levels the ground around a cell, on land, and puts a landmark on it.
+    pub fn build(&mut self, (x, z): (i32, i32), kind: MarkerKind) {
+        let build = self.scale.build;
+        let reach = 4 * build;
+        let ground = self.top(x, z).unwrap_or(SEA_Y).max(SEA_Y + 1);
+        for dz in -reach..=reach {
+            for dx in -reach..=reach {
+                if let Some(column) = self.column_mut(x + dx, z + dz)
+                    && dx * dx + dz * dz <= reach * reach
+                {
+                    column.ground = ground;
+                    column.surface = GRASS;
+                }
+            }
+        }
+        for (bx, by, bz, block) in landmark(kind) {
+            for part in 0..build * build * build {
+                let (px, py, pz) = (part % build, part / build % build, part / build / build);
+                let at = (x + bx * build + px, z + bz * build + pz);
+                let y = ground + 1 + by * build + py;
+                self.buildings.entry(at).or_default().push((y, block));
+            }
+        }
+    }
+
+    /// Lays a winding path between two cells, on planks over the water.
     pub fn pave(&mut self, from: (i32, i32), to: (i32, i32)) {
         let steps = (to.0 - from.0).abs().max((to.1 - from.1).abs()).max(1);
+        let width = self.scale.build;
         for step in 0..=steps {
-            let along = |a: i32, b: i32| a + (b - a) * step / steps;
-            let (x, z) = (along(from.0, to.0), along(from.1, to.1));
-            let Some(index) = Self::index(x, z) else {
-                continue;
+            let along = |a: i32, b: i32| {
+                f64::from(a) + f64::from(b - a) * f64::from(step) / f64::from(steps)
             };
-            if let Some(column) = &mut self.columns[index]
-                && column.is_land()
-            {
-                column.surface = b::BROWN_CONCRETE;
+            let (line_x, line_z) = (along(from.0, to.0), along(from.1, to.1));
+            // The middle of a path strays the most, and both ends stay put.
+            let progress = f64::from(step) / f64::from(steps);
+            let swing = (progress * std::f64::consts::PI).sin() * f64::from(steps) * 0.18;
+            let wander = fractal(PATH_SEED, line_x, line_z, f64::from(steps)) * swing;
+            let (x, z) = ((line_x + wander) as i32, (line_z - wander) as i32);
+            for dz in 0..width {
+                for dx in 0..width {
+                    if let Some(column) = self.column_mut(x + dx, z + dz) {
+                        if column.is_land() {
+                            column.surface = PATH;
+                        } else {
+                            column.ground = SEA_Y;
+                            column.surface = BRIDGE;
+                        }
+                    }
+                }
             }
         }
     }
 
-    /// The chunks of the model, centred on chunk `(0, 0)`, with a ring of empty
-    /// ones: the client only draws a chunk once its neighbours are there. They run
-    /// further south, under the camera: the engine drops an entity that leaves the
-    /// chunks a player has, and a panning camera is an entity.
-    pub fn chunks(&self, biome: BiomeId, biome_count: usize) -> Vec<Chunk> {
-        let reach = (RADIUS + 15) / 16 + 1;
-        let mut built = Vec::new();
-        let south = (CAMERA_Z as i32 + RADIUS) / 16 + 2;
-        for chunk_z in -reach..south {
-            for chunk_x in -reach..reach {
-                built.push(self.chunk(chunk_x, chunk_z, biome, biome_count));
-            }
-        }
-        built
-    }
-
-    fn chunk(&self, chunk_x: i32, chunk_z: i32, biome: BiomeId, count: usize) -> Chunk {
+    /// One chunk of the model, centred on chunk `(0, 0)`. Off the model it is empty,
+    /// which the client needs too: it only draws chunks with all their neighbours.
+    pub fn chunk(&self, chunk_x: i32, chunk_z: i32, biome: BiomeId, count: usize) -> Chunk {
         let mut builder = ChunkBuilder::new(chunk_x, chunk_z)
             .biome(biome.0)
             .biome_registry_size(count);
@@ -217,74 +406,133 @@ impl Scene {
                 let Some(column) = self.column(x, z) else {
                     continue;
                 };
+                let tint = |block| column.state.tint(block);
                 for y in column.bottom..column.ground {
-                    builder.set_block(local_x, y, local_z, cliff_block(column.ground - y));
+                    let block = cliff_block(column.surface, column.ground - y);
+                    builder.set_block(local_x, y, local_z, tint(block));
                 }
-                builder.set_block(local_x, column.ground, local_z, column.surface);
+                builder.set_block(local_x, column.ground, local_z, tint(column.surface));
                 for y in column.ground + 1..=SEA_Y {
-                    builder.set_block(local_x, y, local_z, b::LIGHT_BLUE_CONCRETE);
+                    builder.set_block(local_x, y, local_z, tint(column.water));
+                }
+                for (y, block) in self.buildings.get(&(x, z)).into_iter().flatten() {
+                    builder.set_block(local_x, *y, local_z, tint(*block));
                 }
             }
         }
-        builder.build()
+        let mut chunk = builder.build();
+        // The dimension lights everything alike.
+        chunk.light = LightData::empty();
+        chunk
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use voidmc::{DefaultWorldGenerator, WorldGenerator};
 
     use super::*;
+    use crate::regions::Region;
     use crate::testing::Flat;
 
     const SEA: i32 = 62;
 
+    fn open() -> Regions {
+        Regions::new(vec![Region {
+            name: "Tout",
+            site: [0.0, 0.0],
+            state: RegionState::Discovered,
+        }])
+    }
+
+    fn scene_of(generator: &dyn WorldGenerator, scale: Scale) -> Scene {
+        Scene::new(
+            &Terrain::sample(generator, &scale.window()),
+            SEA,
+            scale,
+            &open(),
+        )
+    }
+
     fn scene(generator: &dyn WorldGenerator) -> Scene {
-        Scene::new(&Terrain::sample(generator, &window()), SEA)
+        scene_of(generator, OVERVIEW)
+    }
+
+    fn land() -> Flat {
+        Flat::new(SEA + 12, BiomeId::plains())
+    }
+
+    fn sea() -> Flat {
+        Flat::new(SEA - 30, BiomeId::plains())
+    }
+
+    #[test]
+    fn both_scales_cover_the_same_world() {
+        let span = |scale: Scale| f64::from(scale.radius * i32::from(scale.blocks_per_cell));
+        for scale in [OVERVIEW, DETAIL] {
+            assert!((span(scale) - WORLD_RADIUS).abs() <= f64::from(scale.blocks_per_cell));
+        }
     }
 
     #[test]
     fn the_island_ends_inside_its_radius() {
-        let scene = scene(&Flat::new(70, BiomeId::plains()));
+        let scene = scene(&land());
+        let radius = OVERVIEW.radius;
         assert!(scene.top(0, 0).is_some());
-        assert!(scene.top(RADIUS - 1, RADIUS - 1).is_none());
-        assert!(scene.top(RADIUS, 0).is_none());
+        assert!(scene.top(radius - 1, radius - 1).is_none());
+        assert!(scene.top(radius, 0).is_none());
+    }
+
+    #[test]
+    fn the_rim_is_no_circle() {
+        let scene = scene(&land());
+        let reach = |dx: i32, dz: i32| {
+            (1..OVERVIEW.radius)
+                .take_while(|r| scene.top(r * dx, r * dz).is_some())
+                .count()
+        };
+        let reaches = [reach(1, 0), reach(-1, 0), reach(0, 1), reach(0, -1)];
+        assert!(reaches.iter().any(|r| *r != reaches[0]), "{reaches:?}");
     }
 
     #[test]
     fn land_rises_by_terraces() {
-        let height = |y| scene(&Flat::new(y, BiomeId::plains())).top(0, 0);
-        assert_eq!(height(SEA + 3), height(SEA + 5));
-        assert_eq!(height(SEA + 6), height(SEA + 3).map(|y| y + TERRACE_RISE));
+        let scene = scene(&land());
+        let tops: Vec<_> = (-30..30).filter_map(|x| scene.top(x, 0)).collect();
+        assert!(tops.iter().all(
+            |top| (*top - SEA_Y - 1) % OVERVIEW.rise == 0 || *top == SEA_Y + 1 + OVERVIEW.build
+        ));
     }
 
     #[test]
     fn the_sea_is_flat() {
-        let scene = scene(&Flat::new(50, BiomeId::plains()));
+        let scene = scene(&sea());
         assert_eq!(scene.top(0, 0), Some(SEA_Y));
     }
 
     #[test]
     fn the_sea_never_spills_over_the_rim() {
-        let scene = scene(&Flat::new(50, BiomeId::plains()));
-        let rim = (0..RADIUS).rev().find(|x| scene.top(*x, 0).is_some());
+        let scene = scene(&sea());
+        let rim = (0..OVERVIEW.radius)
+            .rev()
+            .find(|x| scene.top(*x, 0).is_some());
         assert!(scene.column(rim.unwrap(), 0).unwrap().is_land());
     }
 
     #[test]
     fn extreme_terrain_stays_inside_the_dimension() {
         let high = scene(&Flat::new(10_000, BiomeId::plains()));
-        assert_eq!(high.top(0, 0), Some(MAX_Y));
+        assert_eq!(high.top(0, 0), Some(OVERVIEW.max_y));
         let deep = scene(&Flat::new(-10_000, BiomeId::plains()));
         assert!(deep.column(0, 0).unwrap().bottom >= LOWEST_Y);
     }
 
     #[test]
     fn the_underside_is_thinner_at_the_rim() {
-        let scene = scene(&Flat::new(70, BiomeId::plains()));
-        let rim = (0..RADIUS).rev().find(|x| scene.top(*x, 0).is_some());
+        let scene = scene(&land());
+        let rim = (0..OVERVIEW.radius)
+            .rev()
+            .find(|x| scene.top(*x, 0).is_some());
         let bottom = |x| scene.column(x, 0).unwrap().bottom;
         assert!(bottom(rim.unwrap()) > bottom(0));
     }
@@ -293,55 +541,78 @@ mod tests {
     fn the_surface_depends_on_elevation_and_biome() {
         let plains = BiomeId::plains();
         let desert = BiomeId::named("desert").unwrap();
-        assert_eq!(surface_block(plains, 4, 1), b::LIME_CONCRETE);
-        assert_eq!(
-            surface_block(plains, 10, FOREST_TERRACE),
-            b::LIME_TERRACOTTA
-        );
-        assert_eq!(surface_block(desert, 4, 1), b::SMOOTH_SANDSTONE);
-        assert_eq!(surface_block(plains, 1, 0), b::SMOOTH_SANDSTONE);
-        assert_eq!(
-            surface_block(plains, 20, ROCK_TERRACE),
-            b::LIGHT_GRAY_CONCRETE
-        );
-        assert_eq!(surface_block(plains, 30, SNOW_TERRACE), b::WHITE_CONCRETE);
+        assert_eq!(surface_block(plains, 4, 1), GRASS);
+        assert_eq!(surface_block(desert, 4, 1), SAND);
+        assert_eq!(surface_block(plains, 1, 0), SAND);
+        assert_eq!(surface_block(plains, 20, ROCK_TERRACE), ROCK);
+        assert_eq!(surface_block(plains, 30, SNOW_TERRACE), SNOW);
     }
 
     #[test]
-    fn cliffs_fade_to_black() {
-        assert_eq!(cliff_block(1), b::LIGHT_GRAY_CONCRETE);
-        assert_eq!(cliff_block(DARK_DEPTH), b::GRAY_CONCRETE);
-        assert_eq!(cliff_block(BLACK_DEPTH), b::BLACK_CONCRETE);
+    fn cliffs_show_soil_then_fade_to_black() {
+        assert_eq!(cliff_block(GRASS, 1), SOIL);
+        assert_eq!(cliff_block(ROCK, 1), b::LIGHT_GRAY_CONCRETE);
+        assert_eq!(cliff_block(GRASS, DARK_DEPTH), b::GRAY_CONCRETE);
+        assert_eq!(cliff_block(GRASS, BLACK_DEPTH), b::BLACK_CONCRETE);
     }
 
     #[test]
-    fn paths_cross_land_and_not_the_sea() {
-        let mut land = scene(&Flat::new(70, BiomeId::plains()));
-        land.pave((-5, 0), (5, 3));
-        assert_eq!(land.column(5, 3).unwrap().surface, b::BROWN_CONCRETE);
-        assert_eq!(land.column(0, 1).unwrap().surface, b::BROWN_CONCRETE);
-
-        let mut sea = scene(&Flat::new(50, BiomeId::plains()));
-        let before = sea.column(0, 0);
-        sea.pave((-5, 0), (5, 0));
-        assert_eq!(sea.column(0, 0), before);
+    fn smoothing_keeps_a_flat_field_and_softens_a_spike() {
+        let mut flat = vec![3.0; 25];
+        smooth(&mut flat, 5, 1);
+        assert!(flat.iter().all(|v| (*v - 3.0).abs() < 1e-9));
+        let mut spike = vec![0.0; 25];
+        spike[12] = 9.0;
+        smooth(&mut spike, 5, 1);
+        assert_eq!(spike[12], 1.0);
     }
 
     #[test]
-    fn every_chunk_of_the_model_has_all_its_neighbours() {
+    fn a_path_is_unbroken_and_bridges_the_sea() {
+        let mut scene = scene(&sea());
+        scene.pave((-20, 0), (20, 0));
+        let start = scene.column(-20, 0).unwrap();
+        assert_eq!(start.surface, BRIDGE);
+        assert_eq!(start.ground, SEA_Y);
+        let end = scene.column(20, 0).unwrap();
+        assert_eq!(end.surface, BRIDGE);
+    }
+
+    #[test]
+    fn a_landmark_stands_on_level_land() {
+        let mut scene = scene(&sea());
+        scene.build((0, 0), MarkerKind::Lighthouse);
+        assert_eq!(scene.top(0, 0), Some(SEA_Y + 1));
+        assert_eq!(scene.top(3, 0), Some(SEA_Y + 1));
+        assert!(scene.buildings.contains_key(&(0, 0)));
+    }
+
+    #[test]
+    fn a_landmark_grows_with_the_scale() {
+        let mut detail = scene_of(&land(), DETAIL);
+        detail.build((0, 0), MarkerKind::Lighthouse);
+        assert_eq!(detail.buildings[&(1, 1)].len(), 7 * 2);
+    }
+
+    #[test]
+    fn a_region_tints_the_blocks_it_covers() {
+        let locked = Regions::new(vec![Region {
+            name: "Fermee",
+            site: [0.0, 0.0],
+            state: RegionState::Locked,
+        }]);
+        let generator = land();
+        let terrain = Terrain::sample(&generator, &OVERVIEW.window());
+        let scene = Scene::new(&terrain, SEA, OVERVIEW, &locked);
+        assert_eq!(scene.column(0, 0).unwrap().state, RegionState::Locked);
+    }
+
+    #[test]
+    fn the_real_world_is_mostly_on_the_model() {
         let scene = scene(&DefaultWorldGenerator::default());
-        let chunks: HashSet<_> = scene
-            .chunks(BiomeId::plains(), 64)
-            .iter()
-            .map(|c| (c.x, c.z))
-            .collect();
-        let reach = (RADIUS + 15) / 16;
-        for x in -reach..reach {
-            for z in -reach..reach {
-                for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                    assert!(chunks.contains(&(x + dx, z + dz)), "{x} {z}");
-                }
-            }
-        }
+        let cells = (-OVERVIEW.radius..OVERVIEW.radius)
+            .flat_map(|x| (-OVERVIEW.radius..OVERVIEW.radius).map(move |z| (x, z)));
+        let on_model = cells.filter(|(x, z)| scene.top(*x, *z).is_some()).count();
+        assert!(on_model > 6_000, "{on_model}");
     }
 }
