@@ -1911,6 +1911,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "voidmc-checkers"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "flume",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "voidmc",
+ "voidmc-data",
+ "voidmc-protocol",
+]
+
+[[package]]
 name = "voidmc-codec"
 version = "0.1.1"
 dependencies = [

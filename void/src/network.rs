@@ -527,6 +527,18 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
+                serverbound::PlayPacket::CustomClickAction(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::ResourcePackResponse(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
                 serverbound::PlayPacket::Pong(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,

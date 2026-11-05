@@ -5,6 +5,7 @@ mod client_information;
 mod close_container;
 mod command_suggestions_request;
 mod confirm_teleportation;
+mod custom_click_action;
 mod interact;
 mod keep_alive;
 mod player_abilities;
@@ -13,6 +14,7 @@ mod player_command;
 mod player_input;
 mod player_loaded;
 mod pong;
+mod resource_pack_response;
 mod set_creative_mode_slot;
 mod set_held_item;
 mod set_player_pos;
@@ -31,6 +33,7 @@ pub use client_information::*;
 pub use close_container::*;
 pub use command_suggestions_request::*;
 pub use confirm_teleportation::*;
+pub use custom_click_action::*;
 pub use interact::*;
 pub use keep_alive::*;
 pub use player_abilities::*;
@@ -39,6 +42,7 @@ pub use player_command::*;
 pub use player_input::*;
 pub use player_loaded::*;
 pub use pong::*;
+pub use resource_pack_response::*;
 pub use set_creative_mode_slot::*;
 pub use set_held_item::*;
 pub use set_player_pos::*;
@@ -94,6 +98,8 @@ pub enum PlayPacket {
     PlayerLoaded(PlayerLoaded),
     #[codec(packet_id = 0x2D)]
     Pong(Pong),
+    #[codec(packet_id = 0x31)]
+    ResourcePackResponse(ResourcePackResponse),
     #[codec(packet_id = 0x35)]
     SetHeldItem(SetHeldItem),
     #[codec(packet_id = 0x38)]
@@ -104,4 +110,6 @@ pub enum PlayPacket {
     UseItemOn(UseItemOn),
     #[codec(packet_id = 0x43)]
     UseItem(UseItem),
+    #[codec(packet_id = 0x44)]
+    CustomClickAction(CustomClickAction),
 }

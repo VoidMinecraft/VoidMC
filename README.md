@@ -19,6 +19,7 @@ Instead of shipping a monolithic server with every feature enabled, Void follows
 | `void/` | Core server framework: ECS app, systems, plugins, commands, client state, world state, metrics. |
 | `void-example/` | Runnable example server and logging/metrics setup reference. |
 | `void-demo/` | Alpine Rush: procedural minecart-racing demo built entirely on the public engine APIs (world generation, kart physics, arcade bonuses, live HUD; port complete). |
+| `void-checkers/` | Checkers POC: a solo 3D board of display entities, played with the crosshair. |
 | `void-net/` | Tokio-based TCP networking layer. |
 | `void-protocol/` | Minecraft packet definitions and protocol types. |
 | `void-codec/` | Binary `Encode`/`Decode` primitives. |

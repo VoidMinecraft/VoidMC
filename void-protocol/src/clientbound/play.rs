@@ -3,6 +3,7 @@ mod block_entity_data;
 mod block_update;
 mod boss_event;
 pub mod chunk;
+mod clear_dialog;
 mod clear_titles;
 mod close_container;
 mod command_suggestions_response;
@@ -23,6 +24,7 @@ mod player_info_update;
 mod remove_entities;
 mod remove_mob_effect;
 mod reset_score;
+mod resource_pack_push;
 mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
@@ -41,6 +43,7 @@ mod set_tab_list_header_footer;
 mod set_time;
 mod set_title_text;
 mod set_titles_animation;
+mod show_dialog;
 mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
@@ -60,6 +63,7 @@ pub use block_entity_data::*;
 pub use block_update::*;
 pub use boss_event::*;
 pub use chunk::*;
+pub use clear_dialog::*;
 pub use clear_titles::*;
 pub use close_container::*;
 pub use command_suggestions_response::*;
@@ -82,6 +86,7 @@ pub use player_info_update::*;
 pub use remove_entities::*;
 pub use remove_mob_effect::*;
 pub use reset_score::*;
+pub use resource_pack_push::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
@@ -100,6 +105,7 @@ pub use set_tab_list_header_footer::*;
 pub use set_time::*;
 pub use set_title_text::*;
 pub use set_titles_animation::*;
+pub use show_dialog::*;
 pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
@@ -174,6 +180,8 @@ pub enum PlayPacket {
     ResetScore(ResetScore),
     #[codec(packet_id = 0x4E)]
     RemoveMobEffect(RemoveMobEffect),
+    #[codec(packet_id = 0x51)]
+    ResourcePackPush(ResourcePackPush),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x58)]
@@ -228,6 +236,10 @@ pub enum PlayPacket {
     UpdateAttributes(UpdateAttributes),
     #[codec(packet_id = 0x84)]
     UpdateMobEffect(UpdateMobEffect),
+    #[codec(packet_id = 0x8B)]
+    ClearDialog(ClearDialog),
+    #[codec(packet_id = 0x8C)]
+    ShowDialog(ShowDialog),
 }
 
 /// Packets with manual Encode impls that can't be in the tagged enum.

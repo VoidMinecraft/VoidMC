@@ -93,6 +93,9 @@ const SPECS: &[EnumSpec] = &[
         direction: "clientbound",
         names: &[
             ("SpawnEntity", "minecraft:add_entity"),
+            ("ClearDialog", "minecraft:clear_dialog"),
+            ("ResourcePackPush", "minecraft:resource_pack_push"),
+            ("ShowDialog", "minecraft:show_dialog"),
             ("BlockChangedAck", "minecraft:block_changed_ack"),
             ("BlockEntityData", "minecraft:block_entity_data"),
             ("BlockUpdate", "minecraft:block_update"),
@@ -176,6 +179,8 @@ const SPECS: &[EnumSpec] = &[
         direction: "serverbound",
         names: &[
             ("ConfirmTeleportation", "minecraft:accept_teleportation"),
+            ("CustomClickAction", "minecraft:custom_click_action"),
+            ("ResourcePackResponse", "minecraft:resource_pack"),
             ("ChatCommand", "minecraft:chat_command"),
             ("SignedChatCommand", "minecraft:chat_command_signed"),
             ("ChatMessage", "minecraft:chat"),
