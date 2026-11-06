@@ -426,3 +426,17 @@ fn test_with_setup() {
 - Remove obsolete tests
 - Refactor duplicate test code
 - Update test names if behavior changes
+
+## Testing in a real client
+
+`voidc` starts Minecraft clients that open no window, so that tests never take the focus. It
+offers three levels, from a bot of a few megabytes to a client that renders and takes captures,
+and a page that shows them all. See [void-clients/README.md](https://github.com/VoidMinecraft/VoidMC/blob/main/void-clients/README.md).
+
+```sh
+cargo install --path void-clients
+voidc port "My feature"
+voidc up "My feature"
+voidc cmd my-feature assert "chunks>=100"
+voidc down my-feature
+```

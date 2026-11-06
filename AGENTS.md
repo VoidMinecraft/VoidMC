@@ -11,11 +11,17 @@ This file gives AI coding agents the minimum project context needed to make safe
 - Run example server: `cargo run -p void-example`
 - Docs site (from `void-docs/`): `npm install`, `npm run dev`, `npm run build`
 
+## Testing In A Real Client
+
+Use `voidc`, never a client of your own: see [void-clients/README.md](void-clients/README.md).
+It starts clients without a window, so they neither take the focus nor cover the screen.
+
 ## Workspace Map
 
 - `void/`: core server framework (Bevy ECS app, systems, plugins, commands, world)
 - `void-example/`: runnable example server and logging setup reference
 - `void-demo/`: Alpine Rush racing demo (lib + bin), a consumer of the public APIs
+- `void-clients/`: `voidc`, the tool for test clients: hidden clients, bots, a mosaic
 - `void-net/`: async networking layer
 - `void-protocol/`: protocol packet types and related tests
 - `void-codec/`: encode/decode primitives and tests
@@ -43,7 +49,7 @@ This file gives AI coding agents the minimum project context needed to make safe
 - Add tests for behavior changes.
 - Update docs/examples when public APIs change.
 - Check crate edition before using language features:
-  - `void`, `void-example`, `void-demo`, `void-net`, `void-protocol`: edition 2024
+  - `void`, `void-example`, `void-demo`, `void-net`, `void-protocol`, `void-clients`: edition 2024
   - `void-codec`, `void-codec-macros`: edition 2021
 
 ## Reference Docs

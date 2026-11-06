@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fr">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clients VoidMC</title>
+<style>
+:root{--bg:#14161a;--tile:#1e2127;--line:#2e323a;--text:#e7e9ee;--dim:#8d94a1;--on:#4cc38a;--wait:#e5b454;--off:#e5636b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.35 -apple-system,system-ui,sans-serif;padding:16px}
+header{display:flex;gap:12px;align-items:baseline;margin-bottom:12px}
+h1{font-size:15px;font-weight:600;margin:0}
+#count{color:var(--dim);font-size:12px}
+#g{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(340px,100%),1fr));gap:12px}
+.t{background:var(--tile);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.p{aspect-ratio:16/9;background:#000;display:grid;place-items:center;color:var(--dim);font-size:12px;position:relative}
+.p img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.m{padding:8px 10px 4px;display:flex;align-items:center;gap:8px}
+.f{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.s{font-size:12px}
+.connected{color:var(--on)}
+.starting,.connecting,.waiting{color:var(--wait)}
+.disconnected,.stopped{color:var(--off)}
+.d{color:var(--dim);font-size:12px;padding:0 10px 6px}
+.a{display:flex;gap:6px;padding:0 10px 10px}
+button{background:#2a2e36;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 8px;font:inherit;font-size:12px;cursor:pointer}
+button[hidden]{display:none}
+#none{color:var(--dim);padding:32px 0}
+</style>
+<header><h1>Clients VoidMC</h1><span id="count"></span></header>
+<div id="g"></div>
+<div id="none" hidden>Aucun client. Un agent en lance un avec <code>voidc up "Feature" --port N</code>.</div>
+<script>
+const LABEL={connected:'connecté',disconnected:'déconnecté',waiting:'en attente',starting:'démarrage',connecting:'connexion',stopped:'arrêté'};
+const grid=document.getElementById('g'),tiles={};
+const post=(name,action)=>fetch(`/api/${name}/${action}`,{method:'POST'});
+function tile(c){
+  const e=document.createElement('div');e.className='t';
+  e.innerHTML='<div class="p"><span class="n"></span><img alt="" hidden></div><div class="m"><span class="f"></span><span class="s"></span></div><div class="d"></div><div class="a"><button data-a="run"></button><button data-a="take">Prendre la main</button><button data-a="give" hidden>Rendre la main</button></div>';
+  e.querySelector('[data-a=run]').onclick=()=>post(c.name,e.dataset.on==='1'?'stop':'start');
+  e.querySelector('[data-a=take]').onclick=()=>post(c.name,'take');
+  e.querySelector('[data-a=give]').onclick=()=>post(c.name,'give');
+  grid.append(e);return e;
+}
+async function tick(){
+  const list=await (await fetch('/api/clients')).json();
+  document.getElementById('none').hidden=list.length>0;
+  document.getElementById('count').textContent=`${list.filter(c=>c.running).length} en marche`;
+  for(const name of Object.keys(tiles))if(!list.some(c=>c.name===name)){tiles[name].remove();delete tiles[name]}
+  for(const c of list){
+    const e=tiles[c.name]??=tile(c);
+    e.dataset.on=c.running?'1':'0';
+    e.querySelector('.f').textContent=c.feature;
+    const s=e.querySelector('.s');s.textContent=LABEL[c.state]||c.state;s.className='s '+c.state;
+    const pos=c.x===undefined?'':` · ${Math.round(c.x)} ${Math.round(c.y)} ${Math.round(c.z)}`;
+    e.querySelector('.d').textContent=`${c.level} · port ${c.port}`+(c.fps?` · ${c.fps} FPS`:'')+pos;
+    e.querySelector('[data-a=run]').textContent=c.running?'Arrêter':'Lancer';
+    const picture=c.level==='render'||c.level==='play';
+    const take=e.querySelector('[data-a=take]'),give=e.querySelector('[data-a=give]');
+    take.hidden=c.level!=='render'||!c.running||c.shown;give.hidden=!c.shown;
+    const img=e.querySelector('img'),note=e.querySelector('.n');
+    note.textContent=c.level==='bot'?'bot, sans image':c.level==='logic'?'sans rendu':c.level==='play'?'joué dans sa fenêtre':'';
+    img.hidden=!(c.level==='render'&&c.running&&c.state==='connected');
+    if(!img.hidden)img.src=`/thumb/${c.name}?${Date.now()}`;
+  }
+}
+tick();setInterval(tick,1000);
+</script>
+</html>

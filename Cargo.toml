@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
   "void",
+  "void-clients",
   "void-data",
   "void-demo",
   "void-example",
