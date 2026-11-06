@@ -57,8 +57,11 @@ const GLIDE_LOOK: f32 = 58.0;
 const GLIDE_STOPS: f64 = 3.0;
 /// A leap goes higher than the others, into the sky.
 const LEAP_HEIGHT: f64 = 56.0;
-/// A leap falls on the view from this share of its height over it.
-const LEAP_MODEL_SHARE: f64 = 0.9;
+/// A leap comes down from this share of its height over the view. A client draws no further
+/// than its render distance, and sees nothing of a model from much higher.
+const LEAP_MODEL_SHARE: f64 = 0.25;
+/// Where a leap still looks on the model, low over the land, as it comes out of the sky.
+const LEAP_PITCH: f32 = 32.0;
 
 /// What brings the veil over the screen. A title is the one thing that covers it
 /// from the server and fades on its own.
@@ -98,7 +101,7 @@ pub enum Flow {
     Spiral,
     /// Ahead and up like a bird, then in over the model from low on the horizon.
     Glide,
-    /// Eyes on the sky and up into it, then a fall onto the view from high above.
+    /// Eyes on the sky and up into it, then down from the horizon onto the view.
     Leap,
 }
 
@@ -201,7 +204,7 @@ impl Flow {
             }
             Self::Leap => {
                 let to = [eye[0], eye[1] + high * LEAP_MODEL_SHARE, eye[2]];
-                Flight::new(eye, to, look, length).turning_to([yaw, DOWN])
+                Flight::new(eye, to, look, length).turning_to([yaw, LEAP_PITCH])
             }
         }
     }
@@ -518,8 +521,8 @@ mod tests {
             while flight.left() > 0 {
                 flight.tick();
             }
-            for axis in 0..3 {
-                assert!((flight.at()[axis] - eye[axis]).abs() < 1e-9);
+            for (at, eye) in flight.at().iter().zip(eye) {
+                assert!((at - eye).abs() < 1e-9);
             }
             assert_eq!(flight.looking(), look);
         }

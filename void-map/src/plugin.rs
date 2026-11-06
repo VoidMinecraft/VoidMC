@@ -66,6 +66,10 @@ use crate::transition::{
 };
 use crate::wheel::{CATEGORIES, Wheel, stepped};
 
+mod preview;
+
+pub use preview::{FlowPart, PreviewFlow};
+
 /// `WorldGenerator` does not expose its water level. This is the one of
 /// `DefaultWorldGenerator`, and of vanilla.
 pub const SEA_LEVEL: i32 = 62;
@@ -782,6 +786,8 @@ pub struct MapSession {
     veiled: Option<u32>,
     /// The client has the model around the camera.
     ready: bool,
+    /// An intro or an outro played over, to see it.
+    preview: Option<preview::Preview>,
     /// Held open by the sprint key.
     wheel: Option<OpenWheel>,
     /// When a choice last went on screen, for the hint to leave it there.
@@ -920,7 +926,13 @@ impl MapSession {
 
     /// The camera holds still and nothing reacts to the mouse.
     fn is_frozen(&self) -> bool {
-        self.wheel.is_some()
+        self.wheel.is_some() || self.preview.is_some()
+    }
+
+    /// The flow of the way out, or of the one being played over.
+    fn outro(&self) -> Flow {
+        self.preview
+            .map_or(self.looks.outro, |preview| preview.flow())
     }
 
     /// What the pointer has to show.
@@ -930,7 +942,10 @@ impl MapSession {
         let landing = self.travel.is_some_and(|travel| {
             matches!(travel.ending, Ending::World(_)) && travel.flight.flying_for() <= VEIL_FADE
         });
-        if self.veiled.is_some() || rising || landing {
+        let previewing = self
+            .preview
+            .is_some_and(|preview| preview.holds_the_title());
+        if self.veiled.is_some() || rising || landing || previewing {
             cursor::Wanted::Veil
         } else if !self.drawn || self.travel.is_some() || self.is_frozen() {
             cursor::Wanted::Nothing
@@ -966,7 +981,7 @@ impl MapSession {
             }
             MapMode::Pan => {
                 let turn = self.mouse.report(yaw, pitch);
-                if turn.delta != [0.0, 0.0] && self.travel.is_none() {
+                if turn.delta != [0.0, 0.0] && self.travel.is_none() && !self.is_frozen() {
                     self.pan.apply(turn.delta);
                 }
                 turn.recentre.then_some(PlayerRotation {
@@ -1174,6 +1189,7 @@ impl Plugin for MapPlugin {
                 tick_sessions,
                 fly,
                 tick_passages,
+                preview::tick,
                 run_wheels,
             ),
         )
@@ -1190,6 +1206,7 @@ impl Plugin for MapPlugin {
         .add_observer(read_keys)
         .add_observer(note_pack)
         .add_observer(choose_look)
+        .add_observer(preview::start)
         .add_observer(player_left)
         .add_plugins((PlayersPlugin, CursorPlugin));
         app.world_mut()
@@ -1624,6 +1641,7 @@ fn rise(
         landing: None,
         veiled: None,
         ready: false,
+        preview: None,
         wheel: None,
         told: 0,
         sneaking: false,
@@ -1971,7 +1989,8 @@ fn switch_mode(
     let Ok((mut session, id, loaded)) = sessions.get_mut(player) else {
         return;
     };
-    if session.mode == mode || session.travel.is_some() || session.rig.is_none() {
+    let busy = session.travel.is_some() || session.rig.is_none() || session.preview.is_some();
+    if session.mode == mode || busy {
         return;
     }
     tracing::info!(?mode, "map mode");
@@ -2674,7 +2693,7 @@ fn left_click(
     let Ok(mut session) = sessions.get_mut(player) else {
         return;
     };
-    let busy = session.travel.is_some() || session.rig.is_none();
+    let busy = session.travel.is_some() || session.rig.is_none() || session.preview.is_some();
     if busy || !counts_as_click(&mut session, event.packet.entity_id, &ids) {
         return;
     }
@@ -3062,6 +3081,12 @@ fn tick_sessions(
         if session.rig.is_none() {
             continue;
         }
+        if session
+            .preview
+            .is_some_and(|preview| !preview.flies_the_view())
+        {
+            continue;
+        }
         if let Some(held) = session.veiled.as_mut() {
             *held += 1;
         }
@@ -3108,11 +3133,10 @@ fn tick_sessions(
                             send_veil(&players, player);
                         }
                         let (at, look) = session.landing_place(to, flight);
-                        let landing = session.looks.outro.landing(eye_of(&at), look);
+                        let landing = session.outro().landing(eye_of(&at), look);
                         let [x, y, z] = landing.start();
                         let camera = under_eye(Position { x, y, z });
-                        let [yaw, pitch] = landing.first_look();
-                        let first = Rotation { yaw, pitch };
+                        let first = preview::first_rotation(&landing);
                         session.landing = Some(spawn_eye_camera(&mut commands, camera, first));
                     }
                     if flight.flying_for() + TURN_TICKS == VEIL_FADE
@@ -3120,12 +3144,12 @@ fn tick_sessions(
                         && let Ok(eye) = ids.get(camera.eye)
                     {
                         let (at, look) = session.landing_place(to, flight);
-                        let landing = session.looks.outro.landing(eye_of(&at), look);
+                        let landing = session.outro().landing(eye_of(&at), look);
                         let [x, y, z] = landing.start();
                         let start = Position { x, y, z };
                         turn_eye(&players, player, eye, start, landing.first_look());
                     }
-                    if flight.flying_for() == 0 {
+                    if flight.flying_for() == 0 && session.preview.is_none() {
                         commands.trigger(LeaveMap(player));
                     }
                 }
@@ -3175,7 +3199,8 @@ fn read_keys(
     let usable = session.rig.is_some()
         && session.drawn
         && session.travel.is_none()
-        && session.veiled.is_none();
+        && session.veiled.is_none()
+        && session.preview.is_none();
     if sprint && session.wheel.is_none() && usable {
         open_wheel(&mut session, event.entity, &mut commands);
         players.send(
@@ -3208,7 +3233,7 @@ fn read_keys(
             let (displays, commands) = (&mut displays, &mut commands);
             hand_view_back(&mut session, event.entity, id, displays, &players, commands);
         }
-    } else if sneak && going != Some(Ending::World(None)) {
+    } else if sneak && going != Some(Ending::World(None)) && session.preview.is_none() {
         commands.trigger(CloseMap(event.entity));
     } else if LOOK_OPEN && jump && session.rig.is_some() && session.travel.is_none() {
         commands.trigger(OpenMap(event.entity, session.mode.other()));
@@ -3417,7 +3442,7 @@ fn close(
     let Ok(mut session) = sessions.get_mut(event.0) else {
         return;
     };
-    if session.leaving() || session.rig.is_none() {
+    if session.leaving() || session.rig.is_none() || session.preview.is_some() {
         return;
     }
     if let Some(open) = session.wheel.take() {
@@ -3500,11 +3525,7 @@ fn leave(
         .landing(eye_of(&session.position), session.rotation);
     let [x, y, z] = flight.at();
     let start = under_eye(Position { x, y, z });
-    let [yaw_first, pitch_first] = flight.first_look();
-    let first = Rotation {
-        yaw: yaw_first,
-        pitch: pitch_first,
-    };
+    let first = preview::first_rotation(&flight);
     let waiting = session.landing.take();
     let camera = waiting.unwrap_or_else(|| spawn_eye_camera(&mut commands, start, first));
     let back = Back {
@@ -3546,7 +3567,8 @@ fn player_left(
                 commands.entity(entity).try_despawn();
             }
         }
-        if let Some(camera) = session.landing {
+        let preview = session.preview.and_then(|preview| preview.cameras());
+        for camera in session.landing.into_iter().chain(preview) {
             despawn_eye_camera(camera, &mut commands);
         }
     }
@@ -3565,6 +3587,8 @@ enum MapAction {
     Zone,
     Blocks,
     Move,
+    Intro,
+    Outro,
 }
 
 /// Which option of a look, as a player types it.
@@ -3622,6 +3646,16 @@ impl Pick {
         }
     }
 
+    fn flow(self) -> Option<Flow> {
+        match self {
+            Self::One => Some(Flow::Climb),
+            Self::Two => Some(Flow::Spiral),
+            Self::Three => Some(Flow::Glide),
+            Self::Four => Some(Flow::Leap),
+            _ => None,
+        }
+    }
+
     fn motion(self) -> Option<Motion> {
         match self {
             Self::A => Some(Motion::Damped),
@@ -3667,6 +3701,8 @@ fn map_command() -> Command {
                 ("zone", MapAction::Zone),
                 ("blocks", MapAction::Blocks),
                 ("move", MapAction::Move),
+                ("intro", MapAction::Intro),
+                ("outro", MapAction::Outro),
             ]),
         )
         .arg_optional(
@@ -3719,9 +3755,23 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
             MapAction::Move if pick == Some(Pick::Inertia) => Some(LookChoice::Inertia),
             MapAction::Move => Some(choice(pick, Pick::motion, LookChoice::Motion)),
+            MapAction::Intro => Some(choice(pick, Pick::flow, LookChoice::Intro)),
+            MapAction::Outro => Some(choice(pick, Pick::flow, LookChoice::Outro)),
         };
         if let Some(chosen) = chosen {
             world.trigger(ChooseLook(player, chosen));
+            // Picking one is for seeing it. The choice lands with the commands of the event.
+            world.flush();
+            let looks = world.get::<MapLooks>(player).copied().unwrap_or_default();
+            match chosen {
+                LookChoice::Intro(_) => {
+                    world.trigger(PreviewFlow(player, FlowPart::Intro, looks.intro));
+                }
+                LookChoice::Outro(_) => {
+                    world.trigger(PreviewFlow(player, FlowPart::Outro, looks.outro));
+                }
+                _ => {}
+            }
         }
     });
 }
@@ -3801,6 +3851,7 @@ mod tests {
             landing: None,
             veiled: None,
             ready: false,
+            preview: None,
             wheel: None,
             told: 0,
             sneaking: false,
