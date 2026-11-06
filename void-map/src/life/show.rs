@@ -29,11 +29,13 @@ const GLIDE_TICKS: u8 = 12;
 /// In the range of a client's display entities, past any height of the view.
 const VIEW_RANGE: f32 = 8.0;
 /// A view sees about this far around the land under the middle of the screen, in heights
-/// over the sea, and never less than the first of `REACH`.
-const SEEN_PER_HEIGHT: f64 = 1.8;
+/// over the sea, on a wide window.
+const SEEN_PER_HEIGHT: f64 = 1.6;
+/// How far north of the eye that land is, in heights over the sea.
+const LOOKS_AHEAD: f64 = 0.2;
 /// The least and the most a view reaches, in blocks of the model: at the most, the fog
 /// of a render distance of 8 has covered it all.
-const REACH: [f64; 2] = [56.0, 180.0];
+const REACH: [f64; 2] = [40.0, 180.0];
 /// How much further a scene that is shown has to go to be dropped: it must not come and go
 /// on the edge of the view.
 const REACH_MARGIN: f64 = 24.0;
@@ -145,7 +147,7 @@ fn in_reach([x, y, z]: [f64; 3], at: [f64; 3], leaving: bool) -> bool {
     let height = (y - f64::from(SEA_Y)).max(1.0);
     let margin = if leaving { REACH_MARGIN } else { 0.0 };
     let reach = (height * SEEN_PER_HEIGHT).clamp(REACH[0], REACH[1]) + margin;
-    (at[0] - x).hypot(at[2] - (z - height)) <= reach
+    (at[0] - x).hypot(at[2] - (z - height * LOOKS_AHEAD)) <= reach
 }
 
 fn world_spot(view: &MapView, [x, y, z]: [f64; 3]) -> Position {
@@ -387,7 +389,7 @@ mod tests {
     #[test]
     fn a_scene_stays_a_little_past_where_it_came_in() {
         let reach = REACH[1].min(100.0 * SEEN_PER_HEIGHT);
-        let just_out = [reach + 10.0, 65.0, -100.0];
+        let just_out = [reach + 10.0, 65.0, -100.0 * LOOKS_AHEAD];
         assert!(!in_reach(EYE, just_out, false));
         assert!(in_reach(EYE, just_out, true));
     }
