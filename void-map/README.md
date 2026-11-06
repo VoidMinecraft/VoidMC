@@ -186,10 +186,12 @@ alone. The chunks still to come go out in the new look.
   `LookChoice::Me`.
 - `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
   stripes, behind a fence with a lock, or drained of colour with a large question mark.
-  A cloud is a few round puffs of white blocks on one to four flat layers, as in a game.
-  Its shape comes from a fixed seed and where it hangs, so no two are alike, and it stays
-  at the same place of the world on every model. It is built with the model, not on
-  opening the map.
+  A cloud is a few round puffs of white blocks on one to three flat layers, as in a game.
+  Its shape comes from a fixed seed and where it hangs, so no two are alike. It is drawn in
+  pixels of the world, on the grid of the overview's cells, so that every model draws the
+  same pixels: a cell a pixel there, a cell or two on the middle model and two or three up
+  close. It hangs at the same height in the world, on a model's own scale, as a cloud
+  closer to the eye shows larger. It is built with the model, not on opening the map.
 - `/map border 1` to `3`: what stands along the border of a closed region under
   `/map zone 3`, on a band three blocks wide on the close model and as wide on screen on
   the others: a wall with a merlon every other block, the same wall with square towers, or
