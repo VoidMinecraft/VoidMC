@@ -7,7 +7,7 @@
 //! of the screen is the pointer.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::prelude::*;
@@ -120,6 +120,12 @@ pub(crate) const CHUNKS_PER_TICK: usize = 64;
 /// Blocks a change of look turns on the client in a tick, nearest first. The chunks are
 /// left in place: a look only reaches them as blocks, so nothing goes away and comes back.
 const REPAINTED_BLOCKS_PER_TICK: usize = 20_000;
+/// What a player's chunks can take of a tick. Past it the rest waits for the next tick, so
+/// that a look built for the first time or a slow machine costs time and not a late tick.
+/// Something always goes out, whatever is left.
+const CHUNKS_TIME_PER_TICK: Duration = Duration::from_millis(12);
+/// An empty chunk, in the caches of a model: no chunk of it is this far from its centre.
+const EMPTY_CHUNK: (i32, i32) = (1 << 20, 1 << 20);
 /// What a tick gives the real world, sent ahead of a player.
 const WORLD_CHUNKS_PER_TICK: usize = 32;
 
@@ -352,6 +358,8 @@ struct Level {
     chunks: HashMap<((i32, i32), ChunkLook), (ChunkDataAndLight, usize)>,
     /// Worked out once for all players.
     repaints: HashMap<((i32, i32), ChunkLook, ChunkLook), Vec<SectionChange>>,
+    /// The chunks that are not empty.
+    filled: HashSet<(i32, i32)>,
 }
 
 impl Level {
@@ -396,12 +404,24 @@ impl Level {
                 Some((at, region.state))
             })
             .collect();
+        let filled = scene.filled_chunks();
         Self {
             scene,
             waypoints,
             signs,
             chunks: HashMap::new(),
             repaints: HashMap::new(),
+            filled,
+        }
+    }
+
+    /// What stands for a chunk in the caches: the empty ones are all the same, and a pan
+    /// asks for many past the rim, which would each be built on a tick.
+    fn cached_as(&self, at: (i32, i32)) -> (i32, i32) {
+        if self.filled.contains(&at) {
+            at
+        } else {
+            EMPTY_CHUNK
         }
     }
 
@@ -411,6 +431,7 @@ impl Level {
         look: ChunkLook,
         info: MapLevel,
     ) -> &(ChunkDataAndLight, usize) {
+        let at = self.cached_as(at);
         self.chunks.entry((at, look)).or_insert_with(|| {
             let packet = self
                 .scene
@@ -424,6 +445,7 @@ impl Level {
     }
 
     fn repaint(&mut self, at: (i32, i32), from: ChunkLook, to: ChunkLook) -> &[SectionChange] {
+        let at = self.cached_as(at);
         let scene = &self.scene;
         self.repaints
             .entry((at, from, to))
@@ -2070,7 +2092,14 @@ fn stream_chunks(
         let wanted = session.wanted();
         // `Players` reads this component, so it is replaced rather than changed here.
         let mut now_loaded = loaded.0.clone();
-        repaint(&mut atlas, &mut session, &loaded.0, player, &players);
+        let deadline = started + CHUNKS_TIME_PER_TICK;
+        repaint(
+            &mut atlas,
+            &mut session,
+            &loaded.0,
+            (player, &players),
+            deadline,
+        );
 
         let missing: Vec<_> = wanted
             .into_iter()
@@ -2090,6 +2119,9 @@ fn stream_chunks(
         };
         let (mut sent, mut weight_sent) = (0, 0);
         for (on, at) in missing.iter().take(budget) {
+            if sent > 0 && Instant::now() >= deadline {
+                break;
+            }
             let Some(level) = atlas.level_mut(*on) else {
                 continue;
             };
@@ -2107,7 +2139,7 @@ fn stream_chunks(
             session.streamed.1 += weight_sent;
             session.telemetry.sent(sent, weight_sent, started.elapsed());
         }
-        if missing.len() <= budget && session.streamed.0 > 0 {
+        if missing.len() <= sent && session.streamed.0 > 0 {
             let (chunks, bytes) = std::mem::take(&mut session.streamed);
             tracing::info!(
                 mode = ?session.mode,
@@ -2123,6 +2155,7 @@ fn stream_chunks(
             dimension.0,
             &mut world,
             (player, &players),
+            deadline,
             &mut commands,
         );
         if !missing.is_empty() || ahead {
@@ -2138,8 +2171,8 @@ fn repaint(
     atlas: &mut Atlas,
     session: &mut MapSession,
     loaded: &HashSet<ChunkPos>,
-    player: Entity,
-    players: &Players,
+    (player, players): (Entity, &Players),
+    deadline: Instant,
 ) {
     let look = session.looks.chunks();
     if session.painted != look {
@@ -2181,7 +2214,7 @@ fn repaint(
             );
         }
         session.behind.remove(&chunk);
-        if budget == 0 {
+        if budget == 0 || Instant::now() >= deadline {
             break;
         }
     }
@@ -2195,6 +2228,7 @@ fn send_world_ahead(
     dimension: DimensionId,
     world: &mut WorldChunks,
     (player, players): (Entity, &Players),
+    deadline: Instant,
     commands: &mut Commands,
 ) -> bool {
     let Some(heading) = session.heading else {
@@ -2203,7 +2237,7 @@ fn send_world_ahead(
     let (site, reach) = (session.site, world.config.view_distance);
     let (mut sent, mut generated) = (0, 0);
     for chunk in heading.chunks_in_radius(reach) {
-        if sent >= WORLD_CHUNKS_PER_TICK {
+        if sent >= WORLD_CHUNKS_PER_TICK || (sent > 0 && Instant::now() >= deadline) {
             break;
         }
         if loaded.contains(&chunk) || !site.holds(chunk) {
@@ -3733,6 +3767,23 @@ mod tests {
     }
 
     /// The whole point of a site: a client holds a player's models and the world together.
+    #[test]
+    fn the_chunks_past_the_rim_are_built_once() {
+        let generator = voidmc::DefaultWorldGenerator::default();
+        let mut level = Level::new(&generator, OVERVIEW, &Regions::demo());
+        let info = MapLevel {
+            biome: voidmc::BiomeId::plains(),
+            biome_count: 1,
+        };
+        let far = level.scene.chunk_radius() + 4;
+        for at in [(far, 0), (far + 1, 0), (0, -far)] {
+            level.chunk(at, ChunkLook::default(), info);
+        }
+        assert_eq!(level.chunks.len(), 1);
+        level.chunk((0, 0), ChunkLook::default(), info);
+        assert_eq!(level.chunks.len(), 2);
+    }
+
     #[test]
     fn every_site_holds_the_models_and_the_world() {
         for client in 0..(ANCHOR_COLUMNS * ANCHOR_ROWS) as u32 {

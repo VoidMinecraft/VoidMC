@@ -4,7 +4,7 @@
 //! enough, but its waves are bent and smoothed, because a regular world reads as a
 //! chequerboard at this size.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::{NonZeroU8, NonZeroU16};
 
 use voidmc::BiomeId;
@@ -269,6 +269,52 @@ impl Column {
 
     fn is_land(self) -> bool {
         self.ground >= SEA_Y
+    }
+}
+
+/// The blocks of one column, by height. Comparing two looks goes through tens of thousands
+/// of them, and a map of each column took longer than a tick.
+struct PaintedColumn {
+    blocks: [i32; PaintedColumn::HEIGHTS],
+    lowest: i32,
+    highest: i32,
+}
+
+impl PaintedColumn {
+    const HEIGHTS: usize = 384;
+    const BOTTOM: i32 = -64;
+
+    fn new() -> Self {
+        Self {
+            blocks: [b::AIR; Self::HEIGHTS],
+            lowest: i32::MAX,
+            highest: i32::MIN,
+        }
+    }
+
+    fn set(&mut self, y: i32, block: i32) {
+        if let Some(slot) = self.blocks.get_mut((y - Self::BOTTOM) as usize) {
+            *slot = block;
+            self.lowest = self.lowest.min(y);
+            self.highest = self.highest.max(y);
+        }
+    }
+
+    fn get(&self, y: i32) -> i32 {
+        self.blocks[(y - Self::BOTTOM) as usize]
+    }
+
+    /// The heights this column or another one have anything at.
+    fn span(&self, other: &Self) -> std::ops::RangeInclusive<i32> {
+        self.lowest.min(other.lowest)..=self.highest.max(other.highest)
+    }
+
+    fn clear(&mut self) {
+        if self.lowest <= self.highest {
+            let (from, to) = (self.lowest - Self::BOTTOM, self.highest - Self::BOTTOM);
+            self.blocks[from as usize..=to as usize].fill(b::AIR);
+        }
+        (self.lowest, self.highest) = (i32::MAX, i32::MIN);
     }
 }
 
@@ -708,6 +754,18 @@ impl Scene {
         cells.iter().min_by_key(from_middle).copied()
     }
 
+    /// The chunks with anything on them, on the land or in the air past it. All the others
+    /// are the same empty chunk.
+    pub fn filled_chunks(&self) -> HashSet<(i32, i32)> {
+        let radius = self.scale.radius;
+        let land = (-radius..=radius)
+            .flat_map(|x| (-radius..=radius).map(move |z| (x, z)))
+            .filter(|(x, z)| self.column(*x, *z).is_some());
+        land.chain(self.clouds.keys().copied())
+            .map(|(x, z)| (x.div_euclid(16), z.div_euclid(16)))
+            .collect()
+    }
+
     /// How far from the middle the model's chunks go.
     pub fn chunk_radius(&self) -> i32 {
         self.scale.radius / 16 + 1
@@ -863,6 +921,7 @@ impl Scene {
         to: ChunkLook,
     ) -> Vec<SectionChange> {
         let mut sections: BTreeMap<i32, Vec<VarI64>> = BTreeMap::new();
+        let (mut before, mut after) = (PaintedColumn::new(), PaintedColumn::new());
         for local_z in 0..16u8 {
             for local_x in 0..16u8 {
                 let (x, z) = (
@@ -875,18 +934,11 @@ impl Scene {
                 if from.blocks == to.blocks && !closed && !self.clouds.contains_key(&(x, z)) {
                     continue;
                 }
-                let column_in = |look| {
-                    let mut blocks = BTreeMap::new();
-                    self.paint(x, z, look, &mut |y, block| {
-                        blocks.insert(y, block);
-                    });
-                    blocks
-                };
-                let (before, after) = (column_in(from), column_in(to));
-                let heights = before.keys().chain(after.keys()).copied();
-                for y in heights.collect::<BTreeSet<_>>() {
-                    let block = after.get(&y).copied().unwrap_or(b::AIR);
-                    if before.get(&y).copied().unwrap_or(b::AIR) != block {
+                self.paint(x, z, from, &mut |y, block| before.set(y, block));
+                self.paint(x, z, to, &mut |y, block| after.set(y, block));
+                for y in before.span(&after) {
+                    let block = after.get(y);
+                    if before.get(y) != block {
                         let height = y.rem_euclid(16) as u8;
                         sections
                             .entry(y.div_euclid(16))
@@ -894,6 +946,8 @@ impl Scene {
                             .push(SectionBlocksUpdate::block(local_x, height, local_z, block));
                     }
                 }
+                before.clear();
+                after.clear();
             }
         }
         sections

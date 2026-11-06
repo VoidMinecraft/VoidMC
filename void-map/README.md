@@ -85,6 +85,11 @@ first use for the others. In the map a client is told to keep a far larger radiu
 moves, and the server's radius again on the way out. So a chunk it has seen does not go
 out twice.
 
+What a player's chunks do in a tick is held to `CHUNKS_TIME_PER_TICK`: a chunk built for
+the first time, a repaint or a chunk of the real world cost far more than a chunk that is
+ready, and past that time the rest waits for the next tick. All the empty chunks past the
+rim are one chunk in the caches, which a pan would otherwise build one by one on its ticks.
+
 ## Looks
 
 The engine's command arguments form one chain with no sub-literals, so one option
