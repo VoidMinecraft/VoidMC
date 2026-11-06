@@ -16,13 +16,14 @@ cargo run --profile fast -p voidmc-keeper -- --backend 127.0.0.1:25566 --listen 
 | `--listen ADDRESS` | `127.0.0.1:25565` | Where clients connect |
 | `--return-timeout SECONDS` | `120` | How long a client waits for a lost server |
 | `--settle SECONDS` | `3` | How long a new server has before old chunks and packs go |
+| `--backend-silence SECONDS` | `20` | How long a server may stay silent before it counts as lost |
 
 ## The two paths
 
 While the server is away the client stays in play, its world on screen, with
-`Server away for Ns, hold on` in the action bar. The proxy answers its keep-alives
-and tries to log in every 100 ms. The decision is taken as late as possible, while
-the new server configures:
+`Server away for Ns, hold on` in the action bar. The proxy sends it keep-alives and
+tries to log in every 100 ms. The decision is taken as late as possible, while the new
+server configures:
 
 - **Seamless.** The proxy logs in for the client and follows the frames of the last
   configuration, compared by fingerprint. If the new server does the same thing, the
@@ -30,7 +31,16 @@ the new server configures:
   client still shows, and the relay resumes. No screen appears.
 - **Reconfigured.** At the first difference, the client is told `start_configuration`
   and receives what the server has said so far. This is a real configuration, with a
-  short loading screen, and it is always possible, so every doubt falls back to it.
+  short loading screen, and every doubt about a client in play falls back to it.
+
+Either way the player starts over where the new server puts it: at spawn, with a fresh
+inventory. The client keeps its connection, not its game.
+
+A client lost in the middle of a configuration has neither path: it adds up the
+registries it receives and fails on a double when the configuration ends, and it cannot
+start over. The proxy keeps from it what the new server repeats, and goes on live from
+there. A server that says anything else ends the session with a message. `resumed` then
+comes with path `reconfigured` and reason `the server went away during a configuration`.
 
 The seamless path needs all of the following; `resumed.reason` names the one that failed:
 
@@ -38,7 +48,7 @@ The seamless path needs all of the following; `resumed.reason` names the one tha
 |---|---|
 | The configuration is frame for frame the same, registries and tags included | `the configuration changed at packet N (id 0x..)` |
 | The player entity id is the same | `player id changed from A to B; start the server with VOIDMC_STABLE_PLAYER_IDS=1 ...` |
-| The `login` describes the same level (dimension, seed, sea level, hardcore and the like) | The field that differs |
+| The `login` describes the same level (dimension, seed, sea level, hardcore and the like) | `the level changed: ... became ...`, with both descriptions |
 | The ledger knows everything the client holds | The packet that broke it |
 
 ## The ledger
@@ -51,9 +61,9 @@ go unclassified:
 
 | Case | Examples | At the return |
 |---|---|---|
-| Leaves no state | movement, sounds, particles, time | Nothing |
+| Leaves no state, or state every server sends again | movement, sounds, particles, time, chunk center | Nothing |
 | Leaves state, undone | entities, boss bars, objectives, teams, tab entries, titles, effects, attributes, cooldowns, inventory, cursor, open menu, dialog, camera, vehicle, passengers, game mode, abilities, border, rain, distances | Removed or reset to what a fresh `login` gives |
-| Leaves state it cannot undo | `block_destruction`, `waypoint` | Reconfigured path |
+| Leaves state it cannot undo | `block_destruction`, `waypoint`, `open_book`, `open_sign_editor`, `player_combat_kill`, the game events for the credits, the respawn screen and limited crafting | Reconfigured path |
 | Unknown or unreadable | | Reconfigured path |
 
 Order matters, and each of these comes from the client's own code:
@@ -95,20 +105,35 @@ Stdout carries one JSON object per line, for tools; logs go to stderr.
 | `backend_up`, `backend_down` | `backend` | Status probe, every 500 ms |
 | `client_joined` | `session`, `name` | |
 | `backend_lost` | `session`, tally | The server went away under a client |
-| `resumed` | `session`, `path`, `reason`, `outage_ms`, tally, `ledger_bytes` | The client is back |
+| `resumed` | `session`, `path`, `reason`, `outage_ms`, tally, `ledger_bytes` | The new server took the client over; tally and bytes are what the client held before |
 | `gave_up` | `session`, `reason` | `--return-timeout` ran out, the client was disconnected with this reason |
 | `client_left` | `session` | |
 
 `resumed` is the signal that a server is really back for a client. `backend_up` only
-says that the status answers, and comes before a login is possible.
+says that the status answers, and comes before a login is possible. `resumed` itself
+leaves as soon as the `login` is taken over or the client ends its configuration: the
+chunks of the new server are still on their way, so the world is not yet on screen.
+`outage_ms` and the times below measure up to that point.
+
+Events go through a bounded queue on a thread of their own: a reader that stalls or dies
+loses events and slows nothing.
 
 ## Refusals and failures
 
-- **Compression** is handled on the server side only: the client link stays plain.
+- **Compression** is handled on the server side only: the client link stays plain. A
+  client reads at most 2 097 151 bytes on a plain link, so a packet above that, once
+  inflated, ends the session with a message giving its size.
 - **Online mode** and a **different protocol version** are refused with a clear message.
 - A client that leaves while the server is away ends its session, and the others go on.
 - A frame cut by the crash never reaches the client. A packet that cannot be read is
   still relayed, and forces the reconfigured path at the next return.
+- A server silent for `--backend-silence` counts as lost, in play and during a return,
+  and is tried again. A write stuck for 15 seconds does the same. The default stays
+  below the 30 seconds after which a client hangs up, and above the 10 seconds between
+  two keep-alives of the engine, so a server paused in a debugger counts as lost too.
+- A difference only the `login` shows, such as another player id, costs one more login:
+  the new server sees the player join, leave, and join again, with the client
+  reconfigured the second time. Plugins that react to a join run twice.
 
 ## Measures
 
@@ -118,9 +143,9 @@ killed with `SIGKILL` and restarted at once. Time runs from the kill to `resumed
 | Case | Client | Time |
 |---|---|---|
 | Seamless | Vanilla 26.1.2 | 0.73 s, 1.19 s |
-| Seamless | `voidc` bot | 0.72 s to 1.44 s |
+| Seamless | `voidc` bot, measured before the last fixes | 0.72 s to 1.44 s |
 | Reconfigured, id changed | Vanilla 26.1.2 | 1.00 s |
-| Reconfigured, `voidmc-map` replaced by `voidmc-checkers` | `voidc` bot | 0.41 s |
+| Reconfigured, `voidmc-map` replaced by `voidmc-checkers` | `voidc` bot, measured before the last fixes | 0.41 s |
 
 Most of that time is the server starting. The proxy itself used about 4 MB of resident
 memory and 0.27 s of CPU for a whole run with a vanilla client, and the ledger held
@@ -135,8 +160,6 @@ memory and 0.27 s of CPU for a whole run with a vanilla client, and the ledger h
 
 ## Limits
 
-- A server that hangs without closing its socket is not detected; the client times out
-  by itself.
 - Sounds already playing and map item data stay.
 - Commands typed before the restart are not replayed.
 - `/kick` and other disconnects from a live server pass through to the client.
