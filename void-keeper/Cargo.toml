@@ -23,3 +23,7 @@ voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
 
 [dev-dependencies]
 criterion = "0.7"
+
+[[bench]]
+name = "ledger"
+harness = false
