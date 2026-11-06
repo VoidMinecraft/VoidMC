@@ -9,6 +9,7 @@ use voidmc_ui::{Image, ResourcePack};
 
 use crate::alphabet::LETTERS;
 use crate::cursor;
+use crate::life;
 use crate::markers::MarkerKind;
 use crate::noise::fractal;
 use crate::regions::RegionState;
@@ -1256,6 +1257,7 @@ pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
     install_closed_icons(pack);
     settings::install(pack);
+    life::models::install(pack);
     transition::install(pack, crate::plugin::FIRST_MODEL_BLOCK);
     pack.add(BOAT_ITEM_FILE, BOAT_ITEM.as_bytes().to_vec());
     pack.add(BOAT_MODEL_FILE, boat_model().into_bytes());

@@ -7,7 +7,8 @@
 //! of interest. [`pointer`] turns the mouse into a view and an aim, [`motion`] says how
 //! a pan catches up with it, [`goto`] takes the view from point to point, [`regions`] says what a player knows of each place, and
 //! [`art`] draws the info cards.
-//! [`players`] shows who walks the world, as small figures on the model, and
+//! [`players`] shows who walks the world, as small figures on the model, [`life`] plays
+//! the scenes that go on around them, and
 //! [`cursor`] draws the pointer.
 //! [`settings`] lists what a player can change, in a dialog over the map.
 //! [`plugin`] moves players in and out of the map.
@@ -19,6 +20,7 @@ pub mod buildings;
 pub mod cursor;
 pub mod fence;
 pub mod goto;
+pub mod life;
 pub mod markers;
 pub mod motion;
 pub mod noise;

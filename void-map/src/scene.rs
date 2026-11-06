@@ -14,6 +14,7 @@ use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData, SectionBlocks
 
 use crate::buildings::landmark;
 use crate::fence::{Border, Stretch};
+use crate::life::{Laid, LifeScene};
 use crate::markers::MarkerKind;
 use crate::noise::{fractal, scatter};
 use crate::regions::{Climate, Region, RegionState, Regions, ZoneLook, faded};
@@ -165,6 +166,8 @@ const SAND: i32 = b::SMOOTH_SANDSTONE;
 const SOIL: i32 = b::BROWN_TERRACOTTA;
 const PATH: i32 = b::BROWN_CONCRETE;
 const BRIDGE: i32 = b::SPRUCE_PLANKS;
+const BALLAST: i32 = b::GRAY_CONCRETE;
+const SLEEPER: i32 = b::BROWN_TERRACOTTA;
 const CLOUD_SEED: u32 = 90;
 /// What a cloud is made of, wherever it hangs. The faces of a block take care of its shade.
 const CLOUD: i32 = b::WHITE_CONCRETE;
@@ -993,6 +996,34 @@ impl Scene {
                 }
             }
         }
+    }
+
+    /// Draws what scenes leave on the model.
+    pub fn lay_all(&mut self, scenes: &[LifeScene]) {
+        let laid: Vec<_> = scenes.iter().flat_map(|scene| scene.laid(&*self)).collect();
+        for ((x, z), laid) in laid {
+            self.lay(x, z, laid);
+        }
+    }
+
+    /// Lays a cell of what a scene leaves on the map, as a path does: under the trees, and
+    /// on the level of the sea over the water.
+    fn lay(&mut self, x: i32, z: i32, laid: Laid) {
+        let build = self.scale.build;
+        let Some(column) = self.column_mut(x, z) else {
+            return;
+        };
+        if column.surface == CANOPY {
+            column.ground -= build;
+        }
+        if !column.is_land() {
+            column.ground = SEA_Y;
+        }
+        column.surface = match laid {
+            Laid::Ballast => BALLAST,
+            Laid::Sleeper => SLEEPER,
+            Laid::Planks => BRIDGE,
+        };
     }
 
     /// The blocks of a column in a look, from the bottom up. A later one takes over from

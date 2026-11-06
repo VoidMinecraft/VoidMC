@@ -2141,6 +2141,8 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "flume",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "ussr-nbt",

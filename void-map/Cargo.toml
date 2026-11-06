@@ -16,6 +16,8 @@ voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
 voidmc-ui = { version = "0.1.0", path = "../void-ui" }
 bevy_app = "0.18.0"
 bevy_ecs = "0.18.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 ussr-nbt = "0.2.1"
