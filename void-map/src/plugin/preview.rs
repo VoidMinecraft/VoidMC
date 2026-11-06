@@ -265,7 +265,8 @@ pub(super) fn tick(
                 let home = ChunkPos::from_block(session.position.x, session.position.z);
                 let near = home.chunks_in_radius(NEAR_WORLD_CHUNKS);
                 let whole = near.iter().all(|chunk| session.world.contains(chunk));
-                if (whole && ticks > VEIL_FADE) || ticks >= LANDING_PATIENCE_TICKS {
+                let held = ticks > VEIL_FADE + flight.veil_hold();
+                if (whole && held) || ticks >= LANDING_PATIENCE_TICKS {
                     veil_off(&session, &players, player);
                     if let Some(vehicle) = vehicle {
                         commands.entity(vehicle).try_insert(flight);

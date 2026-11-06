@@ -31,6 +31,7 @@ const CLOSE_SIDE: f64 = 3.0;
 /// The way out of an eye, and back into it: straight up through the top of the head and
 /// behind it from there. Coming along the look, the back of the head would fill the screen.
 const OVER_THE_HEAD: f64 = 0.85;
+const LEVEL_PITCH: f32 = 12.0;
 /// How far around the beam a body swings as it goes, and how fast. A client swings the
 /// legs from how far an entity goes in a tick, and is at full swing from a quarter block.
 const SWING_RADIUS: f64 = 0.75;
@@ -67,6 +68,7 @@ mod outro {
     pub const STANDS: u32 = 74;
     pub const CALM: u32 = 88;
     pub const BEAM_OFF: u32 = 72;
+    pub const SPARKS_END: u32 = 46;
     pub const DEPART: u32 = 74;
     pub const GONE: u32 = 94;
     pub const WATCHING: u32 = 36;
@@ -156,17 +158,55 @@ pub enum Cue {
     Landed,
 }
 
+/// Which way around the player the film is shot, for the land to leave room for the camera.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct View {
+    /// Degrees from the way the player looks.
+    pub turn: f32,
+    /// How far over its usual height the camera goes.
+    pub lift: f64,
+}
+
 /// One film, from where the player's eye is and how they look. All of it follows from that.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scene {
     part: Part,
     eye: [f64; 3],
     look: [f32; 2],
+    view: View,
 }
 
 impl Scene {
     pub fn new(part: Part, eye: [f64; 3], look: [f32; 2]) -> Self {
-        Self { part, eye, look }
+        Self {
+            part,
+            eye,
+            look,
+            view: View::default(),
+        }
+    }
+
+    /// The same film from another side. The camera only gets there after a few ticks.
+    pub fn seen_from(self, view: View) -> Self {
+        Self { view, ..self }
+    }
+
+    /// The sides to try, the one behind the player first.
+    pub fn turns() -> [f32; 4] {
+        [0.0, 90.0, -90.0, 180.0]
+    }
+
+    /// Where a camera shot from this side goes, for the land to be checked.
+    pub fn stops(&self, turn: f32) -> [[f64; 3]; 4] {
+        let around = self.seen_from(View { turn, lift: 0.0 });
+        let [x, y, z] = around.off_feet(WATCH_BACK, WATCH_SIDE, WATCH_HEIGHT);
+        let [feet_x, _, feet_z] = self.feet();
+        [
+            [x, y, z],
+            [(x + feet_x) / 2.0, y, (z + feet_z) / 2.0],
+            around.off_feet(CLOSE_BACK, CLOSE_SIDE, 0.9),
+            around.off_feet(CLOSE_BACK / 2.0, CLOSE_SIDE / 2.0, 0.9),
+        ]
     }
 
     pub fn part(&self) -> Part {
@@ -187,9 +227,9 @@ impl Scene {
     }
 
     /// `back` blocks behind the look, `side` to its right, `up` over the feet.
-    fn from_feet(&self, back: f64, side: f64, up: f64) -> [f64; 3] {
+    fn off_feet(&self, back: f64, side: f64, up: f64) -> [f64; 3] {
         let [x, y, z] = self.feet();
-        let way = look_direction(self.look[0], 0.0);
+        let way = look_direction(self.look[0] + self.view.turn, 0.0);
         [
             x - way[0] * back - way[2] * side,
             y + up,
@@ -212,18 +252,21 @@ impl Scene {
         let over_head = [eye[0], eye[1] + OVER_THE_HEAD, eye[2]];
         let feet = self.feet();
         let middle = |up| [feet[0], feet[1] + up, feet[2]];
-        let watch = self.from_feet(WATCH_BACK, WATCH_SIDE, WATCH_HEIGHT);
+        let lift = self.view.lift;
+        let watch = self.off_feet(WATCH_BACK, WATCH_SIDE, WATCH_HEIGHT + lift);
+        // Level, whatever the look: from over the head, a look down would have it in frame.
+        let level = [self.look[0], self.look[1].min(LEVEL_PITCH)];
         let sky = [feet[0], feet[1] + SKY_HEIGHT, feet[2]];
         let sky_look = [self.look[0], DOWN];
         match self.part {
             Part::Intro => {
                 use intro::{CLOSE, FOLLOWED, WATCHING};
-                let close = self.from_feet(CLOSE_BACK, CLOSE_SIDE, 0.9);
-                let followed = self.from_feet(CLOSE_BACK, CLOSE_SIDE, 2.6);
-                let chase = self.from_feet(-12.0, 4.0, 30.0);
+                let close = self.off_feet(CLOSE_BACK, CLOSE_SIDE, 0.9 + lift);
+                let followed = self.off_feet(CLOSE_BACK, CLOSE_SIDE, 2.6 + lift);
+                let chase = self.off_feet(-12.0, 4.0, 30.0);
                 let keys = [
                     Key::new(crate::transition::SWAP_TICKS, eye, self.look),
-                    Key::new(12, over_head, self.look),
+                    Key::new(12, over_head, level),
                     Key::new(WATCHING, watch, self.aim(watch, middle(4.4))),
                     Key::new(CLOSE, close, self.aim(close, middle(3.0))),
                     Key::new(FOLLOWED, followed, self.aim(followed, middle(HOVER))),
@@ -233,12 +276,12 @@ impl Scene {
             }
             Part::Outro => {
                 use outro::{CLOSER, OVER_THE_HEAD as ABOVE, WATCHING};
-                let closer = self.from_feet(CLOSE_BACK, CLOSE_SIDE, WATCH_HEIGHT);
+                let closer = self.off_feet(CLOSE_BACK, CLOSE_SIDE, WATCH_HEIGHT + lift);
                 let keys = [
                     Key::new(0, sky, sky_look),
                     Key::new(WATCHING, watch, self.aim(watch, middle(4.4))),
                     Key::new(CLOSER, closer, self.aim(closer, middle(1.0))),
-                    Key::new(ABOVE, over_head, self.look),
+                    Key::new(ABOVE, over_head, level),
                     Key::new(OUTRO_TICKS, eye, self.look),
                 ];
                 along(&keys, tick)
@@ -248,15 +291,15 @@ impl Scene {
 
     /// Where the saucer goes off to: ahead of the player, into the sky.
     fn saucer_exit(&self) -> [f64; 3] {
-        self.from_feet(-90.0, 24.0, 62.0)
+        self.off_feet(-90.0, 24.0, 62.0)
     }
 
     /// The place of the saucer, and how it leans, as yaw and pitch.
     pub fn saucer(&self, tick: u32) -> ([f64; 3], [f32; 2]) {
-        let over = self.from_feet(0.0, 0.0, HOVER);
-        let far = self.from_feet(-44.0, 10.0, 30.0);
+        let over = self.off_feet(0.0, 0.0, HOVER);
+        let far = self.off_feet(-44.0, 10.0, 30.0);
         let gone = self.saucer_exit();
-        let high = self.from_feet(-6.0, -20.0, 60.0);
+        let high = self.off_feet(-6.0, -20.0, 60.0);
         let flat = [0.0, 0.0];
         let keys: &[Key] = match self.part {
             Part::Intro => &[
@@ -300,6 +343,12 @@ impl Scene {
             Part::Intro => (intro::BEAM_ON..intro::BEAM_OFF).contains(&tick),
             Part::Outro => (outro::BEAM_ON..outro::BEAM_OFF).contains(&tick),
         }
+    }
+
+    /// Whether the beam gives off sparks. They hang for seconds, and on the way back the
+    /// camera goes through where they are.
+    pub fn sparks(&self, tick: u32) -> bool {
+        self.beam(tick) && (self.part == Part::Intro || tick < outro::SPARKS_END)
     }
 
     /// The body at some tick, if it is to be seen.
@@ -358,7 +407,7 @@ impl Scene {
         let radius = RUN_RADIUS + (SWING_RADIUS - RUN_RADIUS) * swell;
         let stance = match tick {
             _ if tick >= WHIRL => Stance::Whirl,
-            _ if (tick - LIFT) / 9 % 2 == 0 => Stance::Flail,
+            _ if ((tick - LIFT) / 9).is_multiple_of(2) => Stance::Flail,
             _ => Stance::Tumble,
         };
         Some(self.swinging(tick, height, radius, stance))
@@ -376,7 +425,7 @@ impl Scene {
             let share = (t - f64::from(OUT)) / f64::from(LANDED - OUT);
             let height = (1.0 - ease(share)) * (HOVER - HULL_BELOW + 0.4);
             let radius = SWING_RADIUS * (std::f64::consts::PI * share).sin().sqrt();
-            let stance = if (tick - OUT) / 9 % 2 == 0 {
+            let stance = if ((tick - OUT) / 9).is_multiple_of(2) {
                 Stance::Tumble
             } else {
                 Stance::Flail
@@ -648,6 +697,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_film_seen_from_elsewhere_starts_and_ends_the_same() {
+        for turn in Scene::turns() {
+            let view = View { turn, lift: 2.0 };
+            let outro = Scene::new(Part::Outro, EYE, LOOK).seen_from(view);
+            assert_eq!(Track(outro).at(f64::from(OUTRO_TICKS)), (EYE, LOOK));
+            let intro = Scene::new(Part::Intro, EYE, LOOK).seen_from(view);
+            assert_eq!(Track(intro).at(0.0), (EYE, LOOK));
+        }
+    }
+
+    /// A look down from over the head would see it go.
+    #[test]
+    fn the_head_is_out_of_the_frame_when_the_body_goes() {
+        let look = [170.0, 70.0];
+        let scene = Scene::new(Part::Outro, EYE, look);
+        let tick = outro::BODY_GONE;
+        assert!(Track(scene).at(f64::from(tick)).1[1] < 40.0);
     }
 
     #[test]

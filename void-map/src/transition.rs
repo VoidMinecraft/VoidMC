@@ -66,6 +66,9 @@ const LEAP_MODEL_SHARE: f64 = 0.25;
 /// Where a leap still looks on the model, low over the land, as it comes out of the sky.
 const LEAP_PITCH: f32 = 32.0;
 
+/// Most of `chunkSectionFadeInTime`, in ticks.
+const FILM_VEIL_HOLD: u32 = 14;
+
 /// The include of the terrain shaders that holds what the client says of each section.
 const SECTION_SHADER_FILE: &str = "assets/minecraft/shaders/include/chunksection.glsl";
 
@@ -346,6 +349,21 @@ impl Flight {
     /// The film this is the camera of.
     pub fn scene(&self) -> Option<Scene> {
         self.track.map(|track| track.0)
+    }
+
+    /// Shoots its film from elsewhere, before the camera has left where it starts.
+    pub fn refilm(&mut self, scene: Scene) {
+        self.track = Some(Track(scene));
+    }
+
+    /// How long the veil stays once the view is over the world. A client fades in what it
+    /// draws anew, and a film stays up there long enough for that to show.
+    pub fn veil_hold(&self) -> u32 {
+        if self.track.is_some() {
+            FILM_VEIL_HOLD
+        } else {
+            0
+        }
     }
 
     /// The ticks gone by, resting included.

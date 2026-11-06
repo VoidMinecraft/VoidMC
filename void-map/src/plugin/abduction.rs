@@ -4,22 +4,25 @@
 
 use bevy_app::App;
 use bevy_ecs::prelude::*;
+use bevy_ecs::system::SystemParam;
 use voidmc::{
     Billboard, Display, DisplayTransform, EntityBuilder, EntityKind, EntityMetadata, ItemDisplay,
     ItemDisplayContext, ItemStack, Mannequin, MetadataSource, MetadataSourceAppExt, NoGravity,
     Players, Sound, Sounds,
     components::{PlayerUuid, Position, Rotation},
-    world::DimensionId,
+    world::{
+        ChunkData, ChunkIndex, ChunkPosition, DimensionId, block_state_at_world,
+        is_solid_block_state,
+    },
 };
 use voidmc_codec::Encode;
 use voidmc_protocol::clientbound::{
-    EntityMetadataValue as Value, LevelParticles, Particle, ParticleColor, ResolvableProfile,
-    entity_metadata,
+    EntityMetadataValue as Value, LevelParticles, Particle, ResolvableProfile, entity_metadata,
 };
 use voidmc_protocol::slot::{DataComponent, component_ids};
 
 use super::{MapSession, PackLoaded, Passage};
-use crate::abduction::{BEAM_MODEL, Body, Cue, HOVER, SAUCER_MODEL, Scene, Stance};
+use crate::abduction::{BEAM_MODEL, Body, Cue, HOVER, SAUCER_MODEL, Scene, Stance, View};
 use crate::transition::{Flight, SEGMENT_TICKS};
 
 /// How much longer than a segment a display of the scene takes over it, so as never to stop.
@@ -30,10 +33,12 @@ const BEAM_WIDTH: f32 = 6.5;
 const BEAM_TICKS: u16 = 4;
 /// The view range of what is seen from high up, as a share of what a client calls far.
 const FAR: f32 = 3.0;
-/// Sparks are short lived, for none to hang in front of the camera on its way back.
-const SPARK_COLOUR: ParticleColor = ParticleColor(0xC8FFE0);
 /// What a client counts as frozen through, and shakes a body for.
 const FROZEN_TICKS: i32 = 140;
+/// How far up the land is searched over a spot of the camera.
+const SEARCHED_HEIGHT: i32 = 12;
+/// What a camera keeps clear of the ground.
+const CAMERA_MARGIN: f64 = 0.6;
 const POSE_STANDING: i32 = 0;
 const POSE_FALL_FLYING: i32 = 1;
 const POSE_SPIN_ATTACK: i32 = 4;
@@ -71,6 +76,50 @@ impl MetadataSource for Stance {
 
     fn clear(meta: &mut EntityMetadata) {
         Stance::Stand.write(meta);
+    }
+}
+
+/// What the world is made of, for the camera to keep out of it.
+#[derive(SystemParam)]
+pub(super) struct Land<'w, 's> {
+    index: Res<'w, ChunkIndex>,
+    chunks: Query<'w, 's, (&'static ChunkPosition, &'static ChunkData)>,
+}
+
+impl Land<'_, '_> {
+    fn solid(&self, x: f64, y: i32, z: f64) -> bool {
+        let (x, z) = (x.floor() as i32, z.floor() as i32);
+        let block =
+            block_state_at_world(&self.index, &self.chunks, DimensionId::Overworld, x, y, z);
+        block.is_some_and(is_solid_block_state)
+    }
+
+    /// How far a camera has to go up from here to be clear of the land.
+    fn clearance(&self, [x, y, z]: [f64; 3]) -> f64 {
+        let height = y.floor() as i32;
+        (0..=SEARCHED_HEIGHT)
+            .rev()
+            .find(|up| self.solid(x, height + up, z))
+            .map_or(0.0, |up| f64::from(up + 1) + CAMERA_MARGIN)
+    }
+
+    /// The first side with room for the whole way of the camera, or else the one that has
+    /// to go up the least.
+    fn view_for(&self, scene: &Scene) -> View {
+        let mut best = View::default();
+        let mut least = f64::INFINITY;
+        for turn in Scene::turns() {
+            let lift = scene
+                .stops(turn)
+                .into_iter()
+                .map(|stop| self.clearance(stop))
+                .fold(0.0, f64::max);
+            if lift < least {
+                least = lift;
+                best = View { turn, lift };
+            }
+        }
+        best
     }
 }
 
@@ -205,7 +254,7 @@ fn play_cue(cue: Cue, scene: &Scene, viewer: Entity, sounds: &Sounds, players: &
                     offset_x: 0.5,
                     offset_y: 0.1,
                     offset_z: 0.5,
-                    max_speed: 0.02,
+                    max_speed: 0.1,
                     count: 6,
                     particle: Particle::Cloud,
                 },
@@ -230,19 +279,16 @@ fn sparkle(scene: &Scene, viewer: Entity, tick: u32, players: &Players) {
             offset_y: 0.7,
             offset_z: 0.7,
             max_speed: 0.0,
-            count: 3,
-            particle: Particle::Dust {
-                color: SPARK_COLOUR,
-                scale: 1.2,
-            },
+            count: 1,
+            particle: Particle::EndRod,
         },
     );
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tick(
-    started: Query<(Entity, &Flight), Added<Flight>>,
-    flights: Query<&Flight>,
+    mut flights: Query<(Entity, &mut Flight)>,
+    land: Land,
     passages: Query<(Entity, &Passage, Option<&PlayerUuid>, Has<PackLoaded>)>,
     sessions: Query<(Entity, &MapSession, Option<&PlayerUuid>)>,
     mut casts: Query<(Entity, &mut Cast)>,
@@ -252,8 +298,8 @@ pub(super) fn tick(
     sounds: Sounds,
     mut commands: Commands,
 ) {
-    for (camera, flight) in &started {
-        let Some(scene) = flight.scene() else {
+    for (camera, mut flight) in &mut flights {
+        let (true, Some(scene)) = (flight.is_added(), flight.scene()) else {
             continue;
         };
         let by_passage = passages
@@ -275,7 +321,10 @@ pub(super) fn tick(
             tracing::warn!(?camera, "a scene with nobody to see it");
             continue;
         };
-        tracing::info!(part = ?scene.part(), "map scene");
+        let view = land.view_for(&scene);
+        let scene = scene.seen_from(view);
+        flight.refilm(scene);
+        tracing::info!(part = ?scene.part(), ?view, "map scene");
         commands.spawn(Cast {
             scene,
             camera,
@@ -290,7 +339,7 @@ pub(super) fn tick(
     }
 
     for (entity, mut cast) in &mut casts {
-        let Ok(flight) = flights.get(cast.camera) else {
+        let Ok((_, flight)) = flights.get(cast.camera) else {
             for part in [cast.body, cast.saucer, cast.beam].into_iter().flatten() {
                 commands.entity(part).try_despawn();
             }
@@ -332,7 +381,7 @@ pub(super) fn tick(
             }
             (None, None) => {}
         }
-        if scene.beam(tick) {
+        if scene.sparks(tick) {
             sparkle(&scene, viewer, tick, &players);
         }
     }

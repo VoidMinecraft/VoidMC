@@ -1984,7 +1984,7 @@ fn tick_passages(
                 {
                     players.send(player, SetCamera { camera_id: eye.0 });
                 }
-                let held = ticks > LANDING_HOLD_TICKS;
+                let held = ticks > LANDING_HOLD_TICKS + flight.veil_hold();
                 if (whole && held) || ticks >= LANDING_PATIENCE_TICKS {
                     tracing::info!(ticks, whole, "world back under the veil");
                     // Again, for a place that only just came and showed the camera.
