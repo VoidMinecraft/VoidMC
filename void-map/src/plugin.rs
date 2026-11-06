@@ -48,7 +48,8 @@ use crate::players::PlayersPlugin;
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
     DIVE_TICKS, FreeLook, MIDDLE_BELOW, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH,
-    REST_YAW, SPECTATOR_EYE_HEIGHT, Zoom, aimed, detail_back, look_direction, overview_y,
+    REST_YAW, SPECTATOR_EYE_HEIGHT, Zoom, aimed, detail_back, look_direction, near_marker,
+    overview_y,
 };
 use crate::regions::{RegionState, Regions, ZoneLook};
 use crate::scene::{self, Blocks, ChunkLook, DETAIL, MIDDLE, OVERVIEW, Scale, Scene};
@@ -406,6 +407,26 @@ impl Level {
             }
         }
     }
+}
+
+/// A model as it is shown, for the tests of what stands on it.
+#[cfg(test)]
+pub(crate) fn built_scene(
+    generator: &dyn WorldGenerator,
+    scale: Scale,
+    regions: &Regions,
+) -> Scene {
+    Level::new(generator, scale, regions).scene
+}
+
+/// The waypoints of the map, in blocks of the world, for the same tests.
+#[cfg(test)]
+pub(crate) fn marker_places(generator: &dyn WorldGenerator) -> Vec<[i32; 2]> {
+    Level::new(generator, DETAIL, &Regions::demo())
+        .waypoints
+        .iter()
+        .map(|w| [w.marker.x, w.marker.z])
+        .collect()
 }
 
 /// Links every cell to the others, with the shortest paths that do.
@@ -1033,12 +1054,20 @@ pub(crate) struct MapView<'a> {
 impl MapSession {
     pub(crate) fn view<'a>(&self, atlas: &'a Atlas) -> Option<MapView<'a>> {
         let Position { x, z, .. } = self.on_model(0.0, 0.0, 0.0);
-        let free = self.rig.is_some() && self.travel.is_none() && self.hovered.is_none();
+        let level = atlas.level(self.model())?;
+        let eye = self.eye();
+        let direction = look_direction(self.look.yaw, self.look.pitch);
+        let free = self.rig.is_some()
+            && self.travel.is_none()
+            && self.hovered.is_none()
+            && !marker_points(level, self)
+                .into_iter()
+                .any(|point| near_marker(eye, direction, point));
         Some(MapView {
-            scene: &atlas.level(self.model())?.scene,
+            scene: &level.scene,
             origin: [x, z],
-            eye: self.eye(),
-            aim: free.then(|| look_direction(self.look.yaw, self.look.pitch)),
+            eye,
+            aim: free.then_some(direction),
         })
     }
 }
@@ -1050,17 +1079,13 @@ impl Atlas {
         Some(waypoints.iter().map(|w| [w.marker.x, w.marker.z]).collect())
     }
 
-    /// Whether this block of the world is on both models, on land or on a bridge of the
-    /// detailed one, where the narrowest way across is.
-    pub(crate) fn on_land(&self, x: i32, z: i32) -> bool {
-        let on = |level: &Option<Level>, test: fn(&Scene, i32, i32) -> bool| {
-            level.as_ref().is_some_and(|level| {
-                let cell = level.scene.cell_of(x, z);
-                cell.is_some_and(|(x, z)| test(&level.scene, x, z))
-            })
-        };
-        on(&self.overview, |scene, x, z| scene.top(x, z).is_some())
-            && on(&self.detail, Scene::is_land)
+    /// Whether a walker can be on this block of the world. The detailed model says so:
+    /// the others, drawn coarser, only show where it stands.
+    pub(crate) fn walkable(&self, x: i32, z: i32) -> bool {
+        self.detail.as_ref().is_some_and(|level| {
+            let cell = level.scene.cell_of(x, z);
+            cell.is_some_and(|(x, z)| level.scene.walkable(x, z))
+        })
     }
 }
 
@@ -2240,7 +2265,8 @@ fn resize(session: &MapSession, marker: Hover, displays: &mut Query<&mut Display
     }
 }
 
-fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
+/// Where the look finds each marker, the player's own last.
+fn marker_points(level: &Level, session: &MapSession) -> Vec<[f64; 3]> {
     let build = f64::from(session.model().scale().build);
     let icons = level
         .waypoints
@@ -2251,7 +2277,11 @@ fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
         .you
         .iter()
         .map(|you| [you.at[0], you.at[1] + session.you_lift() * build, you.at[2]]);
-    let points: Vec<_> = icons.chain(you).collect();
+    icons.chain(you).collect()
+}
+
+fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
+    let points = marker_points(level, session);
     let count = level.waypoints.len();
     let current = session.hovered.map(|hover| match hover {
         Hover::Waypoint(index) => index,
