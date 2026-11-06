@@ -160,6 +160,8 @@ const CAMERA_LAG_TICKS: f64 = 2.7;
 /// Above the tallest landmark, in its blocks.
 const ICON_LIFT: f64 = 10.0;
 const ICON_SCALE: f32 = 5.0;
+/// A half turn about the up axis, as a quaternion.
+const HALF_TURN: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 /// The light of the item of a closed waypoint, out of 15, for a client without the pack.
 const CLOSED_ICON_LIGHT: u8 = 4;
 /// How far a view goes around what it looks at, as a share of its height.
@@ -1482,20 +1484,23 @@ fn display(scale: f32) -> Display {
         .glow_color(GLOW)
 }
 
-fn spawn_icon(commands: &mut Commands, at: Position, item: ItemStack, scale: f32) -> Entity {
-    spawn_item(commands, at, item, ItemDisplayContext::Gui, scale)
+/// A client turns an item display half around, so that one facing the camera shows the back
+/// of a flat item, which is its picture mirrored. This turns it back.
+fn icon_transform(scale: f32) -> DisplayTransform {
+    DisplayTransform::default()
+        .left_rotation(HALF_TURN)
+        .uniform_scale(scale)
 }
 
-fn spawn_item(
-    commands: &mut Commands,
-    at: Position,
-    item: ItemStack,
-    context: ItemDisplayContext,
-    scale: f32,
-) -> Entity {
+fn icon_display(scale: f32) -> Display {
+    display(scale).transform(icon_transform(scale))
+}
+
+fn spawn_icon(commands: &mut Commands, at: Position, item: ItemStack, scale: f32) -> Entity {
+    let item = ItemDisplay::new(item).context(ItemDisplayContext::Gui);
     EntityBuilder::new(EntityKind::ItemDisplay)
         .position(at)
-        .with_bundle((display(scale), ItemDisplay::new(item).context(context)))
+        .with_bundle((icon_display(scale), item))
         .spawn(commands)
         .id()
 }
@@ -1619,7 +1624,7 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
         if waypoint.state != RegionState::Discovered && !session.drawn {
             commands
                 .entity(entity)
-                .insert(display(scale).brightness(CLOSED_ICON_LIGHT, CLOSED_ICON_LIGHT));
+                .insert(icon_display(scale).brightness(CLOSED_ICON_LIGHT, CLOSED_ICON_LIGHT));
         }
         icons.push(entity);
     }
@@ -2657,11 +2662,9 @@ fn set_scale(displays: &mut Query<&mut Display>, entity: Entity, scale: f32) {
 fn resize(session: &MapSession, marker: Hover, displays: &mut Query<&mut Display>) {
     match marker {
         Hover::Waypoint(index) => {
-            set_scale(
-                displays,
-                session.pins.icons[index],
-                session.icon_scale(index),
-            );
+            if let Ok(mut display) = displays.get_mut(session.pins.icons[index]) {
+                display.transform = icon_transform(session.icon_scale(index));
+            }
         }
         Hover::You => {
             for (entity, part) in session.pins.you.iter().flat_map(|you| &you.parts) {

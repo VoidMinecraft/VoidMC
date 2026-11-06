@@ -325,7 +325,9 @@ example.
 
 A waypoint of a closed region is the item of its place, drained of colour, with a small
 gold lock or a question mark in its corner: the place a player will know once it opens,
-and closed at a glance. An item model can only tint, which only darkens, so the pack brings
+and closed at a glance. A client turns an item display half around, so one that faces the
+camera shows the back of a flat item, which is its picture mirrored: `icon_transform` turns
+it back, for every waypoint, at any size. An item model can only tint, which only darkens, so the pack brings
 the item shader of the game with one change: it turns grey what is drawn with the tint of
 `DRAINED_TINT`, the one of these models. A client without the pack gets the usual item,
 darker. The sign of a region stands clear of its waypoints.
