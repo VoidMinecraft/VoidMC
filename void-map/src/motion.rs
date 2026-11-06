@@ -1,6 +1,9 @@
 //! How a panning view catches up with where the mouse has put it.
 //!
-//! Four ways to compare, each from the cameras of games. None changes how far the mouse
+//! Players only get [`Motion::Slack`]. The other three were there to compare, and stay as
+//! code until that is settled, as the wheel and the overview do.
+//!
+//! Four ways, each from the cameras of games. None changes how far the mouse
 //! goes: twice the mouse is twice the distance, at any speed. They differ in what the
 //! view does between the mouse and the screen, where a client glides over three ticks.
 //!

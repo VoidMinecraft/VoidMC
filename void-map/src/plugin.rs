@@ -3897,7 +3897,6 @@ enum MapAction {
     Blocks,
     Border,
     Weather,
-    Move,
     Intro,
     Outro,
 }
@@ -3915,11 +3914,6 @@ enum Pick {
     Eight,
     Flat,
     Real,
-    A,
-    B,
-    C,
-    D,
-    Inertia,
 }
 
 impl Pick {
@@ -3982,16 +3976,6 @@ impl Pick {
         }
     }
 
-    fn motion(self) -> Option<Motion> {
-        match self {
-            Self::A => Some(Motion::Damped),
-            Self::B => Some(Motion::Slack),
-            Self::C => Some(Motion::Lead),
-            Self::D => Some(Motion::Predicted),
-            _ => None,
-        }
-    }
-
     fn blocks(self) -> Option<Blocks> {
         match self {
             Self::Flat => Some(Blocks::Flat),
@@ -4028,7 +4012,6 @@ fn map_command() -> Command {
                 ("blocks", MapAction::Blocks),
                 ("border", MapAction::Border),
                 ("weather", MapAction::Weather),
-                ("move", MapAction::Move),
                 ("intro", MapAction::Intro),
                 ("outro", MapAction::Outro),
             ]),
@@ -4046,11 +4029,6 @@ fn map_command() -> Command {
                 ("8", Pick::Eight),
                 ("flat", Pick::Flat),
                 ("real", Pick::Real),
-                ("a", Pick::A),
-                ("b", Pick::B),
-                ("c", Pick::C),
-                ("d", Pick::D),
-                ("inertie", Pick::Inertia),
             ]),
         )
         .handler(run_map)
@@ -4083,8 +4061,6 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
             MapAction::Border => Some(choice(pick, Pick::border, LookChoice::Border)),
             MapAction::Weather => Some(choice(pick, Pick::weather, LookChoice::Weather)),
-            MapAction::Move if pick == Some(Pick::Inertia) => Some(LookChoice::Inertia),
-            MapAction::Move => Some(choice(pick, Pick::motion, LookChoice::Motion)),
             MapAction::Intro => Some(choice(pick, Pick::flow, LookChoice::Intro)),
             MapAction::Outro => Some(choice(pick, Pick::flow, LookChoice::Outro)),
         };
@@ -4322,19 +4298,16 @@ mod tests {
             actions.matches,
             [
                 "look", "pan", "stop", "style", "me", "zone", "blocks", "border", "weather",
-                "move", "intro", "outro"
+                "intro", "outro"
             ]
         );
-        for action in ["style", "me", "zone", "blocks", "border", "weather", "move"] {
+        for action in ["style", "me", "zone", "blocks", "border", "weather"] {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");
             assert_eq!(
                 options.matches,
-                [
-                    "1", "2", "3", "4", "5", "6", "7", "8", "flat", "real", "a", "b", "c", "d",
-                    "inertie"
-                ]
+                ["1", "2", "3", "4", "5", "6", "7", "8", "flat", "real"]
             );
         }
     }

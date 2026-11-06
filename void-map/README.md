@@ -79,8 +79,9 @@ never flickers. A click acts on that marker and nothing else.
 - `/map pan`: exploration, on a model about three times larger than the overview, which
   streams around the camera. The player rides an invisible entity, and `SetCamera` shows
   the game from it, with a look that never changes. A rider reports its rotation every
-  tick whatever the camera is, and those differences slide the camera, in one of the
-  ways of `motion`. The rim is soft: past it a view slows down over `PAN_MARGIN` blocks
+  tick whatever the camera is, and those differences slide the camera, through the dead
+  zone of `motion`: `Motion::Slack`, the only way a player gets. The other three and
+  inertia keep their code and their tests, but nothing offers them any more. The rim is soft: past it a view slows down over `PAN_MARGIN` blocks
   and stops where it stops, with nothing stored up, so it never springs back and turning
   round answers at once. A view eases to a stop, which lets the camera glide over three
   ticks without overshooting. Past 45° of pitch the player is turned back with an absolute
@@ -207,10 +208,6 @@ alone. The chunks still to come go out in the new look.
   translucent, and the client draws it after a text seen through the land, which writes no
   depth: over water a card comes out tinted. Without see-through, the card's own letters
   fall behind its background, so that stays as it is.
-- `/map move a` to `d`: how a pan follows the mouse, to compare them. `a` is a critically
-  damped spring, `b` a dead zone, `c` looks ahead by the speed of the mouse, `d` predicts
-  between two reports. `/map move inertie` makes any of them go on for a moment once the
-  mouse stops. Twice the mouse is twice the distance in all of them.
 
 ## Travelling
 

@@ -10,7 +10,6 @@ use voidmc_ui::{Button, Dialog, Image, ResourcePack, Text};
 
 use crate::art::Style;
 use crate::fence::Border;
-use crate::motion::Motion;
 use crate::plugin::{MapLooks, Me};
 use crate::regions::ZoneLook;
 use crate::scene::Blocks;
@@ -99,10 +98,6 @@ impl Setting {
     }
 }
 
-fn yes_or_no(on: bool) -> &'static str {
-    if on { "Oui" } else { "Non" }
-}
-
 /// All that can be changed of the map, top to bottom. A new one goes here, as a line, and
 /// [`MapLooks`] holds its value: it reaches a player's map from there.
 pub fn settings() -> Vec<Setting> {
@@ -122,12 +117,6 @@ pub fn settings() -> Vec<Setting> {
         }),
         Setting::new("Météo", &Weather::ALL, Weather::label, |looks| {
             &mut looks.weather
-        }),
-        Setting::new("Déplacement", &Motion::ALL, Motion::label, |looks| {
-            &mut looks.motion
-        }),
-        Setting::new("Inertie", &[false, true], yes_or_no, |looks| {
-            &mut looks.inertia
         }),
         Setting::new("Intro", &Flow::ALL, Flow::label, |looks| &mut looks.intro),
         Setting::new("Outro", &Flow::ALL, Flow::label, |looks| &mut looks.outro),
