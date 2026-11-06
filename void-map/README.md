@@ -91,8 +91,11 @@ leaving midway. What it is made of goes out to all who see the chunk, like the c
 - The veil holds a little longer on the way out, or the sections a client fades in would
   show around the player for as long as the camera stays up there.
 
-The sky only goes nearly black: by day a dark brown stays, and at night the moon and the
-stars show under the model. The level's clock has the last word over the biome there.
+The sky only goes nearly black: by day a dark brown stays, and at night the stars show under
+the model. The level's clock has the last word over the biome there, sun and moon included,
+and they go round under the land too. So the pack brings the shader of those two with one
+change: it draws nothing under the horizon, which it works out from how the sky turns, or a
+moon would show in the void as a grey block.
 
 The model cannot sit over the real columns: each player would need chunks of their own,
 made of both, instead of packets encoded once.

@@ -2,6 +2,7 @@
 //! there needs no respawn and no loading screen: this biome alone turns the sky black.
 
 use voidmc::{Attribute, BiomeBuilder, BiomeId, RegistryDataStore};
+use voidmc_ui::ResourcePack;
 
 use crate::regions::Climate;
 
@@ -17,11 +18,72 @@ const FOLIAGE: u32 = 0x77ab2f;
 /// Far past the camera, so that the model never fades out.
 const FOG_START: f32 = 2_000.0;
 const FOG_END: f32 = 4_000.0;
-/// Out of the view, as far as the sun goes. At night the moon and the stars still show:
-/// a level with a clock has them from the clock, whatever the biome says.
+/// Out of the view, as far as a level with no clock goes. One with a clock has the sun and
+/// the moon from it, whatever the biome says: see [`SKY_BODY_VERTEX`].
 const OVERHEAD: f32 = 0.0;
 const BLACK: u32 = 0x000000;
 const WHITE: u32 = 0xffffff;
+
+const SKY_BODY_VERTEX_FILE: &str = "assets/minecraft/shaders/core/position_tex.vsh";
+const SKY_BODY_FRAGMENT_FILE: &str = "assets/minecraft/shaders/core/position_tex.fsh";
+/// The shader of the sun and the moon and of nothing else, as the game has it, but that it
+/// tells how high they stand. A body under the horizon is hidden by the land of a real
+/// world, and the map looks down past the rim of its island: a moon going round under it
+/// showed in the void as a grey block.
+///
+/// The shader is not told where the camera is, or the horizon, but it can work it out. The
+/// sky turns about the south-north axis, which is the local X of a body, and a camera never
+/// rolls, so that up is square to that axis and to the right of the screen.
+const SKY_BODY_VERTEX: &str = r#"#version 330
+
+#moj_import <minecraft:dynamictransforms.glsl>
+#moj_import <minecraft:projection.glsl>
+
+in vec3 Position;
+in vec2 UV0;
+
+out vec2 texCoord0;
+out float overHorizon;
+
+void main() {
+    vec4 seen = ModelViewMat * vec4(Position, 1.0);
+    gl_Position = ProjMat * seen;
+
+    vec3 axis = ModelViewMat[0].xyz;
+    vec3 up = vec3(0.0, axis.z, -axis.y);
+    overHorizon = dot(seen.xyz, up * sign(up.y));
+
+    texCoord0 = UV0;
+}
+"#;
+const SKY_BODY_FRAGMENT: &str = r#"#version 330
+
+#moj_import <minecraft:dynamictransforms.glsl>
+
+uniform sampler2D Sampler0;
+
+in vec2 texCoord0;
+in float overHorizon;
+
+out vec4 fragColor;
+
+void main() {
+    vec4 color = texture(Sampler0, texCoord0);
+    if (color.a == 0.0 || overHorizon < 0.0) {
+        discard;
+    }
+    fragColor = color * ColorModulator;
+}
+"#;
+
+/// Adds what the sky of the map needs of the pack.
+pub fn install(pack: &mut ResourcePack) {
+    pack.add(SKY_BODY_VERTEX_FILE, SKY_BODY_VERTEX.as_bytes().to_vec());
+    pack.add(
+        SKY_BODY_FRAGMENT_FILE,
+        SKY_BODY_FRAGMENT.as_bytes().to_vec(),
+    );
+}
 
 /// Where the map's biome sits in the registries that clients receive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

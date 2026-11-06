@@ -1402,6 +1402,7 @@ fn install_boat(pack: &mut ResourcePack, name: &str, boxes: &[([f32; 3], [f32; 3
 pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
     install_closed_icons(pack);
+    crate::biome::install(pack);
     settings::install(pack);
     life::models::install(pack);
     transition::install(pack, crate::plugin::FIRST_MODEL_BLOCK);
