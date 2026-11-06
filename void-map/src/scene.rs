@@ -152,6 +152,7 @@ fn real_block(block: i32) -> i32 {
         SAND => b::SAND,
         SOIL => b::DIRT,
         PATH => b::DIRT_PATH,
+        BALLAST => b::GRAVEL,
         SHALLOW_WATER | DEEP_WATER => b::WATER,
         other => other,
     }
@@ -167,7 +168,8 @@ const SOIL: i32 = b::BROWN_TERRACOTTA;
 const PATH: i32 = b::BROWN_CONCRETE;
 const BRIDGE: i32 = b::SPRUCE_PLANKS;
 const BALLAST: i32 = b::GRAY_CONCRETE;
-const SLEEPER: i32 = b::BROWN_TERRACOTTA;
+const SLEEPER: i32 = b::DARK_OAK_PLANKS;
+const RAIL: i32 = b::LIGHT_GRAY_CONCRETE;
 const CLOUD_SEED: u32 = 90;
 /// What a cloud is made of, wherever it hangs. The faces of a block take care of its shade.
 const CLOUD: i32 = b::WHITE_CONCRETE;
@@ -1022,6 +1024,7 @@ impl Scene {
         column.surface = match laid {
             Laid::Ballast => BALLAST,
             Laid::Sleeper => SLEEPER,
+            Laid::Rail => RAIL,
             Laid::Planks => BRIDGE,
         };
     }

@@ -11,6 +11,8 @@
 //! a scene nobody looks at costs nothing, and looking further ahead is as cheap as looking
 //! at now, which is what lets a client glide from one place to the next: see [`show`].
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::noise::scatter;
@@ -29,7 +31,11 @@ const LEAST_CLEARANCE: f64 = 2.0;
 /// How far apart marks are stamped along their line, in cells.
 const STAMP_STEP: f64 = 0.4;
 /// A sleeper every so far along the rails, in world blocks, and as long as the gap.
-const SLEEPER_SPACING: f64 = 6.0;
+const SLEEPER_SPACING: f64 = 3.0;
+/// Rails are drawn from this many cells of width: under that, they are a plain line.
+const RAILS_FROM_WIDTH: f64 = 2.5;
+/// How far from the middle of the band the rails are, in cells.
+const RAIL_ACROSS: f64 = 0.7;
 
 /// What a scene needs of a map, whichever way that map was made.
 pub trait Land {
@@ -133,7 +139,7 @@ pub struct Actor {
     /// How far it strays from there and back, while it moves, in world blocks.
     #[serde(default)]
     pub drift: f64,
-    /// How far it rises and falls, in world blocks.
+    /// How far it rises and falls, in world blocks, unless it has an `at_rest` and rests.
     #[serde(default)]
     pub bob: f64,
 }
@@ -192,60 +198,63 @@ pub enum Mark {
 pub enum Laid {
     Ballast,
     Sleeper,
+    Rail,
     Planks,
 }
 
 impl LifeScene {
-    /// What its marks turn into on a model: the cell and what lies on it. A later entry
-    /// takes over from an earlier one.
+    /// What its marks turn into on a model: each cell and what lies on it. A cell goes by
+    /// the stamp whose middle it is closest to, whichever came last.
     pub fn laid(&self, land: &impl Land) -> Vec<((i32, i32), Laid)> {
-        let mut cells = Vec::new();
+        let mut cells = Stamps::new();
         for mark in &self.marks {
             match mark {
                 Mark::Rails { width } => {
-                    let points = Playback::new(self).points;
-                    for pair in points.windows(2) {
-                        let stamp = |along: f64| {
-                            let sleeper = (along / SLEEPER_SPACING).rem_euclid(2.0) < 1.0;
-                            if sleeper {
-                                Laid::Sleeper
-                            } else {
-                                Laid::Ballast
-                            }
-                        };
-                        stamp_line(
-                            land,
-                            pair[0].at,
-                            pair[1].at,
-                            *width,
-                            pair[0].along,
-                            &stamp,
-                            &mut cells,
-                        );
+                    let wide = land.length(*width) >= RAILS_FROM_WIDTH;
+                    let laid = |along: f64, across: f64| {
+                        if !wide {
+                            Laid::Ballast
+                        } else if across >= RAIL_ACROSS {
+                            Laid::Rail
+                        } else if (along / SLEEPER_SPACING).rem_euclid(2.0) < 1.0 {
+                            Laid::Sleeper
+                        } else {
+                            Laid::Ballast
+                        }
+                    };
+                    for pair in Playback::new(self).points.windows(2) {
+                        let line = [pair[0].at, pair[1].at];
+                        stamp_line(land, line, *width, pair[0].along, &laid, &mut cells);
                     }
                 }
                 Mark::Pier { from, to, width } => {
-                    stamp_line(land, *from, *to, *width, 0.0, &|_| Laid::Planks, &mut cells);
+                    let planks = |_: f64, _: f64| Laid::Planks;
+                    stamp_line(land, [*from, *to], *width, 0.0, &planks, &mut cells);
                 }
             }
         }
         cells
+            .into_iter()
+            .map(|(cell, (_, laid))| (cell, laid))
+            .collect()
     }
 }
 
-/// Stamps a band along a line.
+/// The cells of a mark, with how far from its middle each one was stamped.
+type Stamps = BTreeMap<(i32, i32), (f64, Laid)>;
+
+/// Stamps a band along a line. `laid` is told how far along a cell is, from `start` in
+/// world blocks, and how far from the middle of the band, in cells.
 fn stamp_line(
     land: &impl Land,
-    from: [f64; 2],
-    to: [f64; 2],
+    [from, to]: [[f64; 2]; 2],
     width: f64,
     start: f64,
-    laid: &impl Fn(f64) -> Laid,
-    cells: &mut Vec<((i32, i32), Laid)>,
+    laid: &impl Fn(f64, f64) -> Laid,
+    cells: &mut Stamps,
 ) {
     let length = (to[0] - from[0]).hypot(to[1] - from[1]);
-    let on_model = land.length(length);
-    let steps = (on_model / STAMP_STEP).ceil().max(1.0) as u32;
+    let steps = (land.length(length) / STAMP_STEP).ceil().max(1.0) as u32;
     let half = (land.length(width) / 2.0).max(0.75);
     let reach = half.ceil() as i32;
     for step in 0..=steps {
@@ -255,8 +264,17 @@ fn stamp_line(
         for dz in -reach..=reach {
             for dx in -reach..=reach {
                 let (mid_x, mid_z) = (f64::from(cell_x + dx) + 0.5, f64::from(cell_z + dz) + 0.5);
-                if (mid_x - x).hypot(mid_z - z) <= half {
-                    cells.push(((cell_x + dx, cell_z + dz), laid(start + length * share)));
+                let across = (mid_x - x).hypot(mid_z - z);
+                if across <= half {
+                    let stamp = (across, laid(start + length * share, across));
+                    cells
+                        .entry((cell_x + dx, cell_z + dz))
+                        .and_modify(|best| {
+                            if across < best.0 {
+                                *best = stamp;
+                            }
+                        })
+                        .or_insert(stamp);
                 }
             }
         }
@@ -461,6 +479,8 @@ impl Playback {
         let time = tick as f64;
         // Each actor keeps time of its own, from its place in the cast.
         let phase = actor as f64 * 2.4;
+        // What takes another shape to rest does rest: a perched gull sends nothing.
+        let settled = resting && cast.at_rest.is_some();
         let drift = if resting { 0.0 } else { cast.drift };
         let spot = [
             way[0] + cast.offset[0] + drift * (time / 41.0 + phase).sin(),
@@ -485,7 +505,11 @@ impl Playback {
         } else {
             level
         };
-        let bob = cast.bob * (time / 19.0 + phase).sin();
+        let bob = if settled {
+            0.0
+        } else {
+            cast.bob * (time / 19.0 + phase).sin()
+        };
         let [x, z] = land.on_model(spot);
         Some(Placed {
             at: [x, y + land.length(cast.up + bob), z],
@@ -624,6 +648,20 @@ mod tests {
         assert_eq!(resting.at, [100.0, 65.0, 0.0]);
     }
 
+    /// A move is a packet: nothing sends any while it rests.
+    #[test]
+    fn a_perched_actor_stays_exactly_where_it_landed() {
+        let mut stop = turn(100.0, 0.0);
+        stop.rest = 30;
+        let mut actor = Actor::new(Model::Gull, 2.0);
+        actor.at_rest = Some(Model::GullPerched);
+        actor.bob = 1.5;
+        actor.drift = 3.0;
+        let play = walk(Ends::BackAndForth, vec![turn(0.0, 0.0), stop], vec![actor]);
+        let at = play.place(0, 101, &LAND);
+        assert!((102..128).all(|tick| play.place(0, tick, &LAND) == at));
+    }
+
     #[test]
     fn what_comes_behind_goes_over_the_same_ground_later() {
         let mut wagon = Actor::new(Model::Carriage, 10.0);
@@ -693,8 +731,8 @@ mod tests {
         assert_eq!(on_it.at, [20.0, 65.0, 10.0]);
     }
 
-    /// The word of the task: a file and code are the same road. What comes back from a
-    /// file plays exactly what went in, tick by tick.
+    /// A file and code are the same road: what comes back from a file plays exactly what
+    /// went in, tick by tick.
     #[test]
     fn a_scene_comes_back_from_a_file_and_plays_the_same() {
         let mut bird = Actor::new(Model::Gull, 9.0);
@@ -778,7 +816,7 @@ mod tests {
         };
         let cells = scene.laid(&LAND);
         let has = |laid| cells.iter().any(|(_, one)| *one == laid);
-        assert!(has(Laid::Ballast) && has(Laid::Sleeper) && has(Laid::Planks));
+        assert!(has(Laid::Ballast) && has(Laid::Sleeper) && has(Laid::Planks) && has(Laid::Rail));
         let plank = |cell: &(i32, i32)| cell.1 == 30;
         assert!(
             cells

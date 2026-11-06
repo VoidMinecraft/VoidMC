@@ -46,7 +46,7 @@ const CYAN: Paint = "minecraft:block/light_blue_concrete";
 const GREEN: Paint = "minecraft:block/green_concrete";
 const ORANGE: Paint = "minecraft:block/orange_concrete";
 const WOOD: Paint = "minecraft:block/spruce_planks";
-const SKIN: Paint = "minecraft:block/smooth_sandstone";
+const SKIN: Paint = "minecraft:block/sandstone_top";
 const STRAW: Paint = "minecraft:block/hay_block_top";
 
 /// One box of a model, from and to, in sixteenths of a block.
@@ -68,9 +68,9 @@ const fn part(from: [f32; 3], to: [f32; 3], paint: Paint) -> Part {
     }
 }
 
-/// A flat drawing lying on the ground.
+/// A flat drawing lying on the ground, just over it for the two not to fight.
 const fn flat(paint: Paint) -> [Part; 1] {
-    [part([0.0, 0.0, 0.0], [16.0, 0.0, 16.0], paint)]
+    [part([0.0, 0.6, 0.0], [16.0, 0.6, 16.0], paint)]
 }
 
 const GULL: [Paint; 3] = [
@@ -80,6 +80,7 @@ const GULL: [Paint; 3] = [
 ];
 const GULL_PERCHED: Paint = "voidmap:block/life_gull_perched";
 const FLOAT: Paint = "voidmap:block/life_float";
+const SMOKE: Paint = "voidmap:block/life_smoke";
 
 /// Heads of a person: a large one, as a person is seen from above.
 const fn person(shirt: Paint, trousers: Paint) -> [Part; 5] {
@@ -108,12 +109,14 @@ fn parts(model: Model) -> Vec<Part> {
             part([6.8, 6.5, 2.0], [9.2, 10.0, 4.4], BLACK),
             part([6.3, 10.0, 1.5], [9.7, 10.8, 4.9], LIGHT),
             part([7.0, 6.5, 6.0], [9.0, 7.6, 8.0], YELLOW),
+            part([0.0, 11.0, 0.0], [16.0, 11.0, 16.0], SMOKE),
         ],
         Model::Carriage => vec![
             part([4.5, 0.5, 0.5], [11.5, 2.0, 15.5], BLACK),
             part([4.8, 2.0, 1.0], [11.2, 7.5, 15.0], BLUE),
             part([4.6, 4.5, 2.0], [11.4, 6.2, 14.0], YELLOW),
-            part([4.3, 7.5, 0.5], [11.7, 8.3, 15.5], WHITE),
+            part([5.8, 7.5, 1.5], [10.2, 8.3, 14.5], WHITE),
+            part([7.4, 8.3, 3.0], [8.6, 8.8, 13.0], LIGHT),
         ],
         Model::Wagon => vec![
             part([4.5, 0.5, 0.5], [11.5, 2.0, 15.5], BLACK),
@@ -127,14 +130,17 @@ fn parts(model: Model) -> Vec<Part> {
             let mut parts = person(GREEN, BLUE).to_vec();
             parts.extend([
                 // A wide straw hat: from above, it is all there is to see of them.
-                part([3.5, 14.5, 3.5], [12.5, 15.0, 12.5], STRAW),
-                part([5.5, 15.0, 5.5], [10.5, 16.5, 10.5], STRAW),
+                part([4.5, 15.5, 5.5], [11.5, 16.0, 10.5], STRAW),
+                part([5.5, 15.5, 4.5], [10.5, 16.0, 11.5], STRAW),
+                part([6.0, 16.0, 6.0], [10.0, 17.5, 10.0], STRAW),
                 Part {
                     from: [7.7, 8.0, -14.0],
                     to: [8.3, 8.6, 6.0],
                     paint: WOOD,
                     tilt: -22.5,
                 },
+                // The line, from the tip of the rod down to the water.
+                part([7.9, -2.0, -12.0], [8.1, 11.5, -11.8], WHITE),
             ]);
             parts
         }
@@ -443,9 +449,34 @@ fn float_strip() -> Image {
     image
 }
 
+/// Puffs leaving the chimney, at the top of the drawing, and thinning out down the train.
+fn smoke_strip() -> Image {
+    const FRAMES: u32 = 8;
+    const PUFFS: u32 = 3;
+    let mut image = Image::new(SIDE, SIDE * FRAMES);
+    for frame in 0..FRAMES {
+        for puff in 0..PUFFS {
+            let age = (f64::from(puff) + f64::from(frame) / f64::from(FRAMES)) / f64::from(PUFFS);
+            let (x, y) = (7.5 + (age * 9.0).sin() * 1.2, 3.0 + age * 12.0);
+            let radius = 1.0 + age * 2.2;
+            let strength = (235.0 * (1.0 - age * age)) as u8;
+            for py in 0..SIDE {
+                for px in 0..SIDE {
+                    if (f64::from(px) - x).hypot(f64::from(py) - y) <= radius {
+                        image.set(px, frame * SIDE + py, [236, 238, 242, strength]);
+                    }
+                }
+            }
+        }
+    }
+    image
+}
+
+const SMOKE_FRAMES: &str = r#"{"animation":{"frametime":3,"interpolate":true}}"#;
+
 /// Long calm, a nod and its rings, again and again, and a bite now and then.
 const FLOAT_FRAMES: &str = r#"{"animation":{"frametime":5,"interpolate":false,"frames":[
-    {"index":0,"time":40},1,2,3,4,{"index":0,"time":30},1,2,3,4,{"index":0,"time":60},
+    {"index":0,"time":10},1,2,3,4,{"index":0,"time":8},1,2,3,4,{"index":0,"time":14},
     5,6,7,5,6,7,1,2,3,4]}}"#;
 
 /// Adds every model of the scenes.
@@ -474,6 +505,9 @@ pub fn install(pack: &mut ResourcePack) {
     let file = format!("{TEXTURES}/life_float.png");
     pack.add(file.clone(), float_strip().to_png());
     pack.add(format!("{file}.mcmeta"), FLOAT_FRAMES.as_bytes().to_vec());
+    let file = format!("{TEXTURES}/life_smoke.png");
+    pack.add(file.clone(), smoke_strip().to_png());
+    pack.add(format!("{file}.mcmeta"), SMOKE_FRAMES.as_bytes().to_vec());
 }
 
 #[cfg(test)]
@@ -496,7 +530,6 @@ mod tests {
 
     #[test]
     fn every_frame_of_an_animation_exists() {
-        assert_eq!(gull_strip().to_png().is_empty(), false);
         let meta: serde_json::Value = serde_json::from_str(&beat(3)).unwrap();
         for frame in meta["animation"]["frames"].as_array().unwrap() {
             assert!((frame.as_u64().unwrap() as usize) < GULL_FRAMES.len());

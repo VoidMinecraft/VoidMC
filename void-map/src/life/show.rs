@@ -139,10 +139,9 @@ fn drop_scene(shown: &Shown, commands: &mut Commands) {
     }
 }
 
-/// Where the land a view shows is, and how far around it. `leaving` is for what is
-/// already there.
-fn in_reach(view: &MapView, at: [f64; 3], leaving: bool) -> bool {
-    let [x, y, z] = view.eye;
+/// Whether a place of the model is in sight of an eye. `leaving` is for what is there
+/// already. The view looks north and down, so that it goes by the land north of the eye.
+fn in_reach([x, y, z]: [f64; 3], at: [f64; 3], leaving: bool) -> bool {
     let height = (y - f64::from(SEA_Y)).max(1.0);
     let margin = if leaving { REACH_MARGIN } else { 0.0 };
     let reach = (height * SEEN_PER_HEIGHT).clamp(REACH[0], REACH[1]) + margin;
@@ -196,6 +195,7 @@ fn spawn(
 #[derive(Resource, Debug, Default)]
 struct Cost {
     moves: u64,
+    turns: u64,
     spawns: u64,
     swaps: u64,
     spent: Duration,
@@ -255,7 +255,7 @@ fn play(
             let near = now
                 .iter()
                 .flatten()
-                .any(|placed| in_reach(&view, placed.at, shown));
+                .any(|placed| in_reach(view.eye, placed.at, shown));
             match stage.shown.get_mut(&index) {
                 Some(scene) if near => {
                     scene.next = tick + STEP_TICKS;
@@ -276,10 +276,13 @@ fn play(
                         if position.set_if_neq(world_spot(&view, placed.at)) {
                             cost.moves += 1;
                         }
-                        rotation.set_if_neq(Rotation {
+                        let turned = rotation.set_if_neq(Rotation {
                             yaw: placed.yaw,
                             pitch: 0.0,
                         });
+                        if turned {
+                            cost.turns += 1;
+                        }
                         if body.model != placed.model {
                             body.model = placed.model;
                             item.item = placed.model.item(session.has_pack());
@@ -322,7 +325,7 @@ fn play(
     let took = started.elapsed();
     cost.spent += took;
     cost.longest = cost.longest.max(took);
-    if tick % SUMMARY_PERIOD == 0 {
+    if tick.is_multiple_of(SUMMARY_PERIOD) {
         let cost = std::mem::take(&mut *cost);
         tracing::info!(
             scenes = life.plays.len(),
@@ -330,7 +333,8 @@ fn play(
             shown_actors,
             mean_us = cost.spent.as_micros() as u64 / SUMMARY_PERIOD,
             longest_us = cost.longest.as_micros() as u64,
-            moves_per_second = cost.moves * 20 / SUMMARY_PERIOD,
+            // A move is a packet, and a turn takes one more for the head.
+            packets_per_second = (cost.moves + cost.turns + cost.swaps) * 20 / SUMMARY_PERIOD,
             spawns = cost.spawns,
             swaps = cost.swaps,
             "map life"
@@ -364,5 +368,33 @@ impl Plugin for LifePlugin {
             .init_resource::<Cost>()
             .add_systems(Update, (give_stage, play).chain())
             .add_observer(take_stage);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EYE: [f64; 3] = [0.0, 164.0, 0.0];
+
+    #[test]
+    fn what_is_past_the_reach_of_the_eye_is_out_of_sight() {
+        assert!(in_reach(EYE, [0.0, 65.0, -100.0], false));
+        assert!(!in_reach(EYE, [300.0, 65.0, 0.0], false));
+    }
+
+    /// Or a scene on the edge would come and go, each time with all its entities.
+    #[test]
+    fn a_scene_stays_a_little_past_where_it_came_in() {
+        let reach = REACH[1].min(100.0 * SEEN_PER_HEIGHT);
+        let just_out = [reach + 10.0, 65.0, -100.0];
+        assert!(!in_reach(EYE, just_out, false));
+        assert!(in_reach(EYE, just_out, true));
+    }
+
+    #[test]
+    fn a_low_view_still_keeps_what_is_around_it() {
+        let low = [0.0, 70.0, 0.0];
+        assert!(in_reach(low, [REACH[0] - 10.0, 65.0, 0.0], false));
     }
 }

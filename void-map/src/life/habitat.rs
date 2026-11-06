@@ -22,9 +22,9 @@ const FLOCKS: usize = 4;
 const GULLS: usize = 5;
 const WINGSPAN: f64 = 11.0;
 /// So that a gull still shows on the far model, in its blocks.
-const LEAST_GULL: f64 = 2.2;
-const LOCOMOTIVE: f64 = 26.0;
-const CARRIAGE: f64 = 24.0;
+const LEAST_GULL: f64 = 1.7;
+const LOCOMOTIVE: f64 = 21.0;
+const CARRIAGE: f64 = 19.0;
 const BETWEEN_CARS: f64 = 1.0;
 const TRAIN_SPEED: f64 = 1.1;
 /// Ticks a train waits at a station.
@@ -381,7 +381,7 @@ fn anglers(
         .enumerate()
         .map(|(index, (shore, out))| {
             let reach = |length: f64| [shore[0] + out[0] * length, shore[1] + out[1] * length];
-            let float_ahead = PERSON * 1.05;
+            let float_ahead = PERSON * 1.2;
             let mut float = Actor::new(Model::Float, 13.0);
             float.offset = [out[0] * float_ahead, out[1] * float_ahead];
             float.least = 1.5;
@@ -461,11 +461,13 @@ fn strollers(land: &impl Land, places: &[[f64; 2]]) -> Vec<LifeScene> {
                 above: 0.0,
                 rest: if at == 0 || at == last { 60 } else { 0 },
             });
-            let mut balloons = Actor::new(Model::Balloons, 24.0);
+            let mut balloons = Actor::new(Model::Balloons, 15.0);
             balloons.up = PERSON * 0.55;
             balloons.behind = 2.0;
+            // Beside them, or from above they would hide who holds them.
+            balloons.offset = [5.0, 3.0];
             balloons.bob = 0.8;
-            balloons.least = 3.2;
+            balloons.least = 2.6;
             LifeScene {
                 name: format!("Ballons {}", index + 1),
                 way: Way::Route {
@@ -526,6 +528,22 @@ mod tests {
                         assert!(at.is_some(), "{} {actor} {tick}", scene.name);
                     }
                 }
+            }
+        }
+    }
+
+    /// Someone fishes from planks on every model, wherever each draws its shore.
+    #[test]
+    fn a_pier_reaches_the_water_on_every_model() {
+        let (found, mut models) = scenes();
+        for model in &mut models {
+            model.lay_all(&found);
+            for scene in &found {
+                let Way::Still { at, .. } = scene.way else {
+                    continue;
+                };
+                let (x, z) = model.cell_of(at[0] as i32, at[1] as i32).unwrap();
+                assert_eq!(model.stand_near(x, z), Some((x, z)), "{}", scene.name);
             }
         }
     }
