@@ -4,6 +4,10 @@ use voidmc_net::socket::FrameLimits;
 use crate::registry::RegistryDataStore;
 use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
 
+fn flag_is_on(value: Option<&str>) -> bool {
+    value.is_some_and(|value| !matches!(value, "" | "0" | "false"))
+}
+
 /// Spawn position in the world.
 pub struct SpawnPosition {
     pub x: f64,
@@ -69,7 +73,9 @@ impl Default for ServerConfig {
             packet_ingest_budget_ms: 4,
             max_chunk_generations_per_tick: 8,
             slow_tick_ms: 200,
-            stable_player_ids: std::env::var_os("VOIDMC_STABLE_PLAYER_IDS").is_some(),
+            stable_player_ids: flag_is_on(
+                std::env::var("VOIDMC_STABLE_PLAYER_IDS").ok().as_deref(),
+            ),
             frame_limits: FrameLimits::default(),
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
@@ -253,6 +259,21 @@ impl From<&ServerConfig> for ServerConfigResource {
             max_chunk_generations_per_tick: config.max_chunk_generations_per_tick,
             slow_tick_ms: config.slow_tick_ms,
             stable_player_ids: config.stable_player_ids,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flag_set_to_nothing_or_to_no_is_off() {
+        for value in [None, Some(""), Some("0"), Some("false")] {
+            assert!(!flag_is_on(value), "{value:?}");
+        }
+        for value in [Some("1"), Some("true")] {
+            assert!(flag_is_on(value), "{value:?}");
         }
     }
 }
