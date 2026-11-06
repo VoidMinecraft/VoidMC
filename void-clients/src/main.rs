@@ -138,7 +138,7 @@ fn cmd(args: &[String]) -> Result<(), String> {
     if client.level == Level::Play {
         return Err(format!("{name} is played by Léo and takes no command"));
     }
-    condition::check(&verb)?;
+    condition::check(&verb, client.level)?;
     let reply = control::ask(name, &verb, control::timeout_of(&verb))?;
     println!("{reply}");
     let parsed: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
