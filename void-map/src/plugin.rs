@@ -231,16 +231,11 @@ fn item(name: &str) -> ItemStack {
 }
 
 fn icon(kind: MarkerKind) -> ItemStack {
-    item(match kind {
-        MarkerKind::Village => "minecraft:emerald",
-        MarkerKind::Ruins => "minecraft:bone",
-        MarkerKind::Mine => "minecraft:iron_pickaxe",
-        MarkerKind::Lighthouse => "minecraft:lantern",
-    })
+    item(&format!("minecraft:{}", kind.item()))
 }
 
-/// What a waypoint shows, for a client with the pack or without. The pack draws one of a
-/// closed region in greys, with the mark of its state.
+/// What a waypoint shows, for a client with the pack or without. The pack drains one of a
+/// closed region of its colours, and adds the mark of its state.
 fn waypoint_icon(kind: MarkerKind, state: RegionState, drawn: bool) -> ItemStack {
     let stack = icon(kind);
     match closed_item_model(kind, state).filter(|_| drawn) {
