@@ -92,14 +92,50 @@ follows any action, and one that does not fit the action is refused. Each action
 moves on to the next choice. Choices last for the connection and apply at once. Their
 name shows for a moment over the hotbar, not in the chat.
 
-Holding sprint in the map opens the same choices on a wheel, drawn in the pack: the mouse
-across turns between Panneau, Marqueur, Déplacement, Zones and Blocs, up and down steps
-through the choices, which apply as they go. Its middle shows the choice between the ones
-above and under it, with arrows for the mouse, and letting go keeps it. The camera holds
-still, and a marker under the look stays hovered, for its panel to show the styles.
-A look turns on the client, so the wheel swaps its eye for the same mannequin as a flight,
-which keeps the height of an eye. The player rides under it, right where they stand: a
-client whose camera is another entity only reports its mouse while riding.
+Pressing sprint in the map opens the same choices in a dialog: every setting on one screen,
+the choice that is on in gold, and a click that applies it at once and keeps the dialog
+open, which the server sends again with the new choice. Escape or Fermer closes it. The
+game does not pause, so the map goes on behind it, streams, and changes as choices do. A
+client blurs what is behind a screen, by an option the server has no say in, so the pack
+replaces the blur effect with nothing, and draws the shade and the buttons so that the map
+shows through. All three go for every screen of the client while the pack is loaded, and
+a client that refused the pack keeps its own and a blurred map. The mouse has nothing to
+catch up with on closing: the client puts its pointer back in the middle and ignores the
+next move. The first row under the settings plays an animation, see below.
+
+The mouse never leaves the middle of the screen in the map, so a button of the view could
+not be pointed at. The way to the dialog is the key that the hint names.
+
+The wheel of `wheel.rs` is out of reach behind `WHEEL_OPEN`, until the dialog is settled.
+It opens while sprint is held, drawn in the pack: the mouse across turns between Panneau,
+Marqueur, Déplacement, Zones and Blocs, up and down steps through the choices, which apply
+as they go. A look turns on the client, so it swaps its eye for the same mannequin as a
+flight, which keeps the height of an eye. The player rides under it, right where they stand:
+a client whose camera is another entity only reports its mouse while riding.
+
+### Adding a setting
+
+`settings()` in `settings.rs` is the only list. One line adds a row to the dialog:
+
+```rust
+Setting::new("Météo", &Weather::ALL, Weather::label, |looks| &mut looks.weather),
+```
+
+`Weather` is any `Copy + PartialEq` type with its choices in a static slice and a name for
+each, and `MapLooks` holds its value. That is all it takes for the buttons, the click and
+what the choice is kept in. `session.looks` then reads it. What has to happen at the moment
+it changes, such as a respawn of entities, goes in `choose_look`, next to `before.me`.
+A setting of more than four choices takes several rows.
+
+### Previews
+
+The dialog also offers to watch what is otherwise only seen on leaving: `PREVIEWS` in
+`settings.rs` lists them, and `play_preview` in `plugin.rs` plays them through the same
+`Flight` and veil as the real thing, on the model. The dialog makes way and comes back when
+the view is back where it was. `Ending::Rehearsal` is a flight that ends under the veil, with
+the view back in place behind it, and `Cut` starts a flight elsewhere than the view by
+moving the camera under the veil first. A new one takes a line in `PREVIEWS` and an arm in
+`play_preview`.
 
 A choice only touches what it changes. A panel is one entity, a marker a few. A look of
 the chunks reaches what the client holds as block changes, around the view first, by
@@ -163,7 +199,7 @@ own crosshair.
 
 The veil is a title too, and new times or a new text would cut it short. So the pointer
 gives way to it, and only comes back once it has gone. During a dive and while the wheel
-is open, it is cleared.
+is open, it is cleared. Behind the settings it stays, with what it is over.
 
 Replacing the crosshair sprite is not an option: the pack applies everywhere. A core
 shader can tell the map apart, from `CameraBlockPos` in `Globals`, which every program
@@ -205,7 +241,7 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
+`buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel`, `settings` and `art`. `biome`
 declares the level, `plugin` runs the sessions, `players` shows the characters, `cursor`
 draws the pointer, and `telemetry` measures the characters.
 

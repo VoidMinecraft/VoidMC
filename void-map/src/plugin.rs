@@ -40,7 +40,7 @@ use voidmc_protocol::{
     serverbound::{Interact, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation, SpectateEntity},
     slot::{DataComponent, component_ids},
 };
-use voidmc_ui::{PackSettled, Text};
+use voidmc_ui::{Dialog, PackSettled, Text, UiClick};
 
 use crate::art::{Card, EYE_SKIN, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
 use crate::biome::{self, MapLevel};
@@ -58,6 +58,7 @@ use crate::regions::{RegionState, Regions, ZoneLook};
 use crate::scene::{
     self, Blocks, ChunkLook, DETAIL, MIDDLE, OVERVIEW, Scale, Scene, SectionChange,
 };
+use crate::settings::{self, Action, PREVIEWS, Preview};
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 use crate::transition::{
@@ -224,6 +225,8 @@ pub enum MapMode {
 
 /// The whole-map view is set aside for now: its code stays, players just can't reach it.
 const LOOK_OPEN: bool = false;
+/// The settings dialog took over from the wheel: its code stays until that is settled.
+const WHEEL_OPEN: bool = false;
 
 impl MapMode {
     /// What a player gets when asking for this.
@@ -672,6 +675,8 @@ enum Ending {
     View,
     /// The world: the player's own place, or this one.
     World(Option<Position>),
+    /// Under the veil, as the world would, and from there back to the view.
+    Rehearsal,
 }
 
 /// The view on its way across a model.
@@ -679,6 +684,15 @@ enum Ending {
 struct Travel {
     flight: Flight,
     ending: Ending,
+}
+
+/// A flight that does not start at the view: the veil comes first, and the camera goes
+/// to the start under it.
+#[derive(Debug, Clone, Copy)]
+struct Cut {
+    travel: Travel,
+    /// The ticks gone by.
+    ticks: u32,
 }
 
 /// The card on screen, and what it was drawn from, to tell when it has to change.
@@ -784,9 +798,16 @@ pub struct MapSession {
     ready: bool,
     /// Held open by the sprint key.
     wheel: Option<OpenWheel>,
+    /// The settings dialog is on screen.
+    settings: bool,
+    /// The settings make way for a preview, and come back after it.
+    reopen_settings: bool,
+    /// A preview on its way to the start of its flight.
+    cut: Option<Cut>,
     /// When a choice last went on screen, for the hint to leave it there.
     told: u32,
     sneaking: bool,
+    sprinting: bool,
     /// Jump, left and right as last reported, to act on a press and not on a repeat.
     keys: [bool; 3],
     /// Where the look is, in the middle of the screen.
@@ -876,7 +897,7 @@ impl MapSession {
     /// What a flight would end on if the map were left now.
     fn leaving(&self) -> bool {
         self.travel
-            .is_some_and(|travel| travel.ending != Ending::View)
+            .is_some_and(|travel| matches!(travel.ending, Ending::World(_)))
     }
 
     /// Riding the camera in a pan. In a look, it waits around the player during a dive.
@@ -928,9 +949,9 @@ impl MapSession {
         // A session has no rig while it rises, and the veil comes down at the end of that.
         let rising = self.rig.is_none();
         let landing = self.travel.is_some_and(|travel| {
-            matches!(travel.ending, Ending::World(_)) && travel.flight.flying_for() <= VEIL_FADE
+            travel.ending != Ending::View && travel.flight.flying_for() <= VEIL_FADE
         });
-        if self.veiled.is_some() || rising || landing {
+        if self.veiled.is_some() || self.cut.is_some() || rising || landing {
             cursor::Wanted::Veil
         } else if !self.drawn || self.travel.is_some() || self.is_frozen() {
             cursor::Wanted::Nothing
@@ -1190,6 +1211,8 @@ impl Plugin for MapPlugin {
         .add_observer(read_keys)
         .add_observer(note_pack)
         .add_observer(choose_look)
+        .add_observer(click_settings)
+        .add_observer(play_preview)
         .add_observer(player_left)
         .add_plugins((PlayersPlugin, CursorPlugin));
         app.world_mut()
@@ -1625,8 +1648,12 @@ fn rise(
         veiled: None,
         ready: false,
         wheel: None,
+        settings: false,
+        reopen_settings: false,
+        cut: None,
         told: 0,
         sneaking: false,
+        sprinting: false,
         keys: [false; 3],
         look: Rotation {
             yaw: REST_YAW,
@@ -2645,7 +2672,7 @@ fn left_click(
     let Ok(mut session) = sessions.get_mut(player) else {
         return;
     };
-    let busy = session.travel.is_some() || session.rig.is_none();
+    let busy = session.travel.is_some() || session.cut.is_some() || session.rig.is_none();
     if busy || !counts_as_click(&mut session, event.packet.entity_id, &ids) {
         return;
     }
@@ -2823,7 +2850,7 @@ fn hint() -> Text {
         .append(key("key.right"))
         .append(Text::new(" : zoom   |   "))
         .append(key("key.sprint"))
-        .append(Text::new(" : apparence   |   "))
+        .append(Text::new(" : réglages   |   "))
         .append(key("key.sneak"))
         .append(Text::new(" : fermer"))
 }
@@ -3036,6 +3063,20 @@ fn tick_sessions(
         if session.rig.is_none() {
             continue;
         }
+        if let Some(cut) = session.cut.as_mut() {
+            cut.ticks += 1;
+            let (ticks, travel) = (cut.ticks, cut.travel);
+            if ticks == VEIL_FADE {
+                set_off(&mut session, travel, &mut displays, &mut commands);
+            }
+            if ticks > VEIL_FADE + u32::from(FLIGHT_GLIDE_TICKS) && session.ready {
+                session.cut = None;
+                if session.drawn {
+                    players.send(player, veil_out());
+                }
+            }
+            continue;
+        }
         if let Some(held) = session.veiled.as_mut() {
             *held += 1;
         }
@@ -3075,6 +3116,24 @@ fn tick_sessions(
                     hand_view_back(&mut session, player, id, displays, &players, commands);
                 }
                 Ending::View => {}
+                Ending::Rehearsal => {
+                    if flight.flying_for() == VEIL_FADE && session.drawn {
+                        send_veil(&players, player);
+                    }
+                    if flight.flying_for() == 0 {
+                        // A flight that goes nowhere: a camera only gets its exact place
+                        // from one, and a glide this long stops short of it.
+                        session.travel = None;
+                        let eye = session.eye();
+                        session.cut = Some(Cut {
+                            travel: Travel {
+                                flight: Flight::new(eye, eye, flight.looking(), 1),
+                                ending: Ending::View,
+                            },
+                            ticks: VEIL_FADE - 1,
+                        });
+                    }
+                }
                 // Nothing takes over from this camera: no need for it to come to rest.
                 Ending::World(to) => {
                     if flight.flying_for() == VEIL_FADE {
@@ -3100,6 +3159,9 @@ fn tick_sessions(
                 }
             }
             continue;
+        }
+        if session.reopen_settings {
+            open_settings(&mut session, player, &players);
         }
         if session.is_frozen() {
             continue;
@@ -3141,11 +3203,18 @@ fn read_keys(
         return;
     };
     let sprint = event.sprint;
-    let usable = session.rig.is_some()
-        && session.drawn
+    let pressed = sprint && !session.sprinting;
+    session.sprinting = sprint;
+    let free = session.rig.is_some()
         && session.travel.is_none()
+        && session.cut.is_none()
         && session.veiled.is_none();
-    if sprint && session.wheel.is_none() && usable {
+    let usable = free && session.drawn;
+    if !WHEEL_OPEN {
+        if pressed && free && !session.settings {
+            open_settings(&mut session, event.entity, &players);
+        }
+    } else if sprint && session.wheel.is_none() && usable {
         open_wheel(&mut session, event.entity, &mut commands);
         players.send(
             event.entity,
@@ -3187,12 +3256,12 @@ fn read_keys(
 /// How a player's map looks, kept between sessions.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MapLooks {
-    style: Style,
-    me: Me,
-    zone: ZoneLook,
-    blocks: Blocks,
-    motion: Motion,
-    inertia: bool,
+    pub(crate) style: Style,
+    pub(crate) me: Me,
+    pub(crate) zone: ZoneLook,
+    pub(crate) blocks: Blocks,
+    pub(crate) motion: Motion,
+    pub(crate) inertia: bool,
 }
 
 impl MapLooks {
@@ -3222,7 +3291,7 @@ pub enum Me {
 }
 
 impl Me {
-    const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::Pin,
         Self::Arrow,
         Self::Ring,
@@ -3233,7 +3302,7 @@ impl Me {
         Self::HeadHeading,
     ];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Pin => "Épingle",
             Self::Arrow => "Flèche au sol",
@@ -3266,6 +3335,8 @@ pub enum LookChoice {
     Motion(Option<Motion>),
     /// Turns inertia on or off.
     Inertia,
+    /// A choice of `settings`, both by their place in their list.
+    Setting(usize, usize),
     /// An option that does not go with its action.
     Refused,
 }
@@ -3324,6 +3395,13 @@ fn choose_look(
             let state = if looks.inertia { "oui" } else { "non" };
             format!("Inertie : {state}")
         }
+        LookChoice::Setting(setting, choice) => {
+            let Some(setting) = settings::settings().into_iter().nth(setting) else {
+                return;
+            };
+            setting.choose(&mut looks, choice);
+            format!("{} : {}", setting.name(), setting.label(choice))
+        }
         LookChoice::Refused => {
             tell(
                 "Cette option ne va pas avec cette action.",
@@ -3334,10 +3412,11 @@ fn choose_look(
     };
     tracing::debug!(?player, ?looks, "map looks");
     commands.entity(player).insert(looks);
-    let on_wheel = session
+    // A wheel and the settings show the choice themselves.
+    let shown = session
         .as_ref()
-        .is_some_and(|session| session.wheel.is_some());
-    if !on_wheel {
+        .is_some_and(|session| session.wheel.is_some() || session.settings);
+    if !shown {
         tell(&said, session.as_mut());
     }
     if let Some(mut session) = session {
@@ -3349,7 +3428,119 @@ fn choose_look(
             respawn_signs(&atlas, &mut session, &mut commands);
         }
         session.pan.drive(looks.motion, looks.inertia);
+        if session.settings {
+            players.send(player, settings::dialog(looks).packet());
+        }
     }
+}
+
+/// Shows the settings as they are. The map goes on behind them: the game does not pause.
+fn open_settings(session: &mut MapSession, player: Entity, players: &Players) {
+    session.settings = true;
+    session.reopen_settings = false;
+    players.send(player, settings::dialog(session.looks).packet());
+}
+
+fn close_settings(session: &mut MapSession, player: Entity, players: &Players) {
+    if session.settings {
+        players.send(player, Dialog::close());
+    }
+    session.settings = false;
+}
+
+fn click_settings(
+    event: On<UiClick>,
+    mut sessions: Query<&mut MapSession>,
+    players: Players,
+    mut commands: Commands,
+) {
+    let Some(action) = Action::parse(&event.id) else {
+        return;
+    };
+    let player = event.player;
+    let Ok(mut session) = sessions.get_mut(player) else {
+        return;
+    };
+    match action {
+        Action::Set(setting, choice) => {
+            commands.trigger(ChooseLook(player, LookChoice::Setting(setting, choice)));
+        }
+        Action::Preview(preview) => {
+            if let Some((_, preview)) = PREVIEWS.get(preview) {
+                commands.trigger(PlayPreview(player, *preview));
+            }
+        }
+        Action::Close => close_settings(&mut session, player, &players),
+    }
+}
+
+/// Plays an animation for a look at it, without leaving the map. What it shows of the
+/// world stays on the model: it ends where it started.
+#[derive(Event, Debug, Clone, Copy)]
+pub struct PlayPreview(pub Entity, pub Preview);
+
+fn play_preview(
+    event: On<PlayPreview>,
+    mut sessions: Query<&mut MapSession>,
+    atlas: Res<Atlas>,
+    mut displays: Query<&mut Display>,
+    players: Players,
+    mut commands: Commands,
+) {
+    let player = event.0;
+    let Ok(mut session) = sessions.get_mut(player) else {
+        return;
+    };
+    let busy = session.travel.is_some() || session.cut.is_some() || session.veiled.is_some();
+    let Some(level) = atlas.level(session.model()).filter(|_| !busy) else {
+        return;
+    };
+    tracing::info!(?player, preview = ?event.1, "map preview");
+    session.reopen_settings = session.settings;
+    close_settings(&mut session, player, &players);
+    let (displays, commands) = (&mut displays, &mut commands);
+    let rehearsal = |flight| Travel {
+        flight,
+        ending: Ending::Rehearsal,
+    };
+    match event.1 {
+        Preview::Intro => {
+            let flight = session.way_to_marker(OPENING_TICKS).reversed();
+            let ending = Ending::View;
+            if session.drawn {
+                send_veil(&players, player);
+            }
+            session.cut = Some(Cut {
+                travel: Travel { flight, ending },
+                ticks: 0,
+            });
+        }
+        Preview::Outro => {
+            let flight = session.way_to_marker(CLOSING_TICKS);
+            set_off(&mut session, rehearsal(flight), displays, commands);
+        }
+        Preview::Teleport => {
+            let eye = session.eye();
+            let to = session
+                .selected
+                .and_then(|index| level.waypoints.get(index))
+                .or_else(|| nearest_waypoint(level, eye));
+            if let Some(waypoint) = to {
+                let build = f64::from(session.model().scale().build);
+                let look = [session.look.yaw, session.look.pitch];
+                let flight = Flight::dive(eye, look, waypoint.at, DIVE_STOP * build, DIVE_TICKS);
+                set_off(&mut session, rehearsal(flight), displays, commands);
+            }
+        }
+    }
+}
+
+fn nearest_waypoint(level: &Level, [x, _, z]: [f64; 3]) -> Option<&Waypoint> {
+    let away = |waypoint: &&Waypoint| (waypoint.at[0] - x).hypot(waypoint.at[2] - z);
+    level
+        .waypoints
+        .iter()
+        .min_by(|a, b| away(a).total_cmp(&away(b)))
 }
 
 /// The client has the pack, so it can draw cards.
@@ -3367,6 +3558,7 @@ fn close(
     event: On<CloseMap>,
     mut sessions: Query<&mut MapSession>,
     mut displays: Query<&mut Display>,
+    players: Players,
     mut commands: Commands,
 ) {
     let Ok(mut session) = sessions.get_mut(event.0) else {
@@ -3378,6 +3570,9 @@ fn close(
     if let Some(open) = session.wheel.take() {
         commands.entity(open.display).try_despawn();
     }
+    close_settings(&mut session, event.0, &players);
+    session.reopen_settings = false;
+    session.cut = None;
     let mut flight = session.way_to_marker(CLOSING_TICKS);
     if let Some(travel) = session.travel {
         // Called while on the way in: from where that flight got to, and how it looks.
@@ -3750,8 +3945,12 @@ mod tests {
             veiled: None,
             ready: false,
             wheel: None,
+            settings: false,
+            reopen_settings: false,
+            cut: None,
             told: 0,
             sneaking: false,
+            sprinting: false,
             keys: [false; 3],
             look: Rotation {
                 yaw: REST_YAW,
@@ -3933,6 +4132,31 @@ mod tests {
         session.travel = None;
         session.wheel = None;
         assert_eq!(session.wanted_cursor(), Wanted::Nothing);
+    }
+
+    #[test]
+    fn a_preview_leaves_the_title_to_the_veil() {
+        use cursor::{Look, Wanted};
+        let mut session = session(MapMode::Pan);
+        session.drawn = true;
+        session.rig = Some(Rig {
+            eye_box: Entity::PLACEHOLDER,
+            camera: None,
+            eye: None,
+        });
+        session.settings = true;
+        assert_eq!(session.wanted_cursor(), Wanted::Pointer(Look::Free));
+        let flight = Flight::new([0.0; 3], [0.0; 3], [0.0; 2], VEIL_FADE);
+        let travel = Travel {
+            flight,
+            ending: Ending::Rehearsal,
+        };
+        session.travel = Some(travel);
+        assert_eq!(session.wanted_cursor(), Wanted::Veil);
+        assert!(!session.leaving(), "a rehearsal stays on the map");
+        session.travel = None;
+        session.cut = Some(Cut { travel, ticks: 0 });
+        assert_eq!(session.wanted_cursor(), Wanted::Veil);
     }
 
     #[test]

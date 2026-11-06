@@ -9,6 +9,7 @@
 //! [`art`] draws the info cards.
 //! [`players`] shows who walks the world, as small figures on the model, and
 //! [`cursor`] draws the pointer.
+//! [`settings`] lists what a player can change, in a dialog over the map.
 //! [`plugin`] moves players in and out of the map.
 
 pub mod alphabet;
@@ -24,6 +25,7 @@ pub mod plugin;
 pub mod pointer;
 pub mod regions;
 pub mod scene;
+pub mod settings;
 pub mod telemetry;
 pub mod terrain;
 pub mod transition;

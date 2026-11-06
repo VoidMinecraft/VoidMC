@@ -11,6 +11,7 @@ use crate::alphabet::LETTERS;
 use crate::cursor;
 use crate::markers::MarkerKind;
 use crate::noise::fractal;
+use crate::settings;
 use crate::wheel::CATEGORIES;
 
 /// How wide the detail panel and the bubble's name are.
@@ -1127,6 +1128,7 @@ fn shifts() -> String {
 /// one around the eye: looking up at it would otherwise show its floor on the black sky.
 pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
+    settings::install(pack);
     let black = Image::filled(MINECART_SIZE.0, MINECART_SIZE.1, [0, 0, 0, 255]);
     pack.add(MINECART, black.to_png());
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());
