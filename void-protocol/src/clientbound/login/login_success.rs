@@ -1,7 +1,7 @@
 use uuid::Uuid;
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct Property {
     pub name: String,
     pub value: String,

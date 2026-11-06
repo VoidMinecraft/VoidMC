@@ -77,11 +77,34 @@ Regions are data in `regions`: each is discovered, undiscovered or locked, and t
 only takes the colours of a region down a little to show it. `Regions::demo` is a fixed
 example.
 
+## Characters
+
+`Characters` lists who the map shows: a name, a skin, a place in the real world and a
+yaw. It does not say who plays them. For now `Walk` fills it with `VOID_MAP_WALKERS`
+walkers, 20 by default, who go on foot between waypoints along ways searched on the land
+and bridges of the models. To show connected players, a system copies them into the same
+list, with their account's profile as the skin.
+
+Each one is a `minecraft:mannequin`, in each session, placed from its world position
+onto the current model. A move goes out every tick, the client glides over three, and it
+turns and swings the legs from how the entity moves. The legs hardly swing in a look:
+the client reads them from blocks per tick, and a walk is a share of a block on a model.
+
+Figures are not at the scale of the model. Vanilla draws an entity up to 64 blocks times
+the size of its box, so at a true scale they would vanish far closer than the camera
+stands. Each takes the size its distance calls for, in steps, which also keeps them the
+same size on screen. `DRAWN_MARGIN` sets how large that is.
+
+The look never reaches a figure, since it hits the box around the eye first, and clicks
+only go to markers. So the name is decided on the server like a hover of a marker, and
+only when no marker has the look: the figure glows, with a text display over it.
+`map characters` in the logs says what all this costs, every 200 ticks.
+
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
 `buildings`, `markers`, `pointer` and `art`. `dimension` declares the level, `plugin` runs
-the sessions, and `telemetry` measures them.
+the sessions, `players` shows the characters, and `telemetry` measures them.
 
 ## Logs
 

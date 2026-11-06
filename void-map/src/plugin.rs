@@ -39,6 +39,7 @@ use voidmc_ui::{PackSettled, Text};
 use crate::art::{Card, Mark, Style, Subject, sign};
 use crate::dimension::{self, DIMENSION, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
+use crate::players::PlayersPlugin;
 use crate::pointer::{
     COARSE_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP, Dive, FreeLook, Mouse, OVERVIEW_Z, Pan,
     RECENTRED_PITCH, REST_PITCH, REST_YAW, SPECTATOR_EYE_HEIGHT, Zoom, aimed, detail_back,
@@ -700,6 +701,51 @@ fn on_land(scene: &Scene, [x, z]: [f64; 2]) -> bool {
     scene.top(x.floor() as i32, z.floor() as i32).is_some()
 }
 
+/// What `players` needs of a session.
+pub(crate) struct MapView<'a> {
+    pub scene: &'a Scene,
+    /// The centre of the model, in the blocks of the level.
+    pub origin: [f64; 2],
+    /// On the model.
+    pub eye: [f64; 3],
+    /// Where the middle of the screen points, when no marker has the look.
+    pub aim: Option<[f64; 3]>,
+}
+
+impl MapSession {
+    pub(crate) fn view<'a>(&self, atlas: &'a Atlas) -> Option<MapView<'a>> {
+        let Position { x, z, .. } = self.on_model(0.0, 0.0, 0.0);
+        let free = self.rig.is_some() && self.travel.is_none() && self.hovered.is_none();
+        Some(MapView {
+            scene: &atlas.level(self.model())?.scene,
+            origin: [x, z],
+            eye: self.eye(),
+            aim: free.then(|| look_direction(self.look.yaw, self.look.pitch)),
+        })
+    }
+}
+
+impl Atlas {
+    /// The waypoints, in blocks of the world.
+    pub(crate) fn places(&self) -> Option<Vec<[i32; 2]>> {
+        let waypoints = &self.detail.as_ref()?.waypoints;
+        Some(waypoints.iter().map(|w| [w.marker.x, w.marker.z]).collect())
+    }
+
+    /// Whether this block of the world is on both models, on land or on a bridge of the
+    /// detailed one, where the narrowest way across is.
+    pub(crate) fn on_land(&self, x: i32, z: i32) -> bool {
+        let on = |level: &Option<Level>, test: fn(&Scene, i32, i32) -> bool| {
+            level.as_ref().is_some_and(|level| {
+                let cell = level.scene.cell_of(x, z);
+                cell.is_some_and(|(x, z)| test(&level.scene, x, z))
+            })
+        };
+        on(&self.overview, |scene, x, z| scene.top(x, z).is_some())
+            && on(&self.detail, Scene::is_land)
+    }
+}
+
 pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
@@ -725,7 +771,8 @@ impl Plugin for MapPlugin {
         .add_observer(read_keys)
         .add_observer(note_pack)
         .add_observer(choose_look)
-        .add_observer(player_left);
+        .add_observer(player_left)
+        .add_plugins(PlayersPlugin);
         app.world_mut()
             .resource_mut::<CommandRegistry>()
             .register(map_command());

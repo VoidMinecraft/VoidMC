@@ -54,7 +54,7 @@ pub use entity::{
     AttributeInstance, Attributes, Billboard, BlockDisplay, CustomName, Display, DisplayTransform,
     Effect, EffectCategory, EffectDuration, EffectInstance, EndCrystal, EntityAttribute,
     EntityBuilder, EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent,
-    Glowing, Hidden, Invisible, ItemDisplay, ItemDisplayContext, MetadataSource,
+    Glowing, Hidden, Invisible, ItemDisplay, ItemDisplayContext, Mannequin, MetadataSource,
     MetadataSourceAppExt, Modifier, ModifierOperation, Mount, NoGravity, Passengers, Silent,
     StatusEffects, TextAlignment, TextDisplay,
 };

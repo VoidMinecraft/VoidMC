@@ -1,7 +1,8 @@
 use ussr_nbt::owned::Nbt;
+use uuid::Uuid;
 use voidmc_codec::{Decode, DecodeError, Decoder, Encode, LimitKind, VarI32, VarI64};
 
-use crate::clientbound::Particle;
+use crate::clientbound::{Particle, Property};
 use crate::slot::Slot;
 use crate::types::BlockPosition;
 
@@ -23,6 +24,71 @@ pub mod serializer {
     pub const POSE: i32 = 20;
     pub const VECTOR3: i32 = 39;
     pub const QUATERNION: i32 = 40;
+    pub const RESOLVABLE_PROFILE: i32 = 41;
+}
+
+/// `ResolvableProfile`: who an avatar looks like, and what its skin overrides.
+///
+/// An empty profile with a `body` draws that texture and needs no account. The client
+/// resolves the rest itself: properties carry a real skin, and an id alone shows the
+/// default skin of that id.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ResolvableProfile {
+    pub name: Option<String>,
+    pub id: Option<Uuid>,
+    pub properties: Vec<Property>,
+    /// A texture of the client or of a pack, as `entity/player/wide/steve`.
+    pub body: Option<String>,
+    pub cape: Option<String>,
+    pub elytra: Option<String>,
+    /// Thin arms, or wide ones. Unset, it follows the profile.
+    pub slim: Option<bool>,
+}
+
+impl ResolvableProfile {
+    /// The texture of a body, with no account behind it.
+    pub fn textured(body: impl Into<String>, slim: bool) -> Self {
+        Self {
+            body: Some(body.into()),
+            slim: Some(slim),
+            ..Self::default()
+        }
+    }
+}
+
+impl Encode for ResolvableProfile {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        // The first half is `Either<GameProfile, Partial>`, and a partial says it all.
+        false.encode(buf);
+        self.name.encode(buf);
+        self.id.encode(buf);
+        self.properties.encode(buf);
+        self.body.encode(buf);
+        self.cape.encode(buf);
+        self.elytra.encode(buf);
+        self.slim.encode(buf);
+    }
+}
+
+impl Decode for ResolvableProfile {
+    fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+        let (id, name) = if decoder.decode::<bool>()? {
+            let id = decoder.decode::<Uuid>()?;
+            (Some(id), Some(decoder.decode::<String>()?))
+        } else {
+            let name = decoder.decode::<Option<String>>()?;
+            (decoder.decode::<Option<Uuid>>()?, name)
+        };
+        Ok(Self {
+            name,
+            id,
+            properties: decoder.decode()?,
+            body: decoder.decode()?,
+            cape: decoder.decode()?,
+            elytra: decoder.decode()?,
+            slim: decoder.decode()?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +111,7 @@ pub enum EntityMetadataValue {
     Vector3([f32; 3]),
     /// x, y, z, w.
     Quaternion([f32; 4]),
+    ResolvableProfile(Box<ResolvableProfile>),
 }
 
 impl EntityMetadataValue {
@@ -66,6 +133,7 @@ impl EntityMetadataValue {
             Self::Pose(_) => serializer::POSE,
             Self::Vector3(_) => serializer::VECTOR3,
             Self::Quaternion(_) => serializer::QUATERNION,
+            Self::ResolvableProfile(_) => serializer::RESOLVABLE_PROFILE,
         }
     }
 
@@ -97,6 +165,7 @@ impl EntityMetadataValue {
                     v.encode(buf);
                 }
             }
+            Self::ResolvableProfile(value) => value.encode(buf),
         }
     }
 
@@ -136,6 +205,9 @@ impl EntityMetadataValue {
                     *x = decoder.decode::<f32>()?;
                 }
                 Self::Quaternion(v)
+            }
+            serializer::RESOLVABLE_PROFILE => {
+                Self::ResolvableProfile(Box::new(decoder.decode::<ResolvableProfile>()?))
             }
             _ => return Err(DecodeError::InvalidLength),
         })
@@ -230,6 +302,46 @@ mod tests {
     use super::*;
     use crate::clientbound::ParticleColor;
     use crate::clientbound::entity_metadata::{end_crystal_index, living_entity_index};
+
+    /// The bytes `player_head` in `void-map` sends, which a client is known to accept.
+    #[test]
+    fn a_profile_with_only_an_id_is_a_partial_with_an_empty_patch() {
+        let id = Uuid::from_u128(7);
+        let profile = ResolvableProfile {
+            id: Some(id),
+            ..ResolvableProfile::default()
+        };
+        let mut bytes = Vec::new();
+        profile.encode(&mut bytes);
+        let mut expected = vec![0, 0, 1];
+        expected.extend_from_slice(id.as_bytes());
+        expected.extend_from_slice(&[0, 0, 0, 0, 0]);
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn a_textured_profile_survives_the_wire() {
+        let profile = ResolvableProfile::textured("entity/player/slim/alex", true);
+        let packet = SetEntityData::new(9).with(
+            17,
+            EntityMetadataValue::ResolvableProfile(Box::new(profile)),
+        );
+        let bytes = roundtrip(&packet);
+        assert_eq!(bytes[..3], [9, 17, 41]);
+    }
+
+    #[test]
+    fn a_complete_game_profile_decodes_too() {
+        let id = Uuid::from_u128(7);
+        let mut bytes = vec![1];
+        bytes.extend_from_slice(id.as_bytes());
+        "Léo".to_string().encode(&mut bytes);
+        bytes.extend_from_slice(&[0, 0, 0, 0, 1, 1]);
+        let profile = ResolvableProfile::decode(&mut bytes.as_slice()).unwrap();
+        assert_eq!(profile.id, Some(id));
+        assert_eq!(profile.name.as_deref(), Some("Léo"));
+        assert_eq!(profile.slim, Some(true));
+    }
 
     fn roundtrip(packet: &SetEntityData) -> Vec<u8> {
         let mut buf = Vec::new();

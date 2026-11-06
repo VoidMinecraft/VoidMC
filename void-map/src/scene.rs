@@ -409,6 +409,11 @@ impl Scene {
         self.column(x, z).map(Column::top)
     }
 
+    /// Whether a column stands out of the sea, which bridges do too.
+    pub fn is_land(&self, x: i32, z: i32) -> bool {
+        self.column(x, z).is_some_and(Column::is_land)
+    }
+
     /// The model cell a world block falls on.
     /// The land of a region cell closest to the middle of that land, if it has any.
     pub fn middle_of_land(&self, regions: &Regions, region: &Region) -> Option<(i32, i32)> {

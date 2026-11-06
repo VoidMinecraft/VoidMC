@@ -127,6 +127,7 @@ Each entity class defines its own additional indices on top of `Mob`. For exampl
 - `Cat` adds: variant holder, sound variant holder, lying-down boolean, relaxed-meow boolean, collar color.
 - `Painting` (extends Entity, not Mob): variant holder at the next free index after Entity.
 - `EndCrystal` (extends Entity, not Mob): beam target Optional BlockPos (index 8), show-bottom Boolean (index 9, default `true`).
+- `Mannequin` (extends `Avatar`, which extends LivingEntity): main hand HumanoidArm (index 15), model parts Byte (index 16), profile ResolvableProfile (index 17, serializer 41), immovable Boolean (index 18), description Optional Component (index 19).
 - `Display` family (`item_display`, `block_display`, `text_display`): a large block of transformation fields (interpolation start, duration, scale, translation, rotation, billboard mode, brightness, view range, shadow radius, shadow strength, width, height, glow color override, plus type-specific fields).
 
 The authoritative per-class index tables live in each subclass's static initializer in the vanilla source (see the `defineId(...)` calls in classes under `net.minecraft.world.entity.*`).

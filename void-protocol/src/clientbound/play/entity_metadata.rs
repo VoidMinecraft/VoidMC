@@ -34,6 +34,18 @@ pub mod living_entity_index {
     pub const SLEEPING_POS: u8 = 14;
 }
 
+/// `Avatar`, then `Mannequin`, on top of `LivingEntity`.
+pub mod mannequin_index {
+    pub const MAIN_HAND: u8 = 15;
+    pub const MODEL_PARTS: u8 = 16;
+    pub const PROFILE: u8 = 17;
+    pub const IMMOVABLE: u8 = 18;
+    pub const DESCRIPTION: u8 = 19;
+}
+
+/// `PlayerModelPart`: the cape, the jacket, the sleeves, the trousers and the hat.
+pub const ALL_MODEL_PARTS: i8 = 0x7f;
+
 pub mod item_entity_index {
     pub const ITEM: u8 = 8;
 }

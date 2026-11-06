@@ -10,11 +10,11 @@ use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
 use ussr_nbt::owned::Nbt;
 use voidmc_protocol::clientbound::entity_metadata::{
-    display_index, end_crystal_index, entity_flag, entity_index, item_entity_index,
-    text_display_flag,
+    ALL_MODEL_PARTS, display_index, end_crystal_index, entity_flag, entity_index,
+    item_entity_index, mannequin_index, text_display_flag,
 };
 use voidmc_protocol::clientbound::{
-    EntityMetadataEntry, EntityMetadataValue as Value, SetEntityData,
+    EntityMetadataEntry, EntityMetadataValue as Value, ResolvableProfile, SetEntityData,
 };
 
 pub use voidmc_protocol::clientbound::{
@@ -174,6 +174,42 @@ impl MetadataSource for ItemEntity {
             item_entity_index::ITEM,
             Value::ItemStack(ItemStack::EMPTY.to_slot()),
         );
+    }
+}
+
+/// Synched data of a `minecraft:mannequin`: a player's model with no player behind it,
+/// which the client animates from how it moves. `description` is the line under its
+/// name, and `None` drops the "NPC" label vanilla gives it.
+#[derive(Component, Debug, Clone, PartialEq, Default)]
+pub struct Mannequin {
+    pub profile: ResolvableProfile,
+    pub description: Option<String>,
+}
+
+impl Mannequin {
+    pub fn new(profile: ResolvableProfile) -> Self {
+        Self {
+            profile,
+            description: None,
+        }
+    }
+}
+
+impl MetadataSource for Mannequin {
+    fn write(&self, meta: &mut EntityMetadata) {
+        meta.set(mannequin_index::MODEL_PARTS, Value::Byte(ALL_MODEL_PARTS));
+        meta.set(
+            mannequin_index::PROFILE,
+            Value::ResolvableProfile(Box::new(self.profile.clone())),
+        );
+        meta.set(
+            mannequin_index::DESCRIPTION,
+            Value::OptionalComponent(self.description.as_deref().map(text_component)),
+        );
+    }
+
+    fn clear(meta: &mut EntityMetadata) {
+        Mannequin::default().write(meta);
     }
 }
 
@@ -625,6 +661,7 @@ pub(super) fn register(app: &mut App) {
         .add_metadata_source::<Silent>()
         .add_metadata_source::<ItemEntity>()
         .add_metadata_source::<EndCrystal>()
+        .add_metadata_source::<Mannequin>()
         .add_metadata_source::<Display>()
         .add_metadata_source::<BlockDisplay>()
         .add_metadata_source::<ItemDisplay>()
@@ -947,6 +984,26 @@ mod tests {
             .shadow()
             .alignment(TextAlignment::Right);
         assert_eq!(text.flags(), 0b0001_0101);
+    }
+
+    #[test]
+    fn a_mannequin_sends_its_skin_shows_all_its_layers_and_drops_its_label() {
+        let (mut app, rx) = test_app();
+        let _viewer = player(&mut app, 1);
+        let profile = ResolvableProfile::textured("entity/player/wide/kai", false);
+        let mannequin = EntityBuilder::new(EntityKind::Mannequin)
+            .spawn_in(app.world_mut())
+            .insert(Mannequin::new(profile.clone()))
+            .id();
+        app.update();
+        assert_eq!(metadata(&rx), vec![(1, vec![(16, 0), (17, 41), (19, 6)])]);
+        let meta = app.world().get::<EntityMetadata>(mannequin).unwrap();
+        assert_eq!(meta.get(16), Some(&Value::Byte(0x7f)));
+        assert_eq!(
+            meta.get(17),
+            Some(&Value::ResolvableProfile(Box::new(profile)))
+        );
+        assert_eq!(meta.get(19), Some(&Value::OptionalComponent(None)));
     }
 
     #[test]
