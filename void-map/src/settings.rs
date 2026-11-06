@@ -11,6 +11,7 @@ use voidmc_ui::{Button, Dialog, Image, ResourcePack, Text};
 use crate::art::Style;
 use crate::fence::Border;
 use crate::goto::Navigation;
+use crate::life::show::LifeLook;
 use crate::plugin::{MapLooks, Me};
 use crate::regions::ZoneLook;
 use crate::scene::Blocks;
@@ -118,6 +119,9 @@ pub fn settings() -> Vec<Setting> {
         }),
         Setting::new("Météo", &Weather::ALL, Weather::label, |looks| {
             &mut looks.weather
+        }),
+        Setting::new("Animations", &LifeLook::ALL, LifeLook::label, |looks| {
+            &mut looks.life
         }),
         Setting::new(
             "Déplacement",

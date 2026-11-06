@@ -414,14 +414,61 @@ about the figure's body, and never close to a marker, which always comes first: 
 figure glows, with a text display over it.
 `map characters` in the logs says what all this costs, every 200 ticks.
 
+## Scenes of life
+
+`life` plays what goes on around the characters: gulls in small flocks that fly about and
+land, a train going round its line with a stop at each station, someone fishing from a pier,
+someone out for a walk with balloons. Animations in the dialog turns them all off.
+
+A `LifeScene` is data, and it serialises: its `way`, a spot, a route of turns or a zone to
+roam over, its `cast`, the models and how each follows the way, and the `marks` it leaves on
+the map, rails or a pier. A hand-written one, which the tests read:
+
+```json
+{
+  "name": "Le ballon de Lou",
+  "way": {"Route": {
+    "turns": [{"at": [0, 0]}, {"at": [40, 0], "rest": 60}],
+    "ends": "BackAndForth",
+    "speed": 0.2
+  }},
+  "cast": [
+    {"model": "Stroller", "size": 14.4},
+    {"model": "Balloons", "size": 20, "up": 12, "behind": 1.5, "bob": 0.5}
+  ]
+}
+```
+
+All of it is in world blocks and ticks, whatever the model. `Playback` is the only way to
+play a scene, and `Land` all it asks of a map: the height of the ground, water, where a place
+of the world falls on the model. It reads no generator, which a test holds it to. A map made
+from the world gets its scenes from `life::habitat`, which reads them off a `Land`, and
+`build_atlas` hands them on. A map made by hand has a file instead, and from there it is the
+same road: `Scene::lay_all` draws the marks on each model, `Life::new` plays them.
+
+Where an actor is at a tick is a function of that tick, with no state, so nothing runs for a
+scene nobody looks at, and looking ahead is as cheap as looking at now. An actor is an item
+display of a model of the pack, told every `STEP_TICKS` where it will be `GLIDE_TICKS` ahead:
+the client glides there at a steady pace, and the next place comes before it arrives. That is
+two moves a second for what moves, and none for what stands still. A gull beating its wings,
+the smoke of the locomotive and the rings around a float are animated textures, which a client
+plays by itself: all the copies of a texture go together, so a flock takes three, out of step.
+
+A scene whose actors are out of sight of the eye has no entity. A model taking over gets new
+ones, as figures do. Sizes are in world blocks, so that an actor follows the zoom as a block
+does, with `least`, in blocks of the model, for what would be under a pixel on the far one.
+Rails are a ladder of sleepers on the close model and a plain line on the others.
+
+`map life` in the logs says what all this costs, every 200 ticks.
+
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
 `fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `goto`, `transition`,
-`abduction`, `wheel` and `art`. `biome` declares the level, `plugin` runs the sessions,
-`plugin::preview` plays a flow over, `plugin::abduction` plays the film of the saucer,
-`plugin::goto` moves a view by jumps, `settings` lists what can be changed, `players`
-shows the characters, `cursor`
+`abduction`, `wheel`, `art`, and `life`, apart from `life::show`. `biome` declares the
+level, `plugin` runs the sessions, `plugin::preview` plays a flow over,
+`plugin::abduction` plays the film of the saucer, `plugin::goto` moves a view by jumps,
+`settings` lists what can be changed, `players` shows the characters, `cursor`
 draws the pointer, and `telemetry` measures the characters.
 
 ## Logs

@@ -51,6 +51,8 @@ use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
 use crate::fence::Border;
 use crate::goto::{Goto, Navigation};
+use crate::life::show::{Life, LifeLook, LifePlugin};
+use crate::life::{LifeScene, habitat};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::motion::Motion;
 use crate::players::{Characters, PlayersPlugin, figure_height};
@@ -461,6 +463,16 @@ impl Level {
             repaints: HashMap::new(),
             filled,
         }
+    }
+
+    /// The scenes a map made from the world has, from what this model shows of it.
+    fn scenes(&self, regions: &Regions) -> Vec<LifeScene> {
+        let places = self.waypoints.iter();
+        let places: Vec<_> = places
+            .map(|w| [f64::from(w.marker.x), f64::from(w.marker.z)])
+            .collect();
+        let open = |at: [f64; 2]| regions.at(at[0], at[1]).state == RegionState::Discovered;
+        habitat::scenes_of(&self.scene, &places, &open)
     }
 
     /// What stands for a chunk in the caches: the empty ones are all the same, and a pan
@@ -1311,6 +1323,10 @@ impl MapSession {
         self.drawn
     }
 
+    pub(crate) fn looks(&self) -> MapLooks {
+        self.looks
+    }
+
     pub(crate) fn view<'a>(&self, atlas: &'a Atlas) -> Option<MapView<'a>> {
         let Position { x, z, .. } = self.on_model(0.0, 0.0, 0.0);
         let level = atlas.level(self.model())?;
@@ -1411,7 +1427,7 @@ impl Plugin for MapPlugin {
         .add_observer(goto::forget_tab_list)
         .add_observer(preview::start)
         .add_observer(player_left)
-        .add_plugins((PlayersPlugin, CursorPlugin));
+        .add_plugins((PlayersPlugin, LifePlugin, CursorPlugin));
         abduction::register(app);
         app.world_mut()
             .resource_mut::<CommandRegistry>()
@@ -1419,13 +1435,19 @@ impl Plugin for MapPlugin {
     }
 }
 
-fn build_atlas(mut atlas: ResMut<Atlas>, generator: Res<WorldGen>) {
+fn build_atlas(mut atlas: ResMut<Atlas>, generator: Res<WorldGen>, mut commands: Commands) {
     let generator = generator.0.as_ref();
     let overview = Level::new(generator, OVERVIEW, &atlas.regions);
     let middle = Level::new(generator, MIDDLE, &atlas.regions);
     let detail = Level::new(generator, DETAIL, &atlas.regions);
     tracing::info!(waypoints = overview.waypoints.len(), "map models built");
     let (mut overview, mut middle, mut detail) = (overview, middle, detail);
+    let scenes = detail.scenes(&atlas.regions);
+    tracing::info!(scenes = scenes.len(), "map scenes found");
+    for level in [&mut overview, &mut middle, &mut detail] {
+        level.scene.lay_all(&scenes);
+    }
+    commands.insert_resource(Life::new(&scenes));
     let started = Instant::now();
     overview.prepare(atlas.info);
     middle.prepare(atlas.info);
@@ -3517,6 +3539,7 @@ pub struct MapLooks {
     pub(crate) blocks: Blocks,
     pub(crate) border: Border,
     pub(crate) weather: Weather,
+    pub(crate) life: LifeLook,
     pub(crate) motion: Motion,
     pub(crate) inertia: bool,
     pub(crate) navigation: Navigation,
