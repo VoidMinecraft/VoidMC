@@ -541,6 +541,64 @@ mod tests {
         );
     }
 
+    fn connected_writer() -> (Writer, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        (Arc::new(Mutex::new(Some(client))), server)
+    }
+
+    #[test]
+    fn a_pack_push_is_answered_accepted_downloaded_loaded_with_its_id() {
+        let (writer, mut server) = connected_writer();
+        let id = Uuid::from_u128(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff);
+        let mut push = Vec::new();
+        id.encode(&mut push);
+        "http://127.0.0.1:25701/pack.zip"
+            .to_string()
+            .encode(&mut push);
+        "".to_string().encode(&mut push);
+        true.encode(&mut push);
+        false.encode(&mut push);
+
+        handle(
+            PLAY_PACK_PUSH,
+            &push,
+            &writer,
+            &Shared::default(),
+            Instant::now(),
+        )
+        .unwrap();
+
+        for action in [3u8, 4, 0] {
+            let mut expected = vec![SERVERBOUND_PACK_RESPONSE as u8];
+            expected.extend_from_slice(id.as_bytes());
+            expected.push(action);
+            assert_eq!(receive(&mut server).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn a_pack_push_too_short_for_an_id_is_refused_without_an_answer() {
+        let (writer, mut server) = connected_writer();
+        let result = handle(
+            PLAY_PACK_PUSH,
+            &[0; 15],
+            &writer,
+            &Shared::default(),
+            Instant::now(),
+        );
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        writer.lock().unwrap().take();
+        assert_eq!(
+            receive(&mut server).unwrap_err().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
     #[test]
     fn a_player_keeps_its_uuid_from_one_run_to_the_next() {
         assert_eq!(player_uuid("Bot"), player_uuid("Bot"));
