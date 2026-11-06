@@ -14,7 +14,7 @@ use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData, SectionBlocks
 
 use crate::buildings::landmark;
 use crate::fence::{Border, Stretch};
-use crate::life::{Laid, LifeScene};
+use crate::life::{Laid, Lay, LifeScene};
 use crate::markers::MarkerKind;
 use crate::noise::{fractal, scatter};
 use crate::regions::{Climate, Region, RegionState, Regions, ZoneLook, faded};
@@ -153,6 +153,8 @@ fn real_block(block: i32) -> i32 {
         SOIL => b::DIRT,
         PATH => b::DIRT_PATH,
         BALLAST => b::GRAVEL,
+        PALE_BALLAST => b::DIORITE,
+        DARK_RAIL => b::POLISHED_BLACKSTONE,
         SHALLOW_WATER | DEEP_WATER => b::WATER,
         other => other,
     }
@@ -170,6 +172,9 @@ const BRIDGE: i32 = b::SPRUCE_PLANKS;
 const BALLAST: i32 = b::GRAY_CONCRETE;
 const SLEEPER: i32 = b::DARK_OAK_PLANKS;
 const RAIL: i32 = b::LIGHT_GRAY_CONCRETE;
+const PALE_BALLAST: i32 = b::WHITE_TERRACOTTA;
+const DARK_RAIL: i32 = b::BLACK_TERRACOTTA;
+const PILLAR: i32 = b::STONE_BRICKS;
 const CLOUD_SEED: u32 = 90;
 /// What a cloud is made of, wherever it hangs. The faces of a block take care of its shade.
 const CLOUD: i32 = b::WHITE_CONCRETE;
@@ -276,6 +281,29 @@ struct Column {
     tower: bool,
     /// The level of the land along the band here, or 0 outside of it.
     crest: i32,
+    /// What is built over the water here, which stays water for all that sails on it.
+    deck: Option<Deck>,
+    /// A line runs on this land, which walkers do not take but at a crossing.
+    track: bool,
+}
+
+/// Something built over water.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Deck {
+    /// Its height, and what its top is made of.
+    y: i32,
+    block: i32,
+    kind: DeckKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeckKind {
+    /// Planks on the water, which a figure can stand on and a boat cannot pass.
+    Pier,
+    /// A viaduct, which a boat passes under.
+    Span,
+    /// A viaduct on a pier of masonry, which a boat goes round.
+    Pillar,
 }
 
 impl Column {
@@ -286,6 +314,18 @@ impl Column {
 
     fn is_land(self) -> bool {
         self.ground >= SEA_Y
+    }
+
+    /// Whether the water here is open to a boat.
+    fn open_water(self) -> bool {
+        !self.is_land()
+            && !matches!(
+                self.deck,
+                Some(Deck {
+                    kind: DeckKind::Pier | DeckKind::Pillar,
+                    ..
+                })
+            )
     }
 }
 
@@ -787,6 +827,8 @@ impl Scene {
             ring: 0,
             tower: false,
             crest: 0,
+            deck: None,
+            track: false,
         })
     }
 
@@ -839,14 +881,19 @@ impl Scene {
 
     /// Whether a figure may be shown here: dry and free, on land or a bridge.
     fn standable(&self, x: i32, z: i32) -> bool {
-        self.column(x, z)
-            .is_some_and(|column| column.is_land() && !self.in_the_way(x, z, column))
+        let on_planks =
+            |column: Column| column.deck.is_some_and(|deck| deck.kind == DeckKind::Pier);
+        self.column(x, z).is_some_and(|column| {
+            (column.is_land() || on_planks(column)) && !self.in_the_way(x, z, column)
+        })
     }
 
     /// Whether a figure can walk here: it is free, and so is what is around it, with no
-    /// rim or step too high for a stride next to it.
+    /// rim or step too high for a stride next to it. A line is crossed where a path does,
+    /// and what is built over water is no ground.
     pub fn walkable(&self, x: i32, z: i32) -> bool {
-        let Some(here) = self.column(x, z).filter(|column| column.is_land()) else {
+        let ground = |column: &Column| column.is_land() && !column.track;
+        let Some(here) = self.column(x, z).filter(ground) else {
             return false;
         };
         (-1..=1)
@@ -859,9 +906,9 @@ impl Scene {
             })
     }
 
-    /// Whether a boat may be shown here: on the water, and under no bridge.
+    /// Whether a boat may be shown here: on open water, under a viaduct or not.
     fn floatable(&self, x: i32, z: i32) -> bool {
-        self.column(x, z).is_some_and(|column| !column.is_land())
+        self.column(x, z).is_some_and(Column::open_water)
     }
 
     /// Whether a boat can sail here: there is water all around it.
@@ -1073,30 +1120,54 @@ impl Scene {
     /// Draws what scenes leave on the model.
     pub fn lay_all(&mut self, scenes: &[LifeScene]) {
         let laid: Vec<_> = scenes.iter().flat_map(|scene| scene.laid(&*self)).collect();
-        for ((x, z), laid) in laid {
-            self.lay(x, z, laid);
+        for lay in laid {
+            self.lay(lay);
         }
     }
 
-    /// Lays a cell of what a scene leaves on the map, as a path does: under the trees, and
-    /// on the level of the sea over the water.
-    fn lay(&mut self, x: i32, z: i32, laid: Laid) {
+    /// Lays a cell of what a scene leaves on the map, as a path does: under the trees. What
+    /// lies over water is built over it and takes nothing from it, and a line on the land
+    /// keeps to its own height.
+    fn lay(&mut self, lay: Lay) {
         let build = self.scale.build;
-        let Some(column) = self.column_mut(x, z) else {
+        let Some(column) = self.column_mut(lay.at.0, lay.at.1) else {
             return;
         };
         if column.surface == CANOPY {
             column.ground -= build;
         }
-        if !column.is_land() {
-            column.ground = SEA_Y;
-        }
-        column.surface = match laid {
+        let block = match lay.laid {
             Laid::Ballast => BALLAST,
+            Laid::PaleBallast => PALE_BALLAST,
             Laid::Sleeper => SLEEPER,
             Laid::Rail => RAIL,
+            Laid::DarkRail => DARK_RAIL,
             Laid::Planks => BRIDGE,
         };
+        let over_water = !column.is_land() || column.surface == BRIDGE;
+        match lay.level {
+            None if over_water => {
+                column.deck = Some(Deck {
+                    y: SEA_Y,
+                    block,
+                    kind: DeckKind::Pier,
+                });
+            }
+            None => column.surface = block,
+            Some(y) if over_water => {
+                let kind = if lay.pillar {
+                    DeckKind::Pillar
+                } else {
+                    DeckKind::Span
+                };
+                column.deck = Some(Deck { y, block, kind });
+            }
+            Some(y) => {
+                column.track = column.surface != PATH;
+                column.ground = y;
+                column.surface = block;
+            }
+        }
     }
 
     /// The blocks of a column in a look, from the bottom up. A later one takes over from
@@ -1139,6 +1210,14 @@ impl Scene {
         set(column.ground, tint(column.surface));
         for y in column.ground + 1..=SEA_Y {
             set(y, tint(column.water));
+        }
+        if let Some(deck) = column.deck {
+            if deck.kind == DeckKind::Pillar {
+                for y in column.ground + 1..deck.y {
+                    set(y, tint(PILLAR));
+                }
+            }
+            set(deck.y, tint(deck.block));
         }
         for (y, block) in self.buildings.get(&(x, z)).into_iter().flatten() {
             set(*y, tint(*block));

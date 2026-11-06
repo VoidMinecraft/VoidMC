@@ -6,6 +6,8 @@
 //! next place. What stands still sends nothing, and a scene out of the view has no entity
 //! at all. As for figures, another model takes new entities: a client's glide outlives a
 //! jump of more than 64 blocks, and pulls whatever jumped back towards where it was.
+//! Leaning is no rotation of an entity, which has a yaw and a pitch and nothing else: it
+//! goes in the transform of the display, which a client interpolates the same way.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -17,15 +19,17 @@ use voidmc::{
     components::{Position, Rotation},
 };
 
-use super::{Land, LifeScene, Model, Placed, Playback};
+use super::{Course, Land, LifeScene, Placed, Playback};
 use crate::plugin::{Atlas, MapSession, MapView};
 use crate::scene::{SEA_Y, Scale, Scene};
 
 /// How often a scene in the view is told where to go.
 const STEP_TICKS: u64 = 10;
 /// How far ahead it is told, and how long the client takes to get there. Longer than a
-/// step, so that the next place comes before the last one is reached.
-const GLIDE_TICKS: u8 = 12;
+/// step, so that the next place comes before the last one is reached. Twice as long,
+/// because a client and a server do not keep quite the same time: the odd tick a step
+/// comes early is made up over the whole glide, and that is what shows as a jolt.
+const GLIDE_TICKS: u8 = 20;
 /// In the range of a client's display entities, past any height of the view.
 const VIEW_RANGE: f32 = 8.0;
 /// A view sees about this far around the land under the middle of the screen, in heights
@@ -45,15 +49,29 @@ const SUMMARY_PERIOD: u64 = 200;
 #[derive(Resource, Debug, Default)]
 pub struct Life {
     plays: Vec<Playback>,
+    /// The course of each scene, on each model.
+    courses: Vec<(Scale, Vec<Course>)>,
     tick: u64,
 }
 
 impl Life {
-    pub fn new(scenes: &[LifeScene]) -> Self {
+    /// From the bare models: this comes before their marks are laid.
+    pub fn new(scenes: &[LifeScene], models: &[&Scene]) -> Self {
+        let plays: Vec<Playback> = scenes.iter().map(Playback::new).collect();
+        let on = |model: &&Scene| {
+            let courses = plays.iter().map(|play| play.course(*model)).collect();
+            (model.scale(), courses)
+        };
         Self {
-            plays: scenes.iter().map(Playback::new).collect(),
+            courses: models.iter().map(on).collect(),
+            plays,
             tick: 0,
         }
+    }
+
+    fn courses_on(&self, model: Scale) -> &[Course] {
+        let found = self.courses.iter().find(|(scale, _)| *scale == model);
+        found.map_or(&[], |(_, courses)| courses)
     }
 }
 
@@ -109,13 +127,13 @@ fn cell(scene: &Scene, at: [f64; 2]) -> Option<(i32, i32)> {
 #[derive(Debug, Clone, Copy)]
 struct Body {
     entity: Entity,
-    model: Model,
+    size: f64,
 }
 
 /// A scene on a session's model.
 #[derive(Debug, Clone)]
 struct Shown {
-    bodies: Vec<Option<Body>>,
+    bodies: Vec<Body>,
     /// When it is next told where to go.
     next: u64,
 }
@@ -136,7 +154,7 @@ impl Stage {
 }
 
 fn drop_scene(shown: &Shown, commands: &mut Commands) {
-    for body in shown.bodies.iter().flatten() {
+    for body in &shown.bodies {
         commands.entity(body.entity).try_despawn();
     }
 }
@@ -164,6 +182,16 @@ fn size_on(play: &Playback, actor: usize, land: &Scene) -> f64 {
     land.length(cast.size).max(cast.least)
 }
 
+/// How a display stands on its entity: on its lowest face, leaning to its right. It leans
+/// about the line from its tail to its nose, which an entity faces along.
+fn transform_of(size: f64, roll: f32) -> DisplayTransform {
+    let (sin, cos) = (roll.to_radians() / 2.0).sin_cos();
+    DisplayTransform::default()
+        .translation(0.0, (size / 2.0) as f32, 0.0)
+        .left_rotation([0.0, 0.0, sin, cos])
+        .uniform_scale(size as f32)
+}
+
 fn spawn(
     commands: &mut Commands,
     view: &MapView,
@@ -171,18 +199,16 @@ fn spawn(
     size: f64,
     has_pack: bool,
 ) -> Entity {
-    let transform = DisplayTransform::default()
-        .translation(0.0, (size / 2.0) as f32, 0.0)
-        .uniform_scale(size as f32);
     EntityBuilder::new(EntityKind::ItemDisplay)
         .position(world_spot(view, placed.at))
-        .rotation(placed.yaw, 0.0)
+        .rotation(placed.yaw, placed.pitch)
         .gravity(false)
         .block_collision(false)
         .settle_ticks(0)
         .with_bundle((
             Display::default()
-                .transform(transform)
+                .transform(transform_of(size, placed.roll))
+                .interpolation_ticks(u16::from(GLIDE_TICKS))
                 .brightness(15, 15)
                 .view_range(VIEW_RANGE)
                 .culling_box(size as f32 * 1.5, size as f32 * 1.5)
@@ -198,8 +224,8 @@ fn spawn(
 struct Cost {
     moves: u64,
     turns: u64,
+    leans: u64,
     spawns: u64,
-    swaps: u64,
     spent: Duration,
     longest: Duration,
 }
@@ -210,7 +236,7 @@ type Bodies<'w, 's> = Query<
     (
         &'static mut Position,
         &'static mut Rotation,
-        &'static mut ItemDisplay,
+        &'static mut Display,
     ),
 >;
 
@@ -238,11 +264,12 @@ fn play(
             continue;
         }
         let model = view.scene.scale();
+        let courses = life.courses_on(model);
         let fresh = stage.model.replace(model) != Some(model);
         if fresh {
             stage.clear(&mut commands);
         }
-        for (index, play) in life.plays.iter().enumerate() {
+        for (index, (play, course)) in life.plays.iter().zip(courses).enumerate() {
             let due = stage.shown.get(&index).map_or(
                 fresh || tick % STEP_TICKS == index as u64 % STEP_TICKS,
                 |shown| tick >= shown.next,
@@ -251,27 +278,20 @@ fn play(
                 continue;
             }
             let now: Vec<_> = (0..play.actors())
-                .map(|actor| play.place(actor, tick, view.scene))
+                .map(|actor| play.place(actor, tick, view.scene, course))
                 .collect();
             let shown = stage.shown.contains_key(&index);
             let near = now
                 .iter()
-                .flatten()
                 .any(|placed| in_reach(view.eye, placed.at, shown));
             match stage.shown.get_mut(&index) {
                 Some(scene) if near => {
                     scene.next = tick + STEP_TICKS;
-                    for (actor, slot) in scene.bodies.iter_mut().enumerate() {
-                        let Some(placed) =
-                            play.place(actor, tick + u64::from(GLIDE_TICKS), view.scene)
-                        else {
-                            continue;
-                        };
-                        let Some(body) = slot else {
-                            continue;
-                        };
-                        let Ok((mut position, mut rotation, mut item)) =
-                            bodies.get_mut(body.entity)
+                    for (actor, slot) in scene.bodies.iter().enumerate() {
+                        let ahead = tick + u64::from(GLIDE_TICKS);
+                        let placed = play.place(actor, ahead, view.scene, course);
+                        let Ok((mut position, mut rotation, mut display)) =
+                            bodies.get_mut(slot.entity)
                         else {
                             continue;
                         };
@@ -280,15 +300,14 @@ fn play(
                         }
                         let turned = rotation.set_if_neq(Rotation {
                             yaw: placed.yaw,
-                            pitch: 0.0,
+                            pitch: placed.pitch,
                         });
                         if turned {
                             cost.turns += 1;
                         }
-                        if body.model != placed.model {
-                            body.model = placed.model;
-                            item.item = placed.model.item(session.has_pack());
-                            cost.swaps += 1;
+                        if play.actor(actor).bank != 0.0 {
+                            display.transform = transform_of(slot.size, placed.roll);
+                            cost.leans += 1;
                         }
                     }
                 }
@@ -299,14 +318,13 @@ fn play(
                 }
                 None if near => {
                     let spawned = now.iter().enumerate().map(|(actor, placed)| {
-                        let placed = placed.as_ref()?;
                         cost.spawns += 1;
                         let size = size_on(play, actor, view.scene);
                         let pack = session.has_pack();
-                        Some(Body {
+                        Body {
                             entity: spawn(&mut commands, &view, placed, size, pack),
-                            model: placed.model,
-                        })
+                            size,
+                        }
                     });
                     let scene = Shown {
                         bodies: spawned.collect(),
@@ -336,9 +354,8 @@ fn play(
             mean_us = cost.spent.as_micros() as u64 / SUMMARY_PERIOD,
             longest_us = cost.longest.as_micros() as u64,
             // A move is a packet, and a turn takes one more for the head.
-            packets_per_second = (cost.moves + cost.turns + cost.swaps) * 20 / SUMMARY_PERIOD,
+            packets_per_second = (cost.moves + cost.turns + cost.leans) * 20 / SUMMARY_PERIOD,
             spawns = cost.spawns,
-            swaps = cost.swaps,
             "map life"
         );
     }
