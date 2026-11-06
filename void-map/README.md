@@ -404,7 +404,8 @@ them to the closest one, and sends them `CROSSINGS` times across before they lan
 on to a place. Water is searched like ground, in a `Ground` of its own, and bridges close
 a lake off. Some start on the water, so that boats show from the first moment.
 
-A boat is an item display of a model of the pack, not a `minecraft:oak_boat`: an entity of
+A boat is an item display of a model of the pack, a sailboat or a raft by the `Bateaux` row
+of the settings, not a `minecraft:oak_boat`: an entity of
 the game has no scale and is drawn no further than a mannequin. A client without the pack
 gets the flat sprite of the boat. The model has a mast ahead of its rider and a small sail
 the wind fills away from them, for it to show from nearly straight above. The figure rides it, which sits it down, and its body

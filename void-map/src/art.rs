@@ -72,9 +72,8 @@ pub const EYE_SKIN: &str = "voidmap:entity/nobody";
 const EYE_SKIN_FILE: &str = "assets/voidmap/textures/entity/nobody.png";
 /// What an item takes to look like the boat of the pack, in its `item_model`.
 pub const BOAT_MODEL: &str = "voidmap:boat";
-const BOAT_ITEM_FILE: &str = "assets/voidmap/items/boat.json";
-const BOAT_MODEL_FILE: &str = "assets/voidmap/models/item/boat.json";
-const BOAT_ITEM: &str = r#"{"model":{"type":"minecraft:model","model":"voidmap:item/boat"}}"#;
+/// The same for the raft, which goes by the same rules.
+pub const RAFT_MODEL: &str = "voidmap:raft";
 /// What a box of a boat is made of.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum BoatPart {
@@ -105,6 +104,26 @@ const BOAT_BOXES: [([f32; 3], [f32; 3], BoatPart); 17] = [
     ([3.0, 18.0, 1.0], [13.0, 21.0, 2.5], BoatPart::Sail),
     ([3.0, 15.0, 0.25], [13.0, 18.0, 1.5], BoatPart::Sail),
     ([3.5, 13.0, 1.0], [12.5, 15.0, 2.0], BoatPart::Sail),
+];
+/// The boxes of a raft: a deck of logs just over the water, and a small triangle of a sail.
+/// Each row of it stands further ahead than the one over it, so that from above as well as
+/// from the side it is a triangle, its point at the mast.
+const RAFT_BOXES: [([f32; 3], [f32; 3], BoatPart); 15] = [
+    ([1.75, 8.0, 1.0], [4.0, 9.5, 15.5], BoatPart::Wood),
+    ([4.25, 8.0, 0.25], [6.5, 9.5, 15.0], BoatPart::DarkWood),
+    ([6.75, 8.0, 0.75], [9.25, 9.5, 16.0], BoatPart::Wood),
+    ([9.5, 8.0, 0.25], [11.75, 9.5, 15.25], BoatPart::DarkWood),
+    ([12.0, 8.0, 1.25], [14.25, 9.5, 15.5], BoatPart::Wood),
+    ([1.25, 9.5, 2.5], [14.75, 10.0, 3.5], BoatPart::DarkWood),
+    ([1.25, 9.5, 13.0], [14.75, 10.0, 14.0], BoatPart::DarkWood),
+    ([7.5, 9.5, 4.0], [8.5, 23.0, 5.0], BoatPart::DarkWood),
+    ([3.5, 11.25, 0.25], [12.5, 12.0, 1.0], BoatPart::DarkWood),
+    ([7.5, 11.25, 1.0], [8.5, 12.0, 4.0], BoatPart::DarkWood),
+    ([3.75, 12.0, 0.25], [12.25, 14.0, 1.25], BoatPart::Sail),
+    ([4.5, 14.0, 1.0], [11.5, 16.0, 2.0], BoatPart::Sail),
+    ([5.5, 16.0, 1.75], [10.5, 18.0, 2.75], BoatPart::Sail),
+    ([6.25, 18.0, 2.5], [9.75, 20.0, 3.5], BoatPart::Sail),
+    ([7.25, 20.0, 3.25], [8.75, 22.0, 4.0], BoatPart::Sail),
 ];
 const SKIN_SIZE: u32 = 64;
 
@@ -1342,7 +1361,7 @@ fn shifts() -> String {
 }
 
 /// The model of a boat, in plain wood, as the client takes it.
-fn boat_model() -> String {
+fn boat_model(boxes: &[([f32; 3], [f32; 3], BoatPart)]) -> String {
     let faces = |texture: &str| {
         let face = |side: &str| format!(r#""{side}":{{"texture":"{texture}"}}"#);
         let sides = ["north", "south", "east", "west", "up", "down"].map(face);
@@ -1359,11 +1378,24 @@ fn boat_model() -> String {
             faces(texture)
         )
     };
-    let elements: Vec<_> = BOAT_BOXES.iter().map(element).collect();
+    let elements: Vec<_> = boxes.iter().map(element).collect();
     format!(
         r#"{{"textures":{{"particle":"minecraft:block/oak_planks","oak":"minecraft:block/oak_planks","dark":"minecraft:block/dark_oak_planks","sail":"minecraft:block/white_wool"}},"elements":[{}]}}"#,
         elements.join(",")
     )
+}
+
+/// A boat as an item of the pack.
+fn install_boat(pack: &mut ResourcePack, name: &str, boxes: &[([f32; 3], [f32; 3], BoatPart)]) {
+    let item = format!(r#"{{"model":{{"type":"minecraft:model","model":"voidmap:item/{name}"}}}}"#);
+    pack.add(
+        format!("assets/voidmap/items/{name}.json"),
+        item.into_bytes(),
+    );
+    pack.add(
+        format!("assets/voidmap/models/item/{name}.json"),
+        boat_model(boxes).into_bytes(),
+    );
 }
 
 /// Adds the panels and the font that draws them.
@@ -1374,8 +1406,8 @@ pub fn install(pack: &mut ResourcePack) {
     life::models::install(pack);
     transition::install(pack, crate::plugin::FIRST_MODEL_BLOCK);
     crate::abduction::install(pack);
-    pack.add(BOAT_ITEM_FILE, BOAT_ITEM.as_bytes().to_vec());
-    pack.add(BOAT_MODEL_FILE, boat_model().into_bytes());
+    install_boat(pack, "boat", &BOAT_BOXES);
+    install_boat(pack, "raft", &RAFT_BOXES);
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());
     let mut providers = vec![shifts()];
     for subject in SUBJECTS {
@@ -1631,6 +1663,32 @@ mod tests {
                 assert!(pack.contains(&format!("assets/voidmap/models/item/{name}.json")));
             }
         }
+    }
+
+    /// Both boats are models of the pack, and the raft stays flat under a smaller sail.
+    #[test]
+    fn a_raft_is_a_flat_boat_with_a_smaller_sail() {
+        let mut pack = ResourcePack::new("test");
+        install(&mut pack);
+        for model in [BOAT_MODEL, RAFT_MODEL] {
+            let name = model.strip_prefix("voidmap:").unwrap();
+            assert!(pack.contains(&format!("assets/voidmap/items/{name}.json")));
+            assert!(pack.contains(&format!("assets/voidmap/models/item/{name}.json")));
+        }
+        let parts = |boxes: &[([f32; 3], [f32; 3], BoatPart)], wanted: BoatPart| {
+            let volumes = boxes.iter().filter(|(_, _, part)| *part == wanted);
+            volumes
+                .map(|(from, to, _)| (to[0] - from[0]) * (to[1] - from[1]))
+                .sum::<f32>()
+        };
+        let sail = |boxes: &[_]| parts(boxes, BoatPart::Sail);
+        assert!(sail(&RAFT_BOXES) < sail(&BOAT_BOXES));
+        let sides = RAFT_BOXES
+            .iter()
+            .filter(|(_, _, part)| *part != BoatPart::Sail);
+        let deck = sides.filter(|(from, to, _)| to[0] - from[0] > 2.0 && to[2] - from[2] > 2.0);
+        assert!(deck.clone().count() >= 5);
+        assert!(deck.clone().all(|(_, to, _)| to[1] <= 10.0));
     }
 
     /// The item has to stay what shows: the mark keeps to a corner.

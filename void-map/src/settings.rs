@@ -12,6 +12,7 @@ use crate::art::Style;
 use crate::fence::Border;
 use crate::goto::Navigation;
 use crate::life::show::LifeLook;
+use crate::players::BoatLook;
 use crate::plugin::{MapLooks, Me};
 use crate::regions::ZoneLook;
 use crate::scene::Blocks;
@@ -122,6 +123,9 @@ pub fn settings() -> Vec<Setting> {
         }),
         Setting::new("Animations", &LifeLook::ALL, LifeLook::label, |looks| {
             &mut looks.life
+        }),
+        Setting::new("Bateaux", &BoatLook::ALL, BoatLook::label, |looks| {
+            &mut looks.boats
         }),
         Setting::new(
             "Déplacement",

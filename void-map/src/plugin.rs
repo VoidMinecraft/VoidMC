@@ -55,7 +55,7 @@ use crate::life::show::{Life, LifeLook, LifePlugin};
 use crate::life::{LifeScene, habitat};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::motion::Motion;
-use crate::players::{Characters, PlayersPlugin, figure_height};
+use crate::players::{BoatLook, Characters, PlayersPlugin, figure_height};
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
     DIVE_TICKS, FreeLook, MIDDLE_BELOW, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH,
@@ -3543,6 +3543,7 @@ pub struct MapLooks {
     pub(crate) border: Border,
     pub(crate) weather: Weather,
     pub(crate) life: LifeLook,
+    pub(crate) boats: BoatLook,
     pub(crate) motion: Motion,
     pub(crate) inertia: bool,
     pub(crate) navigation: Navigation,

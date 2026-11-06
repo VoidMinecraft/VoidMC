@@ -32,7 +32,7 @@ use voidmc_protocol::slot::{DataComponent, component_ids};
 
 use voidmc_ui::Text;
 
-use crate::art::BOAT_MODEL;
+use crate::art::{BOAT_MODEL, RAFT_MODEL};
 use crate::plugin::{Atlas, MapSession, MapView, Yourself};
 use crate::pointer::{AimReach, aimed_within};
 use crate::scene::{SEA_Y, Scale, Scene, WORLD_RADIUS};
@@ -1061,6 +1061,8 @@ struct Label {
 struct Figures {
     /// What the figures are placed for. Another model takes new ones: see [`show`].
     model: Option<Scale>,
+    /// What the boats are drawn as. Another look takes new boats, under the same riders.
+    boats: Option<BoatLook>,
     shown: BTreeMap<u128, Figure>,
     label: Option<Label>,
     /// The figures the client was told about, which outlive what it shows.
@@ -1127,14 +1129,40 @@ fn spawn_figure(
         .id()
 }
 
+/// What people sail in, for a player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoatLook {
+    #[default]
+    Sailboat,
+    Raft,
+}
+
+impl BoatLook {
+    pub const ALL: [Self; 2] = [Self::Sailboat, Self::Raft];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sailboat => "Voilier",
+            Self::Raft => "Radeau",
+        }
+    }
+
+    fn model(self) -> &'static str {
+        match self {
+            Self::Sailboat => BOAT_MODEL,
+            Self::Raft => RAFT_MODEL,
+        }
+    }
+}
+
 /// A boat of the pack, or the flat one of the game for a client without it.
-fn boat_item(has_pack: bool) -> ItemStack {
+fn boat_item(has_pack: bool, look: BoatLook) -> ItemStack {
     let boat = ItemStack::of("minecraft:oak_boat", 1).expect("a vanilla item");
     if !has_pack {
         return boat;
     }
     let mut body = Vec::new();
-    BOAT_MODEL.to_string().encode(&mut body);
+    look.model().to_string().encode(&mut body);
     boat.with_component(DataComponent::Raw {
         type_id: component_ids::ITEM_MODEL,
         body,
@@ -1170,7 +1198,7 @@ fn spawn_boat(
     at: Position,
     yaw: f32,
     size: f64,
-    has_pack: bool,
+    item: ItemStack,
     rider: Entity,
 ) -> Entity {
     EntityBuilder::new(EntityKind::ItemDisplay)
@@ -1182,7 +1210,7 @@ fn spawn_boat(
                 .brightness(15, 15)
                 .view_range(LABEL_VIEW_RANGE)
                 .teleport_ticks(GLIDE_TICKS),
-            ItemDisplay::new(boat_item(has_pack)).context(ItemDisplayContext::None),
+            ItemDisplay::new(item).context(ItemDisplayContext::None),
             Passengers::new([rider]),
         ))
         .spawn(commands)
@@ -1285,6 +1313,17 @@ fn show(
         if figures.model.replace(model) != Some(model) {
             figures.clear(&mut commands);
         }
+        let boats = session.looks().boats;
+        if figures
+            .boats
+            .replace(boats)
+            .is_some_and(|last| last != boats)
+        {
+            for boat in figures.shown.values_mut().filter_map(|f| f.boat.take()) {
+                commands.entity(boat).try_despawn();
+            }
+        }
+        let boat_item = || boat_item(session.has_pack(), boats);
 
         let own = view.you.as_ref().zip(account).map(|(you, account)| {
             let (id, character) = yourself(you, account);
@@ -1315,9 +1354,15 @@ fn show(
                 let figure = figures.introduce(*id, character, player, &players);
                 let entity = spawn_figure(&mut commands, spot, figure, character, size);
                 let boat = character.afloat.then(|| {
-                    let pack = session.has_pack();
                     let afloat = lifted(spot, size);
-                    spawn_boat(&mut commands, afloat, character.yaw, size, pack, entity)
+                    spawn_boat(
+                        &mut commands,
+                        afloat,
+                        character.yaw,
+                        size,
+                        boat_item(),
+                        entity,
+                    )
                 });
                 let shown = Figure {
                     entity,
@@ -1337,11 +1382,10 @@ fn show(
             let spot = world_spot(&view, figure.at);
             match (figure.boat, character.afloat) {
                 (None, true) => {
-                    let pack = session.has_pack();
                     let yaw = character.yaw;
                     let rider = figure.entity;
                     let afloat = lifted(spot, size);
-                    let boat = spawn_boat(&mut commands, afloat, yaw, size, pack, rider);
+                    let boat = spawn_boat(&mut commands, afloat, yaw, size, boat_item(), rider);
                     figure.boat = Some(boat);
                 }
                 (Some(boat), false) => {
