@@ -28,8 +28,8 @@ use voidmc::{
 use voidmc_codec::Encode;
 use voidmc_protocol::{
     clientbound::{
-        ChunkDataAndLight, GameEvent, GameEventType, PlayerRotation, SetCamera, SetCenterChunk,
-        SetChunkCacheRadius, SystemChat, UnloadChunk,
+        ChunkDataAndLight, GameEvent, GameEventType, PlayerRotation, SectionBlocksUpdate,
+        SetCamera, SetCenterChunk, SetChunkCacheRadius, SystemChat, UnloadChunk,
     },
     serverbound::{Interact, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation, SpectateEntity},
     slot::{DataComponent, component_ids},
@@ -46,7 +46,9 @@ use crate::pointer::{
     SPECTATOR_EYE_HEIGHT, Zoom, aimed, detail_back, look_direction, overview_y,
 };
 use crate::regions::{RegionState, Regions, ZoneLook};
-use crate::scene::{self, Blocks, ChunkLook, DETAIL, MIDDLE, OVERVIEW, Scale, Scene};
+use crate::scene::{
+    self, Blocks, ChunkLook, DETAIL, MIDDLE, OVERVIEW, Scale, Scene, SectionChange,
+};
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 use crate::transition::{Flight, LANDING_TICKS, RISE_TICKS, VEIL_FADE, veil_in, veil_out};
@@ -102,6 +104,9 @@ const _: () = assert!(
 /// What the model the player is not on gets of each tick.
 const NEIGHBOUR_CHUNKS_PER_TICK: usize = 16;
 pub(crate) const CHUNKS_PER_TICK: usize = 64;
+/// Blocks a change of look turns on the client in a tick, nearest first. The chunks are
+/// left in place: a look only reaches them as blocks, so nothing goes away and comes back.
+const REPAINTED_BLOCKS_PER_TICK: usize = 20_000;
 
 /// A shorter glide moves in visible steps. A longer one only overshoots if the view
 /// stops dead, because the client adds what the entity moved on its own to the target
@@ -265,6 +270,15 @@ impl Model {
         }
     }
 
+    /// The chunks a pan can ask for, on each side of its centre.
+    fn reach(self) -> i32 {
+        match self {
+            Self::Overview => OVERVIEW_PAN_REACH,
+            Self::Middle => MIDDLE_PAN_REACH,
+            Self::Detail => DETAIL_PAN_REACH,
+        }
+    }
+
     /// The models a zoom can move to from this one.
     fn neighbours(self) -> &'static [Self] {
         match self {
@@ -306,6 +320,8 @@ struct Level {
     signs: Vec<([f64; 3], RegionState)>,
     /// Built and encoded once, each with its weight on the wire.
     chunks: HashMap<((i32, i32), ChunkLook), (ChunkDataAndLight, usize)>,
+    /// Worked out once for all players.
+    repaints: HashMap<((i32, i32), ChunkLook, ChunkLook), Vec<SectionChange>>,
 }
 
 impl Level {
@@ -355,6 +371,7 @@ impl Level {
             waypoints,
             signs,
             chunks: HashMap::new(),
+            repaints: HashMap::new(),
         }
     }
 
@@ -374,6 +391,13 @@ impl Level {
             let weight = bytes.len();
             (packet, weight)
         })
+    }
+
+    fn repaint(&mut self, at: (i32, i32), from: ChunkLook, to: ChunkLook) -> &[SectionChange] {
+        let scene = &self.scene;
+        self.repaints
+            .entry((at, from, to))
+            .or_insert_with(|| scene.repaint(at.0, at.1, from, to))
     }
 
     /// Builds the island's chunks ahead of time: on a tick, it would make that tick
@@ -553,6 +577,7 @@ struct Travel {
 struct ShownCard {
     entity: Entity,
     text: String,
+    style: Style,
     hover: Hover,
     /// The height of the view it was sized for.
     zoom: f64,
@@ -620,8 +645,10 @@ pub struct MapSession {
     looks: MapLooks,
     /// The client has the pack, so it can draw.
     drawn: bool,
-    /// The chunks' look changed: they have to go out again.
-    rezoned: bool,
+    /// The look of the chunks going out.
+    painted: ChunkLook,
+    /// The chunks the client has in another look, with that look.
+    behind: HashMap<ChunkPos, ChunkLook>,
     /// On the way down to a waypoint.
     travel: Option<Travel>,
     /// The veil is on, this many ticks since the map took over.
@@ -820,6 +847,15 @@ impl MapSession {
     /// Where a chunk of a model goes on the client.
     fn placed(&self, model: Model, (x, z): (i32, i32)) -> ChunkPos {
         ChunkPos::new(self.anchor[0] + model.origin() + x, self.anchor[1] + z)
+    }
+
+    /// Which chunk of which model this is on the client.
+    fn unplaced(&self, chunk: ChunkPos) -> Option<(Model, (i32, i32))> {
+        [Model::Detail, Model::Middle, Model::Overview]
+            .into_iter()
+            .map(|model| (model, chunk.x - self.anchor[0] - model.origin()))
+            .find(|(model, x)| x.abs() <= model.reach())
+            .map(|(model, x)| (model, (x, chunk.z - self.anchor[1])))
     }
 
     /// Far markers are large and near ones smaller, so that they keep their size on screen.
@@ -1171,6 +1207,32 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
     };
 }
 
+/// Draws the player's marker again, and nothing else of the map.
+fn respawn_you(session: &mut MapSession, commands: &mut Commands) {
+    let Some(you) = session.pins.you.take() else {
+        return;
+    };
+    for (entity, _) in you.parts {
+        commands.entity(entity).try_despawn();
+    }
+    let build = f64::from(session.model().scale().build);
+    session.pins.you = Some(You {
+        parts: spawn_you(session, you.at, build, commands),
+        at: you.at,
+    });
+}
+
+/// Draws the signs of the closed regions again, and nothing else of the map.
+fn respawn_signs(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) {
+    for entity in std::mem::take(&mut session.pins.signs) {
+        commands.entity(entity).try_despawn();
+    }
+    if let Some(level) = atlas.level(session.model()) {
+        let build = f64::from(session.model().scale().build);
+        session.pins.signs = spawn_signs(level, session, build, commands);
+    }
+}
+
 /// The entities of the player's marker, as they chose it.
 fn spawn_you(
     session: &MapSession,
@@ -1465,7 +1527,8 @@ fn enter(
         head: player_head(uuid),
         looks: looks.copied().unwrap_or_default(),
         drawn,
-        rezoned: false,
+        painted: looks.copied().unwrap_or_default().chunks(),
+        behind: HashMap::new(),
         travel: None,
         veiled: drawn.then_some(0),
         ready: false,
@@ -1629,36 +1692,12 @@ fn stream_chunks(
     for (player, mut session, loaded) in &mut sessions {
         let started = Instant::now();
         switch_model(&atlas, &mut session, &mut commands);
-        // What changed look goes out again right over itself, with no gap in between.
-        let rezoned = std::mem::take(&mut session.rezoned);
         let look = session.looks.chunks();
         let model = session.model();
         let wanted = session.wanted();
-        let placed: HashSet<_> = wanted
-            .iter()
-            .map(|(model, at)| session.placed(*model, *at))
-            .collect();
-        let stale: Vec<_> = loaded
-            .0
-            .iter()
-            .copied()
-            .filter(|chunk| rezoned && !placed.contains(chunk))
-            .collect();
         // `Players` reads this component, so it is replaced rather than changed here.
-        let mut now_loaded = if rezoned {
-            HashSet::new()
-        } else {
-            loaded.0.clone()
-        };
-        for chunk in &stale {
-            players.send(
-                player,
-                UnloadChunk {
-                    chunk_x: chunk.x,
-                    chunk_z: chunk.z,
-                },
-            );
-        }
+        let mut now_loaded = loaded.0.clone();
+        repaint(&mut atlas, &mut session, &loaded.0, player, &players);
 
         let missing: Vec<_> = wanted
             .into_iter()
@@ -1700,8 +1739,64 @@ fn stream_chunks(
                 "map chunks sent"
             );
         }
-        if rezoned || !stale.is_empty() || !missing.is_empty() {
+        if !missing.is_empty() {
             commands.entity(player).insert(LoadedChunks(now_loaded));
+        }
+    }
+}
+
+/// Brings the chunks the client holds to the player's look, as blocks: the ones that
+/// differ, around the view first. Nothing leaves the client, and stepping through looks
+/// faster than this goes only sends what ends up different.
+fn repaint(
+    atlas: &mut Atlas,
+    session: &mut MapSession,
+    loaded: &HashSet<ChunkPos>,
+    player: Entity,
+    players: &Players,
+) {
+    let look = session.looks.chunks();
+    if session.painted != look {
+        let was = std::mem::replace(&mut session.painted, look);
+        for chunk in loaded {
+            session.behind.entry(*chunk).or_insert(was);
+        }
+        session.behind.retain(|_, from| *from != look);
+    }
+    session.behind.retain(|chunk, _| loaded.contains(chunk));
+    if session.behind.is_empty() {
+        return;
+    }
+    let [x, _, z] = session.standing();
+    let (centre, own) = (((x / 16.0) as i32, (z / 16.0) as i32), session.model());
+    let mut order: Vec<_> = session
+        .behind
+        .iter()
+        .filter_map(|(chunk, from)| {
+            let (model, at) = session.unplaced(*chunk)?;
+            let away = (at.0 - centre.0).pow(2) + (at.1 - centre.1).pow(2);
+            Some(((model != own, away), model, at, *chunk, *from))
+        })
+        .collect();
+    order.sort_by_key(|(rank, ..)| *rank);
+    let mut budget = REPAINTED_BLOCKS_PER_TICK;
+    for (_, model, at, chunk, from) in order {
+        let Some(level) = atlas.level_mut(model) else {
+            continue;
+        };
+        for change in level.repaint(at, from, look) {
+            budget = budget.saturating_sub(change.blocks.len());
+            players.send(
+                player,
+                SectionBlocksUpdate {
+                    section: SectionBlocksUpdate::section(chunk.x, change.section, chunk.z),
+                    blocks: change.blocks.clone(),
+                },
+            );
+        }
+        session.behind.remove(&chunk);
+        if budget == 0 {
+            break;
         }
     }
 }
@@ -1932,7 +2027,7 @@ fn show_card(atlas: &Atlas, level: &Level, session: &mut MapSession, commands: &
     let same = match (&session.pins.card, &wanted) {
         (Some(shown), Some((hover, _, text))) => {
             let sized = (zoom / shown.zoom - 1.0).abs() < CARD_ZOOM_STEP;
-            shown.hover == *hover && sized && shown.text == *text
+            shown.hover == *hover && sized && shown.text == *text && shown.style == style
         }
         (None, None) => true,
         _ => false,
@@ -1964,6 +2059,7 @@ fn show_card(atlas: &Atlas, level: &Level, session: &mut MapSession, commands: &
     session.pins.card = Some(ShownCard {
         entity: spawn_card(commands, at, display, scale, lift),
         text,
+        style,
         hover,
         zoom,
     });
@@ -2008,9 +2104,12 @@ fn follow_view(
             rotation.set_if_neq(session.camera_rotation());
         }
 
-        let hovered = (session.travel.is_none() && !session.is_frozen())
-            .then(|| hover_of(level, &session))
-            .flatten();
+        // The wheel holds on to what the look was on: its card shows the styles.
+        let hovered = match (session.travel.is_some(), session.is_frozen()) {
+            (true, _) => None,
+            (false, true) => session.hovered,
+            (false, false) => hover_of(level, &session),
+        };
         if hovered != session.hovered {
             let previous = std::mem::replace(&mut session.hovered, hovered);
             tracing::info!(?hovered, "map hover");
@@ -2612,10 +2711,13 @@ fn choose_look(
         tell(&said, session.as_mut());
     }
     if let Some(mut session) = session {
-        session.rezoned |= session.looks.chunks() != looks.chunks();
-        session.looks = looks;
-        despawn_pins(&mut session, &mut commands);
-        spawn_pins(&atlas, &mut session, &mut commands);
+        let before = std::mem::replace(&mut session.looks, looks);
+        if before.me != looks.me {
+            respawn_you(&mut session, &mut commands);
+        }
+        if before.zone != looks.zone {
+            respawn_signs(&atlas, &mut session, &mut commands);
+        }
     }
 }
 
@@ -2971,7 +3073,8 @@ mod tests {
             head: item("minecraft:player_head"),
             looks: MapLooks::default(),
             drawn: false,
-            rezoned: false,
+            painted: ChunkLook::default(),
+            behind: HashMap::new(),
             travel: None,
             veiled: None,
             ready: false,

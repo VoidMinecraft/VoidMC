@@ -4,12 +4,13 @@
 //! enough, but its waves are bent and smoothed, because a regular world reads as a
 //! chequerboard at this size.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::{NonZeroU8, NonZeroU16};
 
 use voidmc::BiomeId;
+use voidmc_codec::VarI64;
 use voidmc_data::v26_1_2::blocks as b;
-use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData};
+use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData, SectionBlocksUpdate};
 
 use crate::buildings::landmark;
 use crate::markers::MarkerKind;
@@ -128,6 +129,14 @@ impl Blocks {
 pub struct ChunkLook {
     pub zone: ZoneLook,
     pub blocks: Blocks,
+}
+
+/// The blocks of one section of a chunk that have to change, as they go on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionChange {
+    /// Its height, in sections.
+    pub section: i32,
+    pub blocks: Vec<VarI64>,
 }
 
 /// The block of the world that a colour of the palette stands for.
@@ -651,6 +660,86 @@ impl Scene {
         }
     }
 
+    /// The blocks of a column in a look, from the bottom up. A later one takes over from
+    /// an earlier one at the same height.
+    fn paint(&self, x: i32, z: i32, look: ChunkLook, set: &mut impl FnMut(i32, i32)) {
+        let Some(column) = self.column(x, z) else {
+            return;
+        };
+        let closed = column.state != RegionState::Discovered;
+        let tint = |block| {
+            if closed && look.zone == ZoneLook::Faded {
+                faded(block)
+            } else if look.blocks == Blocks::Real {
+                real_block(block)
+            } else {
+                column.state.tint(block)
+            }
+        };
+        for y in column.bottom..column.ground {
+            set(y, tint(cliff_block(column.surface, column.ground - y)));
+        }
+        set(column.ground, tint(column.surface));
+        for y in column.ground + 1..=SEA_Y {
+            set(y, tint(column.water));
+        }
+        for (y, block) in self.buildings.get(&(x, z)).into_iter().flatten() {
+            set(*y, tint(*block));
+        }
+        if closed {
+            self.zone_look(look.zone, x, z, column, set);
+        }
+    }
+
+    /// What it takes to turn a chunk from one look to another: the blocks that differ,
+    /// section by section. A look of the zones leaves all the open land alone.
+    pub fn repaint(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        from: ChunkLook,
+        to: ChunkLook,
+    ) -> Vec<SectionChange> {
+        let mut sections: BTreeMap<i32, Vec<VarI64>> = BTreeMap::new();
+        for local_z in 0..16u8 {
+            for local_x in 0..16u8 {
+                let (x, z) = (
+                    chunk_x * 16 + i32::from(local_x),
+                    chunk_z * 16 + i32::from(local_z),
+                );
+                let closed = self
+                    .column(x, z)
+                    .is_some_and(|column| column.state != RegionState::Discovered);
+                if from.blocks == to.blocks && !closed {
+                    continue;
+                }
+                let column_in = |look| {
+                    let mut blocks = BTreeMap::new();
+                    self.paint(x, z, look, &mut |y, block| {
+                        blocks.insert(y, block);
+                    });
+                    blocks
+                };
+                let (before, after) = (column_in(from), column_in(to));
+                let heights = before.keys().chain(after.keys()).copied();
+                for y in heights.collect::<BTreeSet<_>>() {
+                    let block = after.get(&y).copied().unwrap_or(b::AIR);
+                    if before.get(&y).copied().unwrap_or(b::AIR) != block {
+                        let height = y.rem_euclid(16) as u8;
+                        sections
+                            .entry(y.div_euclid(16))
+                            .or_default()
+                            .push(SectionBlocksUpdate::block(local_x, height, local_z, block));
+                    }
+                }
+            }
+        }
+        sections
+            .into_iter()
+            .map(|(section, blocks)| SectionChange { section, blocks })
+            .collect()
+    }
+
     /// One chunk of the model, centred on chunk `(0, 0)`. Off the model it is empty,
     /// which the client needs too: it only draws chunks with all their neighbours.
     pub fn chunk(
@@ -670,34 +759,9 @@ impl Scene {
                     chunk_x * 16 + i32::from(local_x),
                     chunk_z * 16 + i32::from(local_z),
                 );
-                let Some(column) = self.column(x, z) else {
-                    continue;
-                };
-                let closed = column.state != RegionState::Discovered;
-                let tint = |block| {
-                    if closed && look.zone == ZoneLook::Faded {
-                        faded(block)
-                    } else if look.blocks == Blocks::Real {
-                        real_block(block)
-                    } else {
-                        column.state.tint(block)
-                    }
-                };
-                for y in column.bottom..column.ground {
-                    let block = cliff_block(column.surface, column.ground - y);
-                    builder.set_block(local_x, y, local_z, tint(block));
-                }
-                builder.set_block(local_x, column.ground, local_z, tint(column.surface));
-                for y in column.ground + 1..=SEA_Y {
-                    builder.set_block(local_x, y, local_z, tint(column.water));
-                }
-                for (y, block) in self.buildings.get(&(x, z)).into_iter().flatten() {
-                    builder.set_block(local_x, *y, local_z, tint(*block));
-                }
-                if closed {
-                    let mut set = |y, block| builder.set_block(local_x, y, local_z, block);
-                    self.zone_look(look.zone, x, z, column, &mut set);
-                }
+                self.paint(x, z, look, &mut |y, block| {
+                    builder.set_block(local_x, y, local_z, block);
+                });
             }
         }
         let mut chunk = builder.build();
@@ -744,6 +808,71 @@ mod tests {
 
     fn sea() -> Flat {
         Flat::new(SEA - 30, BiomeId::plains())
+    }
+
+    fn demo_scene() -> Scene {
+        let terrain = Terrain::sample(&DefaultWorldGenerator::default(), &OVERVIEW.window());
+        Scene::new(&terrain, SEA, OVERVIEW, &Regions::demo())
+    }
+
+    fn column_in(scene: &Scene, x: i32, z: i32, look: ChunkLook) -> BTreeMap<i32, i32> {
+        let mut blocks = BTreeMap::new();
+        scene.paint(x, z, look, &mut |y, block| {
+            blocks.insert(y, block);
+        });
+        blocks.retain(|_, block| *block != b::AIR);
+        blocks
+    }
+
+    const ZONES: [ZoneLook; 4] = ZoneLook::ALL;
+
+    /// A repaint stands in for sending the chunk again, so it has to end on the same blocks.
+    #[test]
+    fn a_repaint_ends_on_the_blocks_of_the_new_look() {
+        let scene = demo_scene();
+        let reach = scene.chunk_radius();
+        let looks = ZONES.map(|zone| ChunkLook {
+            zone,
+            blocks: Blocks::Flat,
+        });
+        let real = ChunkLook {
+            zone: ZoneLook::Clouds,
+            blocks: Blocks::Real,
+        };
+        for (from, to) in [(looks[0], looks[1]), (looks[2], looks[3]), (looks[3], real)] {
+            for (chunk_x, chunk_z) in [(-reach / 2, 0), (0, reach / 2), (1, 1), (reach / 2, -2)] {
+                let mut sections = BTreeMap::new();
+                for change in scene.repaint(chunk_x, chunk_z, from, to) {
+                    sections.insert(change.section, change.blocks);
+                }
+                for local in 0..256 {
+                    let (x, z) = (chunk_x * 16 + local % 16, chunk_z * 16 + local / 16);
+                    let mut column = column_in(&scene, x, z, from);
+                    for (section, blocks) in &sections {
+                        for VarI64(entry) in blocks {
+                            let (at_x, at_z) = ((entry >> 8) & 15, (entry >> 4) & 15);
+                            if (at_x, at_z) == (i64::from(local % 16), i64::from(local / 16)) {
+                                let y = section * 16 + (entry & 15) as i32;
+                                column.insert(y, (entry >> 12) as i32);
+                            }
+                        }
+                    }
+                    column.retain(|_, block| *block != b::AIR);
+                    assert_eq!(column, column_in(&scene, x, z, to), "{x} {z}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_look_of_the_zones_leaves_the_open_land_alone() {
+        let terrain = Terrain::sample(&DefaultWorldGenerator::default(), &OVERVIEW.window());
+        let scene = Scene::new(&terrain, SEA, OVERVIEW, &open());
+        let [from, to] = [ZoneLook::Clouds, ZoneLook::Faded].map(|zone| ChunkLook {
+            zone,
+            blocks: Blocks::Flat,
+        });
+        assert!(scene.repaint(0, 0, from, to).is_empty());
     }
 
     #[test]
