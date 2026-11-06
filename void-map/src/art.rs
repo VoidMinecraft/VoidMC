@@ -240,10 +240,8 @@ impl Style {
 pub enum Mark {
     /// A small drop pointing at the ground.
     Pin,
-    /// An arrow to lay on the ground.
+    /// An arrow facing the camera, that turns to say where the player was looking.
     Arrow,
-    /// A ring to lay on the ground.
-    Ring,
     /// A disc for a head to sit on.
     Disc,
     Lock,
@@ -252,10 +250,9 @@ pub enum Mark {
     Tip,
 }
 
-const MARKS: [Mark; 7] = [
+const MARKS: [Mark; 6] = [
     Mark::Pin,
     Mark::Arrow,
-    Mark::Ring,
     Mark::Disc,
     Mark::Lock,
     Mark::Unknown,
@@ -316,7 +313,6 @@ impl Mark {
             (true, _) => format!("§f{}", self.glyph()),
             (false, Self::Pin) => "§c▼".into(),
             (false, Self::Arrow) => "§c▲".into(),
-            (false, Self::Ring) => "§c○".into(),
             (false, Self::Disc) => "§f●".into(),
             (false, Self::Lock) => "§7X".into(),
             (false, Self::Unknown) => "§7?".into(),
@@ -333,7 +329,6 @@ impl Mark {
         match self {
             Self::Pin => drop_shape(),
             Self::Arrow => arrow(),
-            Self::Ring => ring(),
             Self::Disc => disc(24, FILL, EDGE),
             Self::Lock => bitmap_of(&LOCK, SIGN_COLOUR, 2),
             Self::Unknown => bitmap_of(&QUESTION, SIGN_COLOUR, 2),
@@ -390,20 +385,6 @@ fn arrow() -> Image {
             let dx = (f64::from(x) - 8.0).abs();
             if dx <= half && dx >= notch {
                 image.set(x as u32, y as u32, PIN_COLOUR);
-            }
-        }
-    }
-    image
-}
-
-fn ring() -> Image {
-    let size = 25;
-    let mut image = Image::new(size, size);
-    for y in 0..size {
-        for x in 0..size {
-            let from = (f64::from(x) - 12.0).hypot(f64::from(y) - 12.0);
-            if (9.5..=12.0).contains(&from) {
-                image.set(x, y, PIN_COLOUR);
             }
         }
     }

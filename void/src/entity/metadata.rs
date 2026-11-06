@@ -451,6 +451,8 @@ impl MetadataSource for ItemDisplay {
 #[require(Display)]
 pub struct TextDisplay {
     pub text: String,
+    /// Shown instead of `text`, for what a plain string cannot say.
+    pub component: Option<Nbt>,
     pub line_width: i32,
     pub background_color: Option<i32>,
     pub opacity: i8,
@@ -471,6 +473,7 @@ impl TextDisplay {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            component: None,
             line_width: 200,
             background_color: None,
             opacity: -1,
@@ -478,6 +481,12 @@ impl TextDisplay {
             see_through: false,
             alignment: TextAlignment::Center,
         }
+    }
+
+    /// A full text component, such as a sprite of a player's face.
+    pub fn component(mut self, component: Nbt) -> Self {
+        self.component = Some(component);
+        self
     }
 
     pub fn line_width(mut self, width: i32) -> Self {
@@ -530,7 +539,11 @@ impl MetadataSource for TextDisplay {
     fn write(&self, meta: &mut EntityMetadata) {
         meta.set(
             display_index::TEXT,
-            Value::Component(text_component(&self.text)),
+            Value::Component(
+                self.component
+                    .clone()
+                    .unwrap_or_else(|| text_component(&self.text)),
+            ),
         );
         meta.set(display_index::TEXT_LINE_WIDTH, Value::Int(self.line_width));
         meta.set(

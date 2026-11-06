@@ -914,13 +914,22 @@ fn world_spot(view: &MapView, [x, y, z]: [f64; 3]) -> Position {
     }
 }
 
+type Bodies<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static mut Position,
+        &'static mut Rotation,
+        Option<&'static mut Attributes>,
+    ),
+>;
+
 /// Keeps every session's figures on the characters.
 fn show(
     characters: Res<Characters>,
     atlas: Res<Atlas>,
     mut sessions: Query<(Entity, &MapSession, &mut Figures)>,
-    mut bodies: Query<(&mut Position, &mut Rotation)>,
-    mut attributes: Query<&mut Attributes>,
+    mut bodies: Bodies,
     mut cost: ResMut<Cost>,
     players: Players,
     mut commands: Commands,
@@ -967,7 +976,7 @@ fn show(
                 let wanted_y = height_ahead(view.scene, figure.at, [*x, *y, *z]);
                 [*x, climbed(figure.at[1], wanted_y), *z]
             };
-            if let Ok((mut position, mut rotation)) = bodies.get_mut(figure.entity) {
+            if let Ok((mut position, mut rotation, _)) = bodies.get_mut(figure.entity) {
                 if position.set_if_neq(world_spot(&view, figure.at)) {
                     cost.moves += 1;
                 }
@@ -977,7 +986,7 @@ fn show(
                 });
             }
             if figure.size != size
-                && let Ok(mut attributes) = attributes.get_mut(figure.entity)
+                && let Ok((_, _, Some(mut attributes))) = bodies.get_mut(figure.entity)
             {
                 figure.size = size;
                 attributes.set_base(EntityAttribute::Scale, size);
@@ -1006,7 +1015,7 @@ fn hover(
     view: &MapView,
     figures: &mut Figures,
     characters: &Characters,
-    bodies: &mut Query<(&mut Position, &mut Rotation)>,
+    bodies: &mut Bodies,
     commands: &mut Commands,
 ) {
     let ids: Vec<u128> = figures.shown.keys().copied().collect();
@@ -1037,7 +1046,7 @@ fn hover(
         }
     } else if let Some(label) = figures.label
         && let Some(figure) = figures.shown.get(&label.id)
-        && let Ok((mut position, _)) = bodies.get_mut(label.entity)
+        && let Ok((mut position, ..)) = bodies.get_mut(label.entity)
     {
         position.set_if_neq(over(figure));
     }

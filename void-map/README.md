@@ -109,11 +109,11 @@ alone. The chunks still to come go out in the new look.
 
 - `/map style 1` to `4`: a full sheet, text alone, a round bubble with the name under it,
   or a large title over a flourish. `/map pan 2` opens exploration with that style.
-- `/map me 1` to `8`: the player's own marker, as a small pin, an arrow on the ground that
-  points where they look, a ring on the ground, their head on a small disc, their head
-  with a small arrow right under it, on a bubble that points down, over a ring, or over
-  the arrow. Only the account id goes out, so an offline account shows the default skin
-  of its id.
+- `/map me 1` to `3`: the player's own marker, flat and facing the camera: a small pin, an
+  arrow that turns to where they were looking, or their face on a disc with a small arrow
+  under it. A face is a text object, so it stays a picture. Only the account id goes out,
+  so an offline account shows the default skin of its id. `Me::ALL` lists them, each as a
+  `LookChoice::Me`.
 - `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
   stripes, behind a fence with a lock, or drained of colour with a large question mark.
   A cloud is one of a few drawings of up to three flat layers, as in a game, and hangs
