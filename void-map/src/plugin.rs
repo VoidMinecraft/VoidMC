@@ -1229,10 +1229,21 @@ type EntrantState<'a> = (
     Has<PackLoaded>,
 );
 
+/// A player with no map on and none on the way.
+type InTheWorld = (Without<MapSession>, Without<Passage>);
+
+type PassageState<'a> = (
+    Entity,
+    &'a mut Passage,
+    &'a MinecraftEntityId,
+    Has<PackLoaded>,
+    Has<ChunkStreamBacklog>,
+);
+
 /// Sets a player off towards the map. It takes over at the top, under the veil.
 fn rise(
     event: On<OpenMap>,
-    players: Query<(&Position, &Rotation), (Without<MapSession>, Without<Passage>)>,
+    players: Query<(&Position, &Rotation), InTheWorld>,
     atlas: Res<Atlas>,
     mut commands: Commands,
 ) {
@@ -1279,17 +1290,7 @@ fn send_veil(players: &Players, player: Entity) {
     }
 }
 
-fn tick_passages(
-    mut passages: Query<(
-        Entity,
-        &mut Passage,
-        &MinecraftEntityId,
-        Has<PackLoaded>,
-        Has<ChunkStreamBacklog>,
-    )>,
-    players: Players,
-    mut commands: Commands,
-) {
+fn tick_passages(mut passages: Query<PassageState>, players: Players, mut commands: Commands) {
     for (player, mut passage, id, drawn, backlog) in &mut passages {
         passage.ticks += 1;
         let ticks = passage.ticks;
