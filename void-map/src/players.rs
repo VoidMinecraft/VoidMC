@@ -22,7 +22,7 @@ use voidmc::{
     AllSkinLayers, Attributes, Billboard, Display, DisplayTransform, EntityAttribute,
     EntityBuilder, EntityKind, Glowing, ItemDisplay, ItemDisplayContext, ItemStack, NoGravity,
     Passengers, Players, Silent, TextDisplay, WorldGen,
-    components::{EntityUuid, Position, Rotation},
+    components::{EntityUuid, PlayerUuid, Position, Rotation},
 };
 use voidmc_codec::Encode;
 use voidmc_protocol::clientbound::{
@@ -31,7 +31,7 @@ use voidmc_protocol::clientbound::{
 use voidmc_protocol::slot::{DataComponent, component_ids};
 
 use crate::art::BOAT_MODEL;
-use crate::plugin::{Atlas, MapSession, MapView};
+use crate::plugin::{Atlas, MapSession, MapView, Yourself};
 use crate::pointer::{AimReach, aimed_within};
 use crate::scene::{SEA_Y, Scale, Scene, WORLD_RADIUS};
 
@@ -941,6 +941,29 @@ fn size_on(scale: Scale) -> f64 {
     LARGER_THAN_LIFE / f64::from(scale.blocks_per_cell)
 }
 
+/// How tall a figure stands on a model, in its blocks.
+pub(crate) fn figure_height(scale: Scale) -> f64 {
+    PLAYER_HEIGHT * size_on(scale)
+}
+
+/// The player of a session, with the skin of their account, as one more character for
+/// that session alone. It goes by their account's id, so that it stands for the same
+/// entry should they ever be in [`Characters`]. The figure itself has an id of its own,
+/// as any: a client that met its own would take the entity for itself.
+fn yourself(you: &Yourself, account: &PlayerUuid) -> (u128, Character) {
+    let character = Character {
+        name: String::new(),
+        skin: ResolvableProfile {
+            id: Some(account.0),
+            ..ResolvableProfile::default()
+        },
+        position: you.position,
+        yaw: you.yaw,
+        afloat: false,
+    };
+    (account.0.as_u128(), character)
+}
+
 /// One of the skins of the client, so that no account and no download is involved.
 fn default_skin(index: usize) -> ResolvableProfile {
     ResolvableProfile {
@@ -1237,14 +1260,14 @@ type Bodies<'w, 's> = Query<'w, 's, (&'static mut Position, &'static mut Rotatio
 fn show(
     characters: Res<Characters>,
     atlas: Res<Atlas>,
-    mut sessions: Query<(Entity, &MapSession, &mut Figures)>,
+    mut sessions: Query<(Entity, &MapSession, &mut Figures, Option<&PlayerUuid>)>,
     mut bodies: Bodies,
     mut cost: ResMut<Cost>,
     players: Players,
     mut commands: Commands,
 ) {
     let started = Instant::now();
-    for (player, session, mut figures) in &mut sessions {
+    for (player, session, mut figures, account) in &mut sessions {
         let Some(view) = session.view(&atlas) else {
             continue;
         };
@@ -1255,10 +1278,16 @@ fn show(
             figures.clear(&mut commands);
         }
 
-        let places: BTreeMap<u128, [f64; 3]> = characters
+        let own = view.you.as_ref().zip(account).map(|(you, account)| {
+            let (id, character) = yourself(you, account);
+            (id, character, you.at)
+        });
+        // Their own marker says where they are: the figure stands right under it.
+        let places: BTreeMap<u128, (&Character, [f64; 3])> = characters
             .0
             .iter()
-            .filter_map(|(id, c)| Some((*id, place_on(view.scene, &c.position, c.afloat)?)))
+            .filter_map(|(id, c)| Some((*id, (c, place_on(view.scene, &c.position, c.afloat)?))))
+            .chain(own.iter().map(|(id, c, at)| (*id, (c, *at))))
             .collect();
         figures.shown.retain(|id, figure| {
             let stays = places.contains_key(id);
@@ -1271,8 +1300,7 @@ fn show(
             stays
         });
 
-        for (id, [x, y, z]) in &places {
-            let character = &characters.0[id];
+        for (id, (character, [x, y, z])) in &places {
             let Some(figure) = figures.shown.get_mut(id) else {
                 let at = [*x, *y, *z];
                 let spot = world_spot(&view, at);
@@ -1334,7 +1362,8 @@ fn show(
             }
         }
 
-        hover(&view, figures, &characters, &mut bodies, &mut commands);
+        let you = own.map(|(id, ..)| id);
+        hover(&view, you, figures, &characters, &mut bodies, &mut commands);
     }
     cost.add(started.elapsed());
     cost.ticks += 1;
@@ -1351,21 +1380,24 @@ fn show(
     }
 }
 
-/// Names the character the look is on, if no marker has it.
+/// Names the character the look is on, if no marker has it, and never `you`: their marker
+/// is over them.
 fn hover(
     view: &MapView,
+    you: Option<u128>,
     figures: &mut Figures,
     characters: &Characters,
     bodies: &mut Bodies,
     commands: &mut Commands,
 ) {
-    let ids: Vec<u128> = figures.shown.keys().copied().collect();
+    let others = figures.shown.keys().filter(|id| Some(**id) != you);
+    let ids: Vec<u128> = others.copied().collect();
     let current = figures
         .label
         .and_then(|label| ids.iter().position(|id| *id == label.id));
     let reach = reach_for(size_on(view.scene.scale()), view.eye[1] - f64::from(SEA_Y));
     let picked = view.aim.and_then(|aim| {
-        let points = figures.shown.values().map(|figure| figure.up(0.5));
+        let points = ids.iter().map(|id| figures.shown[id].up(0.5));
         aimed_within(reach, view.eye, aim, points, current).map(|index| ids[index])
     });
     let over = |figure: &Figure| world_spot(view, figure.up(1.0 + LABEL_GAP));
@@ -1941,6 +1973,20 @@ mod tests {
             assert_eq!(java_hash(id), java_hash(skin.id.unwrap()));
             assert_ne!(Some(id), skin.id);
         }
+    }
+
+    #[test]
+    fn a_player_is_not_their_own_figure_but_keeps_their_default_skin() {
+        let account = PlayerUuid(Uuid::from_u128(0x1234_5678_9abc));
+        let you = Yourself {
+            at: [0.0; 3],
+            position: at(0.0, 0.0),
+            yaw: 0.0,
+        };
+        let (id, character) = yourself(&you, &account);
+        let figure = figure_id(id, &character.skin);
+        assert_ne!(figure, account.0);
+        assert_eq!(java_hash(figure), java_hash(account.0));
     }
 
     #[test]

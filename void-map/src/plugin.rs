@@ -52,7 +52,7 @@ use crate::cursor::{self, CursorPlugin};
 use crate::fence::Border;
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::motion::Motion;
-use crate::players::PlayersPlugin;
+use crate::players::{PlayersPlugin, figure_height};
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
     DIVE_TICKS, FreeLook, MIDDLE_BELOW, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH,
@@ -676,7 +676,11 @@ impl Part {
             Self::Disc => {
                 let centre = LINE_HEIGHT - Mark::Disc.height() as f32 / 2.0;
                 DisplayTransform::default()
-                    .translation(0.0, -centre * scale / PIXELS_PER_BLOCK, 0.0)
+                    .translation(
+                        0.0,
+                        self.rise(scale) - centre * scale / PIXELS_PER_BLOCK,
+                        0.0,
+                    )
                     .uniform_scale(scale)
             }
             Self::Head => {
@@ -685,7 +689,7 @@ impl Part {
                 DisplayTransform::default()
                     .translation(
                         -aside * scale / PIXELS_PER_BLOCK,
-                        -centre * scale / PIXELS_PER_BLOCK,
+                        self.rise(scale) - centre * scale / PIXELS_PER_BLOCK,
                         FACE_FRONT * scale,
                     )
                     .uniform_scale(scale)
@@ -693,11 +697,37 @@ impl Part {
             Self::Tip(under) => {
                 let line = LINE_HEIGHT / PIXELS_PER_BLOCK;
                 DisplayTransform::default()
-                    .translation(0.0, -(under / TIP_SCALE + line) * scale, 0.0)
+                    .translation(
+                        0.0,
+                        self.rise(scale) - (under / TIP_SCALE + line) * scale,
+                        0.0,
+                    )
                     .uniform_scale(scale)
             }
         }
     }
+
+    /// How far up the screen it goes for the marker to stand on the head of the player's
+    /// figure: seen from nearly straight above, it would cover it from any height. What a
+    /// billboard shows has its up on the screen.
+    fn rise(self, scale: f32) -> f32 {
+        let of_marker = match self {
+            Self::Pin => 0.0,
+            Self::Arrow(_) => arrow_half(),
+            Self::Disc | Self::Head | Self::Tip(_) => head_rise(),
+        };
+        of_marker * scale / self.size()
+    }
+}
+
+/// Half of an arrow, in blocks where the marker scale is 1.
+fn arrow_half() -> f32 {
+    Mark::Arrow.height() as f32 / 2.0 * ARROW_SCALE / PIXELS_PER_BLOCK
+}
+
+/// From the tip under a head to the middle of its disc, where the marker scale is 1.
+fn head_rise() -> f32 {
+    DISC_RADIUS + Mark::Tip.height() as f32 * TIP_SCALE / PIXELS_PER_BLOCK
 }
 
 /// Turns an arrow in the plane of the screen, around its own middle. What a billboard
@@ -709,7 +739,11 @@ fn arrow_transform(yaw: f32, scale: f32) -> DisplayTransform {
     let centre = (LINE_HEIGHT - Mark::Arrow.height() as f32 / 2.0) * scale / PIXELS_PER_BLOCK;
     let (sin, cos) = turn.sin_cos();
     DisplayTransform::default()
-        .translation(centre * sin, -centre * cos, 0.0)
+        .translation(
+            centre * sin,
+            Part::Arrow(yaw).rise(scale) - centre * cos,
+            0.0,
+        )
         .left_rotation([0.0, 0.0, half_sin, half_cos])
         .uniform_scale(scale)
 }
@@ -1168,13 +1202,15 @@ impl MapSession {
         part.transform(self.part_scale(part))
     }
 
-    /// How far over the ground the player's marker is aimed at, in blocks of a build.
+    /// How far over the ground the player's marker is aimed at: over their figure.
     fn you_lift(&self) -> f64 {
-        match self.looks.me {
+        let lift = match self.looks.me {
             Me::Pin => 0.0,
             Me::Arrow => ARROW_LIFT,
             Me::Head => MINI_HEAD_LIFT,
-        }
+        };
+        let scale = self.model().scale();
+        figure_height(scale) + lift * f64::from(scale.build)
     }
 
     fn sign_scale(&self) -> f32 {
@@ -1227,6 +1263,17 @@ pub(crate) struct MapView<'a> {
     pub eye: [f64; 3],
     /// Where the middle of the screen points, when no marker has the look.
     pub aim: Option<[f64; 3]>,
+    /// The player, if the model reaches where they are.
+    pub you: Option<Yourself>,
+}
+
+/// The player, as their figure needs them.
+pub(crate) struct Yourself {
+    /// On the model, on the ground under their marker.
+    pub at: [f64; 3],
+    /// In the real world.
+    pub position: Position,
+    pub yaw: f32,
 }
 
 impl MapSession {
@@ -1251,6 +1298,11 @@ impl MapSession {
             origin: [x, z],
             eye,
             aim: free.then_some(direction),
+            you: self.pins.you.as_ref().map(|you| Yourself {
+                at: you.at,
+                position: self.position,
+                yaw: self.rotation.yaw,
+            }),
         })
     }
 }
@@ -1516,7 +1568,7 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
         icons.push(entity);
     }
     let you = model_spot(level, &session.position).map(|at| You {
-        parts: spawn_you(session, at, build, commands),
+        parts: spawn_you(session, at, commands),
         at,
     });
     let signs = spawn_signs(level, session, build, commands);
@@ -1536,9 +1588,8 @@ fn respawn_you(session: &mut MapSession, commands: &mut Commands) {
     for (entity, _) in you.parts {
         commands.entity(entity).try_despawn();
     }
-    let build = f64::from(session.model().scale().build);
     session.pins.you = Some(You {
-        parts: spawn_you(session, you.at, build, commands),
+        parts: spawn_you(session, you.at, commands),
         at: you.at,
     });
 }
@@ -1558,12 +1609,11 @@ fn respawn_signs(atlas: &Atlas, session: &mut MapSession, commands: &mut Command
 fn spawn_you(
     session: &MapSession,
     [x, y, z]: [f64; 3],
-    build: f64,
     commands: &mut Commands,
 ) -> Vec<(Entity, Part)> {
     let text = |mark: Mark| mark.text(session.drawn);
     let drawn = |part: Part| display(1.0).transform(session.part_transform(part));
-    let at = session.on_model(x, y + session.you_lift() * build, z);
+    let at = session.on_model(x, y + session.you_lift(), z);
     match session.looks.me {
         Me::Pin => {
             let entity = spawn_mark(commands, at, text(Mark::Pin), drawn(Part::Pin));
@@ -2575,7 +2625,7 @@ fn marker_points(level: &Level, session: &MapSession) -> Vec<[f64; 3]> {
         .pins
         .you
         .iter()
-        .map(|you| [you.at[0], you.at[1] + session.you_lift() * build, you.at[2]]);
+        .map(|you| [you.at[0], you.at[1] + session.you_lift(), you.at[2]]);
     icons.chain(you).collect()
 }
 
@@ -2631,14 +2681,15 @@ fn marker_top(level: &Level, session: &MapSession, hover: Hover) -> Option<([f64
         }
         Hover::You => {
             let [x, y, z] = session.pins.you.as_ref()?.at;
+            let at = [x, y + session.you_lift(), z];
             let scale = session.marker_scale();
             match session.looks.me {
                 Me::Pin => {
                     let height = Mark::Pin.height() as f32 / PIXELS_PER_BLOCK;
-                    Some(([x, y, z], height * PIN_SCALE * scale))
+                    Some((at, height * PIN_SCALE * scale))
                 }
-                Me::Arrow => Some(([x, y + ARROW_LIFT * build, z], ARROW_SCALE * scale / 4.0)),
-                Me::Head => Some(([x, y + MINI_HEAD_LIFT * build, z], DISC_RADIUS * scale)),
+                Me::Arrow => Some((at, 2.0 * arrow_half() * scale)),
+                Me::Head => Some((at, (head_rise() + DISC_RADIUS) * scale)),
             }
         }
     }
