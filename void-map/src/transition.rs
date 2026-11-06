@@ -511,7 +511,18 @@ impl Flight {
         if self.ticks < SWAP_TICKS {
             return self.pose(0);
         }
+        if self.track.is_some() {
+            return self.pose(self.ticks + self.lead());
+        }
         self.pose((self.ticks / SEGMENT_TICKS + 1) * SEGMENT_TICKS)
+    }
+
+    /// How far ahead a film tells its camera to go. A film is on a curve whose speed changes
+    /// all the time, and by segments that shows as a speed that jumps every quarter of a
+    /// second. So it gets a new end each tick: what glides then gets a share of the way each
+    /// tick, and stays this far behind what it is told. It starts from nothing, from a rest.
+    fn lead(&self) -> u32 {
+        (self.ticks - SWAP_TICKS).min(u32::from(FLIGHT_GLIDE_TICKS))
     }
 
     /// The moment to give what sees for an eye its exact look.
@@ -690,6 +701,22 @@ mod tests {
             (RISE_TICKS - SWAP_TICKS).div_ceil(SEGMENT_TICKS) + 1
         );
         assert_eq!(*targets.last().unwrap(), flight.end());
+    }
+
+    /// A film is told where to go each tick, and starts from a rest.
+    #[test]
+    fn a_film_moves_its_camera_on_each_tick() {
+        let mut flight = Flow::Abduction.rise(EYE, LOOK);
+        while flight.elapsed() < SWAP_TICKS {
+            flight.tick();
+        }
+        let mut last = flight.target();
+        assert!((last[1] - EYE.y).abs() < 1e-9);
+        while flight.elapsed() + u32::from(FLIGHT_GLIDE_TICKS) < flight.length() {
+            flight.tick();
+            assert_ne!(flight.target(), last, "at {}", flight.elapsed());
+            last = flight.target();
+        }
     }
 
     /// A client jumps past this distance instead of gliding, and a dive is the longest

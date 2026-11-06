@@ -28,6 +28,20 @@ const WATCH_HEIGHT: f64 = 1.4;
 /// The same, close enough to see a body struggle.
 const CLOSE_BACK: f64 = 5.5;
 const CLOSE_SIDE: f64 = 3.0;
+/// The way back is seen from far and high, with the saucer, the beam and the body in the land
+/// around them. The camera goes slowly round from here to there as it all happens.
+const WIDE_BACK: f64 = 15.0;
+const WIDE_SIDE: f64 = 8.5;
+const WIDE_HEIGHT: f64 = 9.0;
+const TURNED_BACK: f64 = 13.0;
+const TURNED_SIDE: f64 = 4.0;
+const TURNED_HEIGHT: f64 = 7.0;
+/// What the wide view is aimed at: between the saucer and the feet.
+const WIDE_AIM: f64 = 4.2;
+/// Halfway down from there to the head.
+const NEARING_BACK: f64 = 6.5;
+const NEARING_SIDE: f64 = 2.0;
+const NEARING_HEIGHT: f64 = 3.4;
 /// The way out of an eye, and back into it: straight up through the top of the head and
 /// behind it from there. Coming along the look, the back of the head would fill the screen.
 const OVER_THE_HEAD: f64 = 0.85;
@@ -71,11 +85,12 @@ mod outro {
     pub const SPARKS_END: u32 = 46;
     pub const DEPART: u32 = 74;
     pub const GONE: u32 = 94;
-    pub const WATCHING: u32 = 36;
-    pub const CLOSER: u32 = 74;
-    pub const OVER_THE_HEAD: u32 = 94;
+    pub const WIDE: u32 = 32;
+    pub const TURNED: u32 = 72;
+    pub const NEARING: u32 = 86;
+    pub const OVER_THE_HEAD: u32 = 96;
     /// A client draws the inside of a head: the body goes before the camera gets there.
-    pub const BODY_GONE: u32 = 96;
+    pub const BODY_GONE: u32 = 98;
 }
 
 /// Taken, or brought back.
@@ -85,7 +100,7 @@ pub enum Part {
     Outro,
 }
 
-/// A point of a way, with the look at that point. Between two, the way eases in and out.
+/// A point of a way, with the look at that point.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Key {
     tick: u32,
@@ -97,27 +112,60 @@ impl Key {
     const fn new(tick: u32, at: [f64; 3], look: [f32; 2]) -> Self {
         Self { tick, at, look }
     }
+
+    /// Its numbers side by side, for a way to treat them all alike.
+    fn values(&self) -> [f64; 5] {
+        let [x, y, z] = self.at;
+        let [yaw, pitch] = self.look;
+        [x, y, z, f64::from(yaw), f64::from(pitch)]
+    }
 }
 
+/// How fast a number goes through each key: a way only stops at both ends and where it turns
+/// back, and goes through the others without a change of speed. It never overshoots a key,
+/// so that what holds still between two keys does hold still.
+fn slopes(keys: &[Key], value: usize) -> Vec<f64> {
+    let span = |index: usize| f64::from(keys[index + 1].tick - keys[index].tick);
+    let rise = |index: usize| keys[index + 1].values()[value] - keys[index].values()[value];
+    let mut slopes = vec![0.0; keys.len()];
+    for (index, slope) in slopes.iter_mut().enumerate().take(keys.len() - 1).skip(1) {
+        let (before, after) = (span(index - 1), span(index));
+        let (first, second) = (rise(index - 1) / before, rise(index) / after);
+        if first * second > 0.0 {
+            let (near, far) = (2.0 * after + before, after + 2.0 * before);
+            *slope = (near + far) / (near / first + far / second);
+        }
+    }
+    slopes
+}
+
+/// The way through its keys at some tick, in one curve.
 fn along(keys: &[Key], tick: f64) -> ([f64; 3], [f32; 2]) {
     let (first, last) = (keys[0], keys[keys.len() - 1]);
     if tick <= f64::from(first.tick) {
         return (first.at, first.look);
     }
-    for pair in keys.windows(2) {
-        let [from, to] = [pair[0], pair[1]];
-        if tick < f64::from(to.tick) {
-            let span = f64::from(to.tick - from.tick);
-            let share = ease((tick - f64::from(from.tick)) / span);
-            let at =
-                std::array::from_fn(|axis| from.at[axis] + (to.at[axis] - from.at[axis]) * share);
-            let look = std::array::from_fn(|axis| {
-                from.look[axis] + (to.look[axis] - from.look[axis]) * share as f32
-            });
-            return (at, look);
-        }
-    }
-    (last.at, last.look)
+    let Some(index) = keys
+        .windows(2)
+        .position(|pair| tick < f64::from(pair[1].tick))
+    else {
+        return (last.at, last.look);
+    };
+    let (from, to) = (keys[index], keys[index + 1]);
+    let span = f64::from(to.tick - from.tick);
+    let share = (tick - f64::from(from.tick)) / span;
+    let (square, cube) = (share * share, share * share * share);
+    let value = |axis: usize| {
+        let slope = slopes(keys, axis);
+        (2.0 * cube - 3.0 * square + 1.0) * from.values()[axis]
+            + (cube - 2.0 * square + share) * span * slope[index]
+            + (3.0 * square - 2.0 * cube) * to.values()[axis]
+            + (cube - square) * span * slope[index + 1]
+    };
+    (
+        std::array::from_fn(value),
+        std::array::from_fn(|axis| value(axis + 3) as f32),
+    )
 }
 
 /// What a body does, which a client then animates by itself.
@@ -197,16 +245,26 @@ impl Scene {
     }
 
     /// Where a camera shot from this side goes, for the land to be checked.
-    pub fn stops(&self, turn: f32) -> [[f64; 3]; 4] {
+    pub fn stops(&self, turn: f32) -> Vec<[f64; 3]> {
         let around = self.seen_from(View { turn, lift: 0.0 });
-        let [x, y, z] = around.off_feet(WATCH_BACK, WATCH_SIDE, WATCH_HEIGHT);
-        let [feet_x, _, feet_z] = self.feet();
-        [
-            [x, y, z],
-            [(x + feet_x) / 2.0, y, (z + feet_z) / 2.0],
-            around.off_feet(CLOSE_BACK, CLOSE_SIDE, 0.9),
-            around.off_feet(CLOSE_BACK / 2.0, CLOSE_SIDE / 2.0, 0.9),
-        ]
+        match self.part {
+            Part::Intro => {
+                let [x, y, z] = around.off_feet(WATCH_BACK, WATCH_SIDE, WATCH_HEIGHT);
+                let [feet_x, _, feet_z] = self.feet();
+                vec![
+                    [x, y, z],
+                    [(x + feet_x) / 2.0, y, (z + feet_z) / 2.0],
+                    around.off_feet(CLOSE_BACK, CLOSE_SIDE, 0.9),
+                    around.off_feet(CLOSE_BACK / 2.0, CLOSE_SIDE / 2.0, 0.9),
+                ]
+            }
+            Part::Outro => vec![
+                around.off_feet(WIDE_BACK, WIDE_SIDE, WIDE_HEIGHT),
+                around.off_feet(TURNED_BACK, TURNED_SIDE, TURNED_HEIGHT),
+                around.off_feet(NEARING_BACK, NEARING_SIDE, NEARING_HEIGHT),
+                around.off_feet(NEARING_BACK / 2.0, NEARING_SIDE / 2.0, NEARING_HEIGHT / 2.0),
+            ],
+        }
     }
 
     pub fn part(&self) -> Part {
@@ -275,12 +333,15 @@ impl Scene {
                 along(&keys, tick)
             }
             Part::Outro => {
-                use outro::{CLOSER, OVER_THE_HEAD as ABOVE, WATCHING};
-                let closer = self.off_feet(CLOSE_BACK, CLOSE_SIDE, WATCH_HEIGHT + lift);
+                use outro::{NEARING, OVER_THE_HEAD as ABOVE, TURNED, WIDE};
+                let wide = self.off_feet(WIDE_BACK, WIDE_SIDE, WIDE_HEIGHT + lift);
+                let turned = self.off_feet(TURNED_BACK, TURNED_SIDE, TURNED_HEIGHT + lift);
+                let nearing = self.off_feet(NEARING_BACK, NEARING_SIDE, NEARING_HEIGHT + lift);
                 let keys = [
                     Key::new(0, sky, sky_look),
-                    Key::new(WATCHING, watch, self.aim(watch, middle(4.4))),
-                    Key::new(CLOSER, closer, self.aim(closer, middle(1.0))),
+                    Key::new(WIDE, wide, self.aim(wide, middle(WIDE_AIM))),
+                    Key::new(TURNED, turned, self.aim(turned, middle(WIDE_AIM))),
+                    Key::new(NEARING, nearing, self.aim(nearing, middle(2.6))),
                     Key::new(ABOVE, over_head, level),
                     Key::new(OUTRO_TICKS, eye, self.look),
                 ];
@@ -750,6 +811,44 @@ mod tests {
         let scene = Scene::new(Part::Intro, EYE, LOOK);
         let last = scene.body(intro::TAKEN - 1).unwrap();
         assert!(last.at[1] > scene.feet()[1] + HOVER - HULL_BELOW - 0.5);
+    }
+
+    /// A stop at each key is what Léo saw as small stutters.
+    #[test]
+    fn a_way_goes_through_a_key_without_a_change_of_speed() {
+        let key = |tick, x| Key::new(tick, [x, 0.0, 0.0], [0.0, 0.0]);
+        let keys = [key(0, 0.0), key(10, 10.0), key(30, 40.0), key(40, 40.0)];
+        let x = |tick: f64| along(&keys, tick).0[0];
+        let (before, after) = (x(10.0) - x(9.9), x(10.1) - x(10.0));
+        assert!(
+            before > 0.05 && (before - after).abs() < 0.01,
+            "{before} {after}"
+        );
+        assert_eq!(x(10.0), 10.0);
+    }
+
+    #[test]
+    fn a_way_never_overshoots_a_key() {
+        let key = |tick, x| Key::new(tick, [x, 0.0, 0.0], [0.0, 0.0]);
+        let keys = [key(0, 0.0), key(5, 30.0), key(30, 31.0), key(40, 31.0)];
+        for tick in 0..=400 {
+            let x = along(&keys, f64::from(tick) / 10.0).0[0];
+            assert!((-1e-9..=31.0 + 1e-9).contains(&x), "{tick} {x}");
+        }
+    }
+
+    /// The camera of a film moves on from one tick to the next by about as much as the last
+    /// time, whichever part of the film it is in.
+    #[test]
+    fn the_camera_of_a_film_never_changes_speed_all_at_once() {
+        for scene in scenes() {
+            let at = |tick: u32| Track(scene).at(f64::from(tick)).0;
+            for tick in 1..scene.length() {
+                let [before, after] =
+                    [apart(at(tick - 1), at(tick)), apart(at(tick), at(tick + 1))];
+                assert!((before - after).abs() < 0.3, "{:?} {tick}", scene.part());
+            }
+        }
     }
 
     /// Between two places a display glides, up to where a client gives up and jumps.

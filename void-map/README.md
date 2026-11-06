@@ -62,9 +62,10 @@ does that for anything else, and changes no choice: that is
 
 `Soucoupe` is seen from outside. On the way in, the camera leaves the head through its top
 and draws back, a saucer comes over the player, its beam takes them up struggling, and it
-goes off into the sky with the camera after it. On the way out it comes down from the sky,
-the beam lets them down, they land dizzy, it leaves, and the camera comes back over the
-head and down into the eye.
+goes off into the sky with the camera after it. On the way out it comes down from the sky
+to a wide view from high up, with the saucer, the beam and the body in the land around them,
+goes slowly round as the beam lets them down, they land dizzy, it leaves, and the camera
+comes in over the head and down into the eye.
 
 `abduction.rs` says what happens at each tick of a `Scene`, and `plugin::abduction` plays it
 for any `Flight` that has one, real or preview. So that is all it takes for both, and
@@ -81,8 +82,10 @@ leaving midway. What it is made of goes out to all who see the chunk, like the c
   three ticks as any living entity. Its `Stance` adds what a client animates by itself: the
   shaking of the frozen, the pose of an elytra, in which the pitch turns the whole body,
   and the spin of a riptide.
-- The saucer and the beam are item displays of the pack and glide by segments, as cameras
-  do. The beam is one sheet that the client turns to the camera, and it grows by
+- A film goes through its keys on one curve, which only stops at both ends. It tells what
+  glides where to be each tick, as far ahead as that stays behind: by segments, a speed that
+  changes all the time jumps every quarter of a second.
+- The saucer and the beam are item displays of the pack. The beam is one sheet that the client turns to the camera, and it grows by
   interpolation. A client with no pack gets a pressure plate and a glass pane.
 - The film is shot from the first of four sides with room for the camera, in the blocks
   around the player. It settles that as the flight starts, which still leaves the eye or

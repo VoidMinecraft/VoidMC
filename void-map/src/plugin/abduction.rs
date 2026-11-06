@@ -23,10 +23,10 @@ use voidmc_protocol::slot::{DataComponent, component_ids};
 
 use super::{MapSession, PackLoaded, Passage};
 use crate::abduction::{BEAM_MODEL, Body, Cue, HOVER, SAUCER_MODEL, Scene, Stance, View};
-use crate::transition::{Flight, SEGMENT_TICKS};
+use crate::transition::{FLIGHT_GLIDE_TICKS, Flight};
 
-/// How much longer than a segment a display of the scene takes over it, so as never to stop.
-const GLIDE_TICKS: u8 = SEGMENT_TICKS as u8 + 2;
+/// How long a display of the scene takes to get to a new place.
+const GLIDE_TICKS: u8 = FLIGHT_GLIDE_TICKS;
 /// The saucer, at the scale of a model of one block across.
 const SAUCER_SCALE: f32 = 3.4;
 const BEAM_WIDTH: f32 = 6.5;
@@ -387,7 +387,7 @@ pub(super) fn tick(
     }
 }
 
-/// A new place for the saucer and the beam once a segment, for the client to glide to.
+/// A new place for the saucer and the beam each tick, as far ahead as they stay behind it.
 fn play_saucer(
     cast: &mut Cast,
     tick: u32,
@@ -418,10 +418,7 @@ fn play_saucer(
             display.transform = wanted;
         }
     }
-    if !tick.is_multiple_of(SEGMENT_TICKS) {
-        return;
-    }
-    let (at, [yaw, pitch]) = scene.saucer(tick + SEGMENT_TICKS);
+    let (at, [yaw, pitch]) = scene.saucer(tick + u32::from(GLIDE_TICKS));
     if let Some(saucer) = cast.saucer {
         commands
             .entity(saucer)
