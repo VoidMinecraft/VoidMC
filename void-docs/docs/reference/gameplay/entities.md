@@ -91,6 +91,7 @@ full state once.
 | `NoGravity`, `Silent` | Indices 5 and 4 |
 | `ItemEntity { stack }` | Rendered item of a `minecraft:item` entity |
 | `EndCrystal::floating()` / `.show_base()` / `.beam_target(x, y, z)` | Bedrock base (index 9) and beam target (index 8) of a `minecraft:end_crystal`; the default is floating with no beam |
+| `Mannequin::new(profile)` | Skin (index 17) of a `minecraft:mannequin`, a player's model with no player behind it, with all its layers shown (index 16). `description` is the line under its name (index 19), and the default `None` drops vanilla's "NPC" label. A `ResolvableProfile::textured("entity/player/wide/steve", false)` draws a texture of the client or of a pack, with no account |
 
 Insert to enable, `remove::<T>()` to restore the vanilla default (every shipped
 source implements `clear`, including the display components). Mutating a
