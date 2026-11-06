@@ -41,6 +41,17 @@ registries it receives and fails on a double when the configuration ends, and it
 start over. The proxy keeps from it what the new server repeats, and goes on live from
 there. A server that says anything else ends the session with a message. `resumed` then
 comes with path `reconfigured` and reason `the server went away during a configuration`.
+Resource packs stay out of this comparison: a push of a pack the client does not hold yet
+reaches it at once. A client that receives a push for an id it already has replaces that
+pack without a word to the server, then answers for the new one from the start. If the
+download of the replaced pack then fails, the client fails the new pack of that id with
+it, and the server receives `DOWNLOAD_FAILED` for a pack that had no fault of its own.
+The one exception is a client that already received `finish_configuration`: it no longer reads
+configuration packets, so a pack the proxy would have to pass on ends the session with a
+message.
+
+A client that received `login_finished` and has not acknowledged it yet waits for that
+acknowledgement before the proxy logs in again, so that a new server never tells it twice.
 
 The seamless path needs all of the following; `resumed.reason` names the one that failed:
 
@@ -125,6 +136,10 @@ loses events and slows nothing.
   inflated, ends the session with a message giving its size.
 - **Online mode** and a **different protocol version** are refused with a clear message.
 - A client that leaves while the server is away ends its session, and the others go on.
+- A disconnect, and anything else the proxy writes itself, follows what the client
+  decodes, not what it has answered: `login_finished`, `start_configuration` and
+  `finish_configuration` switch a client as they arrive. Between `finish_configuration`
+  and the client's answer the proxy sends no keep-alive.
 - A frame cut by the crash never reaches the client. A packet that cannot be read is
   still relayed, and forces the reconfigured path at the next return.
 - A server silent for `--backend-silence` counts as lost, in play and during a return,
