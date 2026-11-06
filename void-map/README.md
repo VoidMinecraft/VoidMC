@@ -102,7 +102,10 @@ nothing. The client still redraws the sections around its new place, which takes
 the fog over `chunkSectionFadeInTime`, most of a second of a dark map, so the pack
 overrides `chunksection.glsl` for them to be whole at once, east of `FIRST_MODEL_BLOCK`
 only. What is left of a threshold is those 50 ms, with the sky in the first frames, and
-markers that come back a moment later, since they are new entities.
+markers that come back a moment later, since they are new entities. A camera glides some
+ticks behind what it was told, and a jump does not: in the middle of a zoom, it goes to the
+height the client was showing, and the glide takes over from there, or the whole view would
+leap ahead.
 
 Chunks are built and encoded once, on start for the default look and clouds, and on
 first use for the others. In the map a client is told to keep a far larger radius with
