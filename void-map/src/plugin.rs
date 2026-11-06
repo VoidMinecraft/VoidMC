@@ -43,6 +43,7 @@ use voidmc_ui::{PackSettled, Text};
 
 use crate::art::{Card, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
 use crate::biome::{self, MapLevel};
+use crate::cursor::{self, CursorPlugin};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::players::PlayersPlugin;
 use crate::pointer::{
@@ -162,10 +163,8 @@ const CARD_SCALE_PER_BLOCK: f64 = 0.09;
 const PLAIN_CARD_BACKGROUND: i32 = 0xD8_10_14_1C_u32 as i32;
 const CLEAR: i32 = 0;
 
-/// A spectator only clicks when the look hits an entity, and only sees the
-/// crosshair when that entity has a menu. A chest minecart around the eye is always
-/// hit. The eye sits under its floor, looking down, so the cart never shows.
-const EYE_BOX_KIND: EntityKind = EntityKind::ChestMinecart;
+/// A spectator only clicks when the look hits an entity. A minecart around the eye is
+/// always hit. The eye sits under its floor, looking down, so the cart never shows.
 const EYE_BOX_DROP: f64 = 0.02;
 /// Nobody sees it. A mannequin needs one anyway.
 const EYE_SKIN: &str = "entity/player/wide/steve";
@@ -887,6 +886,19 @@ impl MapSession {
         self.wheel.is_some()
     }
 
+    /// What the pointer has to show.
+    pub(crate) fn wanted_cursor(&self) -> cursor::Wanted {
+        if self.veiled.is_some() || self.closing.is_some() {
+            cursor::Wanted::Veil
+        } else if !self.drawn || self.travel.is_some() || self.is_frozen() {
+            cursor::Wanted::Nothing
+        } else if self.hovered.is_some() {
+            cursor::Wanted::Pointer(cursor::Look::Over)
+        } else {
+            cursor::Wanted::Pointer(cursor::Look::Free)
+        }
+    }
+
     /// Takes in a rotation the client reports, and says how to correct it, if at all.
     fn turn(&mut self, yaw: f32, pitch: f32, atlas: &Atlas) -> Option<PlayerRotation> {
         self.rig?;
@@ -1128,7 +1140,7 @@ impl Plugin for MapPlugin {
         .add_observer(note_pack)
         .add_observer(choose_look)
         .add_observer(player_left)
-        .add_plugins(PlayersPlugin);
+        .add_plugins((PlayersPlugin, CursorPlugin));
         app.world_mut()
             .resource_mut::<CommandRegistry>()
             .register(map_command());
@@ -2136,7 +2148,7 @@ fn rig_up(mut sessions: Query<(Entity, &mut MapSession), Settled>, mut commands:
         if session.rig.is_some() {
             continue;
         }
-        let eye_box = EntityBuilder::new(EYE_BOX_KIND)
+        let eye_box = EntityBuilder::new(cursor::eye_box_kind(session.drawn))
             .position(session.eye_box_position())
             .gravity(false)
             .spawn(&mut commands)
@@ -3673,6 +3685,28 @@ mod tests {
         });
         let look = world.get::<MapSession>(player).unwrap().look;
         assert_eq!((look.yaw, look.pitch), (170.0, 30.0));
+    }
+
+    #[test]
+    fn the_pointer_gives_way_to_the_veil_and_to_a_busy_view() {
+        use cursor::{Look, Wanted};
+        let mut session = session(MapMode::Look);
+        session.drawn = true;
+        assert_eq!(session.wanted_cursor(), Wanted::Pointer(Look::Free));
+        session.hovered = Some(Hover::Waypoint(0));
+        assert_eq!(session.wanted_cursor(), Wanted::Pointer(Look::Over));
+        session.wheel = Some(OpenWheel {
+            wheel: Wheel::default(),
+            display: Entity::PLACEHOLDER,
+            face: String::new(),
+        });
+        assert_eq!(session.wanted_cursor(), Wanted::Nothing);
+        session.closing = Some(1);
+        assert_eq!(session.wanted_cursor(), Wanted::Veil);
+        session.drawn = false;
+        session.closing = None;
+        session.wheel = None;
+        assert_eq!(session.wanted_cursor(), Wanted::Nothing);
     }
 
     #[test]

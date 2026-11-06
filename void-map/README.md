@@ -45,7 +45,8 @@ made of both, instead of packets encoded once.
 
 ## How the view works
 
-The middle of the screen is the pointer. The hovered marker is the nearest in angle
+The middle of the screen is the pointer, which the pack draws and which turns gold over
+a marker. The hovered marker is the nearest in angle
 from that ray, under a threshold, and it holds on a little past it so that the choice
 never flickers. A click acts on that marker and nothing else.
 
@@ -118,10 +119,9 @@ look, starting and ending at rest, and the player then lands at the real place,
 `ARRIVAL_CLEARANCE` above the ground. In a look, that entity takes over from the eye.
 Crouching calls the dive off. A closed region refuses to be travelled to, and says so.
 
-A spectator only clicks when the look hits an entity, and only sees the crosshair when
-that entity has a menu. So a chest minecart surrounds the eye, which sits just under
-its floor: the cart is always hit, and looking down it never shows. A left click sends
-`SpectateEntity`, a right click sends `Interact`.
+A spectator only clicks when the look hits an entity. So a minecart surrounds the eye,
+which sits just under its floor: the cart is always hit, and looking down it never
+shows. A left click sends `SpectateEntity`, a right click sends `Interact`.
 
 The model fits a client render distance of 8. Below that its far rim is cut. The last
 13 blocks of a render distance fade out, which the server cannot change: both views
@@ -130,6 +130,29 @@ keep what matters closer than that.
 Regions are data in `regions`: each is discovered, undiscovered or locked, and the model
 only takes the colours of a region down a little to show it. `Regions::demo` is a fixed
 example.
+
+## The pointer
+
+The pointer is a title of one glyph, from a font of its own. The client centres a title
+at any size of window, and draws it four times larger: sixteen pixels of the picture at
+a height of 4 make one pixel of the picture one pixel of the gui, as in the crosshair,
+so it stays sharp at every gui scale. A change of look is a new text, with no fade.
+
+The client's crosshair stays as it is. A spectator only sees it over an entity with a
+menu, so a plain minecart around the eye leaves it off, and nothing has to tell the map
+from the rest of the game. A client that refused the pack gets a chest minecart, and its
+own crosshair.
+
+The veil is a title too, and new times or a new text would cut it short. So the pointer
+gives way to it, and only comes back once it has gone. During a dive and while the wheel
+is open, it is cleared.
+
+Replacing the crosshair sprite is not an option: the pack applies everywhere. A core
+shader can tell the map apart, from `CameraBlockPos` in `Globals`, which every program
+gets, and a hover from a band of `GameTime`. But the crosshair blends with `INVERT`, so
+its colours come out as a mix with what is under it, and only inverted shapes are
+possible. The action bar is placed from the bottom of the screen, so it only reaches the
+middle with a shader on all text, and it fades unless sent again.
 
 ## Characters
 
@@ -165,8 +188,8 @@ figure glows, with a text display over it.
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
 `buildings`, `markers`, `pointer`, `transition`, `wheel` and `art`. `biome` declares the
-level, `plugin` runs the sessions, `players` shows the characters, and `telemetry` measures
-them.
+level, `plugin` runs the sessions, `players` shows the characters, `cursor` draws the
+pointer, and `telemetry` measures the characters.
 
 ## Logs
 
