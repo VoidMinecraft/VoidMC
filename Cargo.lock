@@ -1964,9 +1964,11 @@ dependencies = [
 name = "voidmc-clients"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "serde",
  "serde_json",
  "toml",
+ "ussr-nbt",
  "uuid",
  "voidmc-codec",
  "voidmc-data",

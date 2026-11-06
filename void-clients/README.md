@@ -61,8 +61,12 @@ and answers one JSON line.
 - `voidc down` only signals a pid that is still that client, so it cannot kill a neighbour.
 - A client to play has no socket, so it cannot be driven, and there is only one.
 - A client goes back to its server by itself after a restart.
-- A client with no verb for `idle_minutes` stops, unless its window is shown. `VOIDC_IDLE_MINUTES`
-  changes that for one launch.
+- A client or a bot with no verb for `idle_minutes` stops, unless its window is shown. `state` and
+  `thumb` do not count as verbs. `VOIDC_IDLE_MINUTES` changes that for one launch.
+- A `voidc up` that fails stops the client it started.
+- A condition that cannot be compared, like `chunks>=abc`, is an error, never true.
+- The mosaic acts only for its own page: a request from another site or another host name is refused.
+- A `VOIDC_HOME` too long for a socket is refused at once.
 
 Limits and levels live in `clients.toml`, built into the binary. Runtime state lives in
 `~/.voidc`, `VOIDC_HOME` moves it.

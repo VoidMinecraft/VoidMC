@@ -41,13 +41,16 @@ pub fn check(registry: &Registry, client: &Client, others: &[Client]) -> Result<
 /// The slow part runs first; the check, the start and the record then happen under one lock.
 pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     check(registry, &client, &running())?;
+    if client.level != Level::Play {
+        registry::socket(&client.name)?;
+    }
     let command = match client.level {
-        Level::Bot => launch::bot(&client)?,
+        Level::Bot => launch::bot(registry, &client)?,
         _ => launch::game(registry, &client)?,
     };
     let _lock = registry::Lock::take().map_err(|e| e.to_string())?;
     check(registry, &client, &running())?;
-    if let Some(owner) = registry::feature_on(client.port).filter(|owner| *owner != client.feature)
+    if let Some(owner) = registry::feature_on(client.port)?.filter(|owner| *owner != client.feature)
     {
         return Err(format!("port {} is leased to {owner}", client.port));
     }

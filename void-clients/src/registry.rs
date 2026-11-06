@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -102,8 +102,26 @@ pub fn client_dir(name: &str) -> PathBuf {
     home().join("clients").join(name)
 }
 
-pub fn socket(name: &str) -> PathBuf {
-    home().join("run").join(format!("{name}.sock"))
+const SOCKET_PATH_LIMIT: usize = 103;
+
+/// The socket of a client, refused when macOS could not bind it.
+pub fn socket(name: &str) -> Result<PathBuf, String> {
+    let path = home().join("run").join(format!("{name}.sock"));
+    let length = path.as_os_str().len();
+    if length > SOCKET_PATH_LIMIT {
+        return Err(format!(
+            "the socket {} is {length} bytes long and macOS takes at most {SOCKET_PATH_LIMIT}: use a shorter VOIDC_HOME or name",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// Writes a whole file or nothing: a reader never sees half of it.
+fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    fs::write(&temporary, bytes)?;
+    fs::rename(temporary, path)
 }
 
 pub fn title(level: Level, feature: &str) -> String {
@@ -138,9 +156,10 @@ pub fn slug(feature: &str) -> Result<String, String> {
 pub fn save(client: &Client) -> std::io::Result<()> {
     let dir = client_dir(&client.name);
     fs::create_dir_all(&dir)?;
-    let temporary = dir.join("client.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(client)?)?;
-    fs::rename(temporary, dir.join("client.json"))
+    write_whole(
+        &dir.join("client.json"),
+        &serde_json::to_vec_pretty(client)?,
+    )
 }
 
 pub fn load(name: &str) -> Option<Client> {
@@ -196,22 +215,26 @@ impl Drop for Lock {
     }
 }
 
-fn leases() -> BTreeMap<String, u16> {
-    fs::read(home().join("ports.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// No file is no lease; a file that does not parse is an error, never an empty table.
+fn leases() -> Result<BTreeMap<String, u16>, String> {
+    let path = home().join("ports.json");
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("{} is damaged ({e}): fix or delete it", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
 }
 
-pub fn lease_of(feature: &str) -> Option<u16> {
-    leases().get(feature).copied()
+pub fn lease_of(feature: &str) -> Result<Option<u16>, String> {
+    Ok(leases()?.get(feature).copied())
 }
 
-pub fn feature_on(port: u16) -> Option<String> {
-    leases()
+pub fn feature_on(port: u16) -> Result<Option<String>, String> {
+    Ok(leases()?
         .into_iter()
         .find(|(_, leased)| *leased == port || *leased + 1 == port)
-        .map(|(feature, _)| feature)
+        .map(|(feature, _)| feature))
 }
 
 fn listening(port: u16) -> bool {
@@ -221,7 +244,7 @@ fn listening(port: u16) -> bool {
 /// The pair of ports of a feature, the same one every time.
 pub fn lease(registry: &Registry, feature: &str) -> Result<u16, String> {
     let _lock = Lock::take().map_err(|e| e.to_string())?;
-    let mut all = leases();
+    let mut all = leases()?;
     if let Some(port) = all.get(feature) {
         return Ok(*port);
     }
@@ -229,7 +252,7 @@ pub fn lease(registry: &Registry, feature: &str) -> Result<u16, String> {
     let port = free_pair(registry, &taken, listening).ok_or("no free ports left")?;
     all.insert(feature.to_string(), port);
     let bytes = serde_json::to_vec_pretty(&all).map_err(|e| e.to_string())?;
-    fs::write(home().join("ports.json"), bytes).map_err(|e| e.to_string())?;
+    write_whole(&home().join("ports.json"), &bytes).map_err(|e| e.to_string())?;
     Ok(port)
 }
 
@@ -246,6 +269,13 @@ fn free_pair(registry: &Registry, taken: &[u16], busy: impl Fn(u16) -> bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_socket_macos_cannot_bind_is_refused_before_anything_starts() {
+        assert!(socket("hot-reload").is_ok());
+        let long = "x".repeat(SOCKET_PATH_LIMIT);
+        assert!(socket(&long).unwrap_err().contains("VOIDC_HOME"));
+    }
 
     #[test]
     fn a_title_never_exceeds_three_words() {

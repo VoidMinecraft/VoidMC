@@ -233,7 +233,7 @@ pub fn game(registry: &Registry, client: &Client) -> Result<Command, String> {
         .arg(format!("-Dvoid.server={server}"))
         .arg(format!(
             "-Dvoid.socket={}",
-            registry::socket(&client.name).display()
+            registry::socket(&client.name)?.display()
         ))
         .arg(format!("-Dvoid.idle.minutes={}", idle_minutes(registry)));
     match client.level {
@@ -299,12 +299,17 @@ pub fn game(registry: &Registry, client: &Client) -> Result<Command, String> {
     Ok(command)
 }
 
-pub fn bot(client: &Client) -> Result<Command, String> {
+pub fn bot(registry: &Registry, client: &Client) -> Result<Command, String> {
     let dir = registry::client_dir(&client.name);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(registry::home().join("run")).map_err(|e| e.to_string())?;
     let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
-    command.args(["bot-run", &client.name, &client.port.to_string()]);
+    command.args([
+        "bot-run",
+        &client.name,
+        &client.port.to_string(),
+        &idle_minutes(registry).to_string(),
+    ]);
     Ok(command)
 }
 

@@ -7,7 +7,7 @@ use crate::registry;
 
 /// Sends one verb to a client and returns its JSON line.
 pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> {
-    let mut stream = UnixStream::connect(registry::socket(name))
+    let mut stream = UnixStream::connect(registry::socket(name)?)
         .map_err(|e| format!("client {name} does not answer: {e}"))?;
     stream
         .set_read_timeout(Some(timeout))

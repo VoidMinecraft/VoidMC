@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use ussr_nbt::owned::{Compound, List, Nbt, Tag};
 use uuid::Uuid;
 use voidmc_codec::{Decode, Encode, VarI32};
 use voidmc_data::Version;
@@ -16,7 +17,7 @@ use voidmc_protocol::serverbound as sb;
 use voidmc_protocol::{PROTOCOL_VERSION, State as Phase};
 
 use crate::condition::{self, Condition};
-use crate::registry;
+use crate::{frame, registry};
 
 const VERSION: Version = Version::V26_1_2;
 const LOGIN: &str = "login";
@@ -24,6 +25,8 @@ const CONFIGURATION: &str = "configuration";
 const PLAY: &str = "play";
 const PACK_ACCEPTED_DOWNLOADED_LOADED: [i32; 3] = [3, 4, 0];
 const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
+const SILENCE_LIMIT: Duration = Duration::from_secs(30);
+const IDLE_CHECK: Duration = Duration::from_secs(5);
 
 macro_rules! packets {
     ($($constant:ident: $state:ident $direction:literal $name:literal,)*) => {
@@ -35,10 +38,21 @@ macro_rules! packets {
 
 packets! {
     LOGIN_SUCCESS: LOGIN "clientbound" "minecraft:login_finished",
+    LOGIN_COMPRESSION: LOGIN "clientbound" "minecraft:login_compression",
+    LOGIN_DISCONNECT: LOGIN "clientbound" "minecraft:login_disconnect",
+    LOGIN_CUSTOM_QUERY: LOGIN "clientbound" "minecraft:custom_query",
+    LOGIN_COOKIE: LOGIN "clientbound" "minecraft:cookie_request",
+    CONFIG_COOKIE: CONFIGURATION "clientbound" "minecraft:cookie_request",
+    CONFIG_DISCONNECT: CONFIGURATION "clientbound" "minecraft:disconnect",
+    CONFIG_PING: CONFIGURATION "clientbound" "minecraft:ping",
+    CONFIG_PACK_PUSH: CONFIGURATION "clientbound" "minecraft:resource_pack_push",
     CONFIG_FINISH: CONFIGURATION "clientbound" "minecraft:finish_configuration",
     CONFIG_KEEP_ALIVE: CONFIGURATION "clientbound" "minecraft:keep_alive",
     CONFIG_KNOWN_PACKS: CONFIGURATION "clientbound" "minecraft:select_known_packs",
     PLAY_ADD_ENTITY: PLAY "clientbound" "minecraft:add_entity",
+    PLAY_COOKIE: PLAY "clientbound" "minecraft:cookie_request",
+    PLAY_MOVE_ENTITY: PLAY "clientbound" "minecraft:move_entity_pos",
+    PLAY_MOVE_ENTITY_ROTATING: PLAY "clientbound" "minecraft:move_entity_pos_rot",
     PLAY_DISCONNECT: PLAY "clientbound" "minecraft:disconnect",
     PLAY_POSITION_SYNC: PLAY "clientbound" "minecraft:entity_position_sync",
     PLAY_UNLOAD_CHUNK: PLAY "clientbound" "minecraft:forget_level_chunk",
@@ -53,6 +67,12 @@ packets! {
     PLAY_SYSTEM_CHAT: PLAY "clientbound" "minecraft:system_chat",
     PLAY_TELEPORT_ENTITY: PLAY "clientbound" "minecraft:teleport_entity",
     SERVERBOUND_CONFIG_KEEP_ALIVE: CONFIGURATION "serverbound" "minecraft:keep_alive",
+    SERVERBOUND_CONFIG_PONG: CONFIGURATION "serverbound" "minecraft:pong",
+    SERVERBOUND_CONFIG_PACK_RESPONSE: CONFIGURATION "serverbound" "minecraft:resource_pack",
+    SERVERBOUND_LOGIN_QUERY_ANSWER: LOGIN "serverbound" "minecraft:custom_query_answer",
+    SERVERBOUND_LOGIN_COOKIE: LOGIN "serverbound" "minecraft:cookie_response",
+    SERVERBOUND_CONFIG_COOKIE: CONFIGURATION "serverbound" "minecraft:cookie_response",
+    SERVERBOUND_PLAY_COOKIE: PLAY "serverbound" "minecraft:cookie_response",
     SERVERBOUND_CONFIGURATION_ACK: PLAY "serverbound" "minecraft:configuration_acknowledged",
     SERVERBOUND_PACK_RESPONSE: PLAY "serverbound" "minecraft:resource_pack",
 }
@@ -63,8 +83,9 @@ struct World {
     in_play: bool,
     position: [f64; 3],
     entities: HashMap<i32, [f64; 3]>,
-    chunks: i64,
+    chunks: HashSet<(i32, i32)>,
     chat: String,
+    action_bar: String,
     chat_count: u64,
     camera: i32,
     packets: BTreeMap<i32, u64>,
@@ -77,8 +98,16 @@ struct World {
 impl World {
     fn forget_level(&mut self) {
         self.entities.clear();
-        self.chunks = 0;
+        self.chunks.clear();
         self.camera = 0;
+    }
+
+    fn shift(&mut self, entity: i32, delta: [i16; 3]) {
+        if let Some(at) = self.entities.get_mut(&entity) {
+            for (axis, step) in at.iter_mut().zip(delta) {
+                *axis += f64::from(step) / 4096.0;
+            }
+        }
     }
 
     fn fields(&self) -> Value {
@@ -96,9 +125,10 @@ impl World {
             "y": self.position[1],
             "z": self.position[2],
             "entities": self.entities.len(),
-            "chunks": self.chunks,
+            "chunks": self.chunks.len(),
             "camera": self.camera,
             "chat": self.chat,
+            "action_bar": self.action_bar,
             "chat_count": self.chat_count,
             "bytes": self.bytes,
             "reconnects": self.reconnects,
@@ -109,18 +139,31 @@ impl World {
 }
 
 type Shared = Arc<Mutex<World>>;
-type Writer = Arc<Mutex<Option<TcpStream>>>;
+type Writer = Arc<Mutex<Option<Link>>>;
+
+struct Link {
+    stream: TcpStream,
+    threshold: Option<usize>,
+}
+
+struct Reader {
+    stream: TcpStream,
+    threshold: Option<usize>,
+}
+
+impl Reader {
+    fn next(&mut self) -> std::io::Result<Vec<u8>> {
+        frame::read(&mut self.stream, self.threshold)
+    }
+}
 
 fn send<T: Encode>(writer: &Writer, packet: &T) -> std::io::Result<()> {
     let mut body = Vec::new();
     packet.encode(&mut body);
-    let mut frame = Vec::new();
-    VarI32(body.len() as i32).encode(&mut frame);
-    frame.extend(body);
-    match writer.lock().unwrap().as_mut() {
-        Some(stream) => stream.write_all(&frame),
-        None => Err(std::io::ErrorKind::NotConnected.into()),
-    }
+    let mut link = writer.lock().unwrap();
+    let link = link.as_mut().ok_or(std::io::ErrorKind::NotConnected)?;
+    let frame = frame::encode(&body, link.threshold)?;
+    link.stream.write_all(&frame)
 }
 
 struct Raw(Vec<u8>);
@@ -138,20 +181,63 @@ fn raw(id: i32, body: &[u8]) -> Raw {
     Raw(bytes)
 }
 
-fn receive(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    let (mut length, mut shift) = (0u32, 0);
-    loop {
-        let mut byte = [0u8];
-        stream.read_exact(&mut byte)?;
-        length |= ((byte[0] & 0x7F) as u32) << shift;
-        shift += 7;
-        if byte[0] & 0x80 == 0 {
-            break;
+fn refused(reason: String) -> std::io::Error {
+    std::io::Error::other(format!("the server sent the bot away: {reason}"))
+}
+
+/// The plain text of a chat component, whether the server sends a string or a compound.
+fn component(rest: &mut &[u8]) -> std::io::Result<String> {
+    if rest.first() == Some(&0x08) {
+        let length = rest
+            .get(1..3)
+            .map(|bytes| usize::from(u16::from_be_bytes([bytes[0], bytes[1]])))
+            .ok_or_else(|| invalid("short text"))?;
+        let text = rest
+            .get(3..3 + length)
+            .ok_or_else(|| invalid("short text"))?;
+        let text = String::from_utf8_lossy(text).into_owned();
+        *rest = &rest[3 + length..];
+        return Ok(text);
+    }
+    let nbt = Nbt::decode(rest).map_err(invalid)?;
+    let mut text = String::new();
+    plain(&nbt.compound, &mut text);
+    Ok(text)
+}
+
+fn plain(compound: &Compound, text: &mut String) {
+    for (key, tag) in &compound.tags {
+        match (key.to_string().as_str(), tag) {
+            ("text" | "translate", Tag::String(value)) => text.push_str(&value.to_string()),
+            ("extra" | "with", Tag::List(List::Compound(parts))) => {
+                parts.iter().for_each(|part| plain(part, text));
+            }
+            ("extra" | "with", Tag::List(List::String(parts))) => {
+                parts
+                    .iter()
+                    .for_each(|part| text.push_str(&part.to_string()));
+            }
+            _ => {}
         }
     }
-    let mut body = vec![0; length as usize];
-    stream.read_exact(&mut body)?;
-    Ok(body)
+}
+
+fn cookie(writer: &Writer, state: &str, answer: &str, mut rest: &[u8]) -> std::io::Result<()> {
+    let key = String::decode(&mut rest).map_err(invalid)?;
+    let mut body = Vec::new();
+    key.encode(&mut body);
+    false.encode(&mut body);
+    send(writer, &raw(serverbound(state, answer), &body))
+}
+
+fn answer_pack(writer: &Writer, state: &str, answer: &str, rest: &[u8]) -> std::io::Result<()> {
+    let id = rest.get(..16).ok_or_else(|| invalid("short pack id"))?;
+    for action in PACK_ACCEPTED_DOWNLOADED_LOADED {
+        let mut body = id.to_vec();
+        VarI32(action).encode(&mut body);
+        send(writer, &raw(serverbound(state, answer), &body))?;
+    }
+    Ok(())
 }
 
 fn invalid(error: impl std::fmt::Debug) -> std::io::Error {
@@ -180,7 +266,7 @@ fn player_uuid(name: &str) -> Uuid {
     }))
 }
 
-fn login(stream: &mut TcpStream, writer: &Writer, name: &str, port: u16) -> std::io::Result<()> {
+fn login(reader: &mut Reader, writer: &Writer, name: &str, port: u16) -> std::io::Result<()> {
     send(
         writer,
         &sb::HandshakePacket::Handshake(sb::Handshake {
@@ -198,9 +284,33 @@ fn login(stream: &mut TcpStream, writer: &Writer, name: &str, port: u16) -> std:
         }),
     )?;
     loop {
-        let body = receive(stream)?;
-        if clientbound(LOGIN, packet_id(&mut body.as_slice())?) == Some(LOGIN_SUCCESS) {
-            break;
+        let body = reader.next()?;
+        let mut rest = body.as_slice();
+        match clientbound(LOGIN, packet_id(&mut rest)?) {
+            Some(LOGIN_SUCCESS) => break,
+            Some(LOGIN_COMPRESSION) => {
+                let threshold = usize::try_from(VarI32::decode(&mut rest).map_err(invalid)?.0).ok();
+                reader.threshold = threshold;
+                if let Some(link) = writer.lock().unwrap().as_mut() {
+                    link.threshold = threshold;
+                }
+            }
+            Some(LOGIN_DISCONNECT) => {
+                return Err(refused(String::decode(&mut rest).map_err(invalid)?));
+            }
+            Some(LOGIN_CUSTOM_QUERY) => {
+                let mut body = Vec::new();
+                VarI32::decode(&mut rest)
+                    .map_err(invalid)?
+                    .encode(&mut body);
+                false.encode(&mut body);
+                send(
+                    writer,
+                    &raw(serverbound(LOGIN, SERVERBOUND_LOGIN_QUERY_ANSWER), &body),
+                )?;
+            }
+            Some(LOGIN_COOKIE) => cookie(writer, LOGIN, SERVERBOUND_LOGIN_COOKIE, rest)?,
+            _ => {}
         }
     }
     send(
@@ -221,12 +331,12 @@ fn login(stream: &mut TcpStream, writer: &Writer, name: &str, port: u16) -> std:
             particle_status: sb::ParticleStatus::Minimal,
         }),
     )?;
-    configuration(stream, writer)
+    configuration(reader, writer)
 }
 
-fn configuration(stream: &mut TcpStream, writer: &Writer) -> std::io::Result<()> {
+fn configuration(reader: &mut Reader, writer: &Writer) -> std::io::Result<()> {
     loop {
-        let body = receive(stream)?;
+        let body = reader.next()?;
         let mut rest = body.as_slice();
         match clientbound(CONFIGURATION, packet_id(&mut rest)?) {
             Some(CONFIG_KEEP_ALIVE) => send(
@@ -246,6 +356,20 @@ fn configuration(stream: &mut TcpStream, writer: &Writer) -> std::io::Result<()>
                     }],
                 }),
             )?,
+            Some(CONFIG_PING) => send(
+                writer,
+                &raw(serverbound(CONFIGURATION, SERVERBOUND_CONFIG_PONG), rest),
+            )?,
+            Some(CONFIG_COOKIE) => cookie(writer, CONFIGURATION, SERVERBOUND_CONFIG_COOKIE, rest)?,
+            Some(CONFIG_PACK_PUSH) => {
+                answer_pack(
+                    writer,
+                    CONFIGURATION,
+                    SERVERBOUND_CONFIG_PACK_RESPONSE,
+                    rest,
+                )?;
+            }
+            Some(CONFIG_DISCONNECT) => return Err(refused(component(&mut rest)?)),
             Some(CONFIG_FINISH) => {
                 return send(
                     writer,
@@ -260,13 +384,13 @@ fn configuration(stream: &mut TcpStream, writer: &Writer) -> std::io::Result<()>
 }
 
 fn play(
-    mut stream: TcpStream,
+    mut reader: Reader,
     writer: &Writer,
     world: &Shared,
     started: Instant,
 ) -> std::io::Result<()> {
     loop {
-        let body = receive(&mut stream)?;
+        let body = reader.next()?;
         let mut rest = body.as_slice();
         let id = packet_id(&mut rest)?;
         {
@@ -283,7 +407,7 @@ fn play(
                 writer,
                 &raw(serverbound(PLAY, SERVERBOUND_CONFIGURATION_ACK), &[]),
             )?;
-            configuration(&mut stream, writer)?;
+            configuration(&mut reader, writer)?;
             continue;
         }
         handle(name, rest, writer, world, started)?;
@@ -338,17 +462,8 @@ fn handle(
                 send(writer, &sb::PlayPacket::PlayerLoaded(sb::PlayerLoaded {}))?;
             }
         }
-        PLAY_PACK_PUSH => {
-            let id = rest.get(..16).ok_or_else(|| invalid("short pack id"))?;
-            for action in PACK_ACCEPTED_DOWNLOADED_LOADED {
-                let mut body = id.to_vec();
-                VarI32(action).encode(&mut body);
-                send(
-                    writer,
-                    &raw(serverbound(PLAY, SERVERBOUND_PACK_RESPONSE), &body),
-                )?;
-            }
-        }
+        PLAY_PACK_PUSH => answer_pack(writer, PLAY, SERVERBOUND_PACK_RESPONSE, rest)?,
+        PLAY_COOKIE => cookie(writer, PLAY, SERVERBOUND_PLAY_COOKIE, rest)?,
         PLAY_ADD_ENTITY => {
             let entity = cb::SpawnEntity::decode(&mut rest).map_err(invalid)?;
             w.entities
@@ -356,13 +471,23 @@ fn handle(
         }
         PLAY_POSITION_SYNC => {
             let entity = cb::EntityPositionSync::decode(&mut rest).map_err(invalid)?;
-            w.entities
-                .insert(entity.entity_id, [entity.x, entity.y, entity.z]);
+            if let Some(at) = w.entities.get_mut(&entity.entity_id) {
+                *at = [entity.x, entity.y, entity.z];
+            }
         }
         PLAY_TELEPORT_ENTITY => {
             let entity = cb::TeleportEntity::decode(&mut rest).map_err(invalid)?;
-            w.entities
-                .insert(entity.entity_id, [entity.x, entity.y, entity.z]);
+            if let Some(at) = w.entities.get_mut(&entity.entity_id) {
+                *at = [entity.x, entity.y, entity.z];
+            }
+        }
+        PLAY_MOVE_ENTITY => {
+            let step = cb::UpdateEntityPosition::decode(&mut rest).map_err(invalid)?;
+            w.shift(step.entity_id, [step.delta_x, step.delta_y, step.delta_z]);
+        }
+        PLAY_MOVE_ENTITY_ROTATING => {
+            let step = cb::UpdateEntityPositionAndRotation::decode(&mut rest).map_err(invalid)?;
+            w.shift(step.entity_id, [step.delta_x, step.delta_y, step.delta_z]);
         }
         PLAY_REMOVE_ENTITIES => {
             let count = VarI32::decode(&mut rest).map_err(invalid)?.0;
@@ -371,16 +496,26 @@ fn handle(
                 w.entities.remove(&gone);
             }
         }
-        PLAY_CHUNK => w.chunks += 1,
-        PLAY_UNLOAD_CHUNK => w.chunks -= 1,
+        PLAY_CHUNK => {
+            let x = i32::decode(&mut rest).map_err(invalid)?;
+            let z = i32::decode(&mut rest).map_err(invalid)?;
+            w.chunks.insert((x, z));
+        }
+        PLAY_UNLOAD_CHUNK => {
+            let gone = cb::UnloadChunk::decode(&mut rest).map_err(invalid)?;
+            w.chunks.remove(&(gone.chunk_x, gone.chunk_z));
+        }
         PLAY_SET_CAMERA => w.camera = VarI32::decode(&mut rest).map_err(invalid)?.0,
         PLAY_SYSTEM_CHAT => {
-            if let Ok(message) = cb::SystemChat::decode(&mut rest) {
-                w.chat = format!("{:?}", message.content);
+            let text = component(&mut rest)?;
+            if bool::decode(&mut rest).map_err(invalid)? {
+                w.action_bar = text;
+            } else {
+                w.chat = text;
                 w.chat_count += 1;
             }
         }
-        PLAY_DISCONNECT => return Err(std::io::ErrorKind::ConnectionReset.into()),
+        PLAY_DISCONNECT => return Err(refused(component(&mut rest)?)),
         _ => {}
     }
     Ok(())
@@ -388,12 +523,21 @@ fn handle(
 
 fn session(name: &str, port: u16, writer: &Writer, world: &Shared) -> std::io::Result<()> {
     let started = Instant::now();
-    let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+    let stream = TcpStream::connect(("127.0.0.1", port))?;
     stream.set_nodelay(true)?;
-    *writer.lock().unwrap() = Some(stream.try_clone()?);
+    stream.set_read_timeout(Some(SILENCE_LIMIT))?;
+    stream.set_write_timeout(Some(SILENCE_LIMIT))?;
+    *writer.lock().unwrap() = Some(Link {
+        stream: stream.try_clone()?,
+        threshold: None,
+    });
     world.lock().unwrap().connected = true;
-    login(&mut stream, writer, name, port)?;
-    play(stream, writer, world, started)
+    let mut reader = Reader {
+        stream,
+        threshold: None,
+    };
+    login(&mut reader, writer, name, port)?;
+    play(reader, writer, world, started)
 }
 
 /// Stays on its server: a restart only costs it a reconnection.
@@ -480,10 +624,21 @@ fn answer(line: &str, writer: &Writer, world: &Shared) -> Result<Value, String> 
     }
 }
 
-fn serve(stream: UnixStream, writer: Writer, world: Shared) -> std::io::Result<()> {
+type LastVerb = Arc<Mutex<Instant>>;
+
+fn serve(
+    stream: UnixStream,
+    writer: Writer,
+    world: Shared,
+    last_verb: LastVerb,
+) -> std::io::Result<()> {
     let mut out = stream.try_clone()?;
     for line in BufReader::new(stream).lines() {
-        let reply = match answer(line?.trim(), &writer, &world) {
+        let line = line?;
+        if !matches!(line.split_whitespace().next(), Some("state" | "thumb")) {
+            *last_verb.lock().unwrap() = Instant::now();
+        }
+        let reply = match answer(line.trim(), &writer, &world) {
             Ok(Value::Object(mut fields)) => {
                 fields.insert("ok".into(), json!(true));
                 Value::Object(fields)
@@ -496,17 +651,31 @@ fn serve(stream: UnixStream, writer: Writer, world: Shared) -> std::io::Result<(
     Ok(())
 }
 
-pub fn run(name: &str, port: u16) -> Result<(), String> {
-    let socket = registry::socket(name);
+/// Leaves once no verb came for `idle`, like the game clients do.
+fn stop_when_idle(socket: std::path::PathBuf, last_verb: LastVerb, idle: Duration) {
+    loop {
+        thread::sleep(IDLE_CHECK);
+        if last_verb.lock().unwrap().elapsed() > idle {
+            let _ = fs::remove_file(&socket);
+            std::process::exit(0);
+        }
+    }
+}
+
+pub fn run(name: &str, port: u16, idle: Duration) -> Result<(), String> {
+    let socket = registry::socket(name)?;
     let _ = fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket).map_err(|e| e.to_string())?;
     let world = Shared::default();
     let writer = Writer::default();
+    let last_verb = LastVerb::new(Mutex::new(Instant::now()));
     let (w, out, label) = (world.clone(), writer.clone(), name.to_string());
     thread::spawn(move || stay_connected(label, port, out, w));
+    let watched = last_verb.clone();
+    thread::spawn(move || stop_when_idle(socket, watched, idle));
     for stream in listener.incoming().flatten() {
-        let (writer, world) = (writer.clone(), world.clone());
-        thread::spawn(move || serve(stream, writer, world));
+        let (writer, world, last_verb) = (writer.clone(), world.clone(), last_verb.clone());
+        thread::spawn(move || serve(stream, writer, world, last_verb));
     }
     Ok(())
 }
@@ -518,14 +687,14 @@ mod tests {
     #[test]
     fn leaving_a_level_forgets_what_was_on_it() {
         let mut world = World {
-            chunks: 5,
             camera: 3,
             ..Default::default()
         };
+        world.chunks.insert((0, 0));
         world.entities.insert(1, [0.0; 3]);
         world.forget_level();
         assert_eq!(
-            (world.chunks, world.camera, world.entities.len()),
+            (world.chunks.len(), world.camera, world.entities.len()),
             (0, 0, 0)
         );
     }
@@ -543,14 +712,204 @@ mod tests {
         assert_eq!(clientbound(PLAY, i32::MAX), None);
     }
 
-    fn connected_writer() -> (Writer, TcpStream) {
+    fn connected() -> (TcpStream, TcpStream) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
+        for side in [&client, &server] {
+            side.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        }
+        (client, server)
+    }
+
+    fn connected_writer() -> (Writer, TcpStream) {
+        let (client, server) = connected();
+        let link = Link {
+            stream: client,
+            threshold: None,
+        };
+        (Arc::new(Mutex::new(Some(link))), server)
+    }
+
+    fn receive(server: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+        frame::read(server, None)
+    }
+
+    fn handled(world: &Shared, name: &str, body: &[u8]) -> std::io::Result<()> {
+        let (writer, _server) = connected_writer();
+        handle(name, body, &writer, world, Instant::now())
+    }
+
+    fn chunk(x: i32, z: i32) -> Vec<u8> {
+        let mut body = Vec::new();
+        x.encode(&mut body);
+        z.encode(&mut body);
+        body
+    }
+
+    #[test]
+    fn a_chunk_counts_once_and_an_unknown_unload_changes_nothing() {
+        let world = Shared::default();
+        handled(&world, PLAY_CHUNK, &chunk(1, 2)).unwrap();
+        handled(&world, PLAY_CHUNK, &chunk(1, 2)).unwrap();
+        handled(&world, PLAY_UNLOAD_CHUNK, &chunk(9, 9)).unwrap();
+        assert_eq!(world.lock().unwrap().fields()["chunks"], 1);
+        handled(&world, PLAY_UNLOAD_CHUNK, &chunk(2, 1)).unwrap();
+        assert_eq!(world.lock().unwrap().fields()["chunks"], 0);
+    }
+
+    #[test]
+    fn an_entity_follows_its_relative_moves_and_an_unseen_one_is_not_invented() {
+        let world = Shared::default();
+        world.lock().unwrap().entities.insert(7, [1.0, 2.0, 3.0]);
+        let step = |id: i32| {
+            let mut body = Vec::new();
+            VarI32(id).encode(&mut body);
+            for delta in [4096i16, -2048, 0] {
+                delta.encode(&mut body);
+            }
+            true.encode(&mut body);
+            body
+        };
+        handled(&world, PLAY_MOVE_ENTITY, &step(7)).unwrap();
+        handled(&world, PLAY_MOVE_ENTITY, &step(8)).unwrap();
+        let w = world.lock().unwrap();
+        assert_eq!(w.entities[&7], [2.0, 1.5, 3.0]);
+        assert!(!w.entities.contains_key(&8));
+    }
+
+    fn chat(nbt: Nbt, overlay: bool) -> Vec<u8> {
+        let mut body = Vec::new();
+        nbt.encode(&mut body);
+        overlay.encode(&mut body);
+        body
+    }
+
+    fn text(value: &str) -> Compound {
+        Compound {
+            tags: vec![("text".into(), Tag::String(value.into()))],
+        }
+    }
+
+    #[test]
+    fn chat_is_plain_text_and_an_action_bar_does_not_replace_it() {
+        let world = Shared::default();
+        let mut message = text("Bienvenue ");
+        message.tags.push((
+            "extra".into(),
+            Tag::List(List::Compound(vec![text("sur la "), text("carte")])),
+        ));
+        let nbt = |compound| Nbt {
+            name: "".into(),
+            compound,
+        };
+        handled(&world, PLAY_SYSTEM_CHAT, &chat(nbt(message), false)).unwrap();
+        handled(&world, PLAY_SYSTEM_CHAT, &chat(nbt(text("Tour 2")), true)).unwrap();
+        let fields = world.lock().unwrap().fields();
+        assert_eq!(fields["chat"], "Bienvenue sur la carte");
+        assert_eq!(fields["action_bar"], "Tour 2");
+        assert_eq!(fields["chat_count"], 1);
+    }
+
+    #[test]
+    fn a_chat_sent_as_a_bare_string_is_read_too() {
+        let world = Shared::default();
+        let mut body = vec![0x08, 0, 5];
+        body.extend(b"Salut");
+        body.push(0);
+        handled(&world, PLAY_SYSTEM_CHAT, &body).unwrap();
+        assert_eq!(world.lock().unwrap().fields()["chat"], "Salut");
+    }
+
+    fn packet(state: &str, name: &str, body: &[u8]) -> Vec<u8> {
+        let id = voidmc_data::packet_id(VERSION, state, "clientbound", name).unwrap();
+        let mut packet = Vec::new();
+        VarI32(id).encode(&mut packet);
+        packet.extend_from_slice(body);
+        packet
+    }
+
+    fn sent_id(body: &[u8]) -> i32 {
+        packet_id(&mut &body[..]).unwrap()
+    }
+
+    #[test]
+    fn a_bot_follows_compression_from_login_to_the_end_of_configuration() {
+        let (client, mut server) = connected();
+        let writer: Writer = Arc::new(Mutex::new(Some(Link {
+            stream: client.try_clone().unwrap(),
+            threshold: None,
+        })));
+        let bot = thread::spawn(move || {
+            let mut reader = Reader {
+                stream: client,
+                threshold: None,
+            };
+            login(&mut reader, &writer, "Bot", 25700)
+        });
+        let threshold = Some(256);
+        frame::read(&mut server, None).unwrap();
+        frame::read(&mut server, None).unwrap();
+        let mut compression = Vec::new();
+        VarI32(256).encode(&mut compression);
+        let start = packet(LOGIN, LOGIN_COMPRESSION, &compression);
         server
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .write_all(&frame::encode(&start, None).unwrap())
             .unwrap();
-        (Arc::new(Mutex::new(Some(client))), server)
+        let done = packet(LOGIN, LOGIN_SUCCESS, &[]);
+        server
+            .write_all(&frame::encode(&done, threshold).unwrap())
+            .unwrap();
+        let acknowledged = frame::read(&mut server, threshold).unwrap();
+        assert_eq!(
+            sent_id(&acknowledged),
+            serverbound(LOGIN, "minecraft:login_acknowledged")
+        );
+        let information = frame::read(&mut server, threshold).unwrap();
+        assert_eq!(
+            sent_id(&information),
+            serverbound(CONFIGURATION, "minecraft:client_information")
+        );
+        let mut ping = Vec::new();
+        42i32.encode(&mut ping);
+        let ping = packet(CONFIGURATION, CONFIG_PING, &ping);
+        server
+            .write_all(&frame::encode(&ping, threshold).unwrap())
+            .unwrap();
+        let pong = frame::read(&mut server, threshold).unwrap();
+        assert_eq!(pong[1..], 42i32.to_be_bytes());
+        let finish = packet(CONFIGURATION, CONFIG_FINISH, &[]);
+        server
+            .write_all(&frame::encode(&finish, threshold).unwrap())
+            .unwrap();
+        frame::read(&mut server, threshold).unwrap();
+        bot.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_refused_login_keeps_its_reason() {
+        let (client, mut server) = connected();
+        let writer: Writer = Arc::new(Mutex::new(Some(Link {
+            stream: client.try_clone().unwrap(),
+            threshold: None,
+        })));
+        let bot = thread::spawn(move || {
+            let mut reader = Reader {
+                stream: client,
+                threshold: None,
+            };
+            login(&mut reader, &writer, "Bot", 25700)
+        });
+        frame::read(&mut server, None).unwrap();
+        frame::read(&mut server, None).unwrap();
+        let mut reason = Vec::new();
+        "\"Serveur plein\"".to_string().encode(&mut reason);
+        let refusal = packet(LOGIN, LOGIN_DISCONNECT, &reason);
+        server
+            .write_all(&frame::encode(&refusal, None).unwrap())
+            .unwrap();
+        let error = bot.join().unwrap().unwrap_err();
+        assert!(error.to_string().contains("Serveur plein"), "{error}");
     }
 
     #[test]

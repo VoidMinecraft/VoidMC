@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -12,6 +12,53 @@ use crate::{control, lifecycle};
 
 const PAGE: &str = include_str!("dash.html");
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
+const HEAD_LIMIT: u64 = 16 * 1024;
+const READ_LIMIT: Duration = Duration::from_secs(5);
+
+struct Head {
+    method: String,
+    target: String,
+    host: Option<String>,
+    origin: Option<String>,
+}
+
+fn head(stream: &TcpStream) -> std::io::Result<Head> {
+    let mut lines = BufReader::new(stream.try_clone()?.take(HEAD_LIMIT)).lines();
+    let first = lines.next().transpose()?.unwrap_or_default();
+    let mut words = first.split_whitespace();
+    let mut head = Head {
+        method: words.next().unwrap_or("").to_string(),
+        target: words.next().unwrap_or("").to_string(),
+        host: None,
+        origin: None,
+    };
+    for line in lines {
+        let line = line?;
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let value = Some(value.trim().to_string());
+            match name.trim().to_ascii_lowercase().as_str() {
+                "host" => head.host = value,
+                "origin" => head.origin = value,
+                _ => {}
+            }
+        }
+    }
+    Ok(head)
+}
+
+/// Only this page may act: another site, or a name rebound to 127.0.0.1, is refused.
+fn trusted(head: &Head, port: u16) -> bool {
+    let hosts = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let host_ok = head.host.as_ref().is_some_and(|host| hosts.contains(host));
+    let origin_ok = match &head.origin {
+        Some(origin) => hosts.iter().any(|host| *origin == format!("http://{host}")),
+        None => head.method != "POST",
+    };
+    host_ok && origin_ok
+}
 
 /// Starts the page if nobody serves it yet, and says where it is.
 pub fn ensure(registry: &Registry) -> Result<String, String> {
@@ -91,10 +138,12 @@ fn action(registry: &Registry, name: &str, verb: &str) -> Result<(), String> {
 }
 
 fn request(registry: &Registry, mut stream: TcpStream) -> std::io::Result<()> {
-    let mut first = String::new();
-    BufReader::new(stream.try_clone()?).read_line(&mut first)?;
-    let mut words = first.split_whitespace();
-    let (method, target) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+    stream.set_read_timeout(Some(READ_LIMIT))?;
+    let head = head(&stream)?;
+    if !trusted(&head, registry.dashboard_port) {
+        return respond(&mut stream, "403 Forbidden", "text/plain", b"");
+    }
+    let (method, target) = (head.method.as_str(), head.target.as_str());
     let path = target.split('?').next().unwrap_or("");
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let safe = |name: &str| registry::load(name).is_some_and(|client| client.name == name);
@@ -134,4 +183,50 @@ pub fn run(registry: Registry) -> Result<(), String> {
         thread::spawn(move || request(&registry, stream));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn head(method: &str, host: Option<&str>, origin: Option<&str>) -> Head {
+        Head {
+            method: method.into(),
+            target: "/".into(),
+            host: host.map(str::to_string),
+            origin: origin.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn only_the_page_itself_may_act() {
+        let page = Some("http://127.0.0.1:25685");
+        assert!(trusted(&head("GET", Some("127.0.0.1:25685"), None), 25685));
+        assert!(trusted(&head("POST", Some("127.0.0.1:25685"), page), 25685));
+        assert!(trusted(
+            &head(
+                "POST",
+                Some("localhost:25685"),
+                Some("http://localhost:25685")
+            ),
+            25685
+        ));
+        assert!(!trusted(
+            &head(
+                "POST",
+                Some("127.0.0.1:25685"),
+                Some("https://evil.example")
+            ),
+            25685
+        ));
+        assert!(!trusted(
+            &head("POST", Some("127.0.0.1:25685"), None),
+            25685
+        ));
+        assert!(!trusted(
+            &head("GET", Some("evil.example:25685"), None),
+            25685
+        ));
+        assert!(!trusted(&head("GET", None, None), 25685));
+    }
 }

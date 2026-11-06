@@ -2,6 +2,7 @@ mod bot;
 mod condition;
 mod control;
 mod dash;
+mod frame;
 mod launch;
 mod lifecycle;
 mod registry;
@@ -43,8 +44,16 @@ fn parse_size(text: &str) -> Result<(u32, u32), String> {
 }
 
 fn wait_in_game(name: &str) -> Result<(), String> {
+    let client = registry::load(name).ok_or_else(|| format!("unknown client {name}"))?;
+    let log = registry::client_dir(name).join("client.log");
     let start = Instant::now();
     while start.elapsed() < JOIN_LIMIT {
+        if !registry::alive(&client) {
+            return Err(format!(
+                "{name} stopped before it was in game, see {}",
+                log.display()
+            ));
+        }
         if let Ok(line) = control::ask(name, "state", Duration::from_secs(5)) {
             let reply: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             if reply["state"] == "connected" {
@@ -60,7 +69,7 @@ fn wait_in_game(name: &str) -> Result<(), String> {
     Err(format!(
         "{name} is not in game after {} s, see {}",
         JOIN_LIMIT.as_secs(),
-        registry::client_dir(name).join("client.log").display()
+        log.display()
     ))
 }
 
@@ -69,7 +78,7 @@ fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> 
     let name = registry::slug(&feature)?;
     let port = match flag(args, "--port") {
         Some(port) => port.parse().map_err(|_| "bad port")?,
-        None => registry::lease_of(&feature)
+        None => registry::lease_of(&feature)?
             .ok_or("no port: pass --port, or take one with voidc port")?,
     };
     let client = Client {
@@ -93,7 +102,10 @@ fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> 
         println!("{name}: started");
         return Ok(());
     }
-    wait_in_game(&name)
+    wait_in_game(&name).map_err(|error| match lifecycle::down(&name) {
+        Ok(()) => format!("{error}\n{name} is stopped, so it does not stay behind"),
+        Err(stop) => format!("{error}\n{name} could not be stopped: {stop}"),
+    })
 }
 
 fn list() {
@@ -172,7 +184,12 @@ fn run() -> Result<(), String> {
         "bot-run" => {
             let name = rest.first().ok_or("name")?;
             let port = rest.get(1).ok_or("port")?.parse().map_err(|_| "bad port")?;
-            bot::run(name, port)
+            let idle: u64 = rest
+                .get(2)
+                .ok_or("idle minutes")?
+                .parse()
+                .map_err(|_| "bad idle minutes")?;
+            bot::run(name, port, Duration::from_secs(idle * 60))
         }
         _ => Err(USAGE.to_string()),
     }

@@ -133,14 +133,34 @@ public class Probe {
     }
   }
 
+  private static final Map<String, String> USAGE = Map.ofEntries(
+      Map.entry("shot", "shot name [downscale]"),
+      Map.entry("fps", "fps n"),
+      Map.entry("turn", "turn dx dy"),
+      Map.entry("aim", "aim yaw pitch"),
+      Map.entry("seq", "seq ms dx,dy ..."),
+      Map.entry("shift", "shift on|off"),
+      Map.entry("key", "key code action"),
+      Map.entry("hover", "hover x y"),
+      Map.entry("click", "click x y"),
+      Map.entry("track", "track n"),
+      Map.entry("frames", "frames n"));
+
+  private static int required(String usage) {
+    return (int) Arrays.stream(usage.split(" ")).skip(1).filter(word -> !word.startsWith("[") && !word.equals("...")).count();
+  }
+
   private static String answer(String line) {
+    String[] words = line.split("\\s+");
+    String usage = USAGE.get(words[0]);
+    if (usage != null && words.length - 1 < required(usage)) return failure("usage: " + usage);
     try {
-      String[] words = line.split("\\s+");
       if (!words[0].equals("state") && !words[0].equals("thumb")) lastVerb = System.currentTimeMillis();
       return ok(verb(words[0], words, line));
-    } catch (java.util.concurrent.ExecutionException error) {
-      return failure(String.valueOf(error.getCause()));
-    } catch (Throwable error) {
+    } catch (Throwable thrown) {
+      Throwable error = thrown instanceof java.util.concurrent.ExecutionException ? thrown.getCause() : thrown;
+      boolean malformed = error instanceof NumberFormatException || error instanceof ArrayIndexOutOfBoundsException;
+      if (usage != null && malformed) return failure("usage: " + usage + " (" + error.getMessage() + ")");
       return failure(String.valueOf(error));
     }
   }
