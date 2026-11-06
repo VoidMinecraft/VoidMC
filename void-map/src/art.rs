@@ -1373,7 +1373,7 @@ pub fn install(pack: &mut ResourcePack) {
     settings::install(pack);
     life::models::install(pack);
     transition::install(pack, crate::plugin::FIRST_MODEL_BLOCK);
-    crate::abduction::install(pack);
+    crate::film::install(pack);
     pack.add(BOAT_ITEM_FILE, BOAT_ITEM.as_bytes().to_vec());
     pack.add(BOAT_MODEL_FILE, boat_model().into_bytes());
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());

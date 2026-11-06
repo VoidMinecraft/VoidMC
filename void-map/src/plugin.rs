@@ -50,6 +50,7 @@ use crate::art::{
 use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
 use crate::fence::Border;
+use crate::film::Film;
 use crate::goto::{Goto, Navigation};
 use crate::life::show::{Life, LifeLook, LifePlugin};
 use crate::life::{LifeScene, habitat};
@@ -76,7 +77,7 @@ use crate::transition::{
 use crate::weather::{self, Weather};
 use crate::wheel::{CATEGORIES, Wheel, stepped};
 
-mod abduction;
+mod film;
 mod goto;
 mod preview;
 
@@ -1402,7 +1403,7 @@ impl Plugin for MapPlugin {
                 fly,
                 tick_passages,
                 preview::tick,
-                abduction::tick,
+                film::tick,
                 run_wheels,
                 let_it_fall,
             ),
@@ -1428,7 +1429,7 @@ impl Plugin for MapPlugin {
         .add_observer(preview::start)
         .add_observer(player_left)
         .add_plugins((PlayersPlugin, LifePlugin, CursorPlugin));
-        abduction::register(app);
+        film::register(app);
         app.world_mut()
             .resource_mut::<CommandRegistry>()
             .register(map_command());
@@ -4100,7 +4101,9 @@ impl Pick {
             Self::Two => Some(Flow::Spiral),
             Self::Three => Some(Flow::Glide),
             Self::Four => Some(Flow::Leap),
-            Self::Five => Some(Flow::Abduction),
+            Self::Five => Some(Flow::Film(Film::Saucer)),
+            Self::Six => Some(Flow::Film(Film::Shark)),
+            Self::Seven => Some(Flow::Film(Film::Couch)),
             _ => None,
         }
     }

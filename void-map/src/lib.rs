@@ -13,13 +13,13 @@
 //! [`settings`] lists what a player can change, in a dialog over the map.
 //! [`plugin`] moves players in and out of the map.
 
-pub mod abduction;
 pub mod alphabet;
 pub mod art;
 pub mod biome;
 pub mod buildings;
 pub mod cursor;
 pub mod fence;
+pub mod film;
 pub mod goto;
 pub mod life;
 pub mod markers;

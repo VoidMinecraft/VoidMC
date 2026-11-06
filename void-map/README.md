@@ -51,6 +51,8 @@ is the flight of its intro, backwards. All end exactly in the eye, or on the vie
 - `/map intro 4`, `Saut dans le ciel`: eyes on the sky and up into it, then down from low
   over the land onto the view.
 - `/map intro 5`, `Soucoupe`: a film, see below, with the flight of `Envol` on the model.
+- `/map intro 6`, `Requin`: a film too.
+- `/map intro 7`, `Canapé`: a film too.
 
 `/map outro` takes the same numbers. Either one, from inside the map, also plays that flow
 over without leaving: the world stays on the client, so that an eye flies over it while
@@ -58,7 +60,7 @@ the player stays on the rig, and a veil covers each cut. `PreviewFlow(player, pa
 does that for anything else, and changes no choice: that is
 `ChooseLook(player, LookChoice::Intro(Some(flow)))`, or `Outro`.
 
-### The saucer
+### The films
 
 `Soucoupe` is seen from outside. On the way in, the camera leaves the head through its top
 and draws back, a saucer comes over the player, its beam takes them up struggling, and it
@@ -67,8 +69,14 @@ to a wide view from high up, with the saucer, the beam and the body in the land 
 goes slowly round as the beam lets them down, they land dizzy, it leaves, and the camera
 comes in over the head and down into the eye.
 
-`abduction.rs` says what happens at each tick of a `Scene`, and `plugin::abduction` plays it
-for any `Flight` that has one, real or preview. So that is all it takes for both, and
+`Requin` works on dry land as well: a pool of cartoon water opens under the player, a fin
+circles it, and the shark bursts out and swallows them. On the way out it spits them back
+out of the pool. `Canapé` opens the clouds: on the way out a sofa falls with the character on
+it and lands with a hop and a cloud of dust, on the way in it takes them back up to the sky.
+
+`film.rs` says what a film is, a `Script` in `film/` says what happens at each tick of a
+`Scene`, and `plugin::film` plays it for any `Flight` that has one, real or preview. A new
+film is a `Script`, a line in `Film` and a line in `Flow::ALL`. So that is all it takes for both, and
 nothing of it is in the passages: the scene starts when such a flight does and takes its
 clock from it. It ends when the camera goes, for whatever reason, which covers a player
 leaving midway. What it is made of goes out to all who see the chunk, like the cameras.
@@ -468,9 +476,9 @@ Rails are a ladder of sleepers on the close model and a plain line on the others
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
 `fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `goto`, `transition`,
-`abduction`, `wheel`, `art`, and `life`, apart from `life::show`. `biome` declares the
+`film`, `wheel`, `art`, and `life`, apart from `life::show`. `biome` declares the
 level, `plugin` runs the sessions, `plugin::preview` plays a flow over,
-`plugin::abduction` plays the film of the saucer, `plugin::goto` moves a view by jumps,
+`plugin::film` plays the films, `plugin::goto` moves a view by jumps,
 `settings` lists what can be changed, `players` shows the characters, `cursor`
 draws the pointer, and `telemetry` measures the characters.
 
