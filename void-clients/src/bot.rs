@@ -10,33 +10,38 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use uuid::Uuid;
 use voidmc_codec::{Decode, Encode, VarI32};
+use voidmc_data::Version;
 use voidmc_protocol::clientbound as cb;
 use voidmc_protocol::serverbound as sb;
 use voidmc_protocol::{PROTOCOL_VERSION, State as Phase};
 
 use crate::registry;
 
-const LOGIN_SUCCESS: i32 = 0x02;
-const CONFIG_FINISH: i32 = 0x03;
-const CONFIG_KEEP_ALIVE: i32 = 0x04;
-const CONFIG_KNOWN_PACKS: i32 = 0x0E;
-const PLAY_ADD_ENTITY: i32 = 0x01;
-const PLAY_DISCONNECT: i32 = 0x20;
-const PLAY_POSITION_SYNC: i32 = 0x23;
-const PLAY_UNLOAD_CHUNK: i32 = 0x25;
-const PLAY_KEEP_ALIVE: i32 = 0x2C;
-const PLAY_CHUNK: i32 = 0x2D;
-const PLAY_PING: i32 = 0x3D;
-const PLAY_PLAYER_POSITION: i32 = 0x48;
-const PLAY_REMOVE_ENTITIES: i32 = 0x4D;
-const PLAY_PACK_PUSH: i32 = 0x51;
-const PLAY_SET_CAMERA: i32 = 0x5D;
-const PLAY_START_CONFIGURATION: i32 = 0x76;
-const PLAY_SYSTEM_CHAT: i32 = 0x79;
-const PLAY_TELEPORT_ENTITY: i32 = 0x7D;
-const SERVERBOUND_CONFIG_KEEP_ALIVE: i32 = 0x04;
-const SERVERBOUND_CONFIGURATION_ACK: i32 = 0x10;
-const SERVERBOUND_PACK_RESPONSE: i32 = 0x31;
+const VERSION: Version = Version::V26_1_2;
+const LOGIN: &str = "login";
+const CONFIGURATION: &str = "configuration";
+const PLAY: &str = "play";
+const LOGIN_SUCCESS: &str = "minecraft:login_finished";
+const CONFIG_FINISH: &str = "minecraft:finish_configuration";
+const CONFIG_KEEP_ALIVE: &str = "minecraft:keep_alive";
+const CONFIG_KNOWN_PACKS: &str = "minecraft:select_known_packs";
+const PLAY_ADD_ENTITY: &str = "minecraft:add_entity";
+const PLAY_DISCONNECT: &str = "minecraft:disconnect";
+const PLAY_POSITION_SYNC: &str = "minecraft:entity_position_sync";
+const PLAY_UNLOAD_CHUNK: &str = "minecraft:forget_level_chunk";
+const PLAY_KEEP_ALIVE: &str = "minecraft:keep_alive";
+const PLAY_CHUNK: &str = "minecraft:level_chunk_with_light";
+const PLAY_PING: &str = "minecraft:ping";
+const PLAY_PLAYER_POSITION: &str = "minecraft:player_position";
+const PLAY_REMOVE_ENTITIES: &str = "minecraft:remove_entities";
+const PLAY_PACK_PUSH: &str = "minecraft:resource_pack_push";
+const PLAY_SET_CAMERA: &str = "minecraft:set_camera";
+const PLAY_START_CONFIGURATION: &str = "minecraft:start_configuration";
+const PLAY_SYSTEM_CHAT: &str = "minecraft:system_chat";
+const PLAY_TELEPORT_ENTITY: &str = "minecraft:teleport_entity";
+const SERVERBOUND_CONFIG_KEEP_ALIVE: &str = "minecraft:keep_alive";
+const SERVERBOUND_CONFIGURATION_ACK: &str = "minecraft:configuration_acknowledged";
+const SERVERBOUND_PACK_RESPONSE: &str = "minecraft:resource_pack";
 const PACK_ACCEPTED_DOWNLOADED_LOADED: [i32; 3] = [3, 4, 0];
 const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
 const DEFAULT_WAIT_MS: u64 = 20_000;
@@ -146,6 +151,18 @@ fn packet_id(rest: &mut &[u8]) -> std::io::Result<i32> {
     Ok(VarI32::decode(rest).map_err(invalid)?.0)
 }
 
+fn clientbound(state: &str, id: i32) -> Option<&'static str> {
+    voidmc_data::packets(VERSION, state, "clientbound")?
+        .iter()
+        .find(|(_, packet)| *packet == id)
+        .map(|(name, _)| *name)
+}
+
+fn serverbound(state: &str, name: &str) -> i32 {
+    voidmc_data::packet_id(VERSION, state, "serverbound", name)
+        .unwrap_or_else(|| panic!("{name} is not a {state} packet of the reference"))
+}
+
 fn player_uuid(name: &str) -> Uuid {
     Uuid::from_u128(name.bytes().fold(0xB07u128, |hash, byte| {
         hash.wrapping_mul(131).wrapping_add(byte as u128)
@@ -171,7 +188,7 @@ fn login(stream: &mut TcpStream, writer: &Writer, name: &str, port: u16) -> std:
     )?;
     loop {
         let body = receive(stream)?;
-        if packet_id(&mut body.as_slice())? == LOGIN_SUCCESS {
+        if clientbound(LOGIN, packet_id(&mut body.as_slice())?) == Some(LOGIN_SUCCESS) {
             break;
         }
     }
@@ -200,9 +217,15 @@ fn configuration(stream: &mut TcpStream, writer: &Writer) -> std::io::Result<()>
     loop {
         let body = receive(stream)?;
         let mut rest = body.as_slice();
-        match packet_id(&mut rest)? {
-            CONFIG_KEEP_ALIVE => send(writer, &raw(SERVERBOUND_CONFIG_KEEP_ALIVE, rest))?,
-            CONFIG_KNOWN_PACKS => send(
+        match clientbound(CONFIGURATION, packet_id(&mut rest)?) {
+            Some(CONFIG_KEEP_ALIVE) => send(
+                writer,
+                &raw(
+                    serverbound(CONFIGURATION, SERVERBOUND_CONFIG_KEEP_ALIVE),
+                    rest,
+                ),
+            )?,
+            Some(CONFIG_KNOWN_PACKS) => send(
                 writer,
                 &sb::ConfigurationPacket::KnownPacks(sb::KnownPacks {
                     known_packs: vec![sb::KnownPack {
@@ -212,7 +235,7 @@ fn configuration(stream: &mut TcpStream, writer: &Writer) -> std::io::Result<()>
                     }],
                 }),
             )?,
-            CONFIG_FINISH => {
+            Some(CONFIG_FINISH) => {
                 return send(
                     writer,
                     &sb::ConfigurationPacket::FinishConfigurationAcknowledged(
@@ -240,25 +263,31 @@ fn play(
             *w.packets.entry(id).or_default() += 1;
             w.bytes += body.len() as u64;
         }
-        if id == PLAY_START_CONFIGURATION {
+        let Some(name) = clientbound(PLAY, id) else {
+            continue;
+        };
+        if name == PLAY_START_CONFIGURATION {
             world.lock().unwrap().forget_level();
-            send(writer, &raw(SERVERBOUND_CONFIGURATION_ACK, &[]))?;
+            send(
+                writer,
+                &raw(serverbound(PLAY, SERVERBOUND_CONFIGURATION_ACK), &[]),
+            )?;
             configuration(&mut stream, writer)?;
             continue;
         }
-        handle(id, rest, writer, world, started)?;
+        handle(name, rest, writer, world, started)?;
     }
 }
 
 fn handle(
-    id: i32,
+    name: &str,
     mut rest: &[u8],
     writer: &Writer,
     world: &Shared,
     started: Instant,
 ) -> std::io::Result<()> {
     let mut w = world.lock().unwrap();
-    match id {
+    match name {
         PLAY_KEEP_ALIVE => {
             let keep = cb::KeepAlive::decode(&mut rest).map_err(invalid)?;
             send(
@@ -303,7 +332,10 @@ fn handle(
             for action in PACK_ACCEPTED_DOWNLOADED_LOADED {
                 let mut body = id.to_vec();
                 VarI32(action).encode(&mut body);
-                send(writer, &raw(SERVERBOUND_PACK_RESPONSE, &body))?;
+                send(
+                    writer,
+                    &raw(serverbound(PLAY, SERVERBOUND_PACK_RESPONSE), &body),
+                )?;
             }
         }
         PLAY_ADD_ENTITY => {
@@ -541,6 +573,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_packet_name_is_in_the_reference() {
+        let received = [
+            (LOGIN, LOGIN_SUCCESS),
+            (CONFIGURATION, CONFIG_FINISH),
+            (CONFIGURATION, CONFIG_KEEP_ALIVE),
+            (CONFIGURATION, CONFIG_KNOWN_PACKS),
+            (PLAY, PLAY_ADD_ENTITY),
+            (PLAY, PLAY_DISCONNECT),
+            (PLAY, PLAY_POSITION_SYNC),
+            (PLAY, PLAY_UNLOAD_CHUNK),
+            (PLAY, PLAY_KEEP_ALIVE),
+            (PLAY, PLAY_CHUNK),
+            (PLAY, PLAY_PING),
+            (PLAY, PLAY_PLAYER_POSITION),
+            (PLAY, PLAY_REMOVE_ENTITIES),
+            (PLAY, PLAY_PACK_PUSH),
+            (PLAY, PLAY_SET_CAMERA),
+            (PLAY, PLAY_START_CONFIGURATION),
+            (PLAY, PLAY_SYSTEM_CHAT),
+            (PLAY, PLAY_TELEPORT_ENTITY),
+        ];
+        for (state, name) in received {
+            let id = voidmc_data::packet_id(VERSION, state, "clientbound", name);
+            assert_eq!(clientbound(state, id.expect(name)), Some(name));
+        }
+        for (state, name) in [
+            (CONFIGURATION, SERVERBOUND_CONFIG_KEEP_ALIVE),
+            (PLAY, SERVERBOUND_CONFIGURATION_ACK),
+            (PLAY, SERVERBOUND_PACK_RESPONSE),
+        ] {
+            serverbound(state, name);
+        }
+    }
+
+    #[test]
+    fn a_packet_outside_the_reference_has_no_name() {
+        assert_eq!(clientbound(PLAY, i32::MAX), None);
+    }
+
     fn connected_writer() -> (Writer, TcpStream) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -574,7 +646,7 @@ mod tests {
         .unwrap();
 
         for action in [3u8, 4, 0] {
-            let mut expected = vec![SERVERBOUND_PACK_RESPONSE as u8];
+            let mut expected = vec![serverbound(PLAY, SERVERBOUND_PACK_RESPONSE) as u8];
             expected.extend_from_slice(id.as_bytes());
             expected.push(action);
             assert_eq!(receive(&mut server).unwrap(), expected);

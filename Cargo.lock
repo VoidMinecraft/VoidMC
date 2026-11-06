@@ -1969,6 +1969,7 @@ dependencies = [
  "toml",
  "uuid",
  "voidmc-codec",
+ "voidmc-data",
  "voidmc-protocol",
 ]
 
