@@ -48,6 +48,7 @@ let config = ServerConfigBuilder::new()
 | `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
+| `stable_player_ids` | `bool` | Whether `VOIDMC_STABLE_PLAYER_IDS` is set | A player keeps its entity id across restarts, see [Development Proxy](./keeper) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
