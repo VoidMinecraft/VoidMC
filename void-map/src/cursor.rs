@@ -11,8 +11,13 @@
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
-use voidmc::{EntityKind, Players};
-use voidmc_protocol::clientbound::{ClearTitles, SetTitleText, SetTitlesAnimation};
+use voidmc::{
+    EntityBuilder, EntityKind, EntityMetadata, MetadataSource, MetadataSourceAppExt, Players,
+    components::Position,
+};
+use voidmc_protocol::clientbound::{
+    ClearTitles, EntityMetadataValue, SetTitleText, SetTitlesAnimation,
+};
 use voidmc_ui::{Image, ResourcePack, Text};
 
 use crate::plugin::MapSession;
@@ -112,14 +117,44 @@ pub enum Wanted {
     Pointer(Look),
 }
 
-/// The box around the eye. The client only shows a spectator its crosshair over
-/// something with a menu, and any box takes clicks.
+/// How wide and high the box around the eye is. Wide enough for a pan to stay in it between
+/// two frames, and a spectator's reach goes no further than its own hit.
+const EYE_BOX_SIZE: f32 = 4.0;
+
+/// Synched data of an `interaction`: width, then height.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+struct EyeBoxSize;
+
+impl MetadataSource for EyeBoxSize {
+    fn write(&self, meta: &mut EntityMetadata) {
+        meta.set(8, EntityMetadataValue::Float(EYE_BOX_SIZE));
+        meta.set(9, EntityMetadataValue::Float(EYE_BOX_SIZE));
+    }
+}
+
+/// The box around the eye. Any box takes clicks, and an `interaction` has no model, so that
+/// nothing can ever show of it, from any angle: even a spectator, who sees invisible
+/// entities, sees none. Only a client with no pack needs more, for its own crosshair, which
+/// shows a spectator only something with a menu. Theirs stays out of every flight.
 pub fn eye_box_kind(drawn: bool) -> EntityKind {
     if drawn {
-        EntityKind::Minecart
+        EntityKind::Interaction
     } else {
         EntityKind::ChestMinecart
     }
+}
+
+/// Puts up the box around the eye.
+pub fn spawn_eye_box(commands: &mut Commands, drawn: bool, at: Position) -> Entity {
+    let builder = EntityBuilder::new(eye_box_kind(drawn))
+        .position(at)
+        .gravity(false);
+    let builder = if drawn {
+        builder.with(EyeBoxSize)
+    } else {
+        builder
+    };
+    builder.spawn(commands).id()
 }
 
 /// What this server left in a player's title.
@@ -209,7 +244,8 @@ pub struct CursorPlugin;
 
 impl Plugin for CursorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, show);
+        app.add_metadata_source::<EyeBoxSize>()
+            .add_systems(Update, show);
     }
 }
 
@@ -307,7 +343,7 @@ mod tests {
 
     #[test]
     fn only_a_box_for_a_client_with_no_pack_shows_the_crosshair() {
-        assert_eq!(eye_box_kind(true), EntityKind::Minecart);
+        assert_eq!(eye_box_kind(true), EntityKind::Interaction);
         assert_eq!(eye_box_kind(false), EntityKind::ChestMinecart);
     }
 

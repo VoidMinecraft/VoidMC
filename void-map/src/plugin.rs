@@ -35,7 +35,7 @@ use voidmc_protocol::{
     clientbound::{
         ChunkDataAndLight, EntityPositionSync, GameEvent, GameEventType, PlayerRotation,
         ResolvableProfile, SectionBlocksUpdate, SetCamera, SetCenterChunk, SetChunkCacheRadius,
-        SystemChat, UnloadChunk,
+        SetHeadRotation, SystemChat, UnloadChunk,
     },
     serverbound::{Interact, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation, SpectateEntity},
     slot::{DataComponent, component_ids},
@@ -61,7 +61,7 @@ use crate::scene::{
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 use crate::transition::{
-    CLOSING_TICKS, FLIGHT_GLIDE_TICKS, Flight, OPENING_TICKS, RISE_TICKS, SWAP_TICKS, TURN_TICKS,
+    CLOSING_TICKS, FLIGHT_GLIDE_TICKS, Flight, Flow, OPENING_TICKS, SWAP_TICKS, TURN_TICKS,
     VEIL_FADE, veil_in, veil_out,
 };
 use crate::wheel::{CATEGORIES, Wheel, stepped};
@@ -893,7 +893,7 @@ impl MapSession {
     fn camera_rotation(&self) -> Rotation {
         match &self.travel {
             Some(travel) => {
-                let [yaw, pitch] = travel.flight.looking();
+                let [yaw, pitch] = travel.flight.target_look();
                 Rotation { yaw, pitch }
             }
             None => self.look,
@@ -1066,14 +1066,14 @@ impl MapSession {
         SIGN_SCALE * self.marker_scale()
     }
 
-    /// The way between the view and the player's marker, close up, in the middle of the
-    /// screen. Nothing to fly to with no marker: the view holds where it is.
-    fn way_to_marker(&self, length: u32) -> Flight {
+    /// The way between the view and the player's marker, close up, as `flow` flies it.
+    /// Nothing to fly to with no marker: the view holds where it is.
+    fn way_to_marker(&self, flow: Flow, length: u32) -> Flight {
         let eye = self.eye();
         let build = f64::from(self.model().scale().build);
         let rest = [self.look.yaw, self.look.pitch];
         match &self.pins.you {
-            Some(you) => Flight::dive(eye, rest, you.at, DIVE_STOP * build, length),
+            Some(you) => flow.to_marker(eye, rest, you.at, DIVE_STOP * build, length),
             None => Flight::new(eye, eye, rest, length),
         }
     }
@@ -1641,7 +1641,8 @@ fn rise(
     spawn_pins(&atlas, &mut session, &mut commands);
     session.place_pan(&atlas);
     session.look = session.rest();
-    let opening = session.way_to_marker(OPENING_TICKS).reversed();
+    let intro = session.looks.intro;
+    let opening = session.way_to_marker(intro, OPENING_TICKS).reversed();
     let [yaw, pitch] = opening.looking();
     let look = Rotation { yaw, pitch };
     let [x, y, z] = session.vehicle_at(opening.at());
@@ -1661,7 +1662,7 @@ fn rise(
         ending: Ending::View,
     });
 
-    let flight = Flight::rise(eye_of(position), *rotation);
+    let flight = intro.rise(eye_of(position), *rotation);
     let camera = spawn_eye_camera(&mut commands, under_eye(eye_of(position)), *rotation);
     commands.entity(camera.vehicle).insert(flight);
     commands
@@ -1703,13 +1704,11 @@ fn eye_of(position: &Position) -> Position {
 }
 
 /// Moves the cameras of the passages. `Players` reads `Position`, so it stays out of this.
-fn fly(mut flights: Query<(&mut Flight, &mut Position, &mut Rotation)>) {
-    for (mut flight, mut position, mut rotation) in &mut flights {
+fn fly(mut flights: Query<(&mut Flight, &mut Position)>) {
+    for (mut flight, mut position) in &mut flights {
         flight.tick();
         let [x, y, z] = flight.target();
         position.set_if_neq(under_eye(Position { x, y, z }));
-        let [yaw, pitch] = flight.looking();
-        rotation.set_if_neq(Rotation { yaw, pitch });
     }
 }
 
@@ -1737,6 +1736,26 @@ fn settled(camera: &MinecraftEntityId, at: Position, [yaw, pitch]: [f32; 2]) -> 
     }
 }
 
+/// Turns what sees for an eye. It rides, so its place does not count, but a client takes
+/// its pitch from here, and its yaw from its head, which only ever comes as a byte. Both
+/// reach the view over three ticks, so that one of these a tick makes a smooth turn.
+fn turn_eye(
+    players: &Players,
+    player: Entity,
+    eye: &MinecraftEntityId,
+    at: Position,
+    [yaw, pitch]: [f32; 2],
+) {
+    players.send(player, settled(eye, at, [yaw, pitch]));
+    players.send(
+        player,
+        SetHeadRotation {
+            entity_id: eye.0,
+            head_yaw: (yaw_as_shown(yaw) * 256.0 / 360.0).round() as u8,
+        },
+    );
+}
+
 fn send_veil(players: &Players, player: Entity) {
     for packet in veil_in() {
         players.send(player, packet);
@@ -1754,23 +1773,35 @@ fn tick_passages(
     for (player, mut passage, id, drawn, loaded, session, tab) in &mut passages {
         passage.ticks += 1;
         let ticks = passage.ticks;
+        let flight = flights.get(passage.camera.vehicle).ok();
+        // Whatever flies under this eye, it turns as it goes.
+        if let (Some(flight), Ok(eye)) = (flight, ids.get(passage.camera.eye))
+            && flight.eye_turning()
+        {
+            let [x, y, z] = flight.at();
+            turn_eye(
+                &players,
+                player,
+                eye,
+                Position { x, y, z },
+                flight.looking(),
+            );
+        }
         match passage.kind {
             PassageKind::Rise => {
-                if drawn && ticks == RISE_TICKS - VEIL_FADE {
+                let rise_ticks = flight.map_or(0, Flight::length);
+                if drawn && ticks == rise_ticks - VEIL_FADE {
                     send_veil(&players, player);
                 }
                 let Some(mut session) = session else {
                     continue;
                 };
                 if ticks == TURN_TICKS
-                    && let (Ok(eye), Ok(flight)) = (
-                        ids.get(passage.camera.eye),
-                        flights.get(passage.camera.vehicle),
-                    )
+                    && let (Ok(eye), Some(flight)) = (ids.get(passage.camera.eye), flight)
                 {
-                    let [x, y, z] = flight.end();
+                    let [x, y, z] = flight.start();
                     let at = Position { x, y, z };
-                    players.send(player, settled(eye, at, flight.looking()));
+                    players.send(player, settled(eye, at, flight.first_look()));
                 }
                 if ticks == SWAP_TICKS
                     && let Ok(eye) = ids.get(passage.camera.eye)
@@ -1781,14 +1812,14 @@ fn tick_passages(
                     .camera
                     .and_then(|(vehicle, eye)| ids.get(eye.unwrap_or(vehicle)).ok());
                 // What is waiting on the model gets its look too, while nobody sees.
-                if ticks == RISE_TICKS - TURN_TICKS
+                if ticks == rise_ticks - TURN_TICKS
                     && let (Some(eye), Some(travel)) = (ahead, session.travel)
                 {
                     let [x, y, z] = travel.flight.at();
                     let at = session.on_model(x, y, z);
                     players.send(player, settled(eye, at, travel.flight.looking()));
                 }
-                if ticks >= RISE_TICKS && session.ready {
+                if ticks >= rise_ticks && session.ready {
                     if let Some(camera) = ahead {
                         players.send(
                             player,
@@ -1820,7 +1851,8 @@ fn tick_passages(
                     && let Ok(eye) = ids.get(passage.camera.eye)
                 {
                     let [x, y, z] = flight.at();
-                    players.send(player, settled(eye, Position { x, y, z }, flight.looking()));
+                    let at = Position { x, y, z };
+                    turn_eye(&players, player, eye, at, flight.first_look());
                 }
                 if ticks == LANDING_HOLD_TICKS
                     && let Ok(eye) = ids.get(passage.camera.eye)
@@ -1843,7 +1875,7 @@ fn tick_passages(
                 }
             }
             PassageKind::Descent => {
-                let Ok(flight) = flights.get(passage.camera.vehicle) else {
+                let Some(flight) = flight else {
                     continue;
                 };
                 let Some(back) = passage.back else {
@@ -2258,11 +2290,8 @@ fn rig_up(mut sessions: Query<(Entity, &mut MapSession), Settled>, mut commands:
         if session.rig.is_some() {
             continue;
         }
-        let eye_box = EntityBuilder::new(cursor::eye_box_kind(session.drawn))
-            .position(session.eye_box_position())
-            .gravity(false)
-            .spawn(&mut commands)
-            .id();
+        let eye_box =
+            cursor::spawn_eye_box(&mut commands, session.drawn, session.eye_box_position());
         // Riding the camera, the box glides with it exactly.
         let (waiting, eye) = session.camera.take().unzip();
         let camera = match session.mode {
@@ -2278,7 +2307,7 @@ fn rig_up(mut sessions: Query<(Entity, &mut MapSession), Settled>, mut commands:
             }
             MapMode::Look => waiting,
         };
-        if session.mode == MapMode::Look && session.travel.is_some() {
+        if session.travel.is_some() {
             commands.entity(eye_box).insert(Hidden);
         }
         session.rig = Some(Rig {
@@ -2696,10 +2725,8 @@ fn set_off(
     let [x, y, z] = session.vehicle_at(travel.flight.at());
     let at = session.on_model(x, y, z);
     if let Some(rig) = session.rig.as_mut() {
-        if session.mode == MapMode::Look {
-            // A camera would see it, standing around the eye.
-            commands.entity(rig.eye_box).try_insert(Hidden);
-        }
+        // It only has to be there for a click, and a flight does not take any.
+        commands.entity(rig.eye_box).try_insert(Hidden);
         match rig.camera {
             Some(camera) => {
                 if let Ok(mut display) = displays.get_mut(camera) {
@@ -3052,10 +3079,10 @@ fn tick_sessions(
             let flight = travel.flight;
             let eye = session.rig.and_then(|rig| rig.eye);
             let eye = eye.and_then(|eye| ids.get(eye).ok());
-            if let Some(eye) = eye.filter(|_| flight.turning()) {
+            if let Some(eye) = eye.filter(|_| flight.turning() || flight.eye_turning()) {
                 let [x, y, z] = flight.at();
                 let at = session.on_model(x, y, z);
-                players.send(player, settled(eye, at, flight.looking()));
+                turn_eye(&players, player, eye, at, flight.looking());
             }
             if let Some(eye) = eye.filter(|_| flight.swapping()) {
                 players.send(player, SetCamera { camera_id: eye.0 });
@@ -3081,17 +3108,22 @@ fn tick_sessions(
                             send_veil(&players, player);
                         }
                         let (at, look) = session.landing_place(to, flight);
-                        let start = Flight::landing(eye_of(&at), look).at();
-                        let [x, y, z] = start;
+                        let landing = session.looks.outro.landing(eye_of(&at), look);
+                        let [x, y, z] = landing.start();
                         let camera = under_eye(Position { x, y, z });
-                        session.landing = Some(spawn_eye_camera(&mut commands, camera, look));
+                        let [yaw, pitch] = landing.first_look();
+                        let first = Rotation { yaw, pitch };
+                        session.landing = Some(spawn_eye_camera(&mut commands, camera, first));
                     }
                     if flight.flying_for() + TURN_TICKS == VEIL_FADE
                         && let Some(camera) = session.landing
                         && let Ok(eye) = ids.get(camera.eye)
                     {
                         let (at, look) = session.landing_place(to, flight);
-                        players.send(player, settled(eye, at, [look.yaw, look.pitch]));
+                        let landing = session.looks.outro.landing(eye_of(&at), look);
+                        let [x, y, z] = landing.start();
+                        let start = Position { x, y, z };
+                        turn_eye(&players, player, eye, start, landing.first_look());
                     }
                     if flight.flying_for() == 0 {
                         commands.trigger(LeaveMap(player));
@@ -3192,6 +3224,8 @@ pub struct MapLooks {
     blocks: Blocks,
     motion: Motion,
     inertia: bool,
+    intro: Flow,
+    outro: Flow,
 }
 
 impl MapLooks {
@@ -3265,6 +3299,10 @@ pub enum LookChoice {
     Motion(Option<Motion>),
     /// Turns inertia on or off.
     Inertia,
+    /// How the view gets to the map.
+    Intro(Option<Flow>),
+    /// How it leaves.
+    Outro(Option<Flow>),
     /// An option that does not go with its action.
     Refused,
 }
@@ -3323,6 +3361,14 @@ fn choose_look(
             let state = if looks.inertia { "oui" } else { "non" };
             format!("Inertie : {state}")
         }
+        LookChoice::Intro(flow) => {
+            looks.intro = flow.unwrap_or(looks.intro.next());
+            format!("Intro : {}", looks.intro.label())
+        }
+        LookChoice::Outro(flow) => {
+            looks.outro = flow.unwrap_or(looks.outro.next());
+            format!("Outro : {}", looks.outro.label())
+        }
         LookChoice::Refused => {
             tell(
                 "Cette option ne va pas avec cette action.",
@@ -3377,7 +3423,7 @@ fn close(
     if let Some(open) = session.wheel.take() {
         commands.entity(open.display).try_despawn();
     }
-    let mut flight = session.way_to_marker(CLOSING_TICKS);
+    let mut flight = session.way_to_marker(session.looks.outro, CLOSING_TICKS);
     if let Some(travel) = session.travel {
         // Called while on the way in: from where that flight got to, and how it looks.
         let build = f64::from(session.model().scale().build);
@@ -3448,12 +3494,19 @@ fn leave(
         z: home_z,
     } = session.position;
     let (yaw, pitch) = (session.rotation.yaw, session.rotation.pitch);
-    let flight = Flight::landing(eye_of(&session.position), session.rotation);
+    let flight = session
+        .looks
+        .outro
+        .landing(eye_of(&session.position), session.rotation);
     let [x, y, z] = flight.at();
     let start = under_eye(Position { x, y, z });
+    let [yaw_first, pitch_first] = flight.first_look();
+    let first = Rotation {
+        yaw: yaw_first,
+        pitch: pitch_first,
+    };
     let waiting = session.landing.take();
-    let camera =
-        waiting.unwrap_or_else(|| spawn_eye_camera(&mut commands, start, session.rotation));
+    let camera = waiting.unwrap_or_else(|| spawn_eye_camera(&mut commands, start, first));
     let back = Back {
         home,
         abilities: session.abilities,
