@@ -417,16 +417,22 @@ fn gores(one: [u8; 4], other: [u8; 4]) -> Image {
     image
 }
 
-/// A round of shade, soft at its rim.
+/// A round of shade, soft at its rim, as a fine screen of dots. Half see-through pixels
+/// would do on land, but they hide the real water behind them, and the bed of a lake
+/// shows through as a pale patch: a pixel here is either all there or not at all.
 fn balloon_shadow() -> Image {
-    let mut image = Image::new(SIDE, SIDE);
-    let middle = f64::from(SIDE) / 2.0 - 0.5;
-    for y in 0..SIDE {
-        for x in 0..SIDE {
+    /// How far into the screen a dot comes, in sixteenths.
+    const SCREEN: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+    const FINE_SIDE: u32 = SIDE * 4;
+    let mut image = Image::new(FINE_SIDE, FINE_SIDE);
+    let middle = f64::from(FINE_SIDE) / 2.0 - 0.5;
+    for y in 0..FINE_SIDE {
+        for x in 0..FINE_SIDE {
             let far = (f64::from(x) - middle).hypot(f64::from(y) - middle) / middle;
-            if far <= 1.0 {
-                let strength = 130.0 * (1.0 - far.powi(4));
-                image.set(x, y, [10, 14, 24, strength as u8]);
+            let shade = 0.56 * (1.0 - far.powi(4));
+            let dot = f64::from(SCREEN[y as usize % 4][x as usize % 4]) / 16.0;
+            if far <= 1.0 && dot < shade {
+                image.set(x, y, [10, 14, 24, 255]);
             }
         }
     }
