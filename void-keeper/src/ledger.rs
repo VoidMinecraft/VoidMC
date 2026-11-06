@@ -121,6 +121,7 @@ pub struct Tally {
     pub teams: usize,
     pub tab_entries: usize,
     pub effects: usize,
+    pub bytes: usize,
 }
 
 #[derive(Debug, Default)]
@@ -348,6 +349,9 @@ impl Ledger {
 
             cb::BLOCK_DESTRUCTION => self.taint("a block is cracked by a breaker id"),
             cb::WAYPOINT => self.taint("the locator bar holds a waypoint"),
+            cb::OPEN_BOOK => self.taint("a book is open"),
+            cb::OPEN_SIGN_EDITOR => self.taint("a sign is being edited"),
+            cb::PLAYER_COMBAT_KILL => self.taint("the death screen is open"),
 
             cb::ANIMATE
             | cb::AWARD_STATS
@@ -393,14 +397,11 @@ impl Ledger {
             | cb::MOVE_ENTITY_ROT
             | cb::MOVE_MINECART_ALONG_TRACK
             | cb::MOVE_VEHICLE
-            | cb::OPEN_BOOK
-            | cb::OPEN_SIGN_EDITOR
             | cb::PING
             | cb::PLACE_GHOST_RECIPE
             | cb::PLAYER_CHAT
             | cb::PLAYER_COMBAT_END
             | cb::PLAYER_COMBAT_ENTER
-            | cb::PLAYER_COMBAT_KILL
             | cb::PLAYER_LOOK_AT
             | cb::PLAYER_POSITION
             | cb::PLAYER_ROTATION
@@ -504,7 +505,6 @@ impl Ledger {
                 packet.decode::<i64>()?;
                 skip_bytes(packet)?;
                 skip_bytes(packet)?;
-                skip_bytes(packet)?;
             }
             if actions & UPDATE_GAME_MODE != 0 {
                 packet.decode::<VarI32>()?;
@@ -555,6 +555,9 @@ impl Ledger {
             GameEventType::BeginRaining
             | GameEventType::RainLevelChange
             | GameEventType::ThunderLevelChange => self.rain = true,
+            GameEventType::WinGame => self.taint("the end credits are rolling"),
+            GameEventType::EnableRespawnScreen => self.taint("the respawn screen was switched"),
+            GameEventType::LimitedCrafting => self.taint("limited crafting was switched"),
             _ => {}
         }
         Ok(())
@@ -857,6 +860,7 @@ impl Ledger {
             teams: self.teams.len(),
             tab_entries: self.tab_entries.len(),
             effects: self.effects.len(),
+            bytes: self.heap_bytes(),
         }
     }
 
@@ -1387,11 +1391,57 @@ mod tests {
 
     #[test]
     fn what_cannot_be_undone_forces_a_reconfiguration() {
-        for id in [cb::WAYPOINT, cb::BLOCK_DESTRUCTION] {
+        for id in [
+            cb::WAYPOINT,
+            cb::BLOCK_DESTRUCTION,
+            cb::OPEN_BOOK,
+            cb::OPEN_SIGN_EDITOR,
+            cb::PLAYER_COMBAT_KILL,
+        ] {
             let mut ledger = joined();
             ledger.observe(&frame(id, |_| {}));
-            assert!(ledger.fits(&login(PLAYER)).is_err());
+            assert!(ledger.fits(&login(PLAYER)).is_err(), "{id:#x}");
         }
+    }
+
+    #[test]
+    fn game_events_that_stay_on_the_client_force_a_reconfiguration() {
+        for event in [
+            GameEventType::WinGame,
+            GameEventType::EnableRespawnScreen,
+            GameEventType::LimitedCrafting,
+        ] {
+            let mut ledger = joined();
+            ledger.observe(&tagged(&PlayPacket::GameEvent(GameEvent {
+                event,
+                value: 1.0,
+            })));
+            assert!(ledger.fits(&login(PLAYER)).is_err(), "{event:?}");
+        }
+    }
+
+    #[test]
+    fn a_chat_session_in_a_tab_entry_is_read_to_its_end() {
+        let mut ledger = joined();
+        ledger.observe(&frame(cb::PLAYER_INFO_UPDATE, |body| {
+            0x07u8.encode(body);
+            VarI32(2).encode(body);
+            for uuid in [Uuid::from_u128(1), Uuid::from_u128(2)] {
+                uuid.encode(body);
+                "Bot".to_string().encode(body);
+                VarI32(0).encode(body);
+                true.encode(body);
+                Uuid::from_u128(9).encode(body);
+                0i64.encode(body);
+                VarI32(3).encode(body);
+                body.extend_from_slice(&[1, 2, 3]);
+                VarI32(2).encode(body);
+                body.extend_from_slice(&[4, 5]);
+                VarI32(1).encode(body);
+            }
+        }));
+        assert!(ledger.tainted().is_none());
+        assert_eq!(ledger.tally().tab_entries, 2);
     }
 
     #[test]

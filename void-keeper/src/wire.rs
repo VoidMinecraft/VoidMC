@@ -13,6 +13,8 @@ use flate2::write::ZlibEncoder;
 use voidmc_codec::{Decode, Encode, VarI32};
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// What a client reads on a link without compression: the length of a frame takes three bytes.
+pub const MAX_PLAIN_FRAME_BYTES: usize = (1 << 21) - 1;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum WireError {
@@ -43,10 +45,6 @@ impl Framing {
     /// A negative threshold turns compression off, as `login_compression` defines it.
     pub fn set_threshold(&mut self, threshold: i32) {
         self.threshold = usize::try_from(threshold).ok();
-    }
-
-    pub fn compressed(&self) -> bool {
-        self.threshold.is_some()
     }
 
     /// The next whole frame of `buffer`, or `None` until more bytes arrive.
@@ -197,9 +195,10 @@ mod tests {
     fn a_negative_threshold_turns_compression_off() {
         let mut framing = Framing::default();
         framing.set_threshold(256);
-        assert!(framing.compressed());
         framing.set_threshold(-1);
-        assert!(!framing.compressed());
+        let mut out = Vec::new();
+        framing.encode(&[7, 1], &mut out);
+        assert_eq!(out, [2, 7, 1]);
     }
 
     #[test]

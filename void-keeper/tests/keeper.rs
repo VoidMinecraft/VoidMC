@@ -1,5 +1,6 @@
 //! The proxy on real sockets, between a fake client and a fake server, all on ephemeral ports.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,6 +36,7 @@ fn settings() -> Settings {
         retry_every: Duration::from_millis(20),
         keep_alive_every: Duration::from_millis(100),
         settle: Duration::from_millis(200),
+        backend_silence: Duration::from_secs(60),
     }
 }
 
@@ -69,6 +71,13 @@ fn login_packet(entity_id: i32) -> Bytes {
         sea_level: 63,
         enforces_secure_chat: false,
     }))
+}
+
+fn registry(tag: u8) -> Bytes {
+    frame(config_cb::REGISTRY_DATA, |body| {
+        body.push(tag);
+        body.extend_from_slice(&[7; 4000]);
+    })
 }
 
 fn add_entity(id: i32) -> Bytes {
@@ -252,11 +261,7 @@ async fn serve_fake(
             break;
         }
     }
-    peer.send(&frame(config_cb::REGISTRY_DATA, |body| {
-        body.push(plan.registry);
-        body.extend_from_slice(&[7; 4000]);
-    }))
-    .await;
+    peer.send(&registry(plan.registry)).await;
     peer.send(&empty(config_cb::FINISH_CONFIGURATION)).await;
     while let Some(frame_in) = peer.next().await {
         if id_of(&frame_in) == config_sb::FINISH_CONFIGURATION {
@@ -322,9 +327,16 @@ impl FakeClient {
 
     /// Answers a configuration up to the `login` that ends it.
     async fn configure(&mut self) -> Bytes {
+        let mut registries = HashSet::new();
         loop {
             let frame_in = self.next().await;
             match id_of(&frame_in) {
+                config_cb::REGISTRY_DATA => {
+                    assert!(
+                        registries.insert(frame_in),
+                        "a registry reached the client twice"
+                    );
+                }
                 config_cb::SELECT_KNOWN_PACKS => {
                     self.peer
                         .send(&frame(config_sb::SELECT_KNOWN_PACKS, |body| body.push(0)))
@@ -669,6 +681,34 @@ async fn a_frame_cut_by_the_crash_never_reaches_the_client() {
     let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
     server.await.unwrap();
     assert_eq!(id_of(&client.next().await), play_cb::KEEP_ALIVE);
+}
+
+#[tokio::test]
+async fn a_server_lost_after_a_registry_does_not_hand_it_to_the_client_twice() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut rig = Rig::start(address).await;
+    let first = tokio::spawn(async move {
+        let mut peer = accept_login(&listener).await;
+        peer.next().await;
+        peer.send(&login_finished()).await;
+        peer.next().await;
+        peer.next().await;
+        peer.send(&frame(config_cb::SELECT_KNOWN_PACKS, |body| body.push(0)))
+            .await;
+        peer.next().await;
+        peer.send(&registry(1)).await;
+        sleep(Duration::from_millis(100)).await;
+    });
+    let proxy = rig.proxy;
+    let joining = tokio::spawn(async move { FakeClient::join(proxy, "Bot").await });
+    first.await.unwrap();
+
+    let _server = FakeServer::start(address, Plan::player(1)).await;
+    let (_client, login) = joining.await.unwrap();
+    assert_eq!(login, login_packet(1));
+    let resumed = rig.expect_event("resumed").await;
+    assert_eq!(resumed["path"], "reconfigured");
 }
 
 #[tokio::test]

@@ -1,9 +1,10 @@
 //! Runs one [`Session`] per client on real sockets, and says what happens as JSON lines.
 
-use std::io;
+use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::sync_channel;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
@@ -27,8 +28,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_EVERY: Duration = Duration::from_millis(500);
 const READ_CHUNK: usize = 64 * 1024;
+const WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+const EVENT_BACKLOG: usize = 1024;
 
-/// Where events go: the lines `dev-tests` and the dev tool read.
+/// Where events go, one JSON object each.
 #[derive(Clone)]
 pub struct Events {
     sink: Arc<dyn Fn(Value) + Send + Sync>,
@@ -42,7 +47,22 @@ impl Events {
     }
 
     pub fn stdout() -> Self {
-        Self::new(|event| println!("{event}"))
+        Self::writing_to(io::stdout())
+    }
+
+    /// Writes on a thread of its own: a reader that stalls or dies costs events, never a session.
+    pub fn writing_to(mut out: impl Write + Send + 'static) -> Self {
+        let (sender, receiver) = sync_channel::<Value>(EVENT_BACKLOG);
+        std::thread::spawn(move || {
+            for event in receiver {
+                if writeln!(out, "{event}").and_then(|()| out.flush()).is_err() {
+                    return;
+                }
+            }
+        });
+        Self::new(move |event| {
+            let _ = sender.try_send(event);
+        })
     }
 
     fn emit(&self, name: &str, mut fields: Value) {
@@ -115,10 +135,16 @@ impl Peer {
     }
 
     async fn flush(&mut self) -> io::Result<()> {
+        self.flush_within(WRITE_TIMEOUT).await
+    }
+
+    async fn flush_within(&mut self, limit: Duration) -> io::Result<()> {
         if self.outbound.is_empty() {
             return Ok(());
         }
-        self.stream.write_all(&self.outbound).await?;
+        timeout(limit, self.stream.write_all(&self.outbound))
+            .await
+            .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
         self.outbound.clear();
         Ok(())
     }
@@ -153,10 +179,9 @@ struct Keeper {
 
 impl Keeper {
     fn emit(&self, event: Event) {
-        let bytes = self.session.ledger().heap_bytes();
         let tallied = |mut fields: Value, tally: Tally| {
             fields["session"] = json!(self.id);
-            fields["ledger_bytes"] = json!(bytes);
+            fields["ledger_bytes"] = json!(tally.bytes);
             fields["entities"] = json!(tally.entities);
             fields["chunks"] = json!(tally.chunks);
             fields["boss_bars"] = json!(tally.boss_bars);
@@ -270,7 +295,7 @@ impl Keeper {
             match connect(self.backend_address).await {
                 Some(stream) => {
                     self.backend = Some(Peer::new(stream));
-                    self.session.on_backend_connected();
+                    self.session.on_backend_connected(Instant::now());
                 }
                 None => self.session.on_connect_failed(Instant::now()),
             }
@@ -341,6 +366,10 @@ fn status_response(body: &mut Vec<u8>) {
     status.to_string().encode(body);
 }
 
+async fn relay_for(limit: Duration, client: &mut TcpStream, backend: &mut TcpStream) {
+    let _ = timeout(limit, copy_bidirectional(client, backend)).await;
+}
+
 /// The server answers its own pings; while it is away, the keeper does.
 async fn relay_status(mut client: Peer, handshake: Bytes, backend_address: SocketAddr) {
     if let Some(stream) = connect(backend_address).await {
@@ -348,11 +377,11 @@ async fn relay_status(mut client: Peer, handshake: Bytes, backend_address: Socke
         backend.queue(&handshake);
         backend.outbound.extend_from_slice(&client.inbound);
         if backend.flush().await.is_ok() {
-            let _ = copy_bidirectional(&mut client.stream, &mut backend.stream).await;
+            relay_for(STATUS_TIMEOUT, &mut client.stream, &mut backend.stream).await;
         }
         return;
     }
-    while let Ok(Some(frame_in)) = client.next().await {
+    while let Ok(Ok(Some(frame_in))) = timeout(STATUS_TIMEOUT, client.next()).await {
         match split(&frame_in) {
             Some((status_sb::STATUS_REQUEST, _)) => {
                 client.queue(&frame(status_cb::STATUS_RESPONSE, status_response));
@@ -451,6 +480,22 @@ async fn watch_backend(address: SocketAddr, events: Events) {
     }
 }
 
+/// A failed `accept`, such as out of file descriptors, says nothing of the next one.
+async fn next_connection<T, F>(mut accept: impl FnMut() -> F) -> T
+where
+    F: Future<Output = io::Result<T>>,
+{
+    loop {
+        match accept().await {
+            Ok(connection) => return connection,
+            Err(error) => {
+                tracing::warn!(%error, "accept failed, trying again");
+                sleep(ACCEPT_BACKOFF).await;
+            }
+        }
+    }
+}
+
 /// Serves clients on `listener` until the process ends.
 pub async fn run(
     listener: TcpListener,
@@ -468,8 +513,103 @@ pub async fn run(
     tokio::spawn(watch_backend(backend_address, events.clone()));
     let sessions = AtomicU64::new(1);
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = next_connection(|| listener.accept()).await;
         let id = sessions.fetch_add(1, Ordering::Relaxed);
         tokio::spawn(serve(stream, id, backend_address, settings, events.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Broken;
+
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct Stuck;
+
+    impl Write for Stuck {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            loop {
+                std::thread::park();
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    async fn pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("[::1]:0").await.unwrap();
+        let near = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (far, _) = listener.accept().await.unwrap();
+        (near, far)
+    }
+
+    #[test]
+    fn a_dead_reader_of_events_changes_nothing() {
+        let events = Events::writing_to(Broken);
+        for _ in 0..3 {
+            events.emit("listening", json!({}));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn a_stuck_reader_of_events_blocks_nobody() {
+        let events = Events::writing_to(Stuck);
+        for _ in 0..EVENT_BACKLOG * 3 {
+            events.emit("listening", json!({}));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_reading_fails_the_flush() {
+        let (near, _far) = pair().await;
+        let mut peer = Peer::new(near);
+        peer.outbound = vec![0; 64 * 1024 * 1024];
+        let error = peer
+            .flush_within(Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn a_status_relay_ends_on_its_own() {
+        let (mut client, _held) = pair().await;
+        let (mut backend, _also_held) = pair().await;
+        let relay = relay_for(Duration::from_millis(50), &mut client, &mut backend);
+        timeout(Duration::from_secs(5), relay).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_accept_is_tried_again() {
+        let mut failures = 2;
+        let connection = next_connection(|| {
+            let failed = failures > 0;
+            failures -= i32::from(failed);
+            async move {
+                if failed {
+                    Err(io::Error::from_raw_os_error(24))
+                } else {
+                    Ok(7)
+                }
+            }
+        })
+        .await;
+        assert_eq!(connection, 7);
     }
 }

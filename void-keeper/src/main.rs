@@ -11,11 +11,13 @@ const USAGE: &str = "\
 voidmc-keeper: keeps a client in game while the server restarts or crashes
 
   voidmc-keeper --backend ADDRESS [--listen ADDRESS] [--return-timeout SECONDS] [--settle SECONDS]
+               [--backend-silence SECONDS]
 
   --backend          the server, as [::1]:25671
   --listen           where clients connect (default 127.0.0.1:25565)
   --return-timeout   how long a client waits for a lost server (default 120)
   --settle           how long a new server has before old chunks and packs go (default 3)
+  --backend-silence  how long a server may stay silent before it counts as lost (default 20)
 
 Events go to stdout, one JSON object per line; logs go to stderr.";
 
@@ -46,6 +48,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--backend" => backend = Some(address(value()?)?),
             "--return-timeout" => settings.return_timeout = seconds(value()?)?,
             "--settle" => settings.settle = seconds(value()?)?,
+            "--backend-silence" => settings.backend_silence = seconds(value()?)?,
             other => return Err(format!("unknown option {other}")),
         }
     }

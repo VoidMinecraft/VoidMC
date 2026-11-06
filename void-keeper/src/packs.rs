@@ -81,14 +81,6 @@ impl PackBook {
         }
         forsaken
     }
-
-    pub fn len(&self) -> usize {
-        self.packs.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.packs.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -152,6 +144,7 @@ mod tests {
         book.outage();
         book.offer(kept, "def");
         assert_eq!(book.take_forsaken(), vec![id()]);
-        assert_eq!(book.len(), 1);
+        assert_eq!(book.offer(kept, "def"), Some(vec![LOADED]));
+        assert_eq!(book.offer(id(), "abc"), None);
     }
 }
