@@ -13,6 +13,7 @@ use crate::motion::Motion;
 use crate::plugin::{MapLooks, Me};
 use crate::regions::ZoneLook;
 use crate::scene::Blocks;
+use crate::transition::Flow;
 
 const NAMESPACE: &str = "voidmap:settings";
 /// The boss bar sits right where a title goes, and the buttons say what this is.
@@ -120,6 +121,8 @@ pub fn settings() -> Vec<Setting> {
         Setting::new("Inertie", &[false, true], yes_or_no, |looks| {
             &mut looks.inertia
         }),
+        Setting::new("Intro", &Flow::ALL, Flow::label, |looks| &mut looks.intro),
+        Setting::new("Outro", &Flow::ALL, Flow::label, |looks| &mut looks.outro),
     ]
 }
 
@@ -133,8 +136,8 @@ pub enum Preview {
 
 /// What the dialog offers to watch. A new one goes here, as a line, and in `play_preview`.
 pub const PREVIEWS: [(&str, Preview); 3] = [
-    ("Intro", Preview::Intro),
-    ("Outro", Preview::Outro),
+    ("Voir l'intro", Preview::Intro),
+    ("Voir l'outro", Preview::Outro),
     ("Téléportation", Preview::Teleport),
 ];
 

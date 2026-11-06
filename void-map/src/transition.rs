@@ -2,10 +2,14 @@
 //! short veil of cloud and comes out over the player's marker on the model, then draws back
 //! to the view. The way out is the same one, backwards. All of it is client-side gliding:
 //! the server gives a camera the end of a segment and the client does the rest.
+//!
+//! How the view goes there is a [`Flow`], which the intro and the outro choose apart.
 
 use bevy_ecs::prelude::Component;
 use voidmc::components::{Position, Rotation};
 use voidmc_protocol::clientbound::{ClientboundPacket, SetTitleText, SetTitlesAnimation};
+
+use voidmc_ui::ResourcePack;
 
 use crate::art;
 use crate::pointer::{ease, look_direction};
@@ -14,8 +18,8 @@ use crate::pointer::{ease, look_direction};
 pub const VEIL_FADE: u32 = 5;
 /// Longer than anything has to hide. The veil is lifted by hand long before.
 const VEIL_STAY: u32 = 400;
-pub const RISE_TICKS: u32 = 20;
-pub const LANDING_TICKS: u32 = 18;
+const RISE_TICKS: u32 = 20;
+const LANDING_TICKS: u32 = 18;
 /// From the player's marker, up to the view.
 pub const OPENING_TICKS: u32 = 30;
 /// The other way, on the way out.
@@ -38,6 +42,57 @@ const SETTLE_TICKS: u32 = 2;
 pub const FLIGHT_GLIDE_TICKS: u8 = (SEGMENT_TICKS + GLIDE_OVERLAP) as u8;
 /// How far over the player the camera goes, in blocks.
 const FLIGHT_HEIGHT: f64 = 34.0;
+/// Straight down.
+const DOWN: f32 = 90.0;
+/// Straight up.
+const UP: f32 = -90.0;
+/// How wide a spiral gets halfway, on the world and at the height of a view.
+const SPIRAL_RADIUS: f64 = 7.0;
+const SPIRAL_MODEL_SHARE: f64 = 0.2;
+/// How far ahead a glide goes in the world, and how far over a straight line.
+const GLIDE_REACH: f64 = 52.0;
+const GLIDE_BULGE: f64 = 7.0;
+/// How low a glide looks, down from the horizon, where it meets the land.
+const GLIDE_PITCH: f32 = 34.0;
+const GLIDE_LOOK: f32 = 58.0;
+/// How far a glide ends from the marker, in stops of a dive.
+const GLIDE_STOPS: f64 = 3.0;
+/// A leap goes higher than the others, into the sky.
+const LEAP_HEIGHT: f64 = 56.0;
+/// A leap comes down from this share of its height over the view. A client draws no further
+/// than its render distance, and sees nothing of a model from much higher.
+const LEAP_MODEL_SHARE: f64 = 0.25;
+/// Where a leap still looks on the model, low over the land, as it comes out of the sky.
+const LEAP_PITCH: f32 = 32.0;
+
+/// The include of the terrain shaders that holds what the client says of each section.
+const SECTION_SHADER_FILE: &str = "assets/minecraft/shaders/include/chunksection.glsl";
+
+/// A section just built fades in from the colour of the fog, for most of a second, unless it
+/// is close by. That is what shows as a flash when a view jumps to another model, whose
+/// sections are all new: the sky of the map is black, and so is the fog. So on the models,
+/// and nowhere else, a section is whole at once. The block keeps its layout: only a name
+/// changes, and what the shader reads under the old one.
+fn section_shader(first_model_block: i32) -> String {
+    format!(
+        "#version 330\n\n\
+         layout(std140) uniform ChunkSection {{\n    \
+         mat4 ModelViewMat;\n    \
+         float SectionFade;\n    \
+         ivec2 TextureSize;\n    \
+         ivec3 ChunkPosition;\n\
+         }};\n\n\
+         #define ChunkVisibility (ChunkPosition.x >= {first_model_block} ? 1.0 : SectionFade)\n"
+    )
+}
+
+/// Adds what the way between models needs of the pack.
+pub fn install(pack: &mut ResourcePack, first_model_block: i32) {
+    pack.add(
+        SECTION_SHADER_FILE,
+        section_shader(first_model_block).into_bytes(),
+    );
+}
 
 /// What brings the veil over the screen. A title is the one thing that covers it
 /// from the server and fades on its own.
@@ -66,15 +121,176 @@ pub fn veil_out() -> ClientboundPacket {
     .into()
 }
 
+/// One way for the view to go between the world and the map. The intro and the outro each
+/// have one, and an outro is the flight of its intro, backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Flow {
+    /// Straight up, tilting down to the ground under the player, and over their marker.
+    #[default]
+    Climb,
+    /// Up a widening spiral, turning a whole circle, and down one on the model.
+    Spiral,
+    /// Ahead and up like a bird, then in over the model from low on the horizon.
+    Glide,
+    /// Eyes on the sky and up into it, then down from the horizon onto the view.
+    Leap,
+}
+
+impl Flow {
+    pub const ALL: [Self; 4] = [Self::Climb, Self::Spiral, Self::Glide, Self::Leap];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Climb => "Envol",
+            Self::Spiral => "Spirale",
+            Self::Glide => "Vol plané",
+            Self::Leap => "Saut dans le ciel",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|flow| *flow == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    fn extra_ticks(self) -> u32 {
+        match self {
+            Self::Climb => 0,
+            Self::Spiral => 14,
+            Self::Glide => 12,
+            Self::Leap => 6,
+        }
+    }
+
+    /// Out of an eye, into the sky of the world.
+    pub fn rise(self, eye: Position, look: Rotation) -> Flight {
+        let start = [eye.x, eye.y, eye.z];
+        let [yaw, pitch] = [look.yaw, look.pitch];
+        let up = |height| [eye.x, eye.y + height, eye.z];
+        let length = RISE_TICKS + self.extra_ticks();
+        match self {
+            Self::Climb => {
+                Flight::new(start, up(FLIGHT_HEIGHT), [yaw, pitch], length).turning_to([yaw, DOWN])
+            }
+            Self::Spiral => Flight::new(start, up(FLIGHT_HEIGHT), [yaw, pitch], length)
+                .turning_to([yaw + 360.0, GLIDE_LOOK])
+                .along(Shape::Spiral {
+                    radius: SPIRAL_RADIUS,
+                    turns: 1.0,
+                    phase: yaw,
+                }),
+            Self::Glide => {
+                let way = look_direction(yaw, 0.0);
+                let to = [
+                    eye.x + way[0] * GLIDE_REACH,
+                    eye.y + FLIGHT_HEIGHT,
+                    eye.z + way[2] * GLIDE_REACH,
+                ];
+                Flight::new(start, to, [yaw, pitch], length)
+                    .turning_to([yaw, GLIDE_LOOK])
+                    .along(Shape::Bulge([0.0, GLIDE_BULGE, 0.0]))
+            }
+            Self::Leap => {
+                Flight::new(start, up(LEAP_HEIGHT), [yaw, pitch], length).turning_to([yaw, UP])
+            }
+        }
+    }
+
+    /// Back down to an eye, by the same way.
+    pub fn landing(self, eye: Position, look: Rotation) -> Flight {
+        Flight {
+            length: LANDING_TICKS + self.extra_ticks(),
+            ..self.rise(eye, look).reversed()
+        }
+    }
+
+    /// From the view to the end of the flight over the model, `stop` blocks off a marker.
+    /// An intro takes this one backwards.
+    pub fn to_marker(
+        self,
+        eye: [f64; 3],
+        look: [f32; 2],
+        marker: [f64; 3],
+        stop: f64,
+        length: u32,
+    ) -> Flight {
+        let length = length + self.extra_ticks();
+        let [yaw, _] = look;
+        let over = [marker[0], marker[1] + stop, marker[2]];
+        let high = eye[1] - marker[1];
+        match self {
+            Self::Climb => Flight::new(eye, over, look, length).turning_to([yaw, DOWN]),
+            Self::Spiral => Flight::new(eye, over, look, length)
+                .turning_to([yaw - 360.0, DOWN])
+                .along(Shape::Spiral {
+                    radius: high * SPIRAL_MODEL_SHARE,
+                    turns: -1.0,
+                    phase: yaw,
+                }),
+            Self::Glide => {
+                let way = look_direction(yaw, GLIDE_PITCH);
+                let back = stop * GLIDE_STOPS;
+                let to = std::array::from_fn(|axis| marker[axis] - way[axis] * back);
+                Flight::new(eye, to, look, length).turning_to([yaw, GLIDE_PITCH])
+            }
+            Self::Leap => {
+                let to = [eye[0], eye[1] + high * LEAP_MODEL_SHARE, eye[2]];
+                Flight::new(eye, to, look, length).turning_to([yaw, LEAP_PITCH])
+            }
+        }
+    }
+}
+
+/// What a flight does on top of a straight line. It starts and ends on that line, so that
+/// nothing changes where a flight begins and arrives.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Shape {
+    Straight,
+    /// Off to this side, most of all halfway.
+    Bulge([f64; 3]),
+    /// Around the line, this far halfway, starting towards `phase` as a yaw.
+    Spiral {
+        radius: f64,
+        turns: f64,
+        phase: f32,
+    },
+}
+
+impl Shape {
+    /// How far off the line, at this share of the way.
+    fn offset(self, share: f64) -> [f64; 3] {
+        let swell = (share * std::f64::consts::PI).sin();
+        match self {
+            Self::Straight => [0.0; 3],
+            Self::Bulge(side) => side.map(|axis| axis * swell),
+            Self::Spiral {
+                radius,
+                turns,
+                phase,
+            } => {
+                let angle = f64::from(phase).to_radians() + share * turns * std::f64::consts::TAU;
+                [
+                    -angle.sin() * radius * swell,
+                    0.0,
+                    angle.cos() * radius * swell,
+                ]
+            }
+        }
+    }
+}
+
 /// A camera on its way somewhere. It gets told where to be a segment ahead and the client
-/// glides it there by itself, so that a whole flight takes a handful of packets.
+/// glides it there by itself, so that a whole flight takes a handful of packets. Its look
+/// goes the same way, except for an eye: what rides a camera turns by a packet a tick.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct Flight {
     from: [f64; 3],
     to: [f64; 3],
-    /// The same all the way. It takes a camera that only a flight of display entities can
-    /// turn smoothly, and the one that sees for an eye rides on it and cannot.
     look: [f32; 2],
+    look_to: [f32; 2],
+    shape: Shape,
+    /// It runs from `to` to `from`, for a shape to go back on itself.
+    backwards: bool,
     length: u32,
     ticks: u32,
 }
@@ -85,24 +301,21 @@ impl Flight {
             from,
             to,
             look,
+            look_to: look,
+            shape: Shape::Straight,
+            backwards: false,
             length,
             ticks: 0,
         }
     }
 
-    /// Straight up from an eye.
-    pub fn rise(eye: Position, look: Rotation) -> Self {
-        let [x, y, z] = [eye.x, eye.y, eye.z];
-        let up = [x, y + FLIGHT_HEIGHT, z];
-        Self::new([x, y, z], up, [look.yaw, look.pitch], RISE_TICKS)
+    /// Ends on this look.
+    pub fn turning_to(self, look_to: [f32; 2]) -> Self {
+        Self { look_to, ..self }
     }
 
-    /// The way back, down to an eye.
-    pub fn landing(eye: Position, look: Rotation) -> Self {
-        Self {
-            length: LANDING_TICKS,
-            ..Self::rise(eye, look).reversed()
-        }
+    pub fn along(self, shape: Shape) -> Self {
+        Self { shape, ..self }
     }
 
     /// From an eye to `stop` blocks short of a target, which ends up in the middle of the
@@ -116,8 +329,7 @@ impl Flight {
     /// The same way, the other way round.
     pub fn reversed(self) -> Self {
         Self {
-            from: self.to,
-            to: self.from,
+            backwards: !self.backwards,
             ..self
         }
     }
@@ -154,12 +366,39 @@ impl Flight {
 
     /// Where the flight ends.
     pub fn end(&self) -> [f64; 3] {
-        self.to
+        self.pose(self.length)
+    }
+
+    /// How long the flight is, without the time it takes to come to rest.
+    pub fn length(&self) -> u32 {
+        self.length
     }
 
     fn pose(&self, ticks: u32) -> [f64; 3] {
         let progress = ease(f64::from(ticks.min(self.length)) / f64::from(self.length));
-        std::array::from_fn(|axis| self.from[axis] + (self.to[axis] - self.from[axis]) * progress)
+        let share = if self.backwards {
+            1.0 - progress
+        } else {
+            progress
+        };
+        let off = self.shape.offset(share);
+        std::array::from_fn(|axis| {
+            self.from[axis] + (self.to[axis] - self.from[axis]) * share + off[axis]
+        })
+    }
+
+    /// The look at some tick. It waits for the view to come over, as the place does, and
+    /// then has all of the flight to turn.
+    fn look_at(&self, ticks: u32) -> [f32; 2] {
+        let turning = ticks.saturating_sub(SWAP_TICKS).min(self.length);
+        let length = self.length.saturating_sub(SWAP_TICKS).max(1);
+        let progress = ease(f64::from(turning.min(length)) / f64::from(length)) as f32;
+        let share = if self.backwards {
+            1.0 - progress
+        } else {
+            progress
+        };
+        std::array::from_fn(|axis| self.look[axis] + (self.look_to[axis] - self.look[axis]) * share)
     }
 
     /// Where the view is now.
@@ -169,7 +408,32 @@ impl Flight {
 
     /// How the view looks, as yaw and pitch.
     pub fn looking(&self) -> [f32; 2] {
-        self.look
+        self.look_at(self.ticks)
+    }
+
+    /// How the camera entity is told to look: at the end of the segment under way, with
+    /// its place, so that the client glides both at once.
+    pub fn target_look(&self) -> [f32; 2] {
+        if self.ticks < SWAP_TICKS {
+            return self.look_at(0);
+        }
+        self.look_at((self.ticks / SEGMENT_TICKS + 1) * SEGMENT_TICKS)
+    }
+
+    /// The look it starts on.
+    pub fn first_look(&self) -> [f32; 2] {
+        self.look_at(0)
+    }
+
+    /// The place it starts from.
+    pub fn start(&self) -> [f64; 3] {
+        self.pose(0)
+    }
+
+    /// An eye has its look told tick by tick, from the moment it is seen through until it
+    /// has got to the end.
+    pub fn eye_turning(&self) -> bool {
+        self.ticks >= SWAP_TICKS && self.ticks <= self.length + 1 && self.look != self.look_to
     }
 
     /// Where the camera entity is told to be: the end of the segment under way. It changes
@@ -208,26 +472,124 @@ mod tests {
 
     #[test]
     fn a_rise_starts_exactly_where_the_player_sees() {
-        let flight = Flight::rise(EYE, LOOK);
-        assert_eq!(flight.at(), [EYE.x, EYE.y, EYE.z]);
-        assert_eq!(flight.looking(), [LOOK.yaw, LOOK.pitch]);
+        for flow in Flow::ALL {
+            let flight = flow.rise(EYE, LOOK);
+            assert_eq!(flight.at(), [EYE.x, EYE.y, EYE.z]);
+            assert_eq!(flight.looking(), [LOOK.yaw, LOOK.pitch]);
+        }
     }
 
     #[test]
     fn a_landing_ends_exactly_where_the_player_sees() {
-        let mut flight = Flight::landing(EYE, LOOK);
+        for flow in Flow::ALL {
+            let mut flight = flow.landing(EYE, LOOK);
+            while flight.left() > 0 {
+                flight.tick();
+            }
+            for axis in 0..3 {
+                assert!((flight.at()[axis] - [EYE.x, EYE.y, EYE.z][axis]).abs() < 1e-9);
+            }
+            assert_eq!(flight.target(), flight.end());
+            assert_eq!(flight.looking(), [LOOK.yaw, LOOK.pitch]);
+        }
+    }
+
+    /// What Léo asked for: the ground under the player, by the end of the way up.
+    #[test]
+    fn the_first_flow_ends_looking_straight_down() {
+        let mut flight = Flow::Climb.rise(EYE, LOOK);
+        let mut pitches = vec![flight.looking()[1]];
         while flight.left() > 0 {
             flight.tick();
+            pitches.push(flight.looking()[1]);
         }
-        assert_eq!(flight.at(), [EYE.x, EYE.y, EYE.z]);
-        assert_eq!(flight.target(), flight.end());
-        assert_eq!(flight.looking(), [LOOK.yaw, LOOK.pitch]);
+        assert_eq!(flight.looking(), [LOOK.yaw, DOWN]);
+        assert!(pitches.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    /// A turn of a tick has to stay something the eye can follow.
+    #[test]
+    fn no_flow_turns_by_more_than_a_client_can_smooth() {
+        for flow in Flow::ALL {
+            let mut flight = flow.rise(EYE, LOOK);
+            let mut last = flight.looking();
+            while flight.left() > 0 {
+                flight.tick();
+                let now = flight.looking();
+                let turn = (now[0] - last[0]).abs().max((now[1] - last[1]).abs());
+                assert!(turn < 40.0, "{flow:?} turns {turn} in a tick");
+                last = now;
+            }
+        }
+    }
+
+    /// An intro and its outro are the same flight, and each is really its own way.
+    #[test]
+    fn each_flow_flies_its_own_way() {
+        let middles: Vec<_> = Flow::ALL
+            .iter()
+            .map(|flow| {
+                let mut flight = flow.rise(EYE, LOOK);
+                for _ in 0..flight.length() / 2 {
+                    flight.tick();
+                }
+                (flight.at(), flight.looking())
+            })
+            .collect();
+        for (index, one) in middles.iter().enumerate() {
+            assert!(!middles[index + 1..].contains(one));
+        }
+    }
+
+    #[test]
+    fn a_flow_on_the_model_ends_on_the_view_when_taken_backwards() {
+        let eye = [10.0, 120.0, 50.0];
+        let look = [180.0, 78.75];
+        for flow in Flow::ALL {
+            let mut flight = flow
+                .to_marker(eye, look, [0.0, 70.0, 0.0], 16.0, 24)
+                .reversed();
+            while flight.left() > 0 {
+                flight.tick();
+            }
+            for (at, eye) in flight.at().iter().zip(eye) {
+                assert!((at - eye).abs() < 1e-9);
+            }
+            assert_eq!(flight.looking(), look);
+        }
+    }
+
+    /// The client binds this block by its name and reads it by its layout.
+    #[test]
+    fn the_section_shader_keeps_the_layout_of_the_block() {
+        let shader = section_shader(1312);
+        let members = [
+            "mat4 ModelViewMat",
+            "float SectionFade",
+            "ivec2 TextureSize",
+        ];
+        let at: Vec<_> = members
+            .iter()
+            .map(|one| shader.find(one).unwrap())
+            .collect();
+        assert!(at.is_sorted());
+        assert!(shader.contains("uniform ChunkSection"));
+        assert!(shader.contains("ChunkPosition.x >= 1312"));
+    }
+
+    #[test]
+    fn the_next_flow_goes_round_them_all() {
+        let mut flow = Flow::default();
+        for expected in Flow::ALL.iter().cycle().skip(1).take(4) {
+            flow = flow.next();
+            assert_eq!(flow, *expected);
+        }
     }
 
     /// A camera that had not stopped would jump when the eye takes over from it.
     #[test]
     fn a_camera_has_stopped_before_the_flight_ends() {
-        let mut flight = Flight::rise(EYE, LOOK);
+        let mut flight = Flow::Climb.rise(EYE, LOOK);
         while !flight.settling() {
             flight.tick();
         }
@@ -236,7 +598,7 @@ mod tests {
 
     #[test]
     fn a_flight_waits_for_the_view_to_come_over() {
-        let mut flight = Flight::rise(EYE, LOOK);
+        let mut flight = Flow::Climb.rise(EYE, LOOK);
         for _ in 0..SWAP_TICKS - 1 {
             flight.tick();
             assert_eq!(flight.target(), [EYE.x, EYE.y, EYE.z]);
@@ -246,7 +608,7 @@ mod tests {
     /// One packet per segment is the whole point of this.
     #[test]
     fn a_flight_changes_its_target_once_a_segment() {
-        let mut flight = Flight::rise(EYE, LOOK);
+        let mut flight = Flow::Climb.rise(EYE, LOOK);
         let mut targets = vec![flight.target()];
         for _ in 0..RISE_TICKS {
             flight.tick();
