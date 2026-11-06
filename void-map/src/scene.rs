@@ -48,6 +48,15 @@ pub const OVERVIEW: Scale = Scale {
     max_y: 88,
 };
 
+/// Between the two others: each step of a zoom makes blocks less than twice as large.
+pub const MIDDLE: Scale = Scale {
+    radius: 93,
+    blocks_per_cell: 5,
+    rise: 2,
+    build: 1,
+    max_y: 100,
+};
+
 /// The same map, a little under three times wider than the overview.
 pub const DETAIL: Scale = Scale {
     radius: 155,

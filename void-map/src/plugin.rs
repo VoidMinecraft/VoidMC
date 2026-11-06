@@ -40,12 +40,12 @@ use crate::art::{Card, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face
 use crate::dimension::{self, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::pointer::{
-    CLIENT_SNAP_DISTANCE, COARSE_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP, Dive, FreeLook,
-    Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH, REST_YAW, SPECTATOR_EYE_HEIGHT, Zoom,
-    aimed, detail_back, look_direction, overview_y,
+    CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
+    Dive, FreeLook, MIDDLE_BELOW, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH, REST_YAW,
+    SPECTATOR_EYE_HEIGHT, Zoom, aimed, detail_back, look_direction, overview_y,
 };
 use crate::regions::{RegionState, Regions, ZoneLook};
-use crate::scene::{self, Blocks, ChunkLook, DETAIL, OVERVIEW, Scale, Scene};
+use crate::scene::{self, Blocks, ChunkLook, DETAIL, MIDDLE, OVERVIEW, Scale, Scene};
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 use crate::transition::{Flight, LANDING_TICKS, RISE_TICKS, VEIL_FADE, veil_in, veil_out};
@@ -70,31 +70,32 @@ const DETAIL_SEND_RADIUS: i32 = 9;
 /// In the map, a client is told to keep chunks this far from its centre: from one
 /// corner of a pan to the other, so that it holds on to all it was sent. A chunk seen
 /// again need not go out again, and the render distance does not change with it.
-const MAP_CHUNK_CACHE_RADIUS: i32 = 44;
-/// Where the overview sits, in chunks east of the detail model. Both stay with the client,
-/// so that a zoom past [`COARSE_ABOVE`] only moves the camera from one to the other.
-const OVERVIEW_ORIGIN: i32 = 36;
-/// The client's chunks are kept around this one, half way between the models, which
-/// never moves: nothing has to leave for a pan to go on.
-const CENTRE_OF_MODELS: i32 = OVERVIEW_ORIGIN / 2;
+const MAP_CHUNK_CACHE_RADIUS: i32 = 54;
 /// The chunks a pan can ask for, on each side of a model's centre.
 const fn pan_reach(scale: Scale) -> i32 {
     scale.radius / 16 + 2 + DETAIL_SEND_RADIUS
 }
 const DETAIL_PAN_REACH: i32 = pan_reach(DETAIL);
+const MIDDLE_PAN_REACH: i32 = pan_reach(MIDDLE);
 const OVERVIEW_PAN_REACH: i32 = pan_reach(OVERVIEW);
+/// The models sit in a row, in chunks east of the detail model. They all stay with the
+/// client, so that a zoom past a threshold only moves the camera from one to the next.
+const MIDDLE_ORIGIN: i32 = DETAIL_PAN_REACH + MIDDLE_PAN_REACH + 1;
+const OVERVIEW_ORIGIN: i32 = MIDDLE_ORIGIN + MIDDLE_PAN_REACH + OVERVIEW_PAN_REACH + 1;
+/// The client's chunks are kept around this one, half way along the row, which never
+/// moves: nothing has to leave for a pan to go on.
+const CENTRE_OF_MODELS: i32 = (OVERVIEW_ORIGIN + OVERVIEW_PAN_REACH - DETAIL_PAN_REACH) / 2;
 const _: () = assert!(
     DETAIL_PAN_REACH + CENTRE_OF_MODELS <= MAP_CHUNK_CACHE_RADIUS
         && OVERVIEW_ORIGIN + OVERVIEW_PAN_REACH - CENTRE_OF_MODELS <= MAP_CHUNK_CACHE_RADIUS,
-    "the client has to keep both models whole"
+    "the client has to keep all the models whole"
 );
 const _: () = assert!(
     DETAIL_PAN_REACH + OVERVIEW_ORIGIN + OVERVIEW_PAN_REACH < CHUNKS_BETWEEN_ANCHORS,
     "a player's models stay off the next player's"
 );
 const _: () = assert!(
-    (OVERVIEW_ORIGIN - DETAIL_PAN_REACH - OVERVIEW_PAN_REACH + 2 * DETAIL_SEND_RADIUS) * 16
-        > CLIENT_SNAP_DISTANCE as i32,
+    (2 * DETAIL_SEND_RADIUS + 1) * 16 > CLIENT_SNAP_DISTANCE as i32,
     "a camera changing model has to jump, not glide"
 );
 /// What the model the player is not on gets of each tick.
@@ -231,11 +232,12 @@ const LANDING_SETTLE_TICKS: u32 = 14;
 /// When the world still has not come after this, the player goes on without it.
 const LANDING_PATIENCE_TICKS: u32 = 60;
 
-/// The two models of the map. A pan far from the ground uses the coarse one, whose
-/// blocks are larger, to see further than a render distance can.
+/// The models of the map. The further from the ground a pan is, the larger the blocks
+/// of its model, to see further than a render distance can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Model {
     Overview,
+    Middle,
     Detail,
 }
 
@@ -243,6 +245,7 @@ impl Model {
     fn scale(self) -> Scale {
         match self {
             Self::Overview => OVERVIEW,
+            Self::Middle => MIDDLE,
             Self::Detail => DETAIL,
         }
     }
@@ -256,14 +259,28 @@ impl Model {
     fn origin(self) -> i32 {
         match self {
             Self::Overview => OVERVIEW_ORIGIN,
+            Self::Middle => MIDDLE_ORIGIN,
             Self::Detail => 0,
         }
     }
 
-    fn other(self) -> Self {
+    /// The models a zoom can move to from this one.
+    fn neighbours(self) -> &'static [Self] {
         match self {
-            Self::Overview => Self::Detail,
-            Self::Detail => Self::Overview,
+            Self::Overview => &[Self::Middle],
+            Self::Middle => &[Self::Detail, Self::Overview],
+            Self::Detail => &[Self::Middle],
+        }
+    }
+
+    /// The model for a height, from this one: the gaps stop a held height from flipping.
+    fn at_height(self, height: f64) -> Self {
+        match self {
+            Self::Detail if height > COARSE_ABOVE => Self::Middle,
+            Self::Middle if height > COARSEST_ABOVE => Self::Overview,
+            Self::Middle if height < DETAIL_BELOW => Self::Detail,
+            Self::Overview if height < MIDDLE_BELOW => Self::Middle,
+            model => model,
         }
     }
 }
@@ -401,6 +418,7 @@ pub struct Atlas {
     info: MapLevel,
     regions: Regions,
     overview: Option<Level>,
+    middle: Option<Level>,
     detail: Option<Level>,
 }
 
@@ -408,6 +426,7 @@ impl Atlas {
     fn level(&self, model: Model) -> Option<&Level> {
         match model {
             Model::Overview => self.overview.as_ref(),
+            Model::Middle => self.middle.as_ref(),
             Model::Detail => self.detail.as_ref(),
         }
     }
@@ -415,6 +434,7 @@ impl Atlas {
     fn level_mut(&mut self, model: Model) -> Option<&mut Level> {
         match model {
             Model::Overview => self.overview.as_mut(),
+            Model::Middle => self.middle.as_mut(),
             Model::Detail => self.detail.as_mut(),
         }
     }
@@ -588,8 +608,8 @@ pub struct MapSession {
     mouse: Mouse,
     pan: Pan,
     zoom: Zoom,
-    /// The pan is far enough to be on the coarse model.
-    coarse: bool,
+    /// The model of a pan, from its height.
+    pan_model: Model,
     /// The height of the view the markers are sized for.
     sized_for: f64,
     free: FreeLook,
@@ -638,8 +658,7 @@ impl MapSession {
     fn model(&self) -> Model {
         match self.mode {
             MapMode::Look => Model::Overview,
-            MapMode::Pan if self.coarse => Model::Overview,
-            MapMode::Pan => Model::Detail,
+            MapMode::Pan => self.pan_model,
         }
     }
 
@@ -789,9 +808,10 @@ impl MapSession {
         let here = chunks_around(self.mode, chunk(self.standing()));
         let mut wanted: Vec<_> = here.into_iter().map(|at| (model, at)).collect();
         if self.mode == MapMode::Pan {
-            let neighbour = model.other();
-            let there = chunks_around(self.mode, chunk(self.pan_view(neighbour)));
-            wanted.extend(there.into_iter().map(|at| (neighbour, at)));
+            for neighbour in model.neighbours() {
+                let there = chunks_around(self.mode, chunk(self.pan_view(*neighbour)));
+                wanted.extend(there.into_iter().map(|at| (*neighbour, at)));
+            }
         }
         wanted
     }
@@ -879,6 +899,7 @@ impl Plugin for MapPlugin {
             info,
             regions: Regions::demo(),
             overview: None,
+            middle: None,
             detail: None,
         })
         .add_systems(Startup, build_atlas)
@@ -918,17 +939,20 @@ impl Plugin for MapPlugin {
 fn build_atlas(mut atlas: ResMut<Atlas>, generator: Res<WorldGen>) {
     let generator = generator.0.as_ref();
     let overview = Level::new(generator, OVERVIEW, &atlas.regions);
+    let middle = Level::new(generator, MIDDLE, &atlas.regions);
     let detail = Level::new(generator, DETAIL, &atlas.regions);
     tracing::info!(waypoints = overview.waypoints.len(), "map models built");
-    let (mut overview, mut detail) = (overview, detail);
+    let (mut overview, mut middle, mut detail) = (overview, middle, detail);
     let started = Instant::now();
     overview.prepare(atlas.info);
+    middle.prepare(atlas.info);
     detail.prepare(atlas.info);
     tracing::info!(
         took_ms = started.elapsed().as_millis(),
         "map chunks encoded"
     );
     atlas.overview = Some(overview);
+    atlas.middle = Some(middle);
     atlas.detail = Some(detail);
 }
 
@@ -1216,7 +1240,7 @@ fn rise(
     let Ok((position, rotation)) = players.get(player) else {
         return;
     };
-    if atlas.overview.is_none() || atlas.detail.is_none() {
+    if atlas.level(Model::Overview).is_none() || atlas.level(Model::Detail).is_none() {
         return;
     }
     let flight = Flight::rise(eye_of(position), *rotation);
@@ -1386,7 +1410,7 @@ fn enter(
         mouse: Mouse::default(),
         pan: Pan::default(),
         zoom: Zoom::default(),
-        coarse: false,
+        pan_model: Model::Detail,
         sized_for: Zoom::default().height(),
         free: FreeLook::default(),
         telemetry: Telemetry::default(),
@@ -1495,7 +1519,7 @@ fn switch_mode(
     session.pan = Pan::default();
     session.mouse = Mouse::default();
     session.zoom = Zoom::default();
-    session.coarse = false;
+    session.pan_model = Model::Detail;
     session.sized_for = session.zoom.height();
     session.free = FreeLook::default();
     session.look = session.rest();
@@ -1534,16 +1558,12 @@ fn chunks_around(mode: MapMode, camera: (i32, i32)) -> Vec<(i32, i32)> {
 /// already has the chunks and the camera is far enough to jump, so it takes one frame.
 fn switch_model(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) {
     let height = session.zoom.height();
-    let coarse = match session.mode {
-        MapMode::Look => false,
-        MapMode::Pan if session.coarse => height > DETAIL_BELOW,
-        MapMode::Pan => height > COARSE_ABOVE,
-    };
-    if coarse == session.coarse {
+    let model = session.pan_model.at_height(height);
+    if session.mode == MapMode::Look || model == session.pan_model {
         return;
     }
-    tracing::debug!(coarse, height, "map model");
-    session.coarse = coarse;
+    tracing::debug!(?model, height, "map model");
+    session.pan_model = model;
     session.hovered = None;
     session.selected = None;
     despawn_pins(session, commands);
@@ -2896,7 +2916,7 @@ mod tests {
             mouse: Mouse::default(),
             pan: Pan::default(),
             zoom: Zoom::default(),
-            coarse: false,
+            pan_model: Model::Detail,
             sized_for: Zoom::default().height(),
             free: FreeLook::default(),
             telemetry: Telemetry::default(),
@@ -3066,15 +3086,39 @@ mod tests {
         let model = session.model();
         let own = wanted.iter().take_while(|(on, _)| *on == model).count();
         assert!(own > 0 && own < wanted.len());
-        assert!(wanted[own..].iter().all(|(on, _)| *on == model.other()));
+        assert!(
+            wanted[own..]
+                .iter()
+                .all(|(on, _)| model.neighbours().contains(on))
+        );
     }
 
     #[test]
     fn the_two_models_never_share_a_chunk() {
         let session = session(MapMode::Pan);
-        let edge = session.placed(Model::Detail, (DETAIL_PAN_REACH, 0));
-        let next = session.placed(Model::Overview, (-OVERVIEW_PAN_REACH, 0));
-        assert!(edge.x < next.x, "{edge:?} {next:?}");
+        let row = [
+            (Model::Detail, DETAIL_PAN_REACH),
+            (Model::Middle, MIDDLE_PAN_REACH),
+            (Model::Overview, OVERVIEW_PAN_REACH),
+        ];
+        for pair in row.windows(2) {
+            let edge = session.placed(pair[0].0, (pair[0].1, 0));
+            let next = session.placed(pair[1].0, (-pair[1].1, 0));
+            assert!(edge.x < next.x, "{edge:?} {next:?}");
+        }
+    }
+
+    #[test]
+    fn a_zoom_goes_through_every_model_and_a_held_height_stays_on_one() {
+        let out = Model::Detail.at_height(COARSE_ABOVE + 1.0);
+        assert_eq!(out, Model::Middle);
+        assert_eq!(out.at_height(COARSEST_ABOVE + 1.0), Model::Overview);
+        assert_eq!(out.at_height(COARSE_ABOVE - 1.0), Model::Middle);
+        assert_eq!(
+            Model::Overview.at_height(COARSEST_ABOVE - 1.0),
+            Model::Overview
+        );
+        assert_eq!(Model::Middle.at_height(DETAIL_BELOW - 1.0), Model::Detail);
     }
 
     #[test]
@@ -3086,6 +3130,7 @@ mod tests {
             },
             regions: Regions::demo(),
             overview: None,
+            middle: None,
             detail: None,
         };
         let waypoint = Waypoint {

@@ -77,10 +77,13 @@ const WHEEL_INNER: f64 = 57.0;
 const WHEEL_OUTER: f64 = 110.0;
 /// The half width of the gap between two sectors, in pixels.
 const WHEEL_GAP: f64 = 1.5;
-const WHEEL_TOP_ROW: i32 = 22;
-const WHEEL_KIND_ROW: i32 = 96;
-const WHEEL_CHOICE_ROW: i32 = 110;
-const WHEEL_BOTTOM_ROW: i32 = 192;
+/// How far over its line the dial goes, for its text to fall on rows that exist already:
+/// there is little room left for new ones.
+const WHEEL_TOP: i32 = -30;
+const WHEEL_TOP_ROW: i32 = 0;
+const WHEEL_KIND_ROW: i32 = 69;
+const WHEEL_CHOICE_ROW: i32 = 80;
+const WHEEL_BOTTOM_ROW: i32 = 162;
 /// The middle of the sectors on the sides, from the middle of the wheel.
 const WHEEL_SIDE: i32 = 83;
 const WHEEL_ON: [u8; 4] = [226, 176, 72, 235];
@@ -753,7 +756,7 @@ fn wheel_dial(on: usize) -> Image {
 }
 
 /// How far under the top of its line the middle of the wheel is.
-pub const WHEEL_MIDDLE_DROP: f32 = WHEEL_SIZE as f32 / 2.0;
+pub const WHEEL_MIDDLE_DROP: f32 = WHEEL_SIZE as f32 / 2.0 + WHEEL_TOP as f32;
 
 /// The line that draws the wheel, with `on` the sector that is on.
 pub fn wheel_face(on: usize, labels: [&str; 4], count: &str, choice: &str) -> String {
@@ -1136,7 +1139,7 @@ pub fn install(pack: &mut ResourcePack) {
             format!("wheel_{sector}"),
             &wheel_dial(sector),
             wheel_glyph(sector),
-            0,
+            WHEEL_TOP,
         );
     }
     for row in 0..VEIL_ROWS {

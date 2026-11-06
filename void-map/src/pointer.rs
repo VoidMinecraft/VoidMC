@@ -26,9 +26,14 @@ pub const CLOSEST_ZOOM: f64 = 40.0;
 pub const FARTHEST_ZOOM: f64 = 280.0;
 pub const DEFAULT_ZOOM: f64 = 95.0;
 pub const COARSE_ABOVE: f64 = 105.0;
+/// From the middle model to the overview, and back: the same reasoning, one step up.
+pub const COARSEST_ABOVE: f64 = 175.0;
+pub const MIDDLE_BELOW: f64 = 160.0;
 /// Back to the detail model. The gap stops a held height from flipping between the two.
 pub const DETAIL_BELOW: f64 = 96.0;
 const _: () = assert!(DETAIL_BELOW < COARSE_ABOVE, "a steady zoom needs a gap");
+const _: () = assert!(MIDDLE_BELOW < COARSEST_ABOVE, "a steady zoom needs a gap");
+const _: () = assert!(COARSE_ABOVE < MIDDLE_BELOW, "a model has to have its turn");
 /// What a tick with the key held multiplies the height by. It feels the same at any height.
 const ZOOM_PER_TICK: f64 = 1.03;
 
