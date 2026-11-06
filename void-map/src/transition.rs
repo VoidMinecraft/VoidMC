@@ -11,8 +11,8 @@ use voidmc_protocol::clientbound::{ClientboundPacket, SetTitleText, SetTitlesAni
 
 use voidmc_ui::ResourcePack;
 
-use crate::abduction::{Part, Scene, Track};
 use crate::art;
+use crate::film::{Film, Part, Scene, Track};
 use crate::pointer::{ease, look_direction};
 
 /// How long the veil takes to come and to go, in ticks.
@@ -138,17 +138,19 @@ pub enum Flow {
     Glide,
     /// Eyes on the sky and up into it, then down from the horizon onto the view.
     Leap,
-    /// Seen from outside: a saucer takes the player away, and brings them back.
-    Abduction,
+    /// Seen from outside, as a small film.
+    Film(Film),
 }
 
 impl Flow {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Climb,
         Self::Spiral,
         Self::Glide,
         Self::Leap,
-        Self::Abduction,
+        Self::Film(Film::Saucer),
+        Self::Film(Film::Shark),
+        Self::Film(Film::Couch),
     ];
 
     pub fn label(self) -> &'static str {
@@ -157,7 +159,9 @@ impl Flow {
             Self::Spiral => "Spirale",
             Self::Glide => "Vol plané",
             Self::Leap => "Saut dans le ciel",
-            Self::Abduction => "Soucoupe",
+            Self::Film(Film::Saucer) => "Soucoupe",
+            Self::Film(Film::Shark) => "Requin",
+            Self::Film(Film::Couch) => "Canapé",
         }
     }
 
@@ -168,7 +172,7 @@ impl Flow {
 
     fn extra_ticks(self) -> u32 {
         match self {
-            Self::Climb | Self::Abduction => 0,
+            Self::Climb | Self::Film(_) => 0,
             Self::Spiral => 14,
             Self::Glide => 12,
             Self::Leap => 6,
@@ -206,15 +210,15 @@ impl Flow {
             Self::Leap => {
                 Flight::new(start, up(LEAP_HEIGHT), [yaw, pitch], length).turning_to([yaw, UP])
             }
-            Self::Abduction => Flight::filmed(Scene::new(Part::Intro, start, [yaw, pitch])),
+            Self::Film(film) => Flight::filmed(Scene::new(film, Part::Intro, start, [yaw, pitch])),
         }
     }
 
     /// Back down to an eye, by the same way.
     pub fn landing(self, eye: Position, look: Rotation) -> Flight {
-        if self == Self::Abduction {
-            let scene = Scene::new(Part::Outro, [eye.x, eye.y, eye.z], [look.yaw, look.pitch]);
-            return Flight::filmed(scene);
+        if let Self::Film(film) = self {
+            let (at, look) = ([eye.x, eye.y, eye.z], [look.yaw, look.pitch]);
+            return Flight::filmed(Scene::new(film, Part::Outro, at, look));
         }
         Flight {
             length: LANDING_TICKS + self.extra_ticks(),
@@ -237,7 +241,7 @@ impl Flow {
         let over = [marker[0], marker[1] + stop, marker[2]];
         let high = eye[1] - marker[1];
         match self {
-            Self::Climb | Self::Abduction => {
+            Self::Climb | Self::Film(_) => {
                 Flight::new(eye, over, look, length).turning_to([yaw, DOWN])
             }
             Self::Spiral => Flight::new(eye, over, look, length)
@@ -511,7 +515,18 @@ impl Flight {
         if self.ticks < SWAP_TICKS {
             return self.pose(0);
         }
+        if self.track.is_some() {
+            return self.pose(self.ticks + self.lead());
+        }
         self.pose((self.ticks / SEGMENT_TICKS + 1) * SEGMENT_TICKS)
+    }
+
+    /// How far ahead a film tells its camera to go. A film is on a curve whose speed changes
+    /// all the time, and by segments that shows as a speed that jumps every quarter of a
+    /// second. So it gets a new end each tick: what glides then gets a share of the way each
+    /// tick, and stays this far behind what it is told. It starts from nothing, from a rest.
+    fn lead(&self) -> u32 {
+        (self.ticks - SWAP_TICKS).min(u32::from(FLIGHT_GLIDE_TICKS))
     }
 
     /// The moment to give what sees for an eye its exact look.
@@ -690,6 +705,22 @@ mod tests {
             (RISE_TICKS - SWAP_TICKS).div_ceil(SEGMENT_TICKS) + 1
         );
         assert_eq!(*targets.last().unwrap(), flight.end());
+    }
+
+    /// A film is told where to go each tick, and starts from a rest.
+    #[test]
+    fn a_film_moves_its_camera_on_each_tick() {
+        let mut flight = Flow::Film(Film::Saucer).rise(EYE, LOOK);
+        while flight.elapsed() < SWAP_TICKS {
+            flight.tick();
+        }
+        let mut last = flight.target();
+        assert!((last[1] - EYE.y).abs() < 1e-9);
+        while flight.elapsed() + u32::from(FLIGHT_GLIDE_TICKS) < flight.length() {
+            flight.tick();
+            assert_ne!(flight.target(), last, "at {}", flight.elapsed());
+            last = flight.target();
+        }
     }
 
     /// A client jumps past this distance instead of gliding, and a dive is the longest

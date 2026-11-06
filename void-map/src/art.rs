@@ -1406,7 +1406,7 @@ pub fn install(pack: &mut ResourcePack) {
     settings::install(pack);
     life::models::install(pack);
     transition::install(pack, crate::plugin::FIRST_MODEL_BLOCK);
-    crate::abduction::install(pack);
+    crate::film::install(pack);
     install_boat(pack, "boat", &BOAT_BOXES);
     install_boat(pack, "raft", &RAFT_BOXES);
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());

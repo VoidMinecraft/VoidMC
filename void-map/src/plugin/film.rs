@@ -6,9 +6,8 @@ use bevy_app::App;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 use voidmc::{
-    Billboard, Display, DisplayTransform, EntityBuilder, EntityKind, EntityMetadata, ItemDisplay,
-    ItemDisplayContext, ItemStack, Mannequin, MetadataSource, MetadataSourceAppExt, NoGravity,
-    Players, Sound, Sounds,
+    Display, EntityBuilder, EntityKind, EntityMetadata, ItemDisplay, ItemDisplayContext, ItemStack,
+    Mannequin, MetadataSource, MetadataSourceAppExt, NoGravity, Passengers, Players, Sound, Sounds,
     components::{PlayerUuid, Position, Rotation},
     world::{
         ChunkData, ChunkIndex, ChunkPosition, DimensionId, block_state_at_world,
@@ -17,20 +16,14 @@ use voidmc::{
 };
 use voidmc_codec::Encode;
 use voidmc_protocol::clientbound::{
-    EntityMetadataValue as Value, LevelParticles, Particle, ResolvableProfile, entity_metadata,
+    EntityMetadataValue as Value, LevelParticles, ResolvableProfile, entity_metadata,
 };
 use voidmc_protocol::slot::{DataComponent, component_ids};
 
 use super::{MapSession, PackLoaded, Passage};
-use crate::abduction::{BEAM_MODEL, Body, Cue, HOVER, SAUCER_MODEL, Scene, Stance, View};
-use crate::transition::{Flight, SEGMENT_TICKS};
+use crate::film::{Body, Burst, Pose, Prop, Scene, Stance, View};
+use crate::transition::Flight;
 
-/// How much longer than a segment a display of the scene takes over it, so as never to stop.
-const GLIDE_TICKS: u8 = SEGMENT_TICKS as u8 + 2;
-/// The saucer, at the scale of a model of one block across.
-const SAUCER_SCALE: f32 = 3.4;
-const BEAM_WIDTH: f32 = 6.5;
-const BEAM_TICKS: u16 = 4;
 /// The view range of what is seen from high up, as a share of what a client calls far.
 const FAR: f32 = 3.0;
 /// What a client counts as frozen through, and shakes a body for.
@@ -132,8 +125,12 @@ pub(super) struct Cast {
     viewer: Entity,
     profile: ResolvableProfile,
     body: Option<Entity>,
-    saucer: Option<Entity>,
-    beam: Option<Entity>,
+    /// What the body sits on, for as long as it does.
+    seat: Option<usize>,
+    /// Whether a client has been told that it does.
+    seated: bool,
+    /// What shows of each prop of the scene.
+    props: Vec<Option<Entity>>,
     drawn: bool,
     /// The last tick played.
     played: Option<u32>,
@@ -160,48 +157,26 @@ fn place([x, y, z]: [f64; 3]) -> Position {
     Position { x, y, z }
 }
 
-fn spawn_saucer(commands: &mut Commands, at: [f64; 3], drawn: bool) -> Entity {
-    let item = modelled(
-        "minecraft:heavy_weighted_pressure_plate",
-        SAUCER_MODEL,
-        drawn,
-    );
+fn spawn_prop(commands: &mut Commands, prop: &Prop, pose: Pose, drawn: bool) -> Entity {
+    let item = modelled(prop.vanilla, prop.model, drawn);
+    let [width, height] = prop.reach;
+    let display = Display::default()
+        .transform(pose.shape)
+        .interpolation_ticks(prop.morph)
+        .brightness(15, 15)
+        .view_range(FAR)
+        .culling_box(width, height)
+        .teleport_ticks(prop.glide);
+    let display = match prop.billboard {
+        Some(billboard) => display.billboard(billboard),
+        None => display,
+    };
+    let [yaw, pitch] = pose.look;
     EntityBuilder::new(EntityKind::ItemDisplay)
-        .position(place(at))
+        .position(place(pose.at))
+        .rotation(yaw, pitch)
         .with_bundle((
-            Display::default()
-                .transform(DisplayTransform::default().uniform_scale(SAUCER_SCALE))
-                .brightness(15, 15)
-                .view_range(FAR)
-                .culling_box(12.0, 6.0)
-                .teleport_ticks(GLIDE_TICKS),
-            ItemDisplay::new(item).context(ItemDisplayContext::None),
-        ))
-        .spawn(commands)
-        .id()
-}
-
-/// A sheet hanging from the saucer, which the client turns to the camera around its height.
-fn beam_transform(reach: f32) -> DisplayTransform {
-    let length = HOVER as f32 - 0.4;
-    DisplayTransform::default()
-        .translation(0.0, -0.5 - length * reach / 2.0, 0.0)
-        .scale(BEAM_WIDTH, length * reach, 1.0)
-}
-
-fn spawn_beam(commands: &mut Commands, at: [f64; 3], drawn: bool) -> Entity {
-    let item = modelled("minecraft:white_stained_glass_pane", BEAM_MODEL, drawn);
-    EntityBuilder::new(EntityKind::ItemDisplay)
-        .position(place(at))
-        .with_bundle((
-            Display::default()
-                .transform(beam_transform(0.0))
-                .interpolation_ticks(BEAM_TICKS)
-                .billboard(Billboard::Vertical)
-                .brightness(15, 15)
-                .view_range(FAR)
-                .culling_box(10.0, 14.0)
-                .teleport_ticks(GLIDE_TICKS),
+            display,
             ItemDisplay::new(item).context(ItemDisplayContext::None),
         ))
         .spawn(commands)
@@ -227,60 +202,23 @@ fn profile_of(uuid: Option<&PlayerUuid>) -> ResolvableProfile {
     }
 }
 
-fn play_cue(cue: Cue, scene: &Scene, viewer: Entity, sounds: &Sounds, players: &Players) {
-    let feet = scene.feet();
-    let sound = |name: &str, volume: f32, pitch: f32| {
-        let sound = Sound::new(name).volume(volume).pitch(pitch);
-        sounds.play_to(viewer, sound.at(DimensionId::Overworld, &place(feet)));
-    };
-    match cue {
-        Cue::SaucerComes => sound("entity.phantom.swoop", 2.0, 0.6),
-        Cue::BeamOn => sound("block.beacon.activate", 2.0, 1.4),
-        Cue::Grabbed => sound("entity.villager.hurt", 2.0, 1.3),
-        Cue::Taken => sound("entity.enderman.teleport", 2.0, 1.0),
-        Cue::SaucerGoes => sound("entity.firework_rocket.launch", 2.0, 0.6),
-        Cue::Dropped => sound("entity.villager.no", 2.0, 1.2),
-        Cue::Landed => {
-            sound("entity.player.big_fall", 2.0, 1.0);
-            let [x, y, z] = feet;
-            players.send(
-                viewer,
-                LevelParticles {
-                    long_distance: true,
-                    always_visible: true,
-                    x,
-                    y: y + 0.1,
-                    z,
-                    offset_x: 0.5,
-                    offset_y: 0.1,
-                    offset_z: 0.5,
-                    max_speed: 0.1,
-                    count: 6,
-                    particle: Particle::Cloud,
-                },
-            );
-        }
-    }
-}
-
-/// Sparks going up or down the beam, around the body.
-fn sparkle(scene: &Scene, viewer: Entity, tick: u32, players: &Players) {
-    let [x, y, z] = scene.feet();
-    let height = f64::from(tick * 7 % 100) / 100.0 * HOVER;
+fn show(burst: Burst, viewer: Entity, players: &Players) {
+    let [x, y, z] = burst.at;
+    let [offset_x, offset_y, offset_z] = burst.spread;
     players.send(
         viewer,
         LevelParticles {
             long_distance: true,
             always_visible: true,
             x,
-            y: y + height,
+            y,
             z,
-            offset_x: 0.7,
-            offset_y: 0.7,
-            offset_z: 0.7,
-            max_speed: 0.0,
-            count: 1,
-            particle: Particle::EndRod,
+            offset_x,
+            offset_y,
+            offset_z,
+            max_speed: burst.speed,
+            count: burst.count,
+            particle: burst.particle,
         },
     );
 }
@@ -331,8 +269,9 @@ pub(super) fn tick(
             viewer,
             profile: profile_of(uuid),
             body: None,
-            saucer: None,
-            beam: None,
+            seat: None,
+            seated: false,
+            props: vec![None; scene.props().len()],
             drawn,
             played: None,
         });
@@ -340,8 +279,8 @@ pub(super) fn tick(
 
     for (entity, mut cast) in &mut casts {
         let Ok((_, flight)) = flights.get(cast.camera) else {
-            for part in [cast.body, cast.saucer, cast.beam].into_iter().flatten() {
-                commands.entity(part).try_despawn();
+            for part in cast.props.iter().flatten().chain(&cast.body) {
+                commands.entity(*part).try_despawn();
             }
             commands.entity(entity).despawn();
             tracing::info!(part = ?cast.scene.part(), "map scene over");
@@ -354,80 +293,99 @@ pub(super) fn tick(
         cast.played = Some(tick);
         let scene = cast.scene;
         let viewer = cast.viewer;
-        if let Some(cue) = scene.cue(tick) {
-            play_cue(cue, &scene, viewer, &sounds, &players);
+        if let Some(noise) = scene.noise(tick) {
+            let sound = Sound::new(noise.name)
+                .volume(noise.volume)
+                .pitch(noise.pitch);
+            let at = place(scene.feet());
+            sounds.play_to(viewer, sound.at(DimensionId::Overworld, &at));
         }
-        play_saucer(&mut cast, tick, &mut displays, &mut commands);
-        match (scene.body(tick), cast.body) {
-            (Some(body), None) => {
-                let profile = cast.profile.clone();
-                cast.body = Some(spawn_body(&mut commands, body, profile));
-            }
-            (Some(body), Some(entity)) => {
-                commands.entity(entity).try_insert((
-                    place(body.at),
-                    Rotation {
-                        yaw: body.yaw,
-                        pitch: body.pitch,
-                    },
-                ));
-                if let Ok(mut stance) = stances.get_mut(entity) {
-                    stance.set_if_neq(body.stance);
-                }
-            }
-            (None, Some(entity)) => {
-                commands.entity(entity).try_despawn();
-                cast.body = None;
-            }
-            (None, None) => {}
-        }
-        if scene.sparks(tick) {
-            sparkle(&scene, viewer, tick, &players);
+        play_props(&mut cast, tick, &mut displays, &mut commands);
+        play_body(&mut cast, tick, &mut stances, &mut commands);
+        for burst in scene.bursts(tick) {
+            show(burst, viewer, &players);
         }
     }
 }
 
-/// A new place for the saucer and the beam once a segment, for the client to glide to.
-fn play_saucer(
+/// A new place for each prop each tick, as far ahead as it stays behind it.
+fn play_props(
     cast: &mut Cast,
     tick: u32,
     displays: &mut Query<&mut Display>,
     commands: &mut Commands,
 ) {
     let scene = cast.scene;
-    if scene.saucer_gone(tick) {
-        for part in [cast.saucer.take(), cast.beam.take()].into_iter().flatten() {
-            commands.entity(part).try_despawn();
-        }
-        return;
-    }
-    if !scene.saucer_shown(tick) {
-        return;
-    }
-    if cast.saucer.is_none() {
-        let (at, _) = scene.saucer(tick);
-        cast.saucer = Some(spawn_saucer(commands, at, cast.drawn));
-        cast.beam = Some(spawn_beam(commands, at, cast.drawn));
-    }
-    let on = scene.beam(tick);
-    if let Some(beam) = cast.beam
-        && let Ok(mut display) = displays.get_mut(beam)
-    {
-        let wanted = beam_transform(if on { 1.0 } else { 0.0 });
-        if display.transform != wanted {
-            display.transform = wanted;
-        }
-    }
-    if !tick.is_multiple_of(SEGMENT_TICKS) {
-        return;
-    }
-    let (at, [yaw, pitch]) = scene.saucer(tick + SEGMENT_TICKS);
-    if let Some(saucer) = cast.saucer {
+    for (index, prop) in scene.props().iter().enumerate() {
+        let Some(pose) = scene.pose(index, tick) else {
+            if let Some(part) = cast.props[index].take() {
+                commands.entity(part).try_despawn();
+            }
+            continue;
+        };
+        let Some(part) = cast.props[index] else {
+            cast.props[index] = Some(spawn_prop(commands, prop, pose, cast.drawn));
+            continue;
+        };
+        let ahead = scene
+            .pose(index, tick + u32::from(prop.glide))
+            .unwrap_or(pose);
+        let [yaw, pitch] = ahead.look;
         commands
-            .entity(saucer)
-            .try_insert((place(at), Rotation { yaw, pitch }));
+            .entity(part)
+            .try_insert((place(ahead.at), Rotation { yaw, pitch }));
+        let shape = scene
+            .pose(index, tick + u32::from(prop.morph))
+            .unwrap_or(pose)
+            .shape;
+        if let Ok(mut display) = displays.get_mut(part)
+            && display.transform != shape
+        {
+            display.transform = shape;
+        }
     }
-    if let Some(beam) = cast.beam {
-        commands.entity(beam).try_insert(place(at));
+}
+
+/// A body that sits down or gets up is another entity: a client seats what rides from the
+/// moment it does, and this way nothing has to throw it off.
+fn play_body(
+    cast: &mut Cast,
+    tick: u32,
+    stances: &mut Query<&mut Stance>,
+    commands: &mut Commands,
+) {
+    let wanted = cast.scene.body(tick);
+    let moved_seat = wanted.is_some_and(|body: Body| body.seat != cast.seat);
+    if (wanted.is_none() || moved_seat)
+        && let Some(entity) = cast.body.take()
+    {
+        commands.entity(entity).try_despawn();
+    }
+    let Some(body) = wanted else {
+        return;
+    };
+    let Some(entity) = cast.body else {
+        let entity = spawn_body(commands, body, cast.profile.clone());
+        cast.body = Some(entity);
+        cast.seat = body.seat;
+        cast.seated = false;
+        return;
+    };
+    // A tick after it came: a client drops a rider it has not been shown yet.
+    if !cast.seated
+        && let Some(seat) = body.seat.and_then(|seat| cast.props[seat])
+    {
+        commands.entity(seat).try_insert(Passengers::new([entity]));
+        cast.seated = true;
+    }
+    commands.entity(entity).try_insert((
+        place(body.at),
+        Rotation {
+            yaw: body.yaw,
+            pitch: body.pitch,
+        },
+    ));
+    if let Ok(mut stance) = stances.get_mut(entity) {
+        stance.set_if_neq(body.stance);
     }
 }
