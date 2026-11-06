@@ -120,6 +120,38 @@ pub fn look_direction(yaw: f32, pitch: f32) -> [f64; 3] {
     ]
 }
 
+/// How far off the middle of the screen something gets picked up, in degrees.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AimReach {
+    pub enter: f64,
+    pub leave: f64,
+    /// How much closer to the middle another one must be to take over.
+    pub switch: f64,
+}
+
+const MARKER_REACH: AimReach = AimReach {
+    enter: AIM_ENTER,
+    leave: AIM_LEAVE,
+    switch: AIM_SWITCH,
+};
+
+/// Degrees between a look and a point.
+fn angle_to(eye: [f64; 3], direction: [f64; 3], point: [f64; 3]) -> f64 {
+    let to_point: [f64; 3] = std::array::from_fn(|axis| point[axis] - eye[axis]);
+    let length = to_point.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let along: f64 = (0..3).map(|axis| to_point[axis] * direction[axis]).sum();
+    (along / length.max(f64::EPSILON))
+        .clamp(-1.0, 1.0)
+        .acos()
+        .to_degrees()
+}
+
+/// Whether a look is close enough to a marker for it to matter, hovered or not: what is
+/// around a marker goes to that marker.
+pub fn near_marker(eye: [f64; 3], direction: [f64; 3], point: [f64; 3]) -> bool {
+    angle_to(eye, direction, point) <= AIM_LEAVE
+}
+
 /// The marker aimed at, by its angle from the middle of the screen. The one already
 /// aimed at holds on for a while, so that the choice never flickers between two.
 pub fn aimed(
@@ -128,21 +160,26 @@ pub fn aimed(
     points: impl IntoIterator<Item = [f64; 3]>,
     current: Option<usize>,
 ) -> Option<usize> {
-    let angle = |point: [f64; 3]| {
-        let to_point: [f64; 3] = std::array::from_fn(|axis| point[axis] - eye[axis]);
-        let length = to_point.iter().map(|v| v * v).sum::<f64>().sqrt();
-        let along: f64 = (0..3).map(|axis| to_point[axis] * direction[axis]).sum();
-        (along / length.max(f64::EPSILON))
-            .clamp(-1.0, 1.0)
-            .acos()
-            .to_degrees()
-    };
-    let angles: Vec<f64> = points.into_iter().map(angle).collect();
+    aimed_within(MARKER_REACH, eye, direction, points, current)
+}
+
+/// The same for anything, with its own reach.
+pub fn aimed_within(
+    reach: AimReach,
+    eye: [f64; 3],
+    direction: [f64; 3],
+    points: impl IntoIterator<Item = [f64; 3]>,
+    current: Option<usize>,
+) -> Option<usize> {
+    let angles: Vec<f64> = points
+        .into_iter()
+        .map(|point| angle_to(eye, direction, point))
+        .collect();
     let nearest = (0..angles.len()).min_by(|a, b| angles[*a].total_cmp(&angles[*b]));
-    let held = current.filter(|index| angles.get(*index).is_some_and(|a| *a <= AIM_LEAVE));
-    let picked = nearest.filter(|index| angles[*index] <= AIM_ENTER);
+    let held = current.filter(|index| angles.get(*index).is_some_and(|a| *a <= reach.leave));
+    let picked = nearest.filter(|index| angles[*index] <= reach.enter);
     match (held, picked) {
-        (Some(held), Some(picked)) if angles[picked] + AIM_SWITCH < angles[held] => Some(picked),
+        (Some(held), Some(picked)) if angles[picked] + reach.switch < angles[held] => Some(picked),
         (Some(held), _) => Some(held),
         (None, picked) => picked,
     }

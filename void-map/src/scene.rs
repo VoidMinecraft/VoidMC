@@ -154,21 +154,52 @@ const SAND: i32 = b::SMOOTH_SANDSTONE;
 const SOIL: i32 = b::BROWN_TERRACOTTA;
 const PATH: i32 = b::BROWN_CONCRETE;
 const BRIDGE: i32 = b::SPRUCE_PLANKS;
-const CLOUD_SEED: u32 = 70;
+const CLOUD_SEED: u32 = 90;
 /// Each cell of a grid this wide may hold one cloud, in world blocks: clouds are the same
 /// on every model.
-const CLOUD_SPACING: f64 = 84.0;
+const CLOUD_SPACING: f64 = 104.0;
 /// The share of the cells that do.
-const CLOUD_CHANCE: f64 = 0.8;
-const CLOUD_SMALLEST: f64 = 18.0;
-const CLOUD_LARGEST: f64 = 30.0;
-/// The two side puffs of a cloud, as shares of its middle one, which make it long.
-const CLOUD_SIDE_REACH: f64 = 1.0;
-const CLOUD_SIDE_SIZE: f64 = 0.68;
-/// How deep into a cloud each of its layers starts, from the bottom up.
-const CLOUD_LAYERS: [f64; 3] = [0.14, 0.0, 0.38];
-/// Over the sea, as a share of the model's height over the sea.
+const CLOUD_CHANCE: f64 = 0.85;
+/// A pixel of a cloud's drawing, in world blocks: a cell of the overview.
+const CLOUD_PIXEL: f64 = 8.0;
+/// Small clouds as a game draws them, seen from above with north up. A digit says how
+/// many layers stand there: the lowest one is the shade, which shows along the south edge
+/// where nothing covers it, and the two others are the light side.
+const CLOUD_SHAPES: [&[&str]; 4] = [
+    &[
+        "....2222......",
+        "..22333322.22.",
+        ".2233333322332",
+        "22333333333332",
+        "22233333333222",
+        ".111111111111.",
+    ],
+    &[
+        "...222......",
+        ".2233322.22.",
+        "223333332332",
+        "222333333222",
+        ".1111111111.",
+    ],
+    &[
+        "..2222...",
+        ".2233322.",
+        "223333322",
+        "222333222",
+        ".1111111.",
+    ],
+    &["..22...", ".23322.", "2233322", ".11111."],
+];
+/// How far south of its place a cloud is drawn, in world blocks. The camera looks north
+/// and down, so that a cloud high up shows further north than what it hangs over.
+const CLOUD_LEAN: f64 = 48.0;
+/// Over the land under it, in blocks of a landmark: more than the tallest one.
+const CLOUD_CLEARANCE: i32 = 8;
+/// The highest a cloud starts, as a share of the model's height over the sea: a camera
+/// zoomed all the way in stays over it.
 const CLOUD_HEIGHT: f64 = 0.62;
+/// How far from its real place a figure is shown on a coarser model, in cells.
+const STAND_REACH: i32 = 4;
 const HATCH_WIDTH: i32 = 3;
 const PALISADE_HEIGHT: i32 = 3;
 const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
@@ -237,7 +268,7 @@ pub struct Scene {
     scale: Scale,
     columns: Vec<Option<Column>>,
     buildings: HashMap<(i32, i32), Vec<(i32, i32)>>,
-    /// The blocks of the clouds over each column, worked out once.
+    /// The blocks of the clouds over each column, worked out once, on and off the land.
     clouds: HashMap<(i32, i32), Vec<(i32, i32)>>,
 }
 
@@ -251,28 +282,95 @@ fn cloud_blocks(state: RegionState) -> (i32, i32) {
     }
 }
 
-/// A small cloud, as in a game: three puffs in a row.
+/// One cloud: a drawing, the same on every model, at a place of the world.
 #[derive(Debug, Clone, Copy)]
 struct Cloud {
-    at: [f64; 2],
-    size: f64,
+    /// World block of its north-west corner.
+    corner: [f64; 2],
+    shape: &'static [&'static str],
+    mirrored: bool,
 }
 
 impl Cloud {
-    /// How deep a point is in the cloud, from 0 on its edge to 1 in its very middle.
-    fn depth(self, x: f64, z: f64) -> f64 {
-        let [at_x, at_z] = self.at;
-        let reach = self.size * CLOUD_SIDE_REACH;
-        let puffs = [
-            (at_x, self.size),
-            (at_x - reach, self.size * CLOUD_SIDE_SIZE),
-            (at_x + reach, self.size * CLOUD_SIDE_SIZE),
-        ];
-        puffs
-            .into_iter()
-            .map(|(puff_x, size)| 1.0 - (x - puff_x).hypot(z - at_z) / size)
-            .fold(f64::MIN, f64::max)
+    fn span(self) -> [f64; 2] {
+        let width = self.shape.first().map_or(0, |row| row.len());
+        [
+            width as f64 * CLOUD_PIXEL,
+            self.shape.len() as f64 * CLOUD_PIXEL,
+        ]
     }
+
+    /// How many layers stand at a world block.
+    fn layers(self, x: f64, z: f64) -> u8 {
+        let pixel = |from: f64, at: f64| ((at - from) / CLOUD_PIXEL).floor();
+        let (col, row) = (pixel(self.corner[0], x), pixel(self.corner[1], z));
+        if col < 0.0 || row < 0.0 {
+            return 0;
+        }
+        let drawn = self.shape.get(row as usize).and_then(|line| {
+            let col = col as usize;
+            let col = if self.mirrored {
+                line.len().checked_sub(col + 1)?
+            } else {
+                col
+            };
+            line.as_bytes().get(col)
+        });
+        drawn.map_or(0, |digit| digit.saturating_sub(b'0').min(9))
+    }
+
+    fn overlaps(self, other: Self) -> bool {
+        let ([width, depth], [other_width, other_depth]) = (self.span(), other.span());
+        self.corner[0] < other.corner[0] + other_width
+            && other.corner[0] < self.corner[0] + width
+            && self.corner[1] < other.corner[1] + other_depth
+            && other.corner[1] < self.corner[1] + depth
+    }
+}
+
+/// The clouds of the closed regions. They depend on the world alone, so a cloud stays
+/// where it is from one model to the next.
+fn cloud_list(regions: &Regions) -> Vec<(Cloud, RegionState)> {
+    let cells = (WORLD_RADIUS / CLOUD_SPACING).ceil() as i32;
+    let mut clouds: Vec<(Cloud, RegionState)> = Vec::new();
+    for cell_z in -cells..=cells {
+        for cell_x in -cells..=cells {
+            let [jitter_x, jitter_z, chance, pick] = scatter(CLOUD_SEED, cell_x, cell_z);
+            let at = [
+                (f64::from(cell_x) + 0.2 + jitter_x * 0.6) * CLOUD_SPACING,
+                (f64::from(cell_z) + 0.2 + jitter_z * 0.6) * CLOUD_SPACING,
+            ];
+            let state = regions.at(at[0], at[1]).state;
+            if state == RegionState::Discovered
+                || chance >= CLOUD_CHANCE
+                || at[0].hypot(at[1]) > rim_radius(at[0], at[1])
+            {
+                continue;
+            }
+            let count = CLOUD_SHAPES.len() as f64;
+            let shape = CLOUD_SHAPES[((pick * count) as usize).min(CLOUD_SHAPES.len() - 1)];
+            let mut cloud = Cloud {
+                corner: at,
+                shape,
+                mirrored: (pick * count).fract() < 0.5,
+            };
+            let [width, depth] = cloud.span();
+            let snap = |value: f64| (value / CLOUD_PIXEL).round() * CLOUD_PIXEL;
+            cloud.corner = [
+                snap(at[0] - width / 2.0),
+                snap(at[1] + CLOUD_LEAN - depth / 2.0),
+            ];
+            let inside =
+                |value: f64, span: f64| value >= -WORLD_RADIUS && value + span <= WORLD_RADIUS;
+            if inside(cloud.corner[0], width)
+                && inside(cloud.corner[1], depth)
+                && !clouds.iter().any(|(other, _)| cloud.overlaps(*other))
+            {
+                clouds.push((cloud, state));
+            }
+        }
+    }
+    clouds
 }
 
 /// World blocks from the origin to the rim, around a place.
@@ -365,7 +463,7 @@ impl Scene {
             ));
         }
         Self::mark_borders(&mut columns, size, scale.build as usize);
-        let clouds = Self::clouds(&columns, scale);
+        let clouds = Self::clouds(&columns, scale, regions);
         Self {
             scale,
             columns,
@@ -374,57 +472,49 @@ impl Scene {
         }
     }
 
-    /// Small clouds scattered over the closed zones, each a few flat layers. A cloud whose
-    /// middle is over a zone hangs there whole, past its border if need be.
-    fn clouds(columns: &[Option<Column>], scale: Scale) -> HashMap<(i32, i32), Vec<(i32, i32)>> {
-        let size = usize::from(scale.size());
-        let state_at = |x: f64, z: f64| {
-            let cell = |world: f64| (scale.cells(world).floor() as i32 + scale.radius) as usize;
-            let (x, z) = (cell(x), cell(z));
-            (x < size && z < size)
-                .then(|| columns[z * size + x].map(|column| column.state))
+    /// The blocks of the clouds on this model. A cloud hangs whole, past the border of
+    /// its region or the rim if need be, a little over the land it covers.
+    fn clouds(
+        columns: &[Option<Column>],
+        scale: Scale,
+        regions: &Regions,
+    ) -> HashMap<(i32, i32), Vec<(i32, i32)>> {
+        let size = i32::from(scale.size());
+        let ground_at = |x: i32, z: i32| {
+            let (col, row) = (x + scale.radius, z + scale.radius);
+            ((0..size).contains(&col) && (0..size).contains(&row))
+                .then(|| columns[(row * size + col) as usize])
                 .flatten()
-                .filter(|state| *state != RegionState::Discovered)
+                .map(|column| column.ground)
         };
-        let reach = f64::from(scale.radius) * f64::from(scale.blocks_per_cell);
-        let cells = (reach / CLOUD_SPACING).ceil() as i32;
-        let height = SEA_Y + (f64::from(scale.max_y - SEA_Y) * CLOUD_HEIGHT) as i32;
-        let mut clouds: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
-        for cell_z in -cells..=cells {
-            for cell_x in -cells..=cells {
-                let [jitter_x, jitter_z, chance, grow] = scatter(CLOUD_SEED, cell_x, cell_z);
-                let at = [
-                    (f64::from(cell_x) + 0.25 + jitter_x * 0.5) * CLOUD_SPACING,
-                    (f64::from(cell_z) + 0.25 + jitter_z * 0.5) * CLOUD_SPACING,
-                ];
-                let Some(state) = state_at(at[0], at[1]).filter(|_| chance < CLOUD_CHANCE) else {
-                    continue;
-                };
-                let radius = CLOUD_SMALLEST + (CLOUD_LARGEST - CLOUD_SMALLEST) * grow;
-                let cloud = Cloud { at, size: radius };
-                let (light, shade) = cloud_blocks(state);
-                let span = scale.cells(radius * (1.0 + CLOUD_SIDE_REACH)).ceil() as i32 + 1;
-                let (middle_x, middle_z) = (
-                    scale.cells(at[0]).floor() as i32,
-                    scale.cells(at[1]).floor() as i32,
-                );
-                for z in middle_z - span..=middle_z + span {
-                    for x in middle_x - span..=middle_x + span {
-                        let depth = cloud.depth(scale.world(x), scale.world(z));
-                        for (layer, start) in CLOUD_LAYERS.iter().enumerate() {
-                            if depth <= *start {
-                                continue;
-                            }
-                            let block = if layer == 0 { shade } else { light };
-                            let bottom = height + layer as i32 * scale.build;
-                            let column = clouds.entry((x, z)).or_default();
-                            column.extend((0..scale.build).map(|y| (bottom + y, block)));
-                        }
-                    }
+        let highest = SEA_Y + (f64::from(scale.max_y - SEA_Y) * CLOUD_HEIGHT) as i32;
+        let mut blocks: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
+        for (cloud, state) in cloud_list(regions) {
+            let [west, north] = cloud.corner;
+            let [width, depth] = cloud.span();
+            let cell = |world: f64| scale.cells(world).floor() as i32;
+            let cells: Vec<(i32, i32, u8)> = (cell(north)..=cell(north + depth))
+                .flat_map(|z| (cell(west)..=cell(west + width)).map(move |x| (x, z)))
+                .map(|(x, z)| (x, z, cloud.layers(scale.world(x), scale.world(z))))
+                .filter(|(_, _, layers)| *layers > 0)
+                .collect();
+            let land = cells
+                .iter()
+                .filter_map(|(x, z, _)| ground_at(*x, *z))
+                .max()
+                .unwrap_or(SEA_Y);
+            let bottom = (land + CLOUD_CLEARANCE * scale.build).min(highest);
+            let (light, shade) = cloud_blocks(state);
+            for (x, z, layers) in cells {
+                let column = blocks.entry((x, z)).or_default();
+                for layer in 0..i32::from(layers) {
+                    let block = if layer == 0 { shade } else { light };
+                    let from = bottom + layer * scale.build;
+                    column.extend((0..scale.build).map(|y| (from + y, block)));
                 }
             }
         }
-        clouds
+        blocks
     }
 
     fn mark_borders(columns: &mut [Option<Column>], size: usize, reach: usize) {
@@ -520,9 +610,45 @@ impl Scene {
         self.column(x, z).map(Column::top)
     }
 
-    /// Whether a column stands out of the sea, which bridges do too.
-    pub fn is_land(&self, x: i32, z: i32) -> bool {
-        self.column(x, z).is_some_and(Column::is_land)
+    /// Whether a block rises out of a column, that a figure would stand in.
+    fn in_the_way(&self, x: i32, z: i32, column: Column) -> bool {
+        column.surface == CANOPY || self.buildings.contains_key(&(x, z))
+    }
+
+    /// Whether a figure may be shown here: dry and free, on land or a bridge.
+    fn standable(&self, x: i32, z: i32) -> bool {
+        self.column(x, z)
+            .is_some_and(|column| column.is_land() && !self.in_the_way(x, z, column))
+    }
+
+    /// Whether a figure can walk here: it is free, and so is what is around it, with no
+    /// rim or step too high for a stride next to it.
+    pub fn walkable(&self, x: i32, z: i32) -> bool {
+        let Some(here) = self.column(x, z).filter(|column| column.is_land()) else {
+            return false;
+        };
+        (-1..=1)
+            .flat_map(|dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+            .all(|(x, z)| {
+                self.column(x, z).is_some_and(|side| {
+                    !self.in_the_way(x, z, side)
+                        && (side.top() - here.top()).abs() <= self.scale.rise
+                })
+            })
+    }
+
+    /// The closest cell a figure may be shown on, around a cell, and the height of the
+    /// ground there. A model coarser than the one walkers go by has its shores and its
+    /// trees a little elsewhere.
+    pub fn stand_near(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+        (0..=STAND_REACH).find_map(|ring| {
+            (-ring..=ring)
+                .flat_map(|dz| (-ring..=ring).map(move |dx| (dx, dz)))
+                .filter(|(dx, dz)| dx.abs().max(dz.abs()) == ring)
+                .filter(|(dx, dz)| self.standable(x + dx, z + dz))
+                .min_by_key(|(dx, dz)| dx * dx + dz * dz)
+                .map(|(dx, dz)| (x + dx, z + dz))
+        })
     }
 
     /// The model cell a world block falls on.
@@ -569,11 +695,6 @@ impl Scene {
         let build = self.scale.build;
         let locked = column.state == RegionState::Locked;
         match look {
-            ZoneLook::Clouds => {
-                for (y, block) in self.clouds.get(&(x, z)).into_iter().flatten() {
-                    set(*y, *block);
-                }
-            }
             ZoneLook::Hatching => {
                 let width = HATCH_WIDTH * build;
                 if (x + z).rem_euclid(2 * width) < width {
@@ -593,7 +714,7 @@ impl Scene {
                     }
                 }
             }
-            ZoneLook::Faded => {}
+            ZoneLook::Clouds | ZoneLook::Faded => {}
         }
     }
 
@@ -634,7 +755,15 @@ impl Scene {
             // The middle of a path strays the most, and both ends stay put.
             let progress = f64::from(step) / f64::from(steps);
             let swing = (progress * std::f64::consts::PI).sin() * f64::from(steps) * 0.18;
-            let wander = fractal(PATH_SEED, line_x, line_z, f64::from(steps)) * swing;
+            // In world blocks, so that a path is at the same place on every model.
+            let per_cell = f64::from(self.scale.blocks_per_cell);
+            let wander = swing
+                * fractal(
+                    PATH_SEED,
+                    line_x * per_cell,
+                    line_z * per_cell,
+                    f64::from(steps) * per_cell,
+                );
             let (x, z) = ((line_x + wander) as i32, (line_z - wander) as i32);
             for dz in 0..width {
                 for dx in 0..width {
@@ -670,6 +799,11 @@ impl Scene {
                     chunk_x * 16 + i32::from(local_x),
                     chunk_z * 16 + i32::from(local_z),
                 );
+                if look.zone == ZoneLook::Clouds {
+                    for (y, block) in self.clouds.get(&(x, z)).into_iter().flatten() {
+                        builder.set_block(local_x, *y, local_z, *block);
+                    }
+                }
                 let Some(column) = self.column(x, z) else {
                     continue;
                 };
@@ -885,6 +1019,166 @@ mod tests {
         let terrain = Terrain::sample(&generator, &OVERVIEW.window());
         let scene = Scene::new(&terrain, SEA, OVERVIEW, &locked);
         assert_eq!(scene.column(0, 0).unwrap().state, RegionState::Locked);
+    }
+
+    fn closed_scene(scale: Scale) -> Scene {
+        let generator = land();
+        let terrain = Terrain::sample(&generator, &scale.window());
+        Scene::new(&terrain, SEA, scale, &Regions::demo())
+    }
+
+    fn cloud_tops(scene: &Scene) -> impl Iterator<Item = ((i32, i32), i32)> + '_ {
+        scene.clouds.iter().map(|(cell, blocks)| {
+            let top = blocks.iter().map(|(y, _)| *y).max().unwrap_or(0);
+            (*cell, top)
+        })
+    }
+
+    #[test]
+    fn clouds_are_the_same_every_time_and_on_every_model() {
+        let world_cells = |scene: &Scene| {
+            let scale = scene.scale();
+            let mut clouds = cloud_list(&Regions::demo());
+            clouds.sort_by(|a, b| a.0.corner[0].total_cmp(&b.0.corner[0]));
+            (scale, clouds.len())
+        };
+        let (first, second) = (closed_scene(OVERVIEW), closed_scene(OVERVIEW));
+        assert_eq!(first.clouds, second.clouds);
+        assert!(!first.clouds.is_empty());
+        assert_eq!(world_cells(&first).1, world_cells(&closed_scene(DETAIL)).1);
+    }
+
+    #[test]
+    fn a_cloud_is_a_few_flat_layers() {
+        for scale in [OVERVIEW, MIDDLE, DETAIL] {
+            let scene = closed_scene(scale);
+            for blocks in scene.clouds.values() {
+                let layers = blocks.len() as i32 / scale.build;
+                assert!((1..=4).contains(&layers), "{layers}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_closed_regions_have_clouds() {
+        assert!(scene(&land()).clouds.is_empty());
+        for (cloud, state) in cloud_list(&Regions::demo()) {
+            let [width, depth] = cloud.span();
+            let middle = [cloud.corner[0] + width / 2.0, cloud.corner[1] + depth / 2.0];
+            assert_ne!(state, RegionState::Discovered, "{middle:?}");
+        }
+    }
+
+    #[test]
+    fn clouds_stay_apart_and_on_the_model() {
+        let clouds = cloud_list(&Regions::demo());
+        for (index, (cloud, _)) in clouds.iter().enumerate() {
+            let [width, depth] = cloud.span();
+            assert!(cloud.corner[0] >= -WORLD_RADIUS && cloud.corner[1] >= -WORLD_RADIUS);
+            assert!(cloud.corner[0] + width <= WORLD_RADIUS);
+            assert!(cloud.corner[1] + depth <= WORLD_RADIUS);
+            assert!(
+                clouds[..index]
+                    .iter()
+                    .all(|(other, _)| !cloud.overlaps(*other))
+            );
+        }
+    }
+
+    #[test]
+    fn a_cloud_stays_whole_past_the_border_of_its_region() {
+        let scene = closed_scene(OVERVIEW);
+        let chunk = |x, z, zone| {
+            let look = ChunkLook {
+                zone,
+                blocks: Blocks::Flat,
+            };
+            scene.chunk(x, z, BiomeId::plains(), 1, look)
+        };
+        let (x, z) = scene
+            .clouds
+            .keys()
+            .copied()
+            .find(|(x, z)| {
+                scene
+                    .column(*x, *z)
+                    .is_none_or(|column| column.state == RegionState::Discovered)
+            })
+            .expect("a cloud past a border");
+        let (y, block) = scene.clouds[&(x, z)][0];
+        let built = chunk(x.div_euclid(16), z.div_euclid(16), ZoneLook::Clouds);
+        let (local_x, local_z) = (x.rem_euclid(16) as u8, z.rem_euclid(16) as u8);
+        let (section, local_y) = ((y + 64) as usize / 16, (y + 64).rem_euclid(16) as u8);
+        let found = built.sections[section].get_block_state(local_x, local_y, local_z);
+        assert_eq!(found, block);
+    }
+
+    #[test]
+    fn clouds_clear_the_land_and_a_zoomed_camera() {
+        for scale in [OVERVIEW, MIDDLE, DETAIL] {
+            let scene = closed_scene(scale);
+            for ((x, z), top) in cloud_tops(&scene) {
+                if let Some(column) = scene.column(x, z) {
+                    assert!(top > column.ground, "{x} {z}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_walkable_cell_has_room_around_it() {
+        let scene = scene(&land());
+        assert!(scene.walkable(0, 0));
+        let rim = (0..OVERVIEW.radius)
+            .rev()
+            .find(|x| scene.top(*x, 0).is_some())
+            .unwrap();
+        assert!(!scene.walkable(rim, 0));
+        let sea = scene_of(&sea(), OVERVIEW);
+        assert!(!sea.walkable(0, 0));
+    }
+
+    #[test]
+    fn a_landmark_and_the_land_around_it_are_not_walked_on() {
+        let mut scene = scene(&land());
+        assert!(scene.walkable(0, 0));
+        scene.build((0, 0), MarkerKind::Lighthouse);
+        assert!(!scene.walkable(0, 0));
+        assert!(!scene.walkable(1, 0));
+        assert!(scene.walkable(2, 0));
+    }
+
+    #[test]
+    fn a_figure_is_shown_next_to_what_it_cannot_stand_on() {
+        let mut scene = scene(&land());
+        scene.build((0, 0), MarkerKind::Lighthouse);
+        let (x, z) = scene.stand_near(0, 0).unwrap();
+        assert_eq!(x.abs().max(z.abs()), 1);
+        assert_eq!(scene_of(&sea(), OVERVIEW).stand_near(0, 0), None);
+    }
+
+    #[test]
+    fn a_path_is_at_the_same_place_on_every_model() {
+        let bridge = |scale: Scale| {
+            let mut scene = scene_of(&sea(), scale);
+            let cell = |world: i32| world / i32::from(scale.blocks_per_cell);
+            scene.pave((cell(-240), cell(-120)), (cell(240), cell(160)));
+            let radius = scale.radius;
+            (-radius..radius)
+                .flat_map(|x| (-radius..radius).map(move |z| (x, z)))
+                .filter(|(x, z)| scene.column(*x, *z).is_some_and(|c| c.surface == BRIDGE))
+                .map(|(x, z)| [scale.world(x), scale.world(z)])
+                .collect::<Vec<_>>()
+        };
+        let (coarse, fine) = (bridge(OVERVIEW), bridge(DETAIL));
+        assert!(!coarse.is_empty());
+        for [x, z] in coarse {
+            let closest = fine
+                .iter()
+                .map(|[fine_x, fine_z]| (fine_x - x).hypot(fine_z - z))
+                .fold(f64::MAX, f64::min);
+            assert!(closest <= 16.0, "{x} {z}: {closest}");
+        }
     }
 
     #[test]
