@@ -21,6 +21,7 @@ pub mod scene;
 pub mod telemetry;
 pub mod terrain;
 pub mod transition;
+pub mod wheel;
 pub mod window;
 
 #[cfg(test)]

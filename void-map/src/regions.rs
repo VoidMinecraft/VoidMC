@@ -85,6 +85,8 @@ pub enum ZoneLook {
 }
 
 impl ZoneLook {
+    pub const ALL: [Self; 4] = [Self::Clouds, Self::Hatching, Self::Palisade, Self::Faded];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Clouds => "Nuages",

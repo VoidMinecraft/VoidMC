@@ -10,6 +10,7 @@ use voidmc_ui::{Image, ResourcePack};
 use crate::alphabet::LETTERS;
 use crate::markers::MarkerKind;
 use crate::noise::fractal;
+use crate::wheel::CATEGORIES;
 
 /// How wide the detail panel and the bubble's name are.
 const WIDTH: u32 = 150;
@@ -52,6 +53,7 @@ const DETAIL: char = '\u{E111}';
 const FLOURISH: char = '\u{E112}';
 const FIRST_MARK: u32 = 0xE118;
 const FIRST_VEIL: u32 = 0xE120;
+const FIRST_WHEEL: u32 = 0xE130;
 const FIRST_FORWARD: u32 = 0xE200;
 const FIRST_BACK: u32 = 0xE220;
 const SHIFT_BITS: u32 = 10;
@@ -69,6 +71,21 @@ const VEIL_ROWS: u32 = 2;
 const VEIL_SEED: u32 = 0x5EED;
 const VEIL_LIGHT: [f64; 3] = [247.0, 249.0, 252.0];
 const VEIL_SHADE: [f64; 3] = [176.0, 188.0, 208.0];
+
+const WHEEL_SIZE: u32 = 222;
+const WHEEL_INNER: f64 = 57.0;
+const WHEEL_OUTER: f64 = 110.0;
+/// The half width of the gap between two sectors, in pixels.
+const WHEEL_GAP: f64 = 1.5;
+const WHEEL_TOP_ROW: i32 = 22;
+const WHEEL_KIND_ROW: i32 = 96;
+const WHEEL_CHOICE_ROW: i32 = 110;
+const WHEEL_BOTTOM_ROW: i32 = 192;
+/// The middle of the sectors on the sides, from the middle of the wheel.
+const WHEEL_SIDE: i32 = 83;
+const WHEEL_ON: [u8; 4] = [226, 176, 72, 235];
+const WHEEL_OFF: [u8; 4] = [22, 26, 36, 215];
+const WHEEL_MIDDLE: [u8; 4] = [10, 12, 18, 235];
 
 const FILL: [u8; 4] = [14, 17, 24, 225];
 const EDGE: [u8; 4] = [4, 5, 8, 255];
@@ -192,6 +209,8 @@ impl Style {
         STYLES[(self.index() + 1) % STYLES.len()]
     }
 
+    pub const ALL: [Self; 4] = STYLES;
+
     fn index(self) -> usize {
         STYLES.iter().position(|style| *style == self).unwrap_or(0)
     }
@@ -210,15 +229,18 @@ pub enum Mark {
     Disc,
     Lock,
     Unknown,
+    /// A small triangle pointing down, for a head to show where it stands.
+    Tip,
 }
 
-const MARKS: [Mark; 6] = [
+const MARKS: [Mark; 7] = [
     Mark::Pin,
     Mark::Arrow,
     Mark::Ring,
     Mark::Disc,
     Mark::Lock,
     Mark::Unknown,
+    Mark::Tip,
 ];
 
 const PIN_COLOUR: [u8; 4] = [236, 92, 84, 255];
@@ -279,6 +301,7 @@ impl Mark {
             (false, Self::Disc) => "§f●".into(),
             (false, Self::Lock) => "§7X".into(),
             (false, Self::Unknown) => "§7?".into(),
+            (false, Self::Tip) => "§c▼".into(),
         }
     }
 
@@ -295,8 +318,21 @@ impl Mark {
             Self::Disc => disc(24, FILL, EDGE),
             Self::Lock => bitmap_of(&LOCK, SIGN_COLOUR, 2),
             Self::Unknown => bitmap_of(&QUESTION, SIGN_COLOUR, 2),
+            Self::Tip => tip(),
         }
     }
+}
+
+fn tip() -> Image {
+    let (width, height) = (11_u32, 7_u32);
+    let mut image = Image::new(width, height);
+    for y in 0..height {
+        for x in y.min(width / 2)..width - y.min(width / 2) {
+            let edge = y == 0 || x <= y || x + 1 + y >= width;
+            image.set(x, y, if edge { EDGE } else { PIN_COLOUR });
+        }
+    }
+    image
 }
 
 fn drop_shape() -> Image {
@@ -396,6 +432,12 @@ fn text_rows() -> Vec<i32> {
         .chain(&TITLE_ROWS)
         .chain(&bubble)
         .chain(&[NAME_TAG_TEXT, SIGN_ROW])
+        .chain(&[
+            WHEEL_TOP_ROW,
+            WHEEL_KIND_ROW,
+            WHEEL_CHOICE_ROW,
+            WHEEL_BOTTOM_ROW,
+        ])
         .copied()
         .collect();
     rows.sort_unstable();
@@ -677,6 +719,66 @@ pub fn veil() -> String {
         }
     }
     pen.go_to((VEIL_COLUMNS * width) as i32);
+    pen.title
+}
+
+fn wheel_glyph(sector: usize) -> char {
+    char::from_u32(FIRST_WHEEL + sector as u32).expect("a private use character")
+}
+
+/// The dial, with one of its four sectors on, clockwise from the top.
+fn wheel_dial(on: usize) -> Image {
+    let mut image = Image::new(WHEEL_SIZE, WHEEL_SIZE);
+    let centre = f64::from(WHEEL_SIZE - 1) / 2.0;
+    for y in 0..WHEEL_SIZE {
+        for x in 0..WHEEL_SIZE {
+            let (dx, dy) = (f64::from(x) - centre, f64::from(y) - centre);
+            let from = dx.hypot(dy);
+            if from < WHEEL_INNER - 2.0 {
+                image.set(x, y, WHEEL_MIDDLE);
+            } else if (WHEEL_INNER..=WHEEL_OUTER).contains(&from)
+                && (dx.abs() - dy.abs()).abs() > WHEEL_GAP * std::f64::consts::SQRT_2
+            {
+                let sector = match (dx.abs() > dy.abs(), dx > 0.0, dy > 0.0) {
+                    (false, _, false) => 0,
+                    (true, true, _) => 1,
+                    (false, _, true) => 2,
+                    (true, false, _) => 3,
+                };
+                image.set(x, y, if sector == on { WHEEL_ON } else { WHEEL_OFF });
+            }
+        }
+    }
+    image
+}
+
+/// How far under the top of its line the middle of the wheel is.
+pub const WHEEL_MIDDLE_DROP: f32 = WHEEL_SIZE as f32 / 2.0;
+
+/// The line that draws the wheel, with `on` the sector that is on.
+pub fn wheel_face(on: usize, labels: [&str; 4], count: &str, choice: &str) -> String {
+    let size = WHEEL_SIZE as i32;
+    let mut pen = Pen::default();
+    pen.draw(wheel_glyph(on), size + 1);
+    let paint = |sector: usize| {
+        let colour = if sector == on { "§0" } else { "§7" };
+        format!("{colour}{}", labels[sector])
+    };
+    pen.go_to(0);
+    pen.centred(size, WHEEL_TOP_ROW, &paint(0));
+    pen.go_to(0);
+    pen.centred(size, WHEEL_BOTTOM_ROW, &paint(2));
+    let beside = |pen: &mut Pen, sector: usize, middle: i32| {
+        pen.go_to(middle - text_width(labels[sector]) / 2);
+        pen.write(WHEEL_CHOICE_ROW, &paint(sector));
+    };
+    beside(&mut pen, 1, size / 2 + WHEEL_SIDE);
+    beside(&mut pen, 3, size / 2 - WHEEL_SIDE);
+    pen.go_to(0);
+    pen.centred(size, WHEEL_KIND_ROW, &format!("§7{count}"));
+    pen.go_to(0);
+    pen.centred(size, WHEEL_CHOICE_ROW, &format!("§f{choice}"));
+    pen.go_to(size);
     pen.title
 }
 
@@ -1026,6 +1128,16 @@ pub fn install(pack: &mut ResourcePack) {
     for mark in MARKS {
         let name = format!("mark_{}", mark.index());
         add_glyph(pack, &mut providers, name, &mark.image(), mark.glyph(), 0);
+    }
+    for sector in 0..CATEGORIES {
+        add_glyph(
+            pack,
+            &mut providers,
+            format!("wheel_{sector}"),
+            &wheel_dial(sector),
+            wheel_glyph(sector),
+            0,
+        );
     }
     for row in 0..VEIL_ROWS {
         // One row over the middle of the screen, one under it.

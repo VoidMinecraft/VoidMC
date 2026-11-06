@@ -36,7 +36,7 @@ use voidmc_protocol::{
 };
 use voidmc_ui::{PackSettled, Text};
 
-use crate::art::{Card, Mark, Style, Subject, sign};
+use crate::art::{Card, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
 use crate::dimension::{self, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::pointer::{
@@ -49,6 +49,7 @@ use crate::scene::{self, Blocks, ChunkLook, DETAIL, OVERVIEW, Scale, Scene};
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 use crate::transition::{Flight, LANDING_TICKS, RISE_TICKS, VEIL_FADE, veil_in, veil_out};
+use crate::wheel::{Wheel, stepped};
 
 /// `WorldGenerator` does not expose its water level. This is the one of
 /// `DefaultWorldGenerator`, and of vanilla.
@@ -112,8 +113,16 @@ const ICON_HOVER_GROWTH: f32 = 1.6;
 /// The head floats over the player's spot, on a pin always drawn right under it.
 const MINI_HEAD_LIFT: f64 = 4.0;
 const MINI_HEAD_SCALE: f32 = 3.4;
+const TIP_SCALE: f32 = 4.0;
+/// In front of the camera, in blocks. A wheel fills about half of the screen's height.
+const WHEEL_DISTANCE: f64 = 8.0;
+const WHEEL_SCALE: f32 = 1.0;
+/// What a name of a look gets on screen before the hint comes back, in ticks.
+const TOLD_TICKS: u32 = 50;
 /// How much of its scale it takes to reach the edge of a head.
 const HEAD_HALF: f32 = 0.22;
+/// A disc's half, in blocks at scale 1.
+const DISC_RADIUS: f32 = 12.0 * DISC_SCALE / PIXELS_PER_BLOCK;
 const DISC_SCALE: f32 = 5.0;
 const PIN_SCALE: f32 = 7.0;
 const GROUND_MARK_SCALE: f32 = 8.0;
@@ -212,6 +221,10 @@ impl MapMode {
 const TRAVEL_ACTION: &str = "Clic gauche : s'y rendre";
 /// Above the ground of the world, so as not to land in it.
 const ARRIVAL_CLEARANCE: f64 = 0.25;
+/// How much wider a flying player sees, at the usual field of view.
+const FLYING_VIEW_SPREAD: f64 = 1.136;
+/// A look at the horizon stands back as if it were looking this far down.
+const MIN_STAND_IN_DROP: f64 = 0.4;
 /// What the veil waits for, at the least: the client to settle on what it has got.
 const VEIL_SETTLE_TICKS: u32 = 10;
 const LANDING_SETTLE_TICKS: u32 = 14;
@@ -261,6 +274,11 @@ struct Waypoint {
     /// On the model, from its centre.
     at: [f64; 3],
 }
+
+const CLOUDS: ChunkLook = ChunkLook {
+    zone: ZoneLook::Clouds,
+    blocks: Blocks::Flat,
+};
 
 /// One model, with its chunks as they get asked for.
 struct Level {
@@ -341,12 +359,13 @@ impl Level {
     }
 
     /// Builds the island's chunks ahead of time: on a tick, it would make that tick
-    /// late. The other zone looks wait for a player to ask for them.
+    /// late. The looks with less to them wait for a player to ask for them.
     fn prepare(&mut self, info: MapLevel) {
         let reach = self.scene.chunk_radius();
         for x in -reach..=reach {
             for z in -reach..=reach {
                 self.chunk((x, z), ChunkLook::default(), info);
+                self.chunk((x, z), CLOUDS, info);
             }
         }
     }
@@ -436,6 +455,8 @@ enum Part {
     Flat(Mark, f32),
     Disc,
     Head,
+    /// Pointing down, right under a head, this far from its middle at scale 1.
+    Tip(f32),
 }
 
 impl Part {
@@ -446,6 +467,7 @@ impl Part {
             Self::Flat(..) => GROUND_MARK_SCALE,
             Self::Disc => DISC_SCALE,
             Self::Head => MINI_HEAD_SCALE,
+            Self::Tip(_) => TIP_SCALE,
         }
     }
 
@@ -466,6 +488,12 @@ impl Part {
                     .uniform_scale(scale)
             }
             Self::Head => DisplayTransform::default().uniform_scale(scale),
+            Self::Tip(under) => {
+                let line = LINE_HEIGHT / PIXELS_PER_BLOCK;
+                DisplayTransform::default()
+                    .translation(0.0, -(under / TIP_SCALE + line) * scale, 0.0)
+                    .uniform_scale(scale)
+            }
         }
     }
 }
@@ -513,6 +541,15 @@ struct ShownCard {
 enum Hover {
     Waypoint(usize),
     You,
+}
+
+/// The selector on a player's screen.
+#[derive(Debug, Clone)]
+struct OpenWheel {
+    wheel: Wheel,
+    display: Entity,
+    /// What it shows, to tell when that has to change.
+    face: String,
 }
 
 /// A player between the world and the map, seen through a camera of their own.
@@ -572,6 +609,10 @@ pub struct MapSession {
     ready: bool,
     /// On the way out, this many ticks before the veil is whole.
     closing: Option<u32>,
+    /// Held open by the sprint key.
+    wheel: Option<OpenWheel>,
+    /// When a choice last went on screen, for the hint to leave it there.
+    told: u32,
     sneaking: bool,
     /// Jump, left and right as last reported, to act on a press and not on a repeat.
     keys: [bool; 3],
@@ -661,14 +702,53 @@ impl MapSession {
                 let [yaw, pitch] = travel.dive.looking();
                 Rotation { yaw, pitch }
             }
-            None => self.rest(),
+            None => self.look,
         }
+    }
+
+    /// Where the entity to see through goes. In a look, it stands in for the eye.
+    fn camera_at(&self) -> Position {
+        let [x, y, z] = if self.wheel.is_some() {
+            self.stand_in()
+        } else {
+            self.eye()
+        };
+        self.on_model(x, y, z)
+    }
+
+    /// Where a camera entity shows the same thing as the eye of a look. The client widens
+    /// the view of a flying player, which it does not do for what they see through, so
+    /// that the entity has to stand further back.
+    fn stand_in(&self) -> [f64; 3] {
+        let eye = self.eye();
+        if self.mode != MapMode::Look {
+            return eye;
+        }
+        let way = look_direction(self.look.yaw, self.look.pitch);
+        let height = eye[1] - f64::from(scene::SEA_Y);
+        let distance = height / (-way[1]).max(MIN_STAND_IN_DROP);
+        std::array::from_fn(|axis| eye[axis] - way[axis] * distance * (FLYING_VIEW_SPREAD - 1.0))
+    }
+
+    /// The camera holds still and nothing reacts to the mouse.
+    fn is_frozen(&self) -> bool {
+        self.wheel.is_some()
     }
 
     /// Takes in a rotation the client reports, and says how to correct it, if at all.
     fn turn(&mut self, yaw: f32, pitch: f32, atlas: &Atlas) -> Option<PlayerRotation> {
         self.rig?;
         self.telemetry.report(Instant::now());
+        if let Some(open) = self.wheel.as_mut() {
+            let turn = self.mouse.report(yaw, pitch);
+            open.wheel.turn(turn.delta);
+            return turn.recentre.then_some(PlayerRotation {
+                yaw: 0.0,
+                relative_yaw: true,
+                pitch: RECENTRED_PITCH,
+                relative_pitch: false,
+            });
+        }
         match self.mode {
             MapMode::Look => {
                 self.look = Rotation { yaw, pitch };
@@ -755,9 +835,10 @@ impl MapSession {
 
     /// How far over the ground the player's marker is aimed at, in blocks of a build.
     fn you_lift(&self) -> f64 {
-        match self.looks.me {
-            Me::MiniHead => MINI_HEAD_LIFT,
-            Me::Pin | Me::Arrow | Me::Ring => 0.0,
+        if self.looks.me.has_head() {
+            MINI_HEAD_LIFT
+        } else {
+            0.0
         }
     }
 
@@ -810,6 +891,7 @@ impl Plugin for MapPlugin {
                 tick_sessions,
                 fly,
                 tick_passages,
+                run_wheels,
             ),
         )
         .add_observer(rise)
@@ -1033,6 +1115,29 @@ fn spawn_you(
         let display = drawn(part).billboard(Billboard::Fixed);
         (spawn_mark(commands, ground, text(mark), display), part)
     };
+    let with_head = |commands: &mut Commands, behind: &[Part]| {
+        let at = session.on_model(x, y + MINI_HEAD_LIFT * build, z);
+        let mut parts: Vec<_> = behind
+            .iter()
+            .map(|part| {
+                let mark = match part {
+                    Part::Tip(_) => Mark::Tip,
+                    _ => Mark::Disc,
+                };
+                (spawn_mark(commands, at, text(mark), drawn(*part)), *part)
+            })
+            .collect();
+        let head = spawn_item(
+            commands,
+            at,
+            session.head.clone(),
+            // Facing the camera: as an icon, a head shows its hair more than its face.
+            ItemDisplayContext::Fixed,
+            session.part_scale(Part::Head),
+        );
+        parts.push((head, Part::Head));
+        parts
+    };
     match session.looks.me {
         Me::Pin => {
             let at = session.on_model(x, y, z);
@@ -1041,18 +1146,18 @@ fn spawn_you(
         }
         Me::Arrow => vec![lying(Mark::Arrow, session.rotation.yaw, commands)],
         Me::Ring => vec![lying(Mark::Ring, 180.0, commands)],
-        Me::MiniHead => {
-            let at = session.on_model(x, y + MINI_HEAD_LIFT * build, z);
-            let disc = spawn_mark(commands, at, text(Mark::Disc), drawn(Part::Disc));
-            let head = spawn_item(
-                commands,
-                at,
-                session.head.clone(),
-                // Facing the camera: as an icon, a head shows its hair more than its face.
-                ItemDisplayContext::Fixed,
-                session.part_scale(Part::Head),
-            );
-            vec![(disc, Part::Disc), (head, Part::Head)]
+        Me::MiniHead => with_head(commands, &[Part::Disc]),
+        Me::HeadTip => with_head(commands, &[Part::Tip(HEAD_HALF * MINI_HEAD_SCALE)]),
+        Me::Bubble => with_head(commands, &[Part::Disc, Part::Tip(DISC_RADIUS)]),
+        Me::HeadRing => {
+            let mut parts = with_head(commands, &[]);
+            parts.push(lying(Mark::Ring, 180.0, commands));
+            parts
+        }
+        Me::HeadHeading => {
+            let mut parts = with_head(commands, &[]);
+            parts.push(lying(Mark::Arrow, session.rotation.yaw, commands));
+            parts
         }
     }
 }
@@ -1293,6 +1398,8 @@ fn enter(
         veiled: drawn.then_some(0),
         ready: false,
         closing: None,
+        wheel: None,
+        told: 0,
         sneaking: false,
         keys: [false; 3],
         look: Rotation {
@@ -1732,7 +1839,7 @@ fn marker_top(level: &Level, session: &MapSession, hover: Hover) -> Option<([f64
                     Some(([x, y, z], height * PIN_SCALE * scale))
                 }
                 Me::Arrow | Me::Ring => Some(([x, y, z], GROUND_MARK_SCALE * scale / 4.0)),
-                Me::MiniHead => Some((
+                Me::MiniHead | Me::HeadTip | Me::Bubble | Me::HeadRing | Me::HeadHeading => Some((
                     [x, y + MINI_HEAD_LIFT * build, z],
                     MINI_HEAD_SCALE * scale * HEAD_HALF * 2.0,
                 )),
@@ -1820,7 +1927,7 @@ fn follow_view(
         };
         // The box rides on the client, but the engine goes by this to keep it shown.
         let moves = [
-            (rig.camera, session.camera_position()),
+            (rig.camera, session.camera_at()),
             (Some(rig.eye_box), session.eye_box_position()),
         ];
         for (entity, at) in moves {
@@ -1833,9 +1940,7 @@ fn follow_view(
             rotation.set_if_neq(session.camera_rotation());
         }
 
-        let hovered = session
-            .travel
-            .is_none()
+        let hovered = (session.travel.is_none() && !session.is_frozen())
             .then(|| hover_of(level, &session))
             .flatten();
         if hovered != session.hovered {
@@ -1962,7 +2067,7 @@ fn start_dive(
     let waypoint = &level.waypoints[index];
     let marker = &waypoint.marker;
     tracing::info!(marker = %marker.name, "map dive");
-    let eye = session.eye();
+    let eye = session.stand_in();
     let look = match session.mode {
         MapMode::Look => session.look,
         MapMode::Pan => session.rest(),
@@ -2031,8 +2136,144 @@ fn hint() -> Text {
         .append(Text::new(" / "))
         .append(key("key.right"))
         .append(Text::new(" : zoom   |   "))
+        .append(key("key.sprint"))
+        .append(Text::new(" : apparence   |   "))
         .append(key("key.sneak"))
         .append(Text::new(" : fermer"))
+}
+
+fn wheel_hint() -> Text {
+    Text::new("Souris : gauche / droite change de sujet, haut / bas de choix   |   ")
+        .color(TextColor::White)
+        .append(Text::keybind("key.sprint"))
+        .append(Text::new(" relâché : garder"))
+}
+
+/// The labels of the wheel's sectors, clockwise from the top.
+const WHEEL_LABELS: [&str; 4] = ["Panneau", "Marqueur", "Zones", "Blocs"];
+
+/// What a sector of the wheel offers, and which of it is on.
+fn wheel_choices(category: usize, looks: MapLooks) -> (Vec<(&'static str, LookChoice)>, usize) {
+    fn of<T: Copy + PartialEq>(
+        all: &[T],
+        now: T,
+        label: fn(T) -> &'static str,
+        choice: fn(Option<T>) -> LookChoice,
+    ) -> (Vec<(&'static str, LookChoice)>, usize) {
+        let choices = all.iter().map(|one| (label(*one), choice(Some(*one))));
+        let index = all.iter().position(|one| *one == now).unwrap_or(0);
+        (choices.collect(), index)
+    }
+    match category {
+        0 => of(&Style::ALL, looks.style, Style::label, LookChoice::Style),
+        1 => of(&Me::ALL, looks.me, Me::label, LookChoice::Me),
+        2 => of(
+            &ZoneLook::ALL,
+            looks.zone,
+            ZoneLook::label,
+            LookChoice::Zone,
+        ),
+        _ => of(
+            &Blocks::ALL,
+            looks.blocks,
+            Blocks::label,
+            LookChoice::Blocks,
+        ),
+    }
+}
+
+fn open_wheel(session: &mut MapSession, commands: &mut Commands) {
+    let look = session.look;
+    let [x, y, z] = session.stand_in();
+    let at = session.on_model(x, y, z);
+    // A look turns on the client: the view holds still through an entity instead.
+    if let Some(rig) = session.rig.as_mut().filter(|rig| rig.camera.is_none()) {
+        rig.camera = Some(spawn_camera(commands, at, look));
+    }
+    session.mouse = Mouse::default();
+    let way = look_direction(look.yaw, look.pitch);
+    let [x, y, z] =
+        std::array::from_fn(|axis| [at.x, at.y, at.z][axis] + way[axis] * WHEEL_DISTANCE);
+    let middle = (WHEEL_MIDDLE_DROP - LINE_HEIGHT) * WHEEL_SCALE / PIXELS_PER_BLOCK;
+    let text = TextDisplay::new(String::new())
+        .line_width(CARD_LINE_WIDTH)
+        .background_color(CLEAR)
+        .see_through();
+    let display = spawn_card(commands, Position { x, y, z }, text, WHEEL_SCALE, middle);
+    session.wheel = Some(OpenWheel {
+        wheel: Wheel::default(),
+        display,
+        face: String::new(),
+    });
+}
+
+fn close_wheel(
+    session: &mut MapSession,
+    player: Entity,
+    ids: &Query<&MinecraftEntityId>,
+    players: &Players,
+    commands: &mut Commands,
+) {
+    let Some(open) = session.wheel.take() else {
+        return;
+    };
+    commands.entity(open.display).try_despawn();
+    session.mouse = Mouse::default();
+    session.told = 0;
+    players.send(
+        player,
+        SystemChat {
+            content: hint().to_nbt(),
+            overlay: true,
+        },
+    );
+    if session.mode == MapMode::Look {
+        if let Some(camera) = session.rig.as_mut().and_then(|rig| rig.camera.take()) {
+            commands.entity(camera).try_despawn();
+        }
+        if let Ok(id) = ids.get(player) {
+            players.send(player, SetCamera { camera_id: id.0 });
+        }
+        // The client went on turning behind the entity.
+        players.send(
+            player,
+            PlayerRotation {
+                yaw: session.look.yaw,
+                relative_yaw: false,
+                pitch: session.look.pitch,
+                relative_pitch: false,
+            },
+        );
+    }
+}
+
+/// Applies what the mouse did to a wheel and draws it.
+fn run_wheels(
+    mut sessions: Query<(Entity, &mut MapSession)>,
+    mut texts: Query<&mut TextDisplay>,
+    mut commands: Commands,
+) {
+    for (player, mut session) in &mut sessions {
+        let looks = session.looks;
+        let Some(open) = session.wheel.as_mut() else {
+            continue;
+        };
+        let category = open.wheel.category;
+        let (choices, index) = wheel_choices(category, looks);
+        let steps = open.wheel.take_steps();
+        let index = stepped(index, steps, choices.len());
+        if steps != 0 {
+            commands.trigger(ChooseLook(player, choices[index].1));
+        }
+        let count = format!("{} / {}", index + 1, choices.len());
+        let face = wheel_face(category, WHEEL_LABELS, &count, choices[index].0);
+        if face != open.face {
+            open.face.clone_from(&face);
+            if let Ok(mut text) = texts.get_mut(open.display) {
+                text.text = face;
+            }
+        }
+    }
 }
 
 fn tick_sessions(
@@ -2044,11 +2285,17 @@ fn tick_sessions(
     for (player, mut session) in &mut sessions {
         session.ticks += 1;
         session.telemetry.tick(Instant::now());
-        if session.ticks.is_multiple_of(HINT_PERIOD) {
+        let told = session.ticks.saturating_sub(session.told) < TOLD_TICKS && session.told > 0;
+        if session.ticks.is_multiple_of(HINT_PERIOD) && !told {
+            let content = if session.wheel.is_some() {
+                wheel_hint()
+            } else {
+                hint()
+            };
             players.send(
                 player,
                 SystemChat {
-                    content: hint().to_nbt(),
+                    content: content.to_nbt(),
                     overlay: true,
                 },
             );
@@ -2080,6 +2327,9 @@ fn tick_sessions(
             if arriving {
                 commands.trigger(CloseMap(player));
             }
+            continue;
+        }
+        if session.is_frozen() {
             continue;
         }
         match session.mode {
@@ -2117,6 +2367,20 @@ fn read_keys(
     let Ok(mut session) = sessions.get_mut(event.entity) else {
         return;
     };
+    let sprint = event.sprint;
+    let usable = session.rig.is_some()
+        && session.drawn
+        && session.travel.is_none()
+        && session.closing.is_none()
+        && session.veiled.is_none();
+    if sprint && session.wheel.is_none() && usable {
+        open_wheel(&mut session, &mut commands);
+    } else if !sprint {
+        close_wheel(&mut session, event.entity, &ids, &players, &mut commands);
+    }
+    if session.wheel.is_some() {
+        return;
+    }
     let keys = [event.jump, event.left, event.right];
     let jump = keys[0] && !session.keys[0];
     if session.keys[1..] != keys[1..] {
@@ -2163,25 +2427,47 @@ pub enum Me {
     Arrow,
     Ring,
     MiniHead,
+    /// The head with a small arrow under it, always just below.
+    HeadTip,
+    /// The head on a disc, which points down like a speech bubble.
+    Bubble,
+    HeadRing,
+    /// The head over an arrow on the ground, which says where the player was facing.
+    HeadHeading,
 }
 
 impl Me {
+    const ALL: [Self; 8] = [
+        Self::Pin,
+        Self::Arrow,
+        Self::Ring,
+        Self::MiniHead,
+        Self::HeadTip,
+        Self::Bubble,
+        Self::HeadRing,
+        Self::HeadHeading,
+    ];
+
     fn label(self) -> &'static str {
         match self {
             Self::Pin => "Épingle",
             Self::Arrow => "Flèche au sol",
             Self::Ring => "Anneau au sol",
             Self::MiniHead => "Pastille avec tête",
+            Self::HeadTip => "Tête et flèche",
+            Self::Bubble => "Bulle avec tête",
+            Self::HeadRing => "Tête et anneau",
+            Self::HeadHeading => "Tête et cap",
         }
     }
 
     fn next(self) -> Self {
-        match self {
-            Self::Pin => Self::Arrow,
-            Self::Arrow => Self::Ring,
-            Self::Ring => Self::MiniHead,
-            Self::MiniHead => Self::Pin,
-        }
+        let index = Self::ALL.iter().position(|me| *me == self).unwrap_or(0);
+        Self::ALL[stepped(index, 1, Self::ALL.len())]
+    }
+
+    fn has_head(self) -> bool {
+        !matches!(self, Self::Pin | Self::Arrow | Self::Ring)
     }
 }
 
@@ -2202,14 +2488,26 @@ pub struct ChooseLook(pub Entity, pub LookChoice);
 
 fn choose_look(
     event: On<ChooseLook>,
-    mut players: Query<(Option<&MapLooks>, Option<&mut MapSession>)>,
+    mut states: Query<(Option<&MapLooks>, Option<&mut MapSession>)>,
     atlas: Res<Atlas>,
-    messages: Messages,
+    players: Players,
     mut commands: Commands,
 ) {
     let player = event.0;
-    let Ok((looks, session)) = players.get_mut(player) else {
+    let Ok((looks, mut session)) = states.get_mut(player) else {
         return;
+    };
+    let tell = |text: &str, session: Option<&mut Mut<MapSession>>| {
+        if let Some(session) = session {
+            session.told = session.ticks;
+        }
+        players.send(
+            player,
+            SystemChat {
+                content: Text::new(text).color(TextColor::White).to_nbt(),
+                overlay: true,
+            },
+        );
     };
     let mut looks = looks.copied().unwrap_or_default();
     let said = match event.1 {
@@ -2230,21 +2528,27 @@ fn choose_look(
             format!("Blocs : {}", looks.blocks.label())
         }
         LookChoice::Refused => {
-            messages
-                .message(player, "Cette option ne va pas avec cette action.")
-                .send();
+            tell(
+                "Cette option ne va pas avec cette action.",
+                session.as_mut(),
+            );
             return;
         }
     };
     tracing::debug!(?player, ?looks, "map looks");
     commands.entity(player).insert(looks);
+    let on_wheel = session
+        .as_ref()
+        .is_some_and(|session| session.wheel.is_some());
+    if !on_wheel {
+        tell(&said, session.as_mut());
+    }
     if let Some(mut session) = session {
-        session.rezoned = session.looks.chunks() != looks.chunks();
+        session.rezoned |= session.looks.chunks() != looks.chunks();
         session.looks = looks;
         despawn_pins(&mut session, &mut commands);
         spawn_pins(&atlas, &mut session, &mut commands);
     }
-    messages.message(player, said).send();
 }
 
 /// The client has the pack, so it can draw cards.
@@ -2270,6 +2574,9 @@ fn close(
     };
     if session.closing.is_some() {
         return;
+    }
+    if let Some(open) = session.wheel.take() {
+        commands.entity(open.display).try_despawn();
     }
     if session.drawn {
         send_veil(&players, player);
@@ -2401,6 +2708,10 @@ enum Pick {
     Two,
     Three,
     Four,
+    Five,
+    Six,
+    Seven,
+    Eight,
     Flat,
     Real,
 }
@@ -2412,7 +2723,7 @@ impl Pick {
             Self::Two => Some(Style::Bare),
             Self::Three => Some(Style::Bubble),
             Self::Four => Some(Style::Title),
-            Self::Flat | Self::Real => None,
+            _ => None,
         }
     }
 
@@ -2422,6 +2733,10 @@ impl Pick {
             Self::Two => Some(Me::Arrow),
             Self::Three => Some(Me::Ring),
             Self::Four => Some(Me::MiniHead),
+            Self::Five => Some(Me::HeadTip),
+            Self::Six => Some(Me::Bubble),
+            Self::Seven => Some(Me::HeadRing),
+            Self::Eight => Some(Me::HeadHeading),
             Self::Flat | Self::Real => None,
         }
     }
@@ -2432,7 +2747,7 @@ impl Pick {
             Self::Two => Some(ZoneLook::Hatching),
             Self::Three => Some(ZoneLook::Palisade),
             Self::Four => Some(ZoneLook::Faded),
-            Self::Flat | Self::Real => None,
+            _ => None,
         }
     }
 
@@ -2440,7 +2755,7 @@ impl Pick {
         match self {
             Self::Flat => Some(Blocks::Flat),
             Self::Real => Some(Blocks::Real),
-            Self::One | Self::Two | Self::Three | Self::Four => None,
+            _ => None,
         }
     }
 }
@@ -2479,6 +2794,10 @@ fn map_command() -> Command {
                 ("2", Pick::Two),
                 ("3", Pick::Three),
                 ("4", Pick::Four),
+                ("5", Pick::Five),
+                ("6", Pick::Six),
+                ("7", Pick::Seven),
+                ("8", Pick::Eight),
                 ("flat", Pick::Flat),
                 ("real", Pick::Real),
             ]),
@@ -2589,6 +2908,8 @@ mod tests {
             veiled: None,
             ready: false,
             closing: None,
+            wheel: None,
+            told: 0,
             sneaking: false,
             keys: [false; 3],
             look: Rotation {
@@ -2624,7 +2945,13 @@ mod tests {
     #[test]
     fn the_hint_names_the_player_s_own_keys() {
         let hint = format!("{:?}", hint().to_compound());
-        for action in ["key.jump", "key.left", "key.right", "key.sneak"] {
+        for action in [
+            "key.jump",
+            "key.left",
+            "key.right",
+            "key.sprint",
+            "key.sneak",
+        ] {
             assert!(hint.contains(action), "{action}: {hint}");
         }
     }
@@ -2648,7 +2975,10 @@ mod tests {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");
-            assert_eq!(options.matches, ["1", "2", "3", "4", "flat", "real"]);
+            assert_eq!(
+                options.matches,
+                ["1", "2", "3", "4", "5", "6", "7", "8", "flat", "real"]
+            );
         }
     }
 

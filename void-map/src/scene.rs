@@ -97,6 +97,8 @@ pub enum Blocks {
 }
 
 impl Blocks {
+    pub const ALL: [Self; 2] = [Self::Flat, Self::Real];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Flat => "Couleurs plates",
