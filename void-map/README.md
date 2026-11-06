@@ -202,13 +202,17 @@ alone. The chunks still to come go out in the new look.
   merlon is one cell on every model, and one in two by the parity of its column, which
   holds whichever way the band turns. What stands on a band keeps to the level of the land
   around it, or it would go up and down every terrace.
-- `/map weather 1` to `3`: nothing, flakes and drops over the regions that have them, or
-  the rain and snow of the client. A region has a `Climate`, which is also the biome of its
-  columns. The client draws its own rain and snow only around the camera, whatever is under
-  the middle of the screen, so they cover the whole view and change as the camera crosses
-  a border. Particles stay over their region, wherever it is on screen: they fall on the
-  line from the eye to the land, close to the eye, or they would be smaller than a pixel.
-  The land, the sky and the fog keep their colours under either. A choice sends no block.
+- `/map weather 1` to `6`: what is in the air, `Weather::ALL` in order. First and by default
+  the rain and snow of the client, then flakes and drops over the regions that have them,
+  leaves in the wind over the woods, embers over the closed regions, glints over the snowy
+  ones, or nothing. A region has a `Climate`, which is also the biome of its columns. The
+  client draws its own rain and snow only around the camera, whatever is under the middle of
+  the screen, so they cover the whole view and change as the camera crosses a border.
+  Particles stay over their land, wherever it is on screen: they hang on the line from the
+  eye to the land, close to the eye, or they would be smaller than a pixel, and a coarser
+  model sends more of them for as many to show. An `Effect` in `weather` says which land,
+  how many, how far from the eye and which particle, and that is all a new one takes. The
+  land, the sky and the fog keep their colours under any. A choice sends no block.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
   world with their textures. Their tint comes from the `voidmc:map` biome. Real water is
   translucent, and the client draws it after a text seen through the land, which writes no

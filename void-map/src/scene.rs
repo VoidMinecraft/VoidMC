@@ -815,6 +815,18 @@ impl Scene {
         self.column(x, z).map(|column| column.climate)
     }
 
+    /// Whether a column is under trees.
+    pub fn wooded(&self, x: i32, z: i32) -> bool {
+        self.column(x, z)
+            .is_some_and(|column| matches!(column.surface, FOREST | CANOPY))
+    }
+
+    /// Whether a column is in a region that is not open.
+    pub fn closed(&self, x: i32, z: i32) -> bool {
+        self.column(x, z)
+            .is_some_and(|column| column.state != RegionState::Discovered)
+    }
+
     /// Whether a block rises out of a column, that a figure would stand in.
     fn in_the_way(&self, x: i32, z: i32, column: Column) -> bool {
         column.surface == CANOPY || self.buildings.contains_key(&(x, z))

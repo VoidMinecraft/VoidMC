@@ -3702,7 +3702,8 @@ fn let_it_fall(
                 players.send(player, event);
             }
         }
-        if !on_map || session.looks.weather != Weather::Particles {
+        let weather = session.looks.weather;
+        if !on_map || !weather.has_particles() {
             continue;
         }
         let Some(level) = atlas.level(session.model()) else {
@@ -3714,7 +3715,9 @@ fn let_it_fall(
         let along = height / -way[1].min(-0.1);
         let middle = [x + way[0] * along, z + way[2] * along];
         let reach = height * VIEW_REACH;
-        for mut drops in weather::falling(&level.scene, [x, y, z], middle, reach, session.ticks) {
+        let eye = [x, y, z];
+        for mut drops in weather::falling(weather, &level.scene, eye, middle, reach, session.ticks)
+        {
             let at = session.on_model(drops.x, drops.y, drops.z);
             (drops.x, drops.y, drops.z) = (at.x, at.y, at.z);
             players.send(player, drops);
@@ -3968,9 +3971,12 @@ impl Pick {
 
     fn weather(self) -> Option<Weather> {
         match self {
-            Self::One => Some(Weather::Clear),
+            Self::One => Some(Weather::Sky),
             Self::Two => Some(Weather::Particles),
-            Self::Three => Some(Weather::Sky),
+            Self::Three => Some(Weather::Leaves),
+            Self::Four => Some(Weather::Embers),
+            Self::Five => Some(Weather::Frost),
+            Self::Six => Some(Weather::Clear),
             _ => None,
         }
     }
