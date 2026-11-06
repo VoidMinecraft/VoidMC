@@ -13,9 +13,10 @@ use voidmc_data::v26_1_2::blocks as b;
 use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData, SectionBlocksUpdate};
 
 use crate::buildings::landmark;
+use crate::fence::{Border, Stretch};
 use crate::markers::MarkerKind;
 use crate::noise::{fractal, scatter};
-use crate::regions::{Region, RegionState, Regions, ZoneLook, faded};
+use crate::regions::{Climate, Region, RegionState, Regions, ZoneLook, faded};
 use crate::terrain::Terrain;
 use crate::window::Window;
 
@@ -129,6 +130,7 @@ impl Blocks {
 pub struct ChunkLook {
     pub zone: ZoneLook,
     pub blocks: Blocks,
+    pub border: Border,
 }
 
 /// The blocks of one section of a chunk that have to change, as they go on the wire.
@@ -164,53 +166,45 @@ const SOIL: i32 = b::BROWN_TERRACOTTA;
 const PATH: i32 = b::BROWN_CONCRETE;
 const BRIDGE: i32 = b::SPRUCE_PLANKS;
 const CLOUD_SEED: u32 = 90;
+/// What a cloud is made of, wherever it hangs. The faces of a block take care of its shade.
+const CLOUD: i32 = b::WHITE_CONCRETE;
 /// Each cell of a grid this wide may hold one cloud, in world blocks: clouds are the same
 /// on every model.
-const CLOUD_SPACING: f64 = 104.0;
+const CLOUD_SPACING: f64 = 84.0;
 /// The share of the cells that do.
-const CLOUD_CHANCE: f64 = 0.85;
-/// A pixel of a cloud's drawing, in world blocks: a cell of the overview.
-const CLOUD_PIXEL: f64 = 8.0;
-/// Small clouds as a game draws them, seen from above with north up. A digit says how
-/// many layers stand there: the lowest one is the shade, which shows along the south edge
-/// where nothing covers it, and the two others are the light side.
-const CLOUD_SHAPES: [&[&str]; 4] = [
-    &[
-        "....2222......",
-        "..22333322.22.",
-        ".2233333322332",
-        "22333333333332",
-        "22233333333222",
-        ".111111111111.",
-    ],
-    &[
-        "...222......",
-        ".2233322.22.",
-        "223333332332",
-        "222333333222",
-        ".1111111111.",
-    ],
-    &[
-        "..2222...",
-        ".2233322.",
-        "223333322",
-        "222333222",
-        ".1111111.",
-    ],
-    &["..22...", ".23322.", "2233322", ".11111."],
-];
+const CLOUD_CHANCE: f64 = 0.8;
+/// A pixel of a cloud, in world blocks: its edge stays that of a drawing on the close
+/// model. A coarser one draws it cell by cell.
+const CLOUD_PIXEL: f64 = 6.0;
+/// The length of a cloud, along its axis, in world blocks.
+const CLOUD_LENGTH: [f64; 2] = [30.0, 118.0];
+/// The radius of its puffs.
+const CLOUD_PUFF: [f64; 2] = [11.0, 25.0];
+/// How far a cloud turns from its west-east axis, as a share of a turn.
+const CLOUD_TILT: f64 = 0.09;
+/// How high in a puff each layer of a cloud starts: 0 at its edge, 1 at its middle.
+const CLOUD_LAYERS: [f64; 4] = [0.0, 0.34, 0.58, 0.78];
 /// How far south of its place a cloud is drawn, in world blocks. The camera looks north
 /// and down, so that a cloud high up shows further north than what it hangs over.
 const CLOUD_LEAN: f64 = 48.0;
 /// Over the land under it, in blocks of a landmark: more than the tallest one.
 const CLOUD_CLEARANCE: i32 = 8;
+/// The most a cloud hangs over that, in layers: no two hang alike.
+const CLOUD_DRIFT: f64 = 4.0;
 /// The highest a cloud starts, as a share of the model's height over the sea: a camera
 /// zoomed all the way in stays over it.
 const CLOUD_HEIGHT: f64 = 0.62;
+/// How far the sign of a region stands from a waypoint, in world blocks.
+const SIGN_CLEARANCE: f64 = 90.0;
 /// How far from its real place a figure is shown on a coarser model, in cells.
 const STAND_REACH: i32 = 4;
 const HATCH_WIDTH: i32 = 3;
-const PALISADE_HEIGHT: i32 = 3;
+/// How wide the band of a border is, in world blocks: three blocks on the detail model.
+const BORDER_WIDTH: f64 = 9.0;
+/// How far apart the towers of a rampart stand, in world blocks.
+const TOWER_SPACING: f64 = 70.0;
+/// How far from its middle a tower goes, in world blocks.
+const TOWER_RADIUS: f64 = 7.0;
 const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
 const DEEP_WATER: i32 = b::LIGHT_BLUE_CONCRETE;
 
@@ -245,6 +239,11 @@ impl Scale {
     fn cells(self, world: f64) -> f64 {
         world / f64::from(self.blocks_per_cell)
     }
+
+    /// How many columns wide the band of a border is: the same on screen on every model.
+    fn border_width(self) -> u8 {
+        self.cells(BORDER_WIDTH).round().max(1.0) as u8
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,8 +256,11 @@ struct Column {
     /// What covers the ground up to the sea.
     water: i32,
     state: RegionState,
-    /// Next to a region in another state.
-    border: bool,
+    climate: Climate,
+    /// How far into the band along a more open region, from 1, or 0 outside of it.
+    ring: u8,
+    /// Part of a tower of a rampart.
+    tower: bool,
 }
 
 impl Column {
@@ -323,105 +325,113 @@ pub struct Scene {
     scale: Scale,
     columns: Vec<Option<Column>>,
     buildings: HashMap<(i32, i32), Vec<(i32, i32)>>,
-    /// The blocks of the clouds over each column, worked out once, on and off the land.
-    clouds: HashMap<(i32, i32), Vec<(i32, i32)>>,
+    /// The heights of the clouds over each column, worked out once, on and off the land.
+    clouds: HashMap<(i32, i32), Vec<i32>>,
 }
 
-/// What a cloud is made of: its light side and its one shade.
-fn cloud_blocks(state: RegionState) -> (i32, i32) {
-    match state {
-        RegionState::Locked => (b::LIGHT_GRAY_CONCRETE, b::GRAY_CONCRETE),
-        RegionState::Undiscovered | RegionState::Discovered => {
-            (b::WHITE_CONCRETE, b::LIGHT_GRAY_CONCRETE)
-        }
-    }
-}
-
-/// One cloud: a drawing, the same on every model, at a place of the world.
-#[derive(Debug, Clone, Copy)]
+/// One cloud: a few round puffs along an axis, the same on every model, at a place of the
+/// world. Each is its own shape, which comes from where it hangs.
+#[derive(Debug, Clone, PartialEq)]
 struct Cloud {
-    /// World block of its north-west corner.
-    corner: [f64; 2],
-    shape: &'static [&'static str],
-    mirrored: bool,
+    /// Their middles and radii, in world blocks.
+    puffs: Vec<[f64; 3]>,
+    /// How many layers it has at its middle.
+    layers: usize,
+    /// How many layers it hangs over the lowest clouds.
+    drift: i32,
 }
 
 impl Cloud {
-    fn span(self) -> [f64; 2] {
-        let width = self.shape.first().map_or(0, |row| row.len());
-        [
-            width as f64 * CLOUD_PIXEL,
-            self.shape.len() as f64 * CLOUD_PIXEL,
-        ]
+    /// The cloud over a place, drawn from four rolls per step of the shape.
+    fn grown(middle: [f64; 2], cell: (i32, i32)) -> Self {
+        let roll = |step: u32| scatter(CLOUD_SEED + 10 * step, cell.0, cell.1);
+        let between = |[low, high]: [f64; 2], share: f64| low + (high - low) * share;
+        let [length, tilt, layers, drift] = roll(1);
+        // Small clouds are the common ones.
+        let length = between(CLOUD_LENGTH, length * length);
+        let tilt = (tilt * 2.0 - 1.0) * CLOUD_TILT * std::f64::consts::TAU;
+        let axis = [tilt.cos(), tilt.sin()];
+        let count = (length / CLOUD_PUFF[0] / 1.6).ceil().max(2.0) as u32;
+        let puffs = (0..count)
+            .map(|index| {
+                let [along, across, size, _] = roll(2 + index);
+                let along = (f64::from(index) + 0.2 + along * 0.6) / f64::from(count) - 0.5;
+                let across = (across * 2.0 - 1.0) * CLOUD_PUFF[0];
+                // The ends of a cloud are thinner than its middle.
+                let belly = 1.0 - along.abs() * 1.2;
+                [
+                    middle[0] + axis[0] * along * length - axis[1] * across,
+                    middle[1] + axis[1] * along * length + axis[0] * across,
+                    between(CLOUD_PUFF, size) * belly,
+                ]
+            })
+            .collect();
+        Self {
+            puffs,
+            layers: 1 + (layers * (length / CLOUD_LENGTH[1] * 3.0 + 1.0)) as usize,
+            drift: (drift * CLOUD_DRIFT) as i32,
+        }
+    }
+
+    /// Its bounds, as west, north, east and south, in world blocks.
+    fn bounds(&self) -> [f64; 4] {
+        self.puffs.iter().fold(
+            [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            |[west, north, east, south], [x, z, radius]| {
+                [
+                    west.min(x - radius),
+                    north.min(z - radius),
+                    east.max(x + radius),
+                    south.max(z + radius),
+                ]
+            },
+        )
     }
 
     /// How many layers stand at a world block.
-    fn layers(self, x: f64, z: f64) -> u8 {
-        let pixel = |from: f64, at: f64| ((at - from) / CLOUD_PIXEL).floor();
-        let (col, row) = (pixel(self.corner[0], x), pixel(self.corner[1], z));
-        if col < 0.0 || row < 0.0 {
-            return 0;
-        }
-        let drawn = self.shape.get(row as usize).and_then(|line| {
-            let col = col as usize;
-            let col = if self.mirrored {
-                line.len().checked_sub(col + 1)?
-            } else {
-                col
-            };
-            line.as_bytes().get(col)
-        });
-        drawn.map_or(0, |digit| digit.saturating_sub(b'0').min(9))
+    fn layers_at(&self, x: f64, z: f64) -> usize {
+        let height = self
+            .puffs
+            .iter()
+            .map(|[puff_x, puff_z, radius]| 1.0 - (puff_x - x).hypot(puff_z - z) / radius)
+            .fold(f64::MIN, f64::max);
+        let reached = CLOUD_LAYERS.iter().filter(|start| height > **start);
+        reached.count().min(self.layers)
     }
 
-    fn overlaps(self, other: Self) -> bool {
-        let ([width, depth], [other_width, other_depth]) = (self.span(), other.span());
-        self.corner[0] < other.corner[0] + other_width
-            && other.corner[0] < self.corner[0] + width
-            && self.corner[1] < other.corner[1] + other_depth
-            && other.corner[1] < self.corner[1] + depth
+    fn overlaps(&self, other: &Self) -> bool {
+        let ([west, north, east, south], [other_west, other_north, other_east, other_south]) =
+            (self.bounds(), other.bounds());
+        west < other_east && other_west < east && north < other_south && other_north < south
     }
 }
 
 /// The clouds of the closed regions. They depend on the world alone, so a cloud stays
 /// where it is from one model to the next.
-fn cloud_list(regions: &Regions) -> Vec<(Cloud, RegionState)> {
+fn cloud_list(regions: &Regions) -> Vec<Cloud> {
     let cells = (WORLD_RADIUS / CLOUD_SPACING).ceil() as i32;
-    let mut clouds: Vec<(Cloud, RegionState)> = Vec::new();
+    let mut clouds: Vec<Cloud> = Vec::new();
     for cell_z in -cells..=cells {
         for cell_x in -cells..=cells {
-            let [jitter_x, jitter_z, chance, pick] = scatter(CLOUD_SEED, cell_x, cell_z);
+            let [jitter_x, jitter_z, chance, _] = scatter(CLOUD_SEED, cell_x, cell_z);
             let at = [
                 (f64::from(cell_x) + 0.2 + jitter_x * 0.6) * CLOUD_SPACING,
                 (f64::from(cell_z) + 0.2 + jitter_z * 0.6) * CLOUD_SPACING,
             ];
-            let state = regions.at(at[0], at[1]).state;
-            if state == RegionState::Discovered
+            if regions.at(at[0], at[1]).state == RegionState::Discovered
                 || chance >= CLOUD_CHANCE
                 || at[0].hypot(at[1]) > rim_radius(at[0], at[1])
             {
                 continue;
             }
-            let count = CLOUD_SHAPES.len() as f64;
-            let shape = CLOUD_SHAPES[((pick * count) as usize).min(CLOUD_SHAPES.len() - 1)];
-            let mut cloud = Cloud {
-                corner: at,
-                shape,
-                mirrored: (pick * count).fract() < 0.5,
-            };
-            let [width, depth] = cloud.span();
-            let snap = |value: f64| (value / CLOUD_PIXEL).round() * CLOUD_PIXEL;
-            cloud.corner = [
-                snap(at[0] - width / 2.0),
-                snap(at[1] + CLOUD_LEAN - depth / 2.0),
-            ];
-            let inside =
-                |value: f64, span: f64| value >= -WORLD_RADIUS && value + span <= WORLD_RADIUS;
-            if inside(cloud.corner[0], width)
-                && inside(cloud.corner[1], depth)
-                && !clouds.iter().any(|(other, _)| cloud.overlaps(*other))
+            let cloud = Cloud::grown([at[0], at[1] + CLOUD_LEAN], (cell_x, cell_z));
+            let [west, north, east, south] = cloud.bounds();
+            let inside = |low: f64, high: f64| low >= -WORLD_RADIUS && high <= WORLD_RADIUS;
+            if inside(west, east)
+                && inside(north, south)
+                && !clouds.iter().any(|other| cloud.overlaps(other))
             {
-                clouds.push((cloud, state));
+                clouds.push(cloud);
             }
         }
     }
@@ -508,16 +518,18 @@ impl Scene {
             );
             let (world_x, world_z) = (scale.world(x), scale.world(z));
             let relief = fractal(RELIEF_SEED, world_x, world_z, RELIEF_SIZE) * RELIEF;
-            let state = regions.at(world_x, world_z).state;
+            let region = regions.at(world_x, world_z);
             columns.push(Self::column_at(
                 scale,
                 [world_x, world_z],
                 smoothed + relief,
                 biomes[index],
-                state,
+                region,
             ));
         }
-        Self::mark_borders(&mut columns, size, scale.build as usize);
+        Self::prune_canopies(&mut columns, size, scale.build);
+        Self::mark_borders(&mut columns, size, scale.border_width());
+        Self::raise_towers(&mut columns, size, scale);
         let clouds = Self::clouds(&columns, scale, regions);
         Self {
             scale,
@@ -533,7 +545,7 @@ impl Scene {
         columns: &[Option<Column>],
         scale: Scale,
         regions: &Regions,
-    ) -> HashMap<(i32, i32), Vec<(i32, i32)>> {
+    ) -> HashMap<(i32, i32), Vec<i32>> {
         let size = i32::from(scale.size());
         let ground_at = |x: i32, z: i32| {
             let (col, row) = (x + scale.radius, z + scale.radius);
@@ -543,14 +555,19 @@ impl Scene {
                 .map(|column| column.ground)
         };
         let highest = SEA_Y + (f64::from(scale.max_y - SEA_Y) * CLOUD_HEIGHT) as i32;
-        let mut blocks: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
-        for (cloud, state) in cloud_list(regions) {
-            let [west, north] = cloud.corner;
-            let [width, depth] = cloud.span();
+        let mut blocks: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
+        for cloud in cloud_list(regions) {
+            let [west, north, east, south] = cloud.bounds();
             let cell = |world: f64| scale.cells(world).floor() as i32;
-            let cells: Vec<(i32, i32, u8)> = (cell(north)..=cell(north + depth))
-                .flat_map(|z| (cell(west)..=cell(west + width)).map(move |x| (x, z)))
-                .map(|(x, z)| (x, z, cloud.layers(scale.world(x), scale.world(z))))
+            // A whole number of cells to a pixel, or the drawing would catch on the grid.
+            let pixel = scale.cells(CLOUD_PIXEL).round().max(1.0) as i32;
+            let drawn = |cell: i32| {
+                let first = cell.div_euclid(pixel) * pixel;
+                (scale.world(first) + scale.world(first + pixel - 1)) / 2.0
+            };
+            let cells: Vec<(i32, i32, usize)> = (cell(north)..=cell(south))
+                .flat_map(|z| (cell(west)..=cell(east)).map(move |x| (x, z)))
+                .map(|(x, z)| (x, z, cloud.layers_at(drawn(x), drawn(z))))
                 .filter(|(_, _, layers)| *layers > 0)
                 .collect();
             let land = cells
@@ -558,36 +575,105 @@ impl Scene {
                 .filter_map(|(x, z, _)| ground_at(*x, *z))
                 .max()
                 .unwrap_or(SEA_Y);
-            let bottom = (land + CLOUD_CLEARANCE * scale.build).min(highest);
-            let (light, shade) = cloud_blocks(state);
+            let bottom = (land + (CLOUD_CLEARANCE + cloud.drift) * scale.build).min(highest);
             for (x, z, layers) in cells {
-                let column = blocks.entry((x, z)).or_default();
-                for layer in 0..i32::from(layers) {
-                    let block = if layer == 0 { shade } else { light };
-                    let from = bottom + layer * scale.build;
-                    column.extend((0..scale.build).map(|y| (from + y, block)));
-                }
+                let top = bottom + layers as i32 * scale.build;
+                blocks.entry((x, z)).or_default().extend(bottom..top);
             }
         }
         blocks
     }
 
-    fn mark_borders(columns: &mut [Option<Column>], size: usize, reach: usize) {
-        let states: Vec<_> = columns.iter().map(|c| c.map(|c| c.state)).collect();
+    /// Takes off the crowns that stand almost alone, until none does: at the size of a
+    /// cell, a stray leaf of the noise reads as a speck and not as a tree.
+    fn prune_canopies(columns: &mut [Option<Column>], size: usize, build: i32) {
+        let is_crown = |column: &Option<Column>| column.is_some_and(|c| c.surface == CANOPY);
+        loop {
+            let crowns: Vec<_> = columns.iter().map(is_crown).collect();
+            let mut pruned = false;
+            for (index, column) in columns.iter_mut().enumerate() {
+                let (x, z) = (index % size, index / size);
+                let sides = [
+                    (x > 0).then(|| index - 1),
+                    (x + 1 < size).then(|| index + 1),
+                    (z > 0).then(|| index - size),
+                    (z + 1 < size).then(|| index + size),
+                ];
+                let joined = sides.iter().flatten().filter(|next| crowns[**next]).count();
+                if let Some(column) = column.as_mut().filter(|_| crowns[index] && joined < 2) {
+                    column.surface = FOREST;
+                    column.ground -= build;
+                    pruned = true;
+                }
+            }
+            if !pruned {
+                return;
+            }
+        }
+    }
+
+    /// The columns around one, with the diagonals: a band keeps its width on a slant.
+    fn around(index: usize, size: usize) -> impl Iterator<Item = usize> {
+        let (x, z) = ((index % size) as i32, (index / size) as i32);
+        let on_model = 0..size as i32;
+        (-1..=1)
+            .flat_map(move |dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+            .filter(move |(x, z)| on_model.contains(x) && on_model.contains(z))
+            .map(move |(x, z)| z as usize * size + x as usize)
+    }
+
+    /// Lays the band along each border, on the side of the region that is more closed,
+    /// so that two closed regions share one band.
+    fn mark_borders(columns: &mut [Option<Column>], size: usize, width: u8) {
+        for ring in 1..=width {
+            for index in 0..columns.len() {
+                let Some(column) = columns[index].filter(|column| column.ring == 0) else {
+                    continue;
+                };
+                let reached = Self::around(index, size).any(|next| {
+                    columns[next].is_some_and(|other| {
+                        if ring == 1 {
+                            other.state < column.state
+                        } else {
+                            other.state == column.state && other.ring == ring - 1
+                        }
+                    })
+                });
+                if let Some(column) = columns[index].as_mut().filter(|_| reached) {
+                    column.ring = ring;
+                }
+            }
+        }
+    }
+
+    /// Picks places along the bands, far enough from each other, in the order of the rows.
+    fn raise_towers(columns: &mut [Option<Column>], size: usize, scale: Scale) {
+        let middle = scale.border_width().div_ceil(2);
+        let at = |index: usize| ((index % size) as f64, (index / size) as f64);
+        let (spacing, radius) = (scale.cells(TOWER_SPACING), scale.cells(TOWER_RADIUS));
+        let mut towers: Vec<usize> = Vec::new();
+        for (index, column) in columns.iter().enumerate() {
+            let (x, z) = at(index);
+            let free = towers.iter().all(|tower| {
+                let (tower_x, tower_z) = at(*tower);
+                (tower_x - x).hypot(tower_z - z) >= spacing
+            });
+            if free && column.is_some_and(|column| column.ring == middle) {
+                towers.push(index);
+            }
+        }
         for (index, column) in columns.iter_mut().enumerate() {
-            let Some(column) = column else {
+            let Some(column) = column
+                .as_mut()
+                .filter(|c| c.state != RegionState::Discovered)
+            else {
                 continue;
             };
-            let (x, z) = (index % size, index / size);
-            let around = [
-                (x.saturating_sub(reach), z),
-                ((x + reach).min(size - 1), z),
-                (x, z.saturating_sub(reach)),
-                (x, (z + reach).min(size - 1)),
-            ];
-            column.border = around
-                .iter()
-                .any(|(x, z)| states[z * size + x].is_some_and(|state| state != column.state));
+            let (x, z) = at(index);
+            column.tower = towers.iter().any(|tower| {
+                let (tower_x, tower_z) = at(*tower);
+                (tower_x - x).hypot(tower_z - z) <= radius
+            });
         }
     }
 
@@ -596,7 +682,7 @@ impl Scene {
         [x, z]: [f64; 2],
         elevation: f64,
         biome: BiomeId,
-        state: RegionState,
+        region: &Region,
     ) -> Option<Column> {
         let from_rim = rim_radius(x, z) - x.hypot(z);
         if from_rim < 0.0 {
@@ -635,8 +721,10 @@ impl Scene {
             } else {
                 DEEP_WATER
             },
-            state,
-            border: false,
+            state: region.state,
+            climate: region.climate,
+            ring: 0,
+            tower: false,
         })
     }
 
@@ -665,6 +753,11 @@ impl Scene {
         self.column(x, z).map(Column::top)
     }
 
+    /// What falls on a column, or `None` off the model.
+    pub fn climate(&self, x: i32, z: i32) -> Option<Climate> {
+        self.column(x, z).map(|column| column.climate)
+    }
+
     /// Whether a block rises out of a column, that a figure would stand in.
     fn in_the_way(&self, x: i32, z: i32, column: Column) -> bool {
         column.surface == CANOPY || self.buildings.contains_key(&(x, z))
@@ -683,7 +776,7 @@ impl Scene {
             return false;
         };
         (-1..=1)
-            .flat_map(|dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+            .flat_map(move |dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
             .all(|(x, z)| {
                 self.column(x, z).is_some_and(|side| {
                     !self.in_the_way(x, z, side)
@@ -735,7 +828,13 @@ impl Scene {
 
     /// The model cell a world block falls on.
     /// The land of a region cell closest to the middle of that land, if it has any.
-    pub fn middle_of_land(&self, regions: &Regions, region: &Region) -> Option<(i32, i32)> {
+    /// It stays clear of `taken`, the cells of what stands there, if the region has room.
+    pub fn middle_of_land(
+        &self,
+        regions: &Regions,
+        region: &Region,
+        taken: &[(i32, i32)],
+    ) -> Option<(i32, i32)> {
         let radius = self.scale.radius;
         let cells: Vec<_> = (-radius..radius)
             .flat_map(|x| (-radius..radius).map(move |z| (x, z)))
@@ -751,7 +850,15 @@ impl Scene {
         let middle = (middle.0 / count, middle.1 / count);
         let from_middle =
             |cell: &&(i32, i32)| (cell.0 - middle.0).pow(2) + (cell.1 - middle.1).pow(2);
-        cells.iter().min_by_key(from_middle).copied()
+        let reach = self.scale.cells(SIGN_CLEARANCE) as i32;
+        let clear = |cell: &&(i32, i32)| {
+            let apart = |other: &(i32, i32)| {
+                (cell.0 - other.0).pow(2) + (cell.1 - other.1).pow(2) >= reach * reach
+            };
+            taken.iter().all(apart)
+        };
+        let free = cells.iter().filter(clear).min_by_key(from_middle);
+        free.or(cells.iter().min_by_key(from_middle)).copied()
     }
 
     /// The chunks with anything on them, on the land or in the air past it. All the others
@@ -780,7 +887,7 @@ impl Scene {
     /// Adds what tells a closed region at this column.
     fn zone_look(
         &self,
-        look: ZoneLook,
+        look: ChunkLook,
         x: i32,
         z: i32,
         column: Column,
@@ -788,7 +895,7 @@ impl Scene {
     ) {
         let build = self.scale.build;
         let locked = column.state == RegionState::Locked;
-        match look {
+        match look.zone {
             ZoneLook::Hatching => {
                 let width = HATCH_WIDTH * build;
                 if (x + z).rem_euclid(2 * width) < width {
@@ -801,10 +908,20 @@ impl Scene {
                 }
             }
             ZoneLook::Palisade => {
-                if column.border {
-                    let tall = PALISADE_HEIGHT * build + (x + z).rem_euclid(2);
-                    for y in 1..=tall {
-                        set(column.top() + y, b::SPRUCE_PLANKS);
+                let tower = column.tower && look.border == Border::Rampart;
+                if column.ring > 0 || tower {
+                    let stretch = Stretch {
+                        x,
+                        z,
+                        ring: column.ring,
+                        width: self.scale.border_width(),
+                        tower,
+                        build,
+                        locked,
+                    };
+                    let real = look.blocks == Blocks::Real;
+                    for (y, block) in look.border.blocks(stretch, real) {
+                        set(column.top() + y, block);
                     }
                 }
             }
@@ -863,6 +980,10 @@ impl Scene {
                 for dx in 0..width {
                     if let Some(column) = self.column_mut(x + dx, z + dz) {
                         if column.is_land() {
+                            // A path goes under the trees, not over them.
+                            if column.surface == CANOPY {
+                                column.ground -= width;
+                            }
                             column.surface = PATH;
                         } else {
                             column.ground = SEA_Y;
@@ -879,8 +1000,8 @@ impl Scene {
     fn paint(&self, x: i32, z: i32, look: ChunkLook, set: &mut impl FnMut(i32, i32)) {
         // Clouds drift over open land and past the shore, so they answer to no column.
         if look.zone == ZoneLook::Clouds {
-            for (y, block) in self.clouds.get(&(x, z)).into_iter().flatten() {
-                set(*y, *block);
+            for y in self.clouds.get(&(x, z)).into_iter().flatten() {
+                set(*y, CLOUD);
             }
         }
         let Some(column) = self.column(x, z) else {
@@ -896,8 +1017,20 @@ impl Scene {
                 column.state.tint(block)
             }
         };
+        // A crown is leaves all the way through, and the ground starts under it.
+        let crown = if column.surface == CANOPY {
+            self.scale.build
+        } else {
+            0
+        };
         for y in column.bottom..column.ground {
-            set(y, tint(cliff_block(column.surface, column.ground - y)));
+            let depth = column.ground - y;
+            let block = if depth < crown {
+                column.surface
+            } else {
+                cliff_block(column.surface, depth + 1 - crown)
+            };
+            set(y, tint(block));
         }
         set(column.ground, tint(column.surface));
         for y in column.ground + 1..=SEA_Y {
@@ -907,7 +1040,7 @@ impl Scene {
             set(*y, tint(*block));
         }
         if closed {
-            self.zone_look(look.zone, x, z, column, set);
+            self.zone_look(look, x, z, column, set);
         }
     }
 
@@ -962,13 +1095,13 @@ impl Scene {
         &self,
         chunk_x: i32,
         chunk_z: i32,
-        biome: BiomeId,
+        biome_of: impl Fn(Climate) -> BiomeId,
         count: usize,
         look: ChunkLook,
     ) -> Chunk {
         let mut builder = ChunkBuilder::new(chunk_x, chunk_z)
-            .biome(biome.0)
-            .biome_registry_size(count);
+            .biome_registry_size(count)
+            .biomes_from(|x, _, z| biome_of(self.climate(x, z).unwrap_or_default()).0);
         for local_z in 0..16u8 {
             for local_x in 0..16u8 {
                 let (x, z) = (
@@ -989,6 +1122,8 @@ impl Scene {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use voidmc::{DefaultWorldGenerator, WorldGenerator};
 
     use super::*;
@@ -1002,6 +1137,7 @@ mod tests {
             name: "Tout",
             site: [0.0, 0.0],
             state: RegionState::Discovered,
+            climate: Climate::Clear,
         }])
     }
 
@@ -1049,13 +1185,28 @@ mod tests {
         let reach = scene.chunk_radius();
         let looks = ZONES.map(|zone| ChunkLook {
             zone,
-            blocks: Blocks::Flat,
+            ..ChunkLook::default()
         });
         let real = ChunkLook {
             zone: ZoneLook::Clouds,
             blocks: Blocks::Real,
+            ..ChunkLook::default()
         };
-        for (from, to) in [(looks[0], looks[1]), (looks[2], looks[3]), (looks[3], real)] {
+        let borders = Border::ALL.map(|border| ChunkLook {
+            zone: ZoneLook::Palisade,
+            border,
+            ..ChunkLook::default()
+        });
+        let pairs = [
+            (looks[0], looks[1]),
+            (looks[2], looks[3]),
+            (looks[3], real),
+            (borders[0], borders[1]),
+            (borders[1], borders[3]),
+            (borders[3], borders[4]),
+            (borders[4], real),
+        ];
+        for (from, to) in pairs {
             for (chunk_x, chunk_z) in [(-reach / 2, 0), (0, reach / 2), (1, 1), (reach / 2, -2)] {
                 let mut sections = BTreeMap::new();
                 for change in scene.repaint(chunk_x, chunk_z, from, to) {
@@ -1081,14 +1232,105 @@ mod tests {
     }
 
     #[test]
+    fn a_chunk_takes_the_biome_of_the_climate_under_it() {
+        let scene = demo_scene();
+        let on_a_cell = (-OVERVIEW.radius..OVERVIEW.radius).filter(|at| at.rem_euclid(4) == 0);
+        let (x, z) = on_a_cell
+            .clone()
+            .flat_map(|x| on_a_cell.clone().map(move |z| (x, z)))
+            .find(|&(x, z)| scene.climate(x, z) == Some(Climate::Snow))
+            .expect("a region of snow");
+        let biome_of = |climate| BiomeId(i32::from(climate == Climate::Snow));
+        let chunk = scene.chunk(
+            x.div_euclid(16),
+            z.div_euclid(16),
+            biome_of,
+            2,
+            ChunkLook::default(),
+        );
+        let cell = (x.rem_euclid(16) / 4 + z.rem_euclid(16) / 4 * 4) as usize;
+        assert_eq!(chunk.sections[8].biome_cells()[cell], 1);
+    }
+
+    #[test]
     fn a_look_of_the_zones_leaves_the_open_land_alone() {
         let terrain = Terrain::sample(&DefaultWorldGenerator::default(), &OVERVIEW.window());
         let scene = Scene::new(&terrain, SEA, OVERVIEW, &open());
         let [from, to] = [ZoneLook::Clouds, ZoneLook::Faded].map(|zone| ChunkLook {
             zone,
-            blocks: Blocks::Flat,
+            ..ChunkLook::default()
         });
         assert!(scene.repaint(0, 0, from, to).is_empty());
+        let [from, to] = [Border::Stakes, Border::Rampart].map(|border| ChunkLook {
+            border,
+            ..ChunkLook::default()
+        });
+        assert!(scene.repaint(0, 0, from, to).is_empty());
+    }
+
+    #[test]
+    fn a_border_is_three_blocks_wide_up_close_and_as_wide_on_screen_further_out() {
+        assert_eq!(DETAIL.border_width(), 3);
+        assert_eq!(MIDDLE.border_width(), 2);
+        assert_eq!(OVERVIEW.border_width(), 1);
+    }
+
+    fn rings(scene: &Scene) -> BTreeSet<u8> {
+        scene.columns.iter().flatten().map(|c| c.ring).collect()
+    }
+
+    #[test]
+    fn the_band_has_all_its_rings_and_stays_on_closed_land() {
+        let scene = closed_scene(DETAIL);
+        assert_eq!(rings(&scene), BTreeSet::from([0, 1, 2, 3]));
+        let open = scene.columns.iter().flatten();
+        let mut open = open.filter(|column| column.state == RegionState::Discovered);
+        assert!(open.all(|column| column.ring == 0 && !column.tower));
+    }
+
+    /// Side by side, two closed regions would each draw their own and double the width.
+    #[test]
+    fn two_closed_regions_share_one_band() {
+        let regions = Regions::new(vec![
+            Region {
+                name: "Ouest",
+                site: [-200.0, 0.0],
+                state: RegionState::Undiscovered,
+                climate: Climate::Clear,
+            },
+            Region {
+                name: "Est",
+                site: [200.0, 0.0],
+                state: RegionState::Locked,
+                climate: Climate::Clear,
+            },
+        ]);
+        let generator = land();
+        let terrain = Terrain::sample(&generator, &DETAIL.window());
+        let scene = Scene::new(&terrain, SEA, DETAIL, &regions);
+        let columns = scene.columns.iter().flatten();
+        let mut banded = columns.filter(|column| column.ring > 0);
+        assert!(banded.all(|column| column.state == RegionState::Locked));
+    }
+
+    #[test]
+    fn a_rampart_has_towers_and_only_it_does() {
+        let scene = closed_scene(DETAIL);
+        let towers = scene.columns.iter().flatten().filter(|c| c.tower).count();
+        assert!(towers > 0, "{towers}");
+        let (x, z) = (-DETAIL.radius..DETAIL.radius)
+            .flat_map(|x| (-DETAIL.radius..DETAIL.radius).map(move |z| (x, z)))
+            .find(|(x, z)| scene.column(*x, *z).is_some_and(|c| c.tower && c.ring == 0))
+            .expect("a tower wider than its band");
+        let top = |border| {
+            let look = ChunkLook {
+                zone: ZoneLook::Palisade,
+                border,
+                ..ChunkLook::default()
+            };
+            column_in(&scene, x, z, look).into_keys().max()
+        };
+        assert!(top(Border::Rampart) > top(Border::Stakes));
     }
 
     #[test]
@@ -1225,6 +1467,7 @@ mod tests {
             name: "Fermee",
             site: [0.0, 0.0],
             state: RegionState::Locked,
+            climate: Climate::Clear,
         }]);
         let generator = land();
         let terrain = Terrain::sample(&generator, &OVERVIEW.window());
@@ -1239,24 +1482,64 @@ mod tests {
     }
 
     fn cloud_tops(scene: &Scene) -> impl Iterator<Item = ((i32, i32), i32)> + '_ {
-        scene.clouds.iter().map(|(cell, blocks)| {
-            let top = blocks.iter().map(|(y, _)| *y).max().unwrap_or(0);
-            (*cell, top)
-        })
+        scene
+            .clouds
+            .iter()
+            .map(|(cell, heights)| (*cell, heights.iter().copied().max().unwrap_or(0)))
     }
 
     #[test]
     fn clouds_are_the_same_every_time_and_on_every_model() {
-        let world_cells = |scene: &Scene| {
-            let scale = scene.scale();
-            let mut clouds = cloud_list(&Regions::demo());
-            clouds.sort_by(|a, b| a.0.corner[0].total_cmp(&b.0.corner[0]));
-            (scale, clouds.len())
-        };
         let (first, second) = (closed_scene(OVERVIEW), closed_scene(OVERVIEW));
         assert_eq!(first.clouds, second.clouds);
         assert!(!first.clouds.is_empty());
-        assert_eq!(world_cells(&first).1, world_cells(&closed_scene(DETAIL)).1);
+        assert_eq!(cloud_list(&Regions::demo()), cloud_list(&Regions::demo()));
+    }
+
+    /// Their outlines, each moved to the same place, as a game would draw them.
+    #[test]
+    fn no_two_clouds_are_the_same_drawing() {
+        let clouds = cloud_list(&Regions::demo());
+        assert!(clouds.len() >= 8, "{}", clouds.len());
+        let drawing = |cloud: &Cloud| {
+            let [west, north, east, south] = cloud.bounds();
+            let cell = |from: f64, step: i32| from + f64::from(step) * CLOUD_PIXEL;
+            let steps = |from: f64, to: f64| ((to - from) / CLOUD_PIXEL).ceil() as i32;
+            (0..steps(north, south))
+                .flat_map(|z| (0..steps(west, east)).map(move |x| (x, z)))
+                .map(|(x, z)| cloud.layers_at(cell(west, x), cell(north, z)))
+                .collect::<Vec<_>>()
+        };
+        let drawings: BTreeSet<_> = clouds.iter().map(drawing).collect();
+        assert_eq!(drawings.len(), clouds.len());
+    }
+
+    #[test]
+    fn clouds_come_in_all_sizes_and_up_to_four_layers() {
+        let clouds = cloud_list(&Regions::demo());
+        let width = |cloud: &Cloud| cloud.bounds()[2] - cloud.bounds()[0];
+        let widths: Vec<_> = clouds.iter().map(width).collect();
+        let (least, most) = widths
+            .iter()
+            .fold((f64::MAX, 0.0_f64), |(low, high), width| {
+                (low.min(*width), high.max(*width))
+            });
+        assert!(most > least * 2.0, "{least} {most}");
+        let layers: BTreeSet<_> = clouds.iter().map(|cloud| cloud.layers).collect();
+        assert!(layers.len() >= 3 && layers.iter().all(|n| (1..=4).contains(n)));
+    }
+
+    #[test]
+    fn a_cloud_is_of_one_colour_in_every_region() {
+        let scene = closed_scene(DETAIL);
+        let look = ChunkLook {
+            zone: ZoneLook::Clouds,
+            ..ChunkLook::default()
+        };
+        for ((x, z), heights) in &scene.clouds {
+            let column = column_in(&scene, *x, *z, look);
+            assert!(heights.iter().all(|y| column[y] == CLOUD), "{x} {z}");
+        }
     }
 
     #[test]
@@ -1273,26 +1556,17 @@ mod tests {
     #[test]
     fn only_closed_regions_have_clouds() {
         assert!(scene(&land()).clouds.is_empty());
-        for (cloud, state) in cloud_list(&Regions::demo()) {
-            let [width, depth] = cloud.span();
-            let middle = [cloud.corner[0] + width / 2.0, cloud.corner[1] + depth / 2.0];
-            assert_ne!(state, RegionState::Discovered, "{middle:?}");
-        }
+        assert!(!closed_scene(OVERVIEW).clouds.is_empty());
     }
 
     #[test]
     fn clouds_stay_apart_and_on_the_model() {
         let clouds = cloud_list(&Regions::demo());
-        for (index, (cloud, _)) in clouds.iter().enumerate() {
-            let [width, depth] = cloud.span();
-            assert!(cloud.corner[0] >= -WORLD_RADIUS && cloud.corner[1] >= -WORLD_RADIUS);
-            assert!(cloud.corner[0] + width <= WORLD_RADIUS);
-            assert!(cloud.corner[1] + depth <= WORLD_RADIUS);
-            assert!(
-                clouds[..index]
-                    .iter()
-                    .all(|(other, _)| !cloud.overlaps(*other))
-            );
+        for (index, cloud) in clouds.iter().enumerate() {
+            let [west, north, east, south] = cloud.bounds();
+            assert!(west >= -WORLD_RADIUS && north >= -WORLD_RADIUS);
+            assert!(east <= WORLD_RADIUS && south <= WORLD_RADIUS);
+            assert!(clouds[..index].iter().all(|other| !cloud.overlaps(other)));
         }
     }
 
@@ -1302,9 +1576,9 @@ mod tests {
         let chunk = |x, z, zone| {
             let look = ChunkLook {
                 zone,
-                blocks: Blocks::Flat,
+                ..ChunkLook::default()
             };
-            scene.chunk(x, z, BiomeId::plains(), 1, look)
+            scene.chunk(x, z, |_| BiomeId::plains(), 1, look)
         };
         let (x, z) = scene
             .clouds
@@ -1316,12 +1590,12 @@ mod tests {
                     .is_none_or(|column| column.state == RegionState::Discovered)
             })
             .expect("a cloud past a border");
-        let (y, block) = scene.clouds[&(x, z)][0];
+        let y = scene.clouds[&(x, z)][0];
         let built = chunk(x.div_euclid(16), z.div_euclid(16), ZoneLook::Clouds);
         let (local_x, local_z) = (x.rem_euclid(16) as u8, z.rem_euclid(16) as u8);
         let (section, local_y) = ((y + 64) as usize / 16, (y + 64).rem_euclid(16) as u8);
         let found = built.sections[section].get_block_state(local_x, local_y, local_z);
-        assert_eq!(found, block);
+        assert_eq!(found, CLOUD);
     }
 
     #[test]
@@ -1334,6 +1608,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn forest() -> Scene {
+        scene_of(&DefaultWorldGenerator::default(), DETAIL)
+    }
+
+    fn crowns(scene: &Scene) -> Vec<(i32, i32)> {
+        let radius = scene.scale.radius;
+        (-radius..radius)
+            .flat_map(|x| (-radius..radius).map(move |z| (x, z)))
+            .filter(|(x, z)| scene.column(*x, *z).is_some_and(|c| c.surface == CANOPY))
+            .collect()
+    }
+
+    /// With soil under a single leaf, a tree reads as a slab of earth with a green top.
+    #[test]
+    fn the_side_of_a_crown_is_leaves_down_to_the_ground() {
+        let scene = forest();
+        let cells = crowns(&scene);
+        assert!(!cells.is_empty());
+        for (x, z) in cells {
+            let ground = scene.column(x, z).unwrap().ground;
+            let blocks = column_in(&scene, x, z, ChunkLook::default());
+            assert_eq!(blocks[&ground], CANOPY);
+            assert_eq!(blocks[&(ground - 1)], CANOPY);
+            assert_eq!(blocks[&(ground - 2)], SOIL);
+        }
+    }
+
+    #[test]
+    fn no_crown_stands_alone() {
+        for scale in [OVERVIEW, MIDDLE, DETAIL] {
+            let scene = scene_of(&DefaultWorldGenerator::default(), scale);
+            let cells: BTreeSet<_> = crowns(&scene).into_iter().collect();
+            for (x, z) in &cells {
+                let sides = [(x - 1, *z), (x + 1, *z), (*x, z - 1), (*x, z + 1)];
+                let joined = sides.iter().filter(|side| cells.contains(side)).count();
+                assert!(joined >= 2, "{x} {z}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_path_cuts_through_the_trees_at_ground_level() {
+        let mut scene = forest();
+        let (x, z) = crowns(&scene)[0];
+        let ground = scene.column(x, z).unwrap().ground;
+        scene.pave((x, z), (x, z));
+        let column = scene.column(x, z).unwrap();
+        assert_eq!(
+            (column.surface, column.ground),
+            (PATH, ground - DETAIL.build)
+        );
     }
 
     #[test]

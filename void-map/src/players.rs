@@ -28,7 +28,7 @@ use voidmc_codec::Encode;
 use voidmc_protocol::clientbound::{
     PlayerInfoActions, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, ResolvableProfile,
 };
-use voidmc_protocol::slot::DataComponent;
+use voidmc_protocol::slot::{DataComponent, component_ids};
 
 use crate::art::BOAT_MODEL;
 use crate::plugin::{Atlas, MapSession, MapView};
@@ -97,8 +97,6 @@ const BOAT_SIZE: f64 = 2.45;
 const RIDER_DROP: f64 = 0.6;
 /// How far into a block of water the feet of a rider are.
 const RIDER_FEET: f64 = 0.01;
-/// `minecraft:item_model`, which the protocol has no name for.
-const ITEM_MODEL: i32 = 10;
 /// Just under a whole block: what still falls in the same one.
 const CELL_INSIDE: f64 = 0.999;
 /// How fast a figure climbs a terrace of the model, in blocks per tick.
@@ -1107,7 +1105,7 @@ fn boat_item(has_pack: bool) -> ItemStack {
     let mut body = Vec::new();
     BOAT_MODEL.to_string().encode(&mut body);
     boat.with_component(DataComponent::Raw {
-        type_id: ITEM_MODEL,
+        type_id: component_ids::ITEM_MODEL,
         body,
     })
 }

@@ -9,11 +9,13 @@ use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 use voidmc_ui::{Button, Dialog, Image, ResourcePack, Text};
 
 use crate::art::Style;
+use crate::fence::Border;
 use crate::motion::Motion;
 use crate::plugin::{MapLooks, Me};
 use crate::regions::ZoneLook;
 use crate::scene::Blocks;
 use crate::transition::Flow;
+use crate::weather::Weather;
 
 const NAMESPACE: &str = "voidmap:settings";
 /// The boss bar sits right where a title goes, and the buttons say what this is.
@@ -114,6 +116,12 @@ pub fn settings() -> Vec<Setting> {
         }),
         Setting::new("Blocs", &Blocks::ALL, Blocks::label, |looks| {
             &mut looks.blocks
+        }),
+        Setting::new("Frontières", &Border::ALL, Border::label, |looks| {
+            &mut looks.border
+        }),
+        Setting::new("Météo", &Weather::ALL, Weather::label, |looks| {
+            &mut looks.weather
         }),
         Setting::new("Déplacement", &Motion::ALL, Motion::label, |looks| {
             &mut looks.motion

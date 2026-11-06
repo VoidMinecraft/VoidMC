@@ -10,7 +10,8 @@ const BORDER_WANDER: f64 = 70.0;
 const BORDER_SIZE: f64 = 180.0;
 const WANDER_SEED: u32 = 50;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// From the most open to the most closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RegionState {
     Discovered,
     Undiscovered,
@@ -77,7 +78,7 @@ pub enum ZoneLook {
     Clouds,
     /// Diagonal stripes on the ground.
     Hatching,
-    /// A fence along its border, with a lock over it.
+    /// A [`Border`](crate::fence::Border) along its edge, with a lock over it.
     #[default]
     Palisade,
     /// Its colours drained, with a large question mark over it.
@@ -106,12 +107,22 @@ impl ZoneLook {
     }
 }
 
+/// What falls on a region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Climate {
+    #[default]
+    Clear,
+    Rain,
+    Snow,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Region {
     pub name: &'static str,
     /// Its centre, in world blocks.
     pub site: [f64; 2],
     pub state: RegionState,
+    pub climate: Climate,
 }
 
 /// Regions cover the whole map: each place belongs to the nearest site.
@@ -126,13 +137,24 @@ impl Regions {
 
     /// A fixed map with one region of each kind left to open up.
     pub fn demo() -> Self {
-        let region = |name, site, state| Region { name, site, state };
+        let region = |name, site, state, climate| Region {
+            name,
+            site,
+            state,
+            climate,
+        };
+        let (open, unknown) = (RegionState::Discovered, RegionState::Undiscovered);
         Self::new(vec![
-            region("Terres du Centre", [0.0, 60.0], RegionState::Discovered),
-            region("Côte Ouest", [-300.0, 40.0], RegionState::Discovered),
-            region("Cap Sud", [80.0, 340.0], RegionState::Discovered),
-            region("Marches du Nord", [40.0, -340.0], RegionState::Undiscovered),
-            region("Confins de l'Est", [340.0, -60.0], RegionState::Locked),
+            region("Terres du Centre", [0.0, 60.0], open, Climate::Clear),
+            region("Côte Ouest", [-300.0, 40.0], open, Climate::Rain),
+            region("Cap Sud", [80.0, 340.0], open, Climate::Clear),
+            region("Marches du Nord", [40.0, -340.0], unknown, Climate::Snow),
+            region(
+                "Confins de l'Est",
+                [340.0, -60.0],
+                RegionState::Locked,
+                Climate::Rain,
+            ),
         ])
     }
 

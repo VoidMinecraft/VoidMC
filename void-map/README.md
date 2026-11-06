@@ -186,9 +186,22 @@ alone. The chunks still to come go out in the new look.
   `LookChoice::Me`.
 - `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
   stripes, behind a fence with a lock, or drained of colour with a large question mark.
-  A cloud is one of a few drawings of up to three flat layers, as in a game, and hangs
+  A cloud is a few round puffs of white blocks on one to four flat layers, as in a game.
+  Its shape comes from a fixed seed and where it hangs, so no two are alike, and it stays
   at the same place of the world on every model. It is built with the model, not on
   opening the map.
+- `/map border 1` to `5`: what stands along the border of a closed region under
+  `/map zone 3`, on a band three blocks wide on the close model and as wide on screen on
+  the others: rough stakes, a rampart with towers, a hedge, a striped band painted on the
+  land and the sea, or a wall of coloured glass. Two closed regions share one band, on the
+  side of the more closed one.
+- `/map weather 1` to `3`: nothing, flakes and drops over the regions that have them, or
+  the rain and snow of the client. A region has a `Climate`, which is also the biome of its
+  columns. The client draws its own rain and snow only around the camera, whatever is under
+  the middle of the screen, so they cover the whole view and change as the camera crosses
+  a border. Particles stay over their region, wherever it is on screen: they fall on the
+  line from the eye to the land, close to the eye, or they would be smaller than a pixel.
+  The land, the sky and the fog keep their colours under either. A choice sends no block.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
   world with their textures. Their tint comes from the `voidmc:map` biome. Real water is
   translucent, and the client draws it after a text seen through the land, which writes no
@@ -220,6 +233,10 @@ keep what matters closer than that.
 Regions are data in `regions`: each is discovered, undiscovered or locked, and the model
 only takes the colours of a region down a little to show it. `Regions::demo` is a fixed
 example.
+
+A waypoint of a closed region is drawn in greys by the pack, as an item model of its own,
+with a question mark or a red lock over it. A client without the pack gets the usual item,
+darker. The sign of a region stands clear of its waypoints.
 
 ## The pointer
 
@@ -294,11 +311,10 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
-declares the level, `plugin` runs the sessions, `plugin::preview` plays a flow over,
-`settings` lists what can be changed,
-`players` shows the characters, `cursor` draws the pointer, and `telemetry` measures the
-characters.
+`fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and
+`art`. `biome` declares the level, `plugin` runs the sessions, `plugin::preview` plays a
+flow over, `settings` lists what can be changed, `players` shows the characters, `cursor`
+draws the pointer, and `telemetry` measures the characters.
 
 ## Logs
 

@@ -42,9 +42,14 @@ use voidmc_protocol::{
 };
 use voidmc_ui::{Dialog, PackSettled, Text, UiClick};
 
-use crate::art::{Card, EYE_SKIN, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
+use voidmc_protocol::slot::{DataComponent, component_ids};
+
+use crate::art::{
+    Card, EYE_SKIN, Mark, Style, Subject, WHEEL_MIDDLE_DROP, closed_item_model, sign, wheel_face,
+};
 use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
+use crate::fence::Border;
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::motion::Motion;
 use crate::players::PlayersPlugin;
@@ -65,6 +70,7 @@ use crate::transition::{
     CLOSING_TICKS, FLIGHT_GLIDE_TICKS, Flight, Flow, OPENING_TICKS, SWAP_TICKS, TURN_TICKS,
     VEIL_FADE, veil_in, veil_out,
 };
+use crate::weather::{self, Weather};
 use crate::wheel::{CATEGORIES, Wheel, stepped};
 
 mod preview;
@@ -145,6 +151,10 @@ const CAMERA_GLIDE_TICKS: u8 = 3;
 /// Above the tallest landmark, in its blocks.
 const ICON_LIFT: f64 = 10.0;
 const ICON_SCALE: f32 = 5.0;
+/// The light of the item of a closed waypoint, out of 15, for a client without the pack.
+const CLOSED_ICON_LIGHT: u8 = 4;
+/// How far a view goes around what it looks at, as a share of its height.
+const VIEW_REACH: f64 = 0.9;
 const ICON_HOVER_GROWTH: f32 = 1.6;
 /// The head floats over the player's spot, on a disc that points down at it.
 const MINI_HEAD_LIFT: f64 = 4.0;
@@ -227,6 +237,24 @@ fn icon(kind: MarkerKind) -> ItemStack {
         MarkerKind::Mine => "minecraft:iron_pickaxe",
         MarkerKind::Lighthouse => "minecraft:lantern",
     })
+}
+
+/// What a waypoint shows, for a client with the pack or without. The pack draws one of a
+/// closed region in greys, with the mark of its state.
+fn waypoint_icon(kind: MarkerKind, state: RegionState, drawn: bool) -> ItemStack {
+    let stack = icon(kind);
+    match closed_item_model(kind, state).filter(|_| drawn) {
+        Some(model) => {
+            // An identifier is a string, and these are short enough for a one-byte length.
+            let mut body = vec![model.len() as u8];
+            body.extend_from_slice(model.as_bytes());
+            stack.with_component(DataComponent::Raw {
+                type_id: component_ids::ITEM_MODEL,
+                body,
+            })
+        }
+        None => stack,
+    }
 }
 
 /// How the mouse drives the map.
@@ -351,11 +379,14 @@ struct Waypoint {
     marker: Marker,
     /// On the model, from its centre.
     at: [f64; 3],
+    /// That of its region.
+    state: RegionState,
 }
 
 const CLOUDS: ChunkLook = ChunkLook {
     zone: ZoneLook::Clouds,
     blocks: Blocks::Flat,
+    border: Border::Stakes,
 };
 
 /// One model, with its chunks as they get asked for.
@@ -395,6 +426,7 @@ impl Level {
             .map(|(marker, cell)| {
                 scene.build(cell, marker.kind);
                 let top = scene.top(cell.0, cell.1).unwrap_or(scene::SEA_Y);
+                let state = regions.at(f64::from(marker.x), f64::from(marker.z)).state;
                 Waypoint {
                     marker,
                     at: [
@@ -402,13 +434,14 @@ impl Level {
                         f64::from(top + 1),
                         f64::from(cell.1) + 0.5,
                     ],
+                    state,
                 }
             })
             .collect();
         let signs = regions
             .closed()
             .filter_map(|region| {
-                let (x, z) = scene.middle_of_land(regions, region)?;
+                let (x, z) = scene.middle_of_land(regions, region, &cells)?;
                 let top = scene.top(x, z)?;
                 let at = [f64::from(x) + 0.5, f64::from(top), f64::from(z) + 0.5];
                 Some((at, region.state))
@@ -445,7 +478,13 @@ impl Level {
         self.chunks.entry((at, look)).or_insert_with(|| {
             let packet = self
                 .scene
-                .chunk(at.0, at.1, info.biome, info.biome_count, look)
+                .chunk(
+                    at.0,
+                    at.1,
+                    |climate| info.biome_of(climate),
+                    info.biome_count,
+                    look,
+                )
                 .to_packet();
             let mut bytes = Vec::new();
             packet.encode(&mut bytes);
@@ -784,6 +823,8 @@ enum PassageKind {
 /// A player in the map, and how to put them back.
 #[derive(Component)]
 pub struct MapSession {
+    /// Whether the client was told to show its rain and snow.
+    raining: bool,
     mode: MapMode,
     site: Site,
     position: Position,
@@ -1253,6 +1294,7 @@ impl Plugin for MapPlugin {
                 tick_passages,
                 preview::tick,
                 run_wheels,
+                let_it_fall,
             ),
         )
         .add_observer(rise)
@@ -1451,7 +1493,15 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
         let [x, y, z] = waypoint.at;
         let at = session.on_model(x, y + ICON_LIFT * build, z);
         let scale = ICON_SCALE * session.marker_scale();
-        icons.push(spawn_icon(commands, at, icon(waypoint.marker.kind), scale));
+        let item = waypoint_icon(waypoint.marker.kind, waypoint.state, session.drawn);
+        let entity = spawn_icon(commands, at, item, scale);
+        // Without the pack there is only the item, so a closed one is at least darker.
+        if waypoint.state != RegionState::Discovered && !session.drawn {
+            commands
+                .entity(entity)
+                .insert(display(scale).brightness(CLOSED_ICON_LIGHT, CLOSED_ICON_LIGHT));
+        }
+        icons.push(entity);
     }
     let you = model_spot(level, &session.position).map(|at| You {
         parts: spawn_you(session, at, build, commands),
@@ -1662,6 +1712,7 @@ fn rise(
         )
         .id();
     let mut session = MapSession {
+        raining: false,
         mode,
         site,
         position: *position,
@@ -3355,6 +3406,8 @@ pub struct MapLooks {
     pub(crate) me: Me,
     pub(crate) zone: ZoneLook,
     pub(crate) blocks: Blocks,
+    pub(crate) border: Border,
+    pub(crate) weather: Weather,
     pub(crate) motion: Motion,
     pub(crate) inertia: bool,
     pub(crate) intro: Flow,
@@ -3366,6 +3419,7 @@ impl MapLooks {
         ChunkLook {
             zone: self.zone,
             blocks: self.blocks,
+            border: self.border,
         }
     }
 }
@@ -3406,6 +3460,8 @@ pub enum LookChoice {
     Me(Option<Me>),
     Zone(Option<ZoneLook>),
     Blocks(Option<Blocks>),
+    Border(Option<Border>),
+    Weather(Option<Weather>),
     Motion(Option<Motion>),
     /// Turns inertia on or off.
     Inertia,
@@ -3463,6 +3519,14 @@ fn choose_look(
         LookChoice::Blocks(blocks) => {
             looks.blocks = blocks.unwrap_or(looks.blocks.next());
             format!("Blocs : {}", looks.blocks.label())
+        }
+        LookChoice::Border(border) => {
+            looks.border = border.unwrap_or(looks.border.next());
+            format!("Frontière : {}", looks.border.label())
+        }
+        LookChoice::Weather(weather) => {
+            looks.weather = weather.unwrap_or(looks.weather.next());
+            format!("Météo : {}", looks.weather.label())
         }
         LookChoice::Motion(motion) => {
             looks.motion = motion.unwrap_or(looks.motion.next());
@@ -3624,6 +3688,43 @@ fn nearest_waypoint(level: &Level, [x, _, z]: [f64; 3]) -> Option<&Waypoint> {
         .waypoints
         .iter()
         .min_by(|a, b| away(a).total_cmp(&away(b)))
+}
+
+/// Shows what falls on the regions, as each player chose. The rain of the client stops on
+/// the way out of the map and for a dive, which go through the real sky. This server has no
+/// weather of its own: one with rain would have to give it back here.
+fn let_it_fall(
+    mut sessions: Query<(Entity, &mut MapSession)>,
+    atlas: Res<Atlas>,
+    players: Players,
+) {
+    for (player, mut session) in &mut sessions {
+        let on_map = session.rig.is_some() && !session.leaving() && session.travel.is_none();
+        let raining = on_map && session.looks.weather == Weather::Sky;
+        if raining != session.raining {
+            session.raining = raining;
+            for event in Weather::sky_events(raining) {
+                players.send(player, event);
+            }
+        }
+        if !on_map || session.looks.weather != Weather::Particles {
+            continue;
+        }
+        let Some(level) = atlas.level(session.model()) else {
+            continue;
+        };
+        let [x, y, z] = session.eye();
+        let way = look_direction(session.look.yaw, session.look.pitch);
+        let height = y - f64::from(scene::SEA_Y);
+        let along = height / -way[1].min(-0.1);
+        let middle = [x + way[0] * along, z + way[2] * along];
+        let reach = height * VIEW_REACH;
+        for mut drops in weather::falling(&level.scene, [x, y, z], middle, reach, session.ticks) {
+            let at = session.on_model(drops.x, drops.y, drops.z);
+            (drops.x, drops.y, drops.z) = (at.x, at.y, at.z);
+            players.send(player, drops);
+        }
+    }
 }
 
 /// The client has the pack, so it can draw cards.
@@ -3794,6 +3895,8 @@ enum MapAction {
     Me,
     Zone,
     Blocks,
+    Border,
+    Weather,
     Move,
     Intro,
     Outro,
@@ -3859,6 +3962,26 @@ impl Pick {
         }
     }
 
+    fn border(self) -> Option<Border> {
+        match self {
+            Self::One => Some(Border::Stakes),
+            Self::Two => Some(Border::Rampart),
+            Self::Three => Some(Border::Hedge),
+            Self::Four => Some(Border::Tape),
+            Self::Five => Some(Border::Glass),
+            _ => None,
+        }
+    }
+
+    fn weather(self) -> Option<Weather> {
+        match self {
+            Self::One => Some(Weather::Clear),
+            Self::Two => Some(Weather::Particles),
+            Self::Three => Some(Weather::Sky),
+            _ => None,
+        }
+    }
+
     fn motion(self) -> Option<Motion> {
         match self {
             Self::A => Some(Motion::Damped),
@@ -3903,6 +4026,8 @@ fn map_command() -> Command {
                 ("me", MapAction::Me),
                 ("zone", MapAction::Zone),
                 ("blocks", MapAction::Blocks),
+                ("border", MapAction::Border),
+                ("weather", MapAction::Weather),
                 ("move", MapAction::Move),
                 ("intro", MapAction::Intro),
                 ("outro", MapAction::Outro),
@@ -3956,6 +4081,8 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Me => Some(choice(pick, Pick::me, LookChoice::Me)),
             MapAction::Zone => Some(choice(pick, Pick::zone, LookChoice::Zone)),
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
+            MapAction::Border => Some(choice(pick, Pick::border, LookChoice::Border)),
+            MapAction::Weather => Some(choice(pick, Pick::weather, LookChoice::Weather)),
             MapAction::Move if pick == Some(Pick::Inertia) => Some(LookChoice::Inertia),
             MapAction::Move => Some(choice(pick, Pick::motion, LookChoice::Motion)),
             MapAction::Intro => Some(choice(pick, Pick::flow, LookChoice::Intro)),
@@ -4019,6 +4146,7 @@ mod tests {
 
     fn session(mode: MapMode) -> MapSession {
         MapSession {
+            raining: false,
             mode,
             site: Site::of(0),
             position: Position {
@@ -4082,6 +4210,8 @@ mod tests {
         let mut level = Level::new(&generator, OVERVIEW, &Regions::demo());
         let info = MapLevel {
             biome: voidmc::BiomeId::plains(),
+            rain: voidmc::BiomeId::plains(),
+            snow: voidmc::BiomeId::plains(),
             biome_count: 1,
         };
         let far = level.scene.chunk_radius() + 4;
@@ -4166,6 +4296,24 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_waypoint_draws_its_own_model_with_the_pack_only() {
+        let kind = MarkerKind::Mine;
+        let has_model = |stack: ItemStack| !stack.components.is_empty();
+        assert!(has_model(waypoint_icon(kind, RegionState::Locked, true)));
+        assert!(has_model(waypoint_icon(
+            kind,
+            RegionState::Undiscovered,
+            true
+        )));
+        assert!(!has_model(waypoint_icon(kind, RegionState::Locked, false)));
+        assert!(!has_model(waypoint_icon(
+            kind,
+            RegionState::Discovered,
+            true
+        )));
+    }
+
+    #[test]
     fn map_completes_its_actions_and_its_styles() {
         let world = World::new();
         let registry = map_registry();
@@ -4173,10 +4321,11 @@ mod tests {
         assert_eq!(
             actions.matches,
             [
-                "look", "pan", "stop", "style", "me", "zone", "blocks", "move", "intro", "outro"
+                "look", "pan", "stop", "style", "me", "zone", "blocks", "border", "weather",
+                "move", "intro", "outro"
             ]
         );
-        for action in ["style", "me", "zone", "blocks", "move"] {
+        for action in ["style", "me", "zone", "blocks", "border", "weather", "move"] {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");
@@ -4410,6 +4559,8 @@ mod tests {
         let atlas = Atlas {
             info: MapLevel {
                 biome: voidmc::BiomeId::plains(),
+                rain: voidmc::BiomeId::plains(),
+                snow: voidmc::BiomeId::plains(),
                 biome_count: 1,
             },
             regions: Regions::demo(),
@@ -4426,6 +4577,7 @@ mod tests {
                 height: 70,
             },
             at: [0.0; 3],
+            state: RegionState::Discovered,
         };
         let player = Position {
             x: 340.0,
