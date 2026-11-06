@@ -3,4 +3,5 @@
 pub mod ledger;
 pub mod packs;
 pub mod script;
+pub mod session;
 pub mod wire;
