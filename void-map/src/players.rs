@@ -186,6 +186,8 @@ struct Place {
     stops: Vec<[f64; 2]>,
     /// The places that can be walked to from here.
     ways: Vec<usize>,
+    /// The way here from anywhere on its piece of ground.
+    posts: Signposts,
 }
 
 /// Where walkers can be, as cells of [`WAY_GRID`] blocks. What is not on it, they never
@@ -196,6 +198,32 @@ struct Ground {
     pieces: Vec<u32>,
     /// How many cells each piece has, the first one standing for no piece.
     sizes: Vec<u32>,
+}
+
+/// The way to one place from everywhere: the step to take on each cell of the ground, as
+/// an index in [`AROUND`].
+#[derive(Debug, Clone, PartialEq)]
+struct Signposts(Vec<u8>);
+
+const NO_STEP: u8 = u8::MAX;
+const HERE: u8 = u8::MAX - 1;
+
+impl Signposts {
+    /// The cells from one to the place, both included.
+    fn towards_root(&self, mut cell: [i32; 2]) -> Option<Vec<[i32; 2]>> {
+        let mut cells = vec![cell];
+        loop {
+            match *self.0.get(index_of(cell)?)? {
+                NO_STEP => return None,
+                HERE => return Some(cells),
+                step => {
+                    let [dx, dz] = AROUND[usize::from(step)];
+                    cell = [cell[0] + dx, cell[1] + dz];
+                    cells.push(cell);
+                }
+            }
+        }
+    }
 }
 
 fn cell_at([x, z]: [f64; 2]) -> [i32; 2] {
@@ -324,36 +352,47 @@ impl Ground {
         false
     }
 
-    /// The turns of a way from a place to another, the last one being `to`, in lines
-    /// that stay on the ground. `None` if no way leads there.
-    fn route(&self, from: [f64; 2], to: [f64; 2]) -> Option<Vec<[f64; 2]>> {
-        let (start, end) = (cell_at(from), cell_at(to));
-        if self.piece(start) == 0 || self.piece(start) != self.piece(end) {
-            return None;
-        }
-        // Searched backwards, so that each cell knows the next one from `from`.
-        let mut towards = vec![None; self.pieces.len()];
-        towards[index_of(end)?] = Some(end);
-        let mut queue = VecDeque::from([end]);
+    /// Every cell a place can be reached from, each with the step towards it. Searched
+    /// once per place, so that a walker setting off costs nothing to speak of.
+    fn signposts(&self, root: [i32; 2]) -> Signposts {
+        let mut steps = vec![NO_STEP; self.pieces.len()];
+        let Some(at) = index_of(root).filter(|_| self.walkable(root)) else {
+            return Signposts(steps);
+        };
+        steps[at] = HERE;
+        let mut queue = VecDeque::from([root]);
         while let Some(cell) = queue.pop_front() {
-            if cell == start {
-                break;
-            }
             for next in self.steps_from(cell) {
-                let slot = &mut towards[index_of(next)?];
-                if slot.is_none() {
-                    *slot = Some(cell);
+                let Some(slot) = index_of(next).map(|index| &mut steps[index]) else {
+                    continue;
+                };
+                if *slot == NO_STEP {
+                    let back = [cell[0] - next[0], cell[1] - next[1]];
+                    *slot = AROUND.iter().position(|step| *step == back).unwrap_or(0) as u8;
                     queue.push_back(next);
                 }
             }
         }
-        let mut path = vec![from];
-        let mut cell = start;
-        while cell != end {
-            cell = towards[index_of(cell)?]?;
-            path.push(middle_of(cell));
+        Signposts(steps)
+    }
+
+    /// The turns of a way between two spots near the same signposts, the last one being
+    /// `to`, in lines that stay on the ground. `None` if no way leads there.
+    fn route(&self, posts: &Signposts, from: [f64; 2], to: [f64; 2]) -> Option<Vec<[f64; 2]>> {
+        let mut going = posts.towards_root(cell_at(from))?;
+        let mut coming = posts.towards_root(cell_at(to))?;
+        // Where both meet is as far as either has to go.
+        let mut meeting = None;
+        while going.last().is_some() && going.last() == coming.last() {
+            meeting = going.pop();
+            coming.pop();
         }
-        path.push(to);
+        coming.reverse();
+        let cells = going.into_iter().chain(meeting).chain(coming);
+        let path: Vec<_> = std::iter::once(from)
+            .chain(cells.map(middle_of))
+            .chain([to])
+            .collect();
         Some(self.straightened(&path))
     }
 
@@ -412,11 +451,13 @@ fn between(from: [f64; 2], to: [f64; 2], along: f64) -> [f64; 2] {
     ]
 }
 
-/// Spots to stop at around a place, all on the same piece of ground.
-fn stops_around(ground: &Ground, [x, z]: [f64; 2], dice: &mut Dice) -> Vec<[f64; 2]> {
-    let Some(anchor) = ground.anchor([x, z]) else {
-        return Vec::new();
-    };
+/// Spots to stop at around a place, all on the piece of ground of `anchor`.
+fn stops_around(
+    ground: &Ground,
+    anchor: [i32; 2],
+    [x, z]: [f64; 2],
+    dice: &mut Dice,
+) -> Vec<[f64; 2]> {
     let piece = ground.piece(anchor);
     let mut stops: Vec<_> = (0..STOP_TRIES)
         .map(|_| {
@@ -442,7 +483,8 @@ fn next_stop(
     here: [f64; 2],
 ) -> (usize, Vec<[f64; 2]>) {
     let to = pick(&places[from].ways, dice).copied().unwrap_or(from);
-    let way = pick(&places[to].stops, dice).and_then(|stop| ground.route(here, *stop));
+    let place = &places[to];
+    let way = pick(&place.stops, dice).and_then(|stop| ground.route(&place.posts, here, *stop));
     (to, way.unwrap_or_default())
 }
 
@@ -461,21 +503,22 @@ impl Walk {
     ) -> Self {
         let ground = Ground::new(&walkable);
         let mut dice = Dice(SEED);
-        let stops: Vec<Vec<[f64; 2]>> = places
+        let middles: Vec<[f64; 2]> = places
             .iter()
-            .map(|[x, z]| stops_around(&ground, [f64::from(*x), f64::from(*z)], &mut dice))
+            .map(|[x, z]| [f64::from(*x), f64::from(*z)])
             .collect();
-        let piece_of = |stops: &[[f64; 2]]| stops.first().map(|stop| ground.piece(cell_at(*stop)));
-        let places: Vec<Place> = (0..stops.len())
+        let anchors: Vec<_> = middles.iter().map(|at| ground.anchor(*at)).collect();
+        let piece_of = |place: usize| anchors[place].map(|cell| ground.piece(cell));
+        let places: Vec<Place> = (0..middles.len())
             .map(|from| Place {
-                stops: stops[from].clone(),
-                ways: (0..stops.len())
+                stops: anchors[from].map_or_else(Vec::new, |anchor| {
+                    stops_around(&ground, anchor, middles[from], &mut dice)
+                }),
+                ways: (0..middles.len())
                     .filter(|to| *to != from)
-                    .filter(|to| {
-                        piece_of(&stops[from]).is_some()
-                            && piece_of(&stops[from]) == piece_of(&stops[*to])
-                    })
+                    .filter(|to| piece_of(from).is_some() && piece_of(from) == piece_of(*to))
                     .collect(),
+                posts: anchors[from].map_or(Signposts(Vec::new()), |at| ground.signposts(at)),
             })
             .collect();
         let homes: Vec<usize> = (0..places.len())
@@ -573,7 +616,7 @@ impl Walk {
                         character.position.z + dz / length * left,
                     ];
                     if !ground.holds(next) {
-                        walker.turn_back(ground, dice, here);
+                        walker.turn_back(ground, places, dice, here);
                         break;
                     }
                     character.position.x = next[0];
@@ -603,10 +646,11 @@ impl Walk {
 
 impl Walker {
     /// Stops short of what cannot be walked on, and goes back the way they came.
-    fn turn_back(&mut self, ground: &Ground, dice: &mut Dice, here: [f64; 2]) {
+    fn turn_back(&mut self, ground: &Ground, places: &[Place], dice: &mut Dice, here: [f64; 2]) {
         let (place, stop) = self.left;
         self.place = place;
-        self.path = ground.route(here, stop).unwrap_or_default();
+        let way = ground.route(&places[place].posts, here, stop);
+        self.path = way.unwrap_or_default();
         self.leg = 0;
         if self.path.is_empty() {
             self.resting = dice.within(REST_TICKS);
@@ -1060,7 +1104,8 @@ mod tests {
     fn a_way_goes_around_a_lake_in_a_few_straight_lines() {
         let lake = |x: i32, z: i32| (x - 60).abs() < 20 && z.abs() < 80;
         let ground = Ground::new(&|x, z| !lake(x, z));
-        let way = ground.route([0.0, 0.0], [120.0, 0.0]).unwrap();
+        let posts = ground.signposts(cell_at([120.0, 0.0]));
+        let way = ground.route(&posts, [0.0, 0.0], [120.0, 0.0]).unwrap();
         assert!(way.len() <= 6, "{way:?}");
         let mut from = [0.0, 0.0];
         for turn in way {
@@ -1083,10 +1128,21 @@ mod tests {
     }
 
     #[test]
+    fn a_way_between_two_spots_does_not_go_by_the_place_first() {
+        let ground = Ground::new(&|_, _| true);
+        let posts = ground.signposts(cell_at([0.0, 0.0]));
+        let way = ground
+            .route(&posts, [100.5, 100.5], [100.5, 130.5])
+            .unwrap();
+        assert_eq!(way.len(), 1, "{way:?}");
+    }
+
+    #[test]
     fn a_diagonal_does_not_squeeze_between_two_corners() {
         let open = |x: i32, z: i32| (x < 0 && z < 0) || (x >= 0 && z >= 0);
         let ground = Ground::new(&open);
-        assert_eq!(ground.route([-3.0, -3.0], [3.0, 3.0]), None);
+        let posts = ground.signposts(cell_at([3.0, 3.0]));
+        assert_eq!(ground.route(&posts, [-3.0, -3.0], [3.0, 3.0]), None);
     }
 
     #[test]

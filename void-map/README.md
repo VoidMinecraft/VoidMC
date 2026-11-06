@@ -85,8 +85,11 @@ the view of a flying player and not of an entity, which stands further back to m
   with a small arrow right under it, on a bubble that points down, over a ring, or over
   the arrow. Only the account id goes out, so an offline account shows the default skin
   of its id.
-- `/map zone 1` to `4`: closed regions, under clouds of blocks, with diagonal stripes,
-  behind a fence with a lock, or drained of colour with a large question mark.
+- `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
+  stripes, behind a fence with a lock, or drained of colour with a large question mark.
+  A cloud is one of a few drawings of up to three flat layers, as in a game, and hangs
+  at the same place of the world on every model. It is built with the model, not on
+  opening the map.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
   world with their textures. Their tint comes from the `voidmc:map` biome.
 
@@ -115,9 +118,15 @@ example.
 
 `Characters` lists who the map shows: a name, a skin, a place in the real world and a
 yaw. It does not say who plays them. For now `Walk` fills it with `VOID_MAP_WALKERS`
-walkers, 20 by default, who go on foot between waypoints along ways searched on the land
-and bridges of the models. To show connected players, a system copies them into the same
-list, with their account's profile as the skin.
+walkers, 20 by default, who go on foot between waypoints. To show connected players, a
+system copies them into the same list, with their account's profile as the skin.
+
+Walkers keep to the ground of the detailed model: land and bridges with room around them,
+clear of trees, landmarks and the rim, and with no step higher than a terrace next to
+them. Ways are searched on that ground once per place, and each step checks it again: a
+walker turns back rather than leave it. The two coarser models draw the shores and the
+trees a little elsewhere, so there a figure stands on the closest free cell, and goes
+unseen if there is none near.
 
 Each one is a `minecraft:mannequin`, in each session, placed from its world position
 onto the current model. A move goes out every tick, the client glides over three, and it
@@ -130,8 +139,9 @@ stands. Each takes the size its distance calls for, in steps, which also keeps t
 same size on screen. `DRAWN_MARGIN` sets how large that is.
 
 The look never reaches a figure, since it hits the box around the eye first, and clicks
-only go to markers. So the name is decided on the server like a hover of a marker, and
-only when no marker has the look: the figure glows, with a text display over it.
+only go to markers. So the name is decided on the server like a hover of a marker, within
+about the figure's body, and never close to a marker, which always comes first: the
+figure glows, with a text display over it.
 `map characters` in the logs says what all this costs, every 200 ticks.
 
 ## Layout
