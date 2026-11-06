@@ -16,6 +16,7 @@ pub mod art;
 pub mod biome;
 pub mod buildings;
 pub mod cursor;
+pub mod fence;
 pub mod markers;
 pub mod motion;
 pub mod noise;

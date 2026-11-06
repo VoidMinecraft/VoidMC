@@ -13,6 +13,7 @@ use voidmc_data::v26_1_2::blocks as b;
 use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData, SectionBlocksUpdate};
 
 use crate::buildings::landmark;
+use crate::fence::{Border, Stretch};
 use crate::markers::MarkerKind;
 use crate::noise::{fractal, scatter};
 use crate::regions::{Region, RegionState, Regions, ZoneLook, faded};
@@ -129,6 +130,7 @@ impl Blocks {
 pub struct ChunkLook {
     pub zone: ZoneLook,
     pub blocks: Blocks,
+    pub border: Border,
 }
 
 /// The blocks of one section of a chunk that have to change, as they go on the wire.
@@ -195,7 +197,12 @@ const CLOUD_HEIGHT: f64 = 0.62;
 /// How far from its real place a figure is shown on a coarser model, in cells.
 const STAND_REACH: i32 = 4;
 const HATCH_WIDTH: i32 = 3;
-const PALISADE_HEIGHT: i32 = 3;
+/// How wide the band of a border is, in world blocks: three blocks on the detail model.
+const BORDER_WIDTH: f64 = 9.0;
+/// How far apart the towers of a rampart stand, in world blocks.
+const TOWER_SPACING: f64 = 70.0;
+/// How far from its middle a tower goes, in world blocks.
+const TOWER_RADIUS: f64 = 7.0;
 const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
 const DEEP_WATER: i32 = b::LIGHT_BLUE_CONCRETE;
 
@@ -230,6 +237,11 @@ impl Scale {
     fn cells(self, world: f64) -> f64 {
         world / f64::from(self.blocks_per_cell)
     }
+
+    /// How many columns wide the band of a border is: the same on screen on every model.
+    fn border_width(self) -> u8 {
+        self.cells(BORDER_WIDTH).round().max(1.0) as u8
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,8 +254,10 @@ struct Column {
     /// What covers the ground up to the sea.
     water: i32,
     state: RegionState,
-    /// Next to a region in another state.
-    border: bool,
+    /// How far into the band along a more open region, from 1, or 0 outside of it.
+    ring: u8,
+    /// Part of a tower of a rampart.
+    tower: bool,
 }
 
 impl Column {
@@ -464,7 +478,9 @@ impl Scene {
                 state,
             ));
         }
-        Self::mark_borders(&mut columns, size, scale.build as usize);
+        Self::prune_canopies(&mut columns, size, scale.build);
+        Self::mark_borders(&mut columns, size, scale.border_width());
+        Self::raise_towers(&mut columns, size, scale);
         let clouds = Self::clouds(&columns, scale, regions);
         Self {
             scale,
@@ -519,22 +535,96 @@ impl Scene {
         blocks
     }
 
-    fn mark_borders(columns: &mut [Option<Column>], size: usize, reach: usize) {
-        let states: Vec<_> = columns.iter().map(|c| c.map(|c| c.state)).collect();
+    /// Takes off the crowns that stand almost alone, until none does: at the size of a
+    /// cell, a stray leaf of the noise reads as a speck and not as a tree.
+    fn prune_canopies(columns: &mut [Option<Column>], size: usize, build: i32) {
+        let is_crown = |column: &Option<Column>| column.is_some_and(|c| c.surface == CANOPY);
+        loop {
+            let crowns: Vec<_> = columns.iter().map(is_crown).collect();
+            let mut pruned = false;
+            for (index, column) in columns.iter_mut().enumerate() {
+                let (x, z) = (index % size, index / size);
+                let sides = [
+                    (x > 0).then(|| index - 1),
+                    (x + 1 < size).then(|| index + 1),
+                    (z > 0).then(|| index - size),
+                    (z + 1 < size).then(|| index + size),
+                ];
+                let joined = sides.iter().flatten().filter(|next| crowns[**next]).count();
+                if let Some(column) = column.as_mut().filter(|_| crowns[index] && joined < 2) {
+                    column.surface = FOREST;
+                    column.ground -= build;
+                    pruned = true;
+                }
+            }
+            if !pruned {
+                return;
+            }
+        }
+    }
+
+    /// The columns around one, with the diagonals: a band keeps its width on a slant.
+    fn around(index: usize, size: usize) -> impl Iterator<Item = usize> {
+        let (x, z) = ((index % size) as i32, (index / size) as i32);
+        let on_model = 0..size as i32;
+        (-1..=1)
+            .flat_map(move |dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+            .filter(move |(x, z)| on_model.contains(x) && on_model.contains(z))
+            .map(move |(x, z)| z as usize * size + x as usize)
+    }
+
+    /// Lays the band along each border, on the side of the region that is more closed,
+    /// so that two closed regions share one band.
+    fn mark_borders(columns: &mut [Option<Column>], size: usize, width: u8) {
+        for ring in 1..=width {
+            for index in 0..columns.len() {
+                let Some(column) = columns[index].filter(|column| column.ring == 0) else {
+                    continue;
+                };
+                let reached = Self::around(index, size).any(|next| {
+                    columns[next].is_some_and(|other| {
+                        if ring == 1 {
+                            other.state < column.state
+                        } else {
+                            other.state == column.state && other.ring == ring - 1
+                        }
+                    })
+                });
+                if let Some(column) = columns[index].as_mut().filter(|_| reached) {
+                    column.ring = ring;
+                }
+            }
+        }
+    }
+
+    /// Picks places along the bands, far enough from each other, in the order of the rows.
+    fn raise_towers(columns: &mut [Option<Column>], size: usize, scale: Scale) {
+        let middle = scale.border_width().div_ceil(2);
+        let at = |index: usize| ((index % size) as f64, (index / size) as f64);
+        let (spacing, radius) = (scale.cells(TOWER_SPACING), scale.cells(TOWER_RADIUS));
+        let mut towers: Vec<usize> = Vec::new();
+        for index in 0..columns.len() {
+            let (x, z) = at(index);
+            let free = towers.iter().all(|tower| {
+                let (tower_x, tower_z) = at(*tower);
+                (tower_x - x).hypot(tower_z - z) >= spacing
+            });
+            if free && columns[index].is_some_and(|column| column.ring == middle) {
+                towers.push(index);
+            }
+        }
         for (index, column) in columns.iter_mut().enumerate() {
-            let Some(column) = column else {
+            let Some(column) = column
+                .as_mut()
+                .filter(|c| c.state != RegionState::Discovered)
+            else {
                 continue;
             };
-            let (x, z) = (index % size, index / size);
-            let around = [
-                (x.saturating_sub(reach), z),
-                ((x + reach).min(size - 1), z),
-                (x, z.saturating_sub(reach)),
-                (x, (z + reach).min(size - 1)),
-            ];
-            column.border = around
-                .iter()
-                .any(|(x, z)| states[z * size + x].is_some_and(|state| state != column.state));
+            let (x, z) = at(index);
+            column.tower = towers.iter().any(|tower| {
+                let (tower_x, tower_z) = at(*tower);
+                (tower_x - x).hypot(tower_z - z) <= radius
+            });
         }
     }
 
@@ -583,7 +673,8 @@ impl Scene {
                 DEEP_WATER
             },
             state,
-            border: false,
+            ring: 0,
+            tower: false,
         })
     }
 
@@ -630,7 +721,7 @@ impl Scene {
             return false;
         };
         (-1..=1)
-            .flat_map(|dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+            .flat_map(move |dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
             .all(|(x, z)| {
                 self.column(x, z).is_some_and(|side| {
                     !self.in_the_way(x, z, side)
@@ -688,7 +779,7 @@ impl Scene {
     /// Adds what tells a closed region at this column.
     fn zone_look(
         &self,
-        look: ZoneLook,
+        look: ChunkLook,
         x: i32,
         z: i32,
         column: Column,
@@ -696,7 +787,7 @@ impl Scene {
     ) {
         let build = self.scale.build;
         let locked = column.state == RegionState::Locked;
-        match look {
+        match look.zone {
             ZoneLook::Hatching => {
                 let width = HATCH_WIDTH * build;
                 if (x + z).rem_euclid(2 * width) < width {
@@ -709,10 +800,20 @@ impl Scene {
                 }
             }
             ZoneLook::Palisade => {
-                if column.border {
-                    let tall = PALISADE_HEIGHT * build + (x + z).rem_euclid(2);
-                    for y in 1..=tall {
-                        set(column.top() + y, b::SPRUCE_PLANKS);
+                let tower = column.tower && look.border == Border::Rampart;
+                if column.ring > 0 || tower {
+                    let stretch = Stretch {
+                        x,
+                        z,
+                        ring: column.ring,
+                        width: self.scale.border_width(),
+                        tower,
+                        build,
+                        locked,
+                    };
+                    let real = look.blocks == Blocks::Real;
+                    for (y, block) in look.border.blocks(stretch, real) {
+                        set(column.top() + y, block);
                     }
                 }
             }
@@ -771,6 +872,10 @@ impl Scene {
                 for dx in 0..width {
                     if let Some(column) = self.column_mut(x + dx, z + dz) {
                         if column.is_land() {
+                            // A path goes under the trees, not over them.
+                            if column.surface == CANOPY {
+                                column.ground -= width;
+                            }
                             column.surface = PATH;
                         } else {
                             column.ground = SEA_Y;
@@ -804,8 +909,20 @@ impl Scene {
                 column.state.tint(block)
             }
         };
+        // A crown is leaves all the way through, and the ground starts under it.
+        let crown = if column.surface == CANOPY {
+            self.scale.build
+        } else {
+            0
+        };
         for y in column.bottom..column.ground {
-            set(y, tint(cliff_block(column.surface, column.ground - y)));
+            let depth = column.ground - y;
+            let block = if depth < crown {
+                column.surface
+            } else {
+                cliff_block(column.surface, depth + 1 - crown)
+            };
+            set(y, tint(block));
         }
         set(column.ground, tint(column.surface));
         for y in column.ground + 1..=SEA_Y {
@@ -815,7 +932,7 @@ impl Scene {
             set(*y, tint(*block));
         }
         if closed {
-            self.zone_look(look.zone, x, z, column, set);
+            self.zone_look(look, x, z, column, set);
         }
     }
 
@@ -961,13 +1078,28 @@ mod tests {
         let reach = scene.chunk_radius();
         let looks = ZONES.map(|zone| ChunkLook {
             zone,
-            blocks: Blocks::Flat,
+            ..ChunkLook::default()
         });
         let real = ChunkLook {
             zone: ZoneLook::Clouds,
             blocks: Blocks::Real,
+            ..ChunkLook::default()
         };
-        for (from, to) in [(looks[0], looks[1]), (looks[2], looks[3]), (looks[3], real)] {
+        let borders = Border::ALL.map(|border| ChunkLook {
+            zone: ZoneLook::Palisade,
+            border,
+            ..ChunkLook::default()
+        });
+        let pairs = [
+            (looks[0], looks[1]),
+            (looks[2], looks[3]),
+            (looks[3], real),
+            (borders[0], borders[1]),
+            (borders[1], borders[3]),
+            (borders[3], borders[4]),
+            (borders[4], real),
+        ];
+        for (from, to) in pairs {
             for (chunk_x, chunk_z) in [(-reach / 2, 0), (0, reach / 2), (1, 1), (reach / 2, -2)] {
                 let mut sections = BTreeMap::new();
                 for change in scene.repaint(chunk_x, chunk_z, from, to) {
@@ -998,9 +1130,77 @@ mod tests {
         let scene = Scene::new(&terrain, SEA, OVERVIEW, &open());
         let [from, to] = [ZoneLook::Clouds, ZoneLook::Faded].map(|zone| ChunkLook {
             zone,
-            blocks: Blocks::Flat,
+            ..ChunkLook::default()
         });
         assert!(scene.repaint(0, 0, from, to).is_empty());
+        let [from, to] = [Border::Stakes, Border::Rampart].map(|border| ChunkLook {
+            border,
+            ..ChunkLook::default()
+        });
+        assert!(scene.repaint(0, 0, from, to).is_empty());
+    }
+
+    #[test]
+    fn a_border_is_three_blocks_wide_up_close_and_as_wide_on_screen_further_out() {
+        assert_eq!(DETAIL.border_width(), 3);
+        assert_eq!(MIDDLE.border_width(), 2);
+        assert_eq!(OVERVIEW.border_width(), 1);
+    }
+
+    fn rings(scene: &Scene) -> BTreeSet<u8> {
+        scene.columns.iter().flatten().map(|c| c.ring).collect()
+    }
+
+    #[test]
+    fn the_band_has_all_its_rings_and_stays_on_closed_land() {
+        let scene = closed_scene(DETAIL);
+        assert_eq!(rings(&scene), BTreeSet::from([0, 1, 2, 3]));
+        let open = scene.columns.iter().flatten();
+        let mut open = open.filter(|column| column.state == RegionState::Discovered);
+        assert!(open.all(|column| column.ring == 0 && !column.tower));
+    }
+
+    /// Side by side, two closed regions would each draw their own and double the width.
+    #[test]
+    fn two_closed_regions_share_one_band() {
+        let regions = Regions::new(vec![
+            Region {
+                name: "Ouest",
+                site: [-200.0, 0.0],
+                state: RegionState::Undiscovered,
+            },
+            Region {
+                name: "Est",
+                site: [200.0, 0.0],
+                state: RegionState::Locked,
+            },
+        ]);
+        let generator = land();
+        let terrain = Terrain::sample(&generator, &DETAIL.window());
+        let scene = Scene::new(&terrain, SEA, DETAIL, &regions);
+        let columns = scene.columns.iter().flatten();
+        let mut banded = columns.filter(|column| column.ring > 0);
+        assert!(banded.all(|column| column.state == RegionState::Locked));
+    }
+
+    #[test]
+    fn a_rampart_has_towers_and_only_it_does() {
+        let scene = closed_scene(DETAIL);
+        let towers = scene.columns.iter().flatten().filter(|c| c.tower).count();
+        assert!(towers > 0, "{towers}");
+        let (x, z) = (-DETAIL.radius..DETAIL.radius)
+            .flat_map(|x| (-DETAIL.radius..DETAIL.radius).map(move |z| (x, z)))
+            .find(|(x, z)| scene.column(*x, *z).is_some_and(|c| c.tower && c.ring == 0))
+            .expect("a tower wider than its band");
+        let top = |border| {
+            let look = ChunkLook {
+                zone: ZoneLook::Palisade,
+                border,
+                ..ChunkLook::default()
+            };
+            column_in(&scene, x, z, look).into_keys().max()
+        };
+        assert!(top(Border::Rampart) > top(Border::Stakes));
     }
 
     #[test]
@@ -1245,7 +1445,7 @@ mod tests {
         let chunk = |x, z, zone| {
             let look = ChunkLook {
                 zone,
-                blocks: Blocks::Flat,
+                ..ChunkLook::default()
             };
             scene.chunk(x, z, BiomeId::plains(), 1, look)
         };
@@ -1277,6 +1477,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn forest() -> Scene {
+        scene_of(&DefaultWorldGenerator::default(), DETAIL)
+    }
+
+    fn crowns(scene: &Scene) -> Vec<(i32, i32)> {
+        let radius = scene.scale.radius;
+        (-radius..radius)
+            .flat_map(|x| (-radius..radius).map(move |z| (x, z)))
+            .filter(|(x, z)| scene.column(*x, *z).is_some_and(|c| c.surface == CANOPY))
+            .collect()
+    }
+
+    /// With soil under a single leaf, a tree reads as a slab of earth with a green top.
+    #[test]
+    fn the_side_of_a_crown_is_leaves_down_to_the_ground() {
+        let scene = forest();
+        let cells = crowns(&scene);
+        assert!(!cells.is_empty());
+        for (x, z) in cells {
+            let ground = scene.column(x, z).unwrap().ground;
+            let blocks = column_in(&scene, x, z, ChunkLook::default());
+            assert_eq!(blocks[&ground], CANOPY);
+            assert_eq!(blocks[&(ground - 1)], CANOPY);
+            assert_eq!(blocks[&(ground - 2)], SOIL);
+        }
+    }
+
+    #[test]
+    fn no_crown_stands_alone() {
+        for scale in [OVERVIEW, MIDDLE, DETAIL] {
+            let scene = scene_of(&DefaultWorldGenerator::default(), scale);
+            let cells: BTreeSet<_> = crowns(&scene).into_iter().collect();
+            for (x, z) in &cells {
+                let sides = [(x - 1, *z), (x + 1, *z), (*x, z - 1), (*x, z + 1)];
+                let joined = sides.iter().filter(|side| cells.contains(side)).count();
+                assert!(joined >= 2, "{x} {z}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_path_cuts_through_the_trees_at_ground_level() {
+        let mut scene = forest();
+        let (x, z) = crowns(&scene)[0];
+        let ground = scene.column(x, z).unwrap().ground;
+        scene.pave((x, z), (x, z));
+        let column = scene.column(x, z).unwrap();
+        assert_eq!(
+            (column.surface, column.ground),
+            (PATH, ground - DETAIL.build)
+        );
     }
 
     #[test]

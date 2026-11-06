@@ -45,6 +45,7 @@ use voidmc_ui::{PackSettled, Text};
 use crate::art::{Card, EYE_SKIN, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
 use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
+use crate::fence::Border;
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::motion::Motion;
 use crate::players::PlayersPlugin;
@@ -337,6 +338,7 @@ struct Waypoint {
 const CLOUDS: ChunkLook = ChunkLook {
     zone: ZoneLook::Clouds,
     blocks: Blocks::Flat,
+    border: Border::Stakes,
 };
 
 /// One model, with its chunks as they get asked for.
@@ -3190,6 +3192,7 @@ pub struct MapLooks {
     me: Me,
     zone: ZoneLook,
     blocks: Blocks,
+    border: Border,
     motion: Motion,
     inertia: bool,
 }
@@ -3199,6 +3202,7 @@ impl MapLooks {
         ChunkLook {
             zone: self.zone,
             blocks: self.blocks,
+            border: self.border,
         }
     }
 }
@@ -3262,6 +3266,7 @@ pub enum LookChoice {
     Me(Option<Me>),
     Zone(Option<ZoneLook>),
     Blocks(Option<Blocks>),
+    Border(Option<Border>),
     Motion(Option<Motion>),
     /// Turns inertia on or off.
     Inertia,
@@ -3313,6 +3318,10 @@ fn choose_look(
         LookChoice::Blocks(blocks) => {
             looks.blocks = blocks.unwrap_or(looks.blocks.next());
             format!("Blocs : {}", looks.blocks.label())
+        }
+        LookChoice::Border(border) => {
+            looks.border = border.unwrap_or(looks.border.next());
+            format!("Frontière : {}", looks.border.label())
         }
         LookChoice::Motion(motion) => {
             looks.motion = motion.unwrap_or(looks.motion.next());
@@ -3511,6 +3520,7 @@ enum MapAction {
     Me,
     Zone,
     Blocks,
+    Border,
     Move,
 }
 
@@ -3569,6 +3579,17 @@ impl Pick {
         }
     }
 
+    fn border(self) -> Option<Border> {
+        match self {
+            Self::One => Some(Border::Stakes),
+            Self::Two => Some(Border::Rampart),
+            Self::Three => Some(Border::Hedge),
+            Self::Four => Some(Border::Tape),
+            Self::Five => Some(Border::Glass),
+            _ => None,
+        }
+    }
+
     fn motion(self) -> Option<Motion> {
         match self {
             Self::A => Some(Motion::Damped),
@@ -3613,6 +3634,7 @@ fn map_command() -> Command {
                 ("me", MapAction::Me),
                 ("zone", MapAction::Zone),
                 ("blocks", MapAction::Blocks),
+                ("border", MapAction::Border),
                 ("move", MapAction::Move),
             ]),
         )
@@ -3664,6 +3686,7 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Me => Some(choice(pick, Pick::me, LookChoice::Me)),
             MapAction::Zone => Some(choice(pick, Pick::zone, LookChoice::Zone)),
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
+            MapAction::Border => Some(choice(pick, Pick::border, LookChoice::Border)),
             MapAction::Move if pick == Some(Pick::Inertia) => Some(LookChoice::Inertia),
             MapAction::Move => Some(choice(pick, Pick::motion, LookChoice::Motion)),
         };
@@ -3845,10 +3868,10 @@ mod tests {
         assert_eq!(
             actions.matches,
             [
-                "look", "pan", "stop", "style", "me", "zone", "blocks", "move"
+                "look", "pan", "stop", "style", "me", "zone", "blocks", "border", "move"
             ]
         );
-        for action in ["style", "me", "zone", "blocks", "move"] {
+        for action in ["style", "me", "zone", "blocks", "border", "move"] {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");

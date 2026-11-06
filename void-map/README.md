@@ -120,6 +120,11 @@ alone. The chunks still to come go out in the new look.
   Its shape comes from a fixed seed and where it hangs, so no two are alike, and it stays
   at the same place of the world on every model. It is built with the model, not on
   opening the map.
+- `/map border 1` to `5`: what stands along the border of a closed region under
+  `/map zone 3`, on a band three blocks wide on the close model and as wide on screen on
+  the others: rough stakes, a rampart with towers, a hedge, a striped band painted on the
+  land and the sea, or a wall of coloured glass. Two closed regions share one band, on the
+  side of the more closed one.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
   world with their textures. Their tint comes from the `voidmc:map` biome.
 - `/map move a` to `d`: how a pan follows the mouse, to compare them. `a` is a critically
@@ -203,7 +208,7 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
+`fence`, `buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
 declares the level, `plugin` runs the sessions, `players` shows the characters, `cursor`
 draws the pointer, and `telemetry` measures the characters.
 

@@ -10,7 +10,8 @@ const BORDER_WANDER: f64 = 70.0;
 const BORDER_SIZE: f64 = 180.0;
 const WANDER_SEED: u32 = 50;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// From the most open to the most closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RegionState {
     Discovered,
     Undiscovered,
@@ -77,7 +78,7 @@ pub enum ZoneLook {
     Clouds,
     /// Diagonal stripes on the ground.
     Hatching,
-    /// A fence along its border, with a lock over it.
+    /// A [`Border`](crate::fence::Border) along its edge, with a lock over it.
     #[default]
     Palisade,
     /// Its colours drained, with a large question mark over it.
