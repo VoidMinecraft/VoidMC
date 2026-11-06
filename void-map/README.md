@@ -96,7 +96,9 @@ across turns between Panneau, Marqueur, Déplacement, Zones and Blocs, up and do
 through the choices, which apply as they go. Its middle shows the choice between the ones
 above and under it, with arrows for the mouse, and letting go keeps it. The camera holds
 still, and a marker under the look stays hovered, for its panel to show the styles.
-A look turns on the client, so the wheel swaps its eye for an entity.
+A look turns on the client, so the wheel swaps its eye for the same mannequin as a flight,
+which keeps the height of an eye. The player rides under it, right where they stand: a
+client whose camera is another entity only reports its mouse while riding.
 
 A choice only touches what it changes. A panel is one entity, a marker a few. A look of
 the chunks reaches what the client holds as block changes, around the view first, by

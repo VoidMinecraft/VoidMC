@@ -677,6 +677,8 @@ enum Hover {
 struct OpenWheel {
     wheel: Wheel,
     display: Entity,
+    /// How long it has been open.
+    ticks: u32,
     /// What it shows, to tell when that has to change.
     face: String,
 }
@@ -876,7 +878,7 @@ impl MapSession {
     fn camera_at(&self) -> Position {
         let [x, y, z] = match &self.travel {
             Some(travel) => self.vehicle_at(travel.flight.target()),
-            None => self.eye(),
+            None => self.vehicle_at(self.eye()),
         };
         self.on_model(x, y, z)
     }
@@ -2298,7 +2300,10 @@ fn hold_still(
         return;
     };
     let home = session.home_position();
-    let moved = (event.packet.x - home.x).hypot(event.packet.z - home.z);
+    // Getting off what the wheel rides on drops a client a little.
+    let moved = (event.packet.x - home.x)
+        .hypot(event.packet.z - home.z)
+        .hypot(event.packet.y - home.y);
     let held = session.mode == MapMode::Look && session.rig.is_some() && session.travel.is_none();
     if held && moved > 0.01 {
         let mut player = commands.entity(event.entity);
@@ -2816,13 +2821,22 @@ fn wheel_choices(category: usize, looks: MapLooks) -> (Vec<(&'static str, LookCh
     }
 }
 
-fn open_wheel(session: &mut MapSession, commands: &mut Commands) {
+fn open_wheel(session: &mut MapSession, player: Entity, commands: &mut Commands) {
     let look = session.look;
-    let [x, y, z] = session.eye();
-    let at = session.on_model(x, y, z);
+    let eye = session.eye();
+    let at = session.on_model(eye[0], eye[1], eye[2]);
     // A look turns on the client: the view holds still through an entity instead.
+    let vehicle = session.on_model(eye[0], eye[1] - RIDER_EYE_HEIGHT, eye[2]);
     if let Some(rig) = session.rig.as_mut().filter(|rig| rig.camera.is_none()) {
-        rig.camera = Some(spawn_camera(commands, at, look, CAMERA_GLIDE_TICKS));
+        let camera = spawn_eye_camera(commands, vehicle, look);
+        // A client whose camera is another entity only reports its mouse when it rides.
+        // The player sits right where they stood, so that nothing moves when they get off.
+        commands
+            .entity(camera.vehicle)
+            .insert(Passengers::new([camera.eye, player]));
+        commands.entity(rig.eye_box).try_insert(Hidden);
+        rig.camera = Some(camera.vehicle);
+        rig.eye = Some(camera.eye);
     }
     session.mouse = Mouse::default();
     let way = look_direction(look.yaw, look.pitch);
@@ -2837,6 +2851,7 @@ fn open_wheel(session: &mut MapSession, commands: &mut Commands) {
     session.wheel = Some(OpenWheel {
         wheel: Wheel::default(),
         display,
+        ticks: 0,
         face: String::new(),
     });
 }
@@ -2862,22 +2877,25 @@ fn close_wheel(
         },
     );
     if session.mode == MapMode::Look {
-        if let Some(camera) = session.rig.as_mut().and_then(|rig| rig.camera.take()) {
-            commands.entity(camera).try_despawn();
-        }
-        if let Ok(id) = ids.get(player) {
-            players.send(player, SetCamera { camera_id: id.0 });
+        if let Some(rig) = session.rig.as_mut() {
+            commands.entity(rig.eye_box).try_remove::<Hidden>();
+            for entity in rig.camera.take().into_iter().chain(rig.eye.take()) {
+                commands.entity(entity).try_despawn();
+            }
         }
         // The client went on turning behind the entity.
         players.send(
             player,
             PlayerRotation {
-                yaw: session.look.yaw,
+                yaw: yaw_as_shown(session.look.yaw),
                 relative_yaw: false,
                 pitch: session.look.pitch,
                 relative_pitch: false,
             },
         );
+        if let Ok(id) = ids.get(player) {
+            players.send(player, SetCamera { camera_id: id.0 });
+        }
     }
 }
 
@@ -2885,13 +2903,32 @@ fn close_wheel(
 fn run_wheels(
     mut sessions: Query<(Entity, &mut MapSession)>,
     mut texts: Query<&mut TextDisplay>,
+    ids: Query<&MinecraftEntityId>,
+    players: Players,
     mut commands: Commands,
 ) {
     for (player, mut session) in &mut sessions {
         let looks = session.looks;
+        let (eye, look) = (session.eye(), session.look);
+        let at = session.on_model(eye[0], eye[1], eye[2]);
+        let seeing = session.rig.and_then(|rig| rig.eye);
         let Some(open) = session.wheel.as_mut() else {
             continue;
         };
+        open.ticks += 1;
+        if let Some(seeing) = seeing.and_then(|eye| ids.get(eye).ok()) {
+            if open.ticks == TURN_TICKS {
+                players.send(player, settled(seeing, at, [look.yaw, look.pitch]));
+            }
+            if open.ticks == SWAP_TICKS {
+                players.send(
+                    player,
+                    SetCamera {
+                        camera_id: seeing.0,
+                    },
+                );
+            }
+        }
         let category = open.wheel.category;
         let (choices, index) = wheel_choices(category, looks);
         let steps = open.wheel.take_steps();
@@ -3055,7 +3092,7 @@ fn read_keys(
         && session.travel.is_none()
         && session.veiled.is_none();
     if sprint && session.wheel.is_none() && usable {
-        open_wheel(&mut session, &mut commands);
+        open_wheel(&mut session, event.entity, &mut commands);
         players.send(
             event.entity,
             SystemChat {
