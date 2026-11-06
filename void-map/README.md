@@ -10,20 +10,38 @@ A small resource pack draws the info panels. A client without it gets plain text
 
 ## Going there and back
 
-The camera rises out of the player's eyes on an entity of its own, into a veil of cloud:
-a title made of large glyphs, the one thing the server can cover the screen with and
-fade. Under it the world's chunks go and the model's come, and the veil lifts once the
-client has them. The way back is the same in reverse: the veil comes at the end of a
-dive, or when crouching, stays until the real chunks are all there, and lifts over a
-camera coming down to the player's eyes.
+`/map` opens at once: the player turns spectator, which hides the hand, and the model
+starts coming, closest to their marker first, while the camera rises straight up out of
+their eyes. A short veil of cloud, a title made of large glyphs, covers the cut. Under it
+the camera is already over the player's marker on the model, close up and in the middle
+of the screen, and from there it draws back to the view without a break. The way out
+is the same one backwards, down to the marker or a waypoint, through the veil, and from
+the sky of the world down to the player's eyes.
+
+There is nothing to wait for under the veil, because the client never lets go of the
+world. It keeps every chunk in a square around a centre, whose size the server sets: the
+models sit only a few dozen chunks east of what the map shows, and a `Site` is a square
+that holds both. The real chunks stay on the client and in `LoadedChunks`, so that block
+changes keep reaching it, and the chunks of a waypoint go out as soon as it is selected.
+Only `RENDER_GAP` keeps the two from showing on each other's horizon. Whoever walks
+out there, past 1300 blocks east, would see the entities of a model: chunks are per
+player, but the entities on them are not.
+
+Cameras are display entities: they are told the end of a segment, `SEGMENT_TICKS` ahead,
+and the client glides them there, which takes a handful of packets for a flight. The
+next segment arrives before the last one ends, so that they never stall. At the end they
+get their exact place, since the engine rounds angles, and come to rest before anything
+takes over from them. Going from a player to an entity without an eye would move the view
+by the height of one, so a flight from or to the eye is seen through an invisible
+mannequin riding the display entity. A rider cannot turn smoothly, so flights keep the
+look they start with. The player's `walking_speed` undoes the wider view a client gives
+someone flying: an eye and a camera see the same thing.
 
 The sky only goes nearly black: by day a dark brown stays, and at night the moon and the
 stars show under the model. The level's clock has the last word over the biome there.
 
-A real preload is out of reach: the client only keeps a square of chunks around its
-centre, so the model's anchor and the destination cannot both be in it. Nor can the
-model sit over the real columns: each player would need chunks of their own, made of
-both, instead of packets encoded once.
+The model cannot sit over the real columns: each player would need chunks of their own,
+made of both, instead of packets encoded once.
 
 ## How the view works
 
@@ -78,8 +96,7 @@ across turns between Panneau, Marqueur, Déplacement, Zones and Blocs, up and do
 through the choices, which apply as they go. Its middle shows the choice between the ones
 above and under it, with arrows for the mouse, and letting go keeps it. The camera holds
 still, and a marker under the look stays hovered, for its panel to show the styles.
-A look turns on the client, so the wheel swaps its eye for an entity: the client widens
-the view of a flying player and not of an entity, which stands further back to make up.
+A look turns on the client, so the wheel swaps its eye for an entity.
 
 A choice only touches what it changes. A panel is one entity, a marker a few. A look of
 the chunks reaches what the client holds as block changes, around the view first, by
@@ -106,9 +123,9 @@ alone. The chunks still to come go out in the new look.
 ## Travelling
 
 A first left click on a marker selects it, which shows its status and description. A
-second one dives into it: over `DIVE_TICKS` a camera entity flies down to it, starting
-and ending at rest, and the player then lands at the real place, `ARRIVAL_CLEARANCE`
-above the ground. In a look, that entity takes over from the eye, looking the same way.
+second one dives into it: over `DIVE_TICKS` a camera entity flies down to it along the
+look, starting and ending at rest, and the player then lands at the real place,
+`ARRIVAL_CLEARANCE` above the ground. In a look, that entity takes over from the eye.
 Crouching calls the dive off. A closed region refuses to be travelled to, and says so.
 
 A spectator only clicks when the look hits an entity, and only sees the crosshair when
