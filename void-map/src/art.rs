@@ -8,6 +8,7 @@
 use voidmc_ui::{Image, ResourcePack};
 
 use crate::alphabet::LETTERS;
+use crate::cursor;
 use crate::markers::MarkerKind;
 use crate::noise::fractal;
 use crate::wheel::CATEGORIES;
@@ -1088,6 +1089,7 @@ fn shifts() -> String {
 /// Adds the panels and the font that draws them. Also turns minecarts black, for the
 /// one around the eye: looking up at it would otherwise show its floor on the black sky.
 pub fn install(pack: &mut ResourcePack) {
+    cursor::install(pack);
     let black = Image::filled(MINECART_SIZE.0, MINECART_SIZE.1, [0, 0, 0, 255]);
     pack.add(MINECART, black.to_png());
     let mut providers = vec![shifts()];

@@ -6,13 +6,15 @@
 //! into columns of blocks, and [`markers::MarkerField`] scatters reproducible points
 //! of interest. [`pointer`] turns the mouse into a view and an aim, [`regions`] says
 //! what a player knows of each place, and [`art`] draws the info cards.
-//! [`players`] shows who walks the world, as small figures on the model.
+//! [`players`] shows who walks the world, as small figures on the model, and
+//! [`cursor`] draws the pointer.
 //! [`plugin`] moves players in and out of the map.
 
 pub mod alphabet;
 pub mod art;
 pub mod biome;
 pub mod buildings;
+pub mod cursor;
 pub mod markers;
 pub mod noise;
 pub mod players;
