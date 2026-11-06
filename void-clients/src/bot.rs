@@ -21,30 +21,41 @@ const VERSION: Version = Version::V26_1_2;
 const LOGIN: &str = "login";
 const CONFIGURATION: &str = "configuration";
 const PLAY: &str = "play";
-const LOGIN_SUCCESS: &str = "minecraft:login_finished";
-const CONFIG_FINISH: &str = "minecraft:finish_configuration";
-const CONFIG_KEEP_ALIVE: &str = "minecraft:keep_alive";
-const CONFIG_KNOWN_PACKS: &str = "minecraft:select_known_packs";
-const PLAY_ADD_ENTITY: &str = "minecraft:add_entity";
-const PLAY_DISCONNECT: &str = "minecraft:disconnect";
-const PLAY_POSITION_SYNC: &str = "minecraft:entity_position_sync";
-const PLAY_UNLOAD_CHUNK: &str = "minecraft:forget_level_chunk";
-const PLAY_KEEP_ALIVE: &str = "minecraft:keep_alive";
-const PLAY_CHUNK: &str = "minecraft:level_chunk_with_light";
-const PLAY_PING: &str = "minecraft:ping";
-const PLAY_PLAYER_POSITION: &str = "minecraft:player_position";
-const PLAY_REMOVE_ENTITIES: &str = "minecraft:remove_entities";
-const PLAY_PACK_PUSH: &str = "minecraft:resource_pack_push";
-const PLAY_SET_CAMERA: &str = "minecraft:set_camera";
-const PLAY_START_CONFIGURATION: &str = "minecraft:start_configuration";
-const PLAY_SYSTEM_CHAT: &str = "minecraft:system_chat";
-const PLAY_TELEPORT_ENTITY: &str = "minecraft:teleport_entity";
-const SERVERBOUND_CONFIG_KEEP_ALIVE: &str = "minecraft:keep_alive";
-const SERVERBOUND_CONFIGURATION_ACK: &str = "minecraft:configuration_acknowledged";
-const SERVERBOUND_PACK_RESPONSE: &str = "minecraft:resource_pack";
 const PACK_ACCEPTED_DOWNLOADED_LOADED: [i32; 3] = [3, 4, 0];
 const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
 const DEFAULT_WAIT_MS: u64 = 20_000;
+
+macro_rules! packets {
+    ($($constant:ident: $state:ident $direction:literal $name:literal,)*) => {
+        $(const $constant: &str = $name;)*
+        #[cfg(test)]
+        const PACKETS: &[(&str, &str, &str)] = &[$(($state, $direction, $name)),*];
+    };
+}
+
+packets! {
+    LOGIN_SUCCESS: LOGIN "clientbound" "minecraft:login_finished",
+    CONFIG_FINISH: CONFIGURATION "clientbound" "minecraft:finish_configuration",
+    CONFIG_KEEP_ALIVE: CONFIGURATION "clientbound" "minecraft:keep_alive",
+    CONFIG_KNOWN_PACKS: CONFIGURATION "clientbound" "minecraft:select_known_packs",
+    PLAY_ADD_ENTITY: PLAY "clientbound" "minecraft:add_entity",
+    PLAY_DISCONNECT: PLAY "clientbound" "minecraft:disconnect",
+    PLAY_POSITION_SYNC: PLAY "clientbound" "minecraft:entity_position_sync",
+    PLAY_UNLOAD_CHUNK: PLAY "clientbound" "minecraft:forget_level_chunk",
+    PLAY_KEEP_ALIVE: PLAY "clientbound" "minecraft:keep_alive",
+    PLAY_CHUNK: PLAY "clientbound" "minecraft:level_chunk_with_light",
+    PLAY_PING: PLAY "clientbound" "minecraft:ping",
+    PLAY_PLAYER_POSITION: PLAY "clientbound" "minecraft:player_position",
+    PLAY_REMOVE_ENTITIES: PLAY "clientbound" "minecraft:remove_entities",
+    PLAY_PACK_PUSH: PLAY "clientbound" "minecraft:resource_pack_push",
+    PLAY_SET_CAMERA: PLAY "clientbound" "minecraft:set_camera",
+    PLAY_START_CONFIGURATION: PLAY "clientbound" "minecraft:start_configuration",
+    PLAY_SYSTEM_CHAT: PLAY "clientbound" "minecraft:system_chat",
+    PLAY_TELEPORT_ENTITY: PLAY "clientbound" "minecraft:teleport_entity",
+    SERVERBOUND_CONFIG_KEEP_ALIVE: CONFIGURATION "serverbound" "minecraft:keep_alive",
+    SERVERBOUND_CONFIGURATION_ACK: PLAY "serverbound" "minecraft:configuration_acknowledged",
+    SERVERBOUND_PACK_RESPONSE: PLAY "serverbound" "minecraft:resource_pack",
+}
 
 #[derive(Default)]
 struct World {
@@ -575,36 +586,9 @@ mod tests {
 
     #[test]
     fn every_packet_name_is_in_the_reference() {
-        let received = [
-            (LOGIN, LOGIN_SUCCESS),
-            (CONFIGURATION, CONFIG_FINISH),
-            (CONFIGURATION, CONFIG_KEEP_ALIVE),
-            (CONFIGURATION, CONFIG_KNOWN_PACKS),
-            (PLAY, PLAY_ADD_ENTITY),
-            (PLAY, PLAY_DISCONNECT),
-            (PLAY, PLAY_POSITION_SYNC),
-            (PLAY, PLAY_UNLOAD_CHUNK),
-            (PLAY, PLAY_KEEP_ALIVE),
-            (PLAY, PLAY_CHUNK),
-            (PLAY, PLAY_PING),
-            (PLAY, PLAY_PLAYER_POSITION),
-            (PLAY, PLAY_REMOVE_ENTITIES),
-            (PLAY, PLAY_PACK_PUSH),
-            (PLAY, PLAY_SET_CAMERA),
-            (PLAY, PLAY_START_CONFIGURATION),
-            (PLAY, PLAY_SYSTEM_CHAT),
-            (PLAY, PLAY_TELEPORT_ENTITY),
-        ];
-        for (state, name) in received {
-            let id = voidmc_data::packet_id(VERSION, state, "clientbound", name);
-            assert_eq!(clientbound(state, id.expect(name)), Some(name));
-        }
-        for (state, name) in [
-            (CONFIGURATION, SERVERBOUND_CONFIG_KEEP_ALIVE),
-            (PLAY, SERVERBOUND_CONFIGURATION_ACK),
-            (PLAY, SERVERBOUND_PACK_RESPONSE),
-        ] {
-            serverbound(state, name);
+        for (state, direction, name) in PACKETS {
+            let found = voidmc_data::packet_id(VERSION, state, direction, name);
+            assert!(found.is_some(), "{state} {direction} {name}");
         }
     }
 
