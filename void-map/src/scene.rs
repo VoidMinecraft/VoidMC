@@ -696,7 +696,7 @@ impl Scene {
             }
         }
         let mut chunk = builder.build();
-        // The dimension lights everything alike.
+        // The biome lights everything alike.
         chunk.light = LightData::empty();
         chunk
     }

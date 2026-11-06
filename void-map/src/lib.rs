@@ -10,8 +10,8 @@
 
 pub mod alphabet;
 pub mod art;
+pub mod biome;
 pub mod buildings;
-pub mod dimension;
 pub mod markers;
 pub mod noise;
 pub mod plugin;

@@ -37,7 +37,7 @@ use voidmc_protocol::{
 use voidmc_ui::{PackSettled, Text};
 
 use crate::art::{Card, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
-use crate::dimension::{self, MapLevel};
+use crate::biome::{self, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
@@ -894,7 +894,7 @@ pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        let info = dimension::register(&mut app.world_mut().resource_mut::<RegistryDataStore>());
+        let info = biome::register(&mut app.world_mut().resource_mut::<RegistryDataStore>());
         app.insert_resource(Atlas {
             info,
             regions: Regions::demo(),

@@ -8,8 +8,9 @@ const BIOME: &str = "voidmc:map";
 /// Far past the camera, so that the model never fades out.
 const FOG_START: f32 = 2_000.0;
 const FOG_END: f32 = 4_000.0;
-/// Under the horizon, whatever the time of day.
-const BELOW_THE_HORIZON: f32 = 180.0;
+/// Out of the view, as far as the sun goes. At night the moon and the stars still show:
+/// a level with a clock has them from the clock, whatever the biome says.
+const OVERHEAD: f32 = 0.0;
 const BLACK: u32 = 0x000000;
 const WHITE: u32 = 0xffffff;
 
@@ -36,8 +37,8 @@ pub fn register(store: &mut RegistryDataStore) -> MapLevel {
         .attribute(visual("sky_light_factor"), Attribute::float(1.0))
         .attribute(visual("ambient_light_color"), Attribute::color(WHITE))
         .attribute(visual("star_brightness"), Attribute::float(0.0))
-        .attribute(visual("sun_angle"), Attribute::float(BELOW_THE_HORIZON))
-        .attribute(visual("moon_angle"), Attribute::float(BELOW_THE_HORIZON))
+        .attribute(visual("sun_angle"), Attribute::float(OVERHEAD))
+        .attribute(visual("moon_angle"), Attribute::float(OVERHEAD))
         .register(store)
         .expect("the map biome registers once");
     MapLevel {
