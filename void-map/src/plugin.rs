@@ -888,7 +888,12 @@ impl MapSession {
 
     /// What the pointer has to show.
     pub(crate) fn wanted_cursor(&self) -> cursor::Wanted {
-        if self.veiled.is_some() || self.closing.is_some() {
+        // A session has no rig while it rises, and the veil comes down at the end of that.
+        let rising = self.rig.is_none();
+        let landing = self.travel.is_some_and(|travel| {
+            matches!(travel.ending, Ending::World(_)) && travel.flight.flying_for() <= VEIL_FADE
+        });
+        if self.veiled.is_some() || rising || landing {
             cursor::Wanted::Veil
         } else if !self.drawn || self.travel.is_some() || self.is_frozen() {
             cursor::Wanted::Nothing
@@ -3692,6 +3697,12 @@ mod tests {
         use cursor::{Look, Wanted};
         let mut session = session(MapMode::Look);
         session.drawn = true;
+        assert_eq!(session.wanted_cursor(), Wanted::Veil, "still rising");
+        session.rig = Some(Rig {
+            eye_box: Entity::PLACEHOLDER,
+            camera: None,
+            eye: None,
+        });
         assert_eq!(session.wanted_cursor(), Wanted::Pointer(Look::Free));
         session.hovered = Some(Hover::Waypoint(0));
         assert_eq!(session.wanted_cursor(), Wanted::Pointer(Look::Over));
@@ -3701,10 +3712,24 @@ mod tests {
             face: String::new(),
         });
         assert_eq!(session.wanted_cursor(), Wanted::Nothing);
-        session.closing = Some(1);
+        let mut flight = Flight::new([0.0; 3], [0.0; 3], [0.0; 2], VEIL_FADE + 1);
+        session.travel = Some(Travel {
+            flight,
+            ending: Ending::World(None),
+        });
+        assert_eq!(
+            session.wanted_cursor(),
+            Wanted::Nothing,
+            "the veil is yet to come"
+        );
+        flight.tick();
+        session.travel = Some(Travel {
+            flight,
+            ending: Ending::World(None),
+        });
         assert_eq!(session.wanted_cursor(), Wanted::Veil);
         session.drawn = false;
-        session.closing = None;
+        session.travel = None;
         session.wheel = None;
         assert_eq!(session.wanted_cursor(), Wanted::Nothing);
     }
