@@ -81,7 +81,7 @@ impl Weather {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Sky => "Pluie et neige du jeu",
+            Self::Sky => "Pluie et neige",
             Self::Particles => "Flocons et gouttes",
             Self::Leaves => "Feuilles au vent",
             Self::Embers => "Braises",
