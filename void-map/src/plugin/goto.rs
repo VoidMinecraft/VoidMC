@@ -91,18 +91,18 @@ fn points(session: &MapSession, level: &Level, characters: &Characters) -> Vec<P
     you.into_iter().chain(people).chain(places).collect()
 }
 
-/// A tick of a view that goes by jumps, in place of the mouse.
-pub(super) fn steer(
-    session: &mut MapSession,
-    player: Entity,
-    atlas: &Atlas,
-    characters: &Characters,
-    players: &Players,
-) {
+/// A tick of a view that goes by jumps or is on a target, in place of the mouse. In free
+/// navigation a gesture of the mouse lets go of the target: the view stays where it is
+/// and slides again, as nothing but the target has changed.
+pub(super) fn steer(session: &mut MapSession, atlas: &Atlas, characters: &Characters) {
     let Some(level) = atlas.level(session.model()) else {
         return;
     };
-    if let Some(way) = session.goto.flick() {
+    let flick = session.goto.flick();
+    if flick.is_some() && session.looks.navigation == Navigation::Free {
+        tracing::info!("map target let go");
+        session.goto.clear();
+    } else if let Some(way) = flick {
         let points = points(session, level, characters);
         let current = session.goto.target();
         let here = points.iter().find(|point| Some(point.target) == current);
@@ -127,10 +127,10 @@ pub(super) fn steer(
         }
         None => session.goto.clear(),
     }
-    tell_tab_list(&mut session.goto, player, players);
 }
 
-fn tell_tab_list(goto: &mut Goto, player: Entity, players: &Players) {
+/// Keeps the footer of the tab list on who the view is on.
+pub(super) fn tell_tab_list(goto: &mut Goto, player: Entity, players: &Players) {
     let now = goto.name().map(str::to_string);
     if goto.told.as_ref() == Some(&now) {
         return;
@@ -169,14 +169,19 @@ pub(super) fn forget_tab_list(
     }
 }
 
-/// What the keys of jumps are, for the line on screen.
-pub(super) fn hint(start: Text) -> Text {
+/// What the keys of targets are, for the line on screen.
+pub(super) fn hint(start: Text, navigation: Navigation, following: bool) -> Text {
     let key = Text::keybind;
+    let start = match navigation {
+        Navigation::Jumps => start
+            .append(key("key.forward"))
+            .append(Text::new(" / "))
+            .append(key("key.back"))
+            .append(Text::new(" : cible   |   ")),
+        Navigation::Free if following => start.append(Text::new("Souris : libre   |   ")),
+        Navigation::Free => start,
+    };
     start
-        .append(key("key.forward"))
-        .append(Text::new(" / "))
-        .append(key("key.back"))
-        .append(Text::new(" : cible   |   "))
         .append(key("key.jump"))
         .append(Text::new(" : liste   |   "))
 }
@@ -202,8 +207,9 @@ fn open_list(
     players.send(player, list(&points(session, level, characters)).packet());
 }
 
-/// Forward and back go down and up the list without opening it, and jump opens it. These
-/// are what a client reports of the keys, with a spectator's camera on another entity.
+/// Jump opens the list, however the view moves. By jumps, forward and back go down and up
+/// it without opening it. These are what a client reports of the keys, with a spectator's
+/// camera on another entity.
 pub(super) fn read_keys(
     event: On<PlayerInputEvent>,
     mut sessions: Query<&mut MapSession>,
@@ -217,14 +223,14 @@ pub(super) fn read_keys(
     let keys = [event.forward, event.backward, event.jump];
     let pressed: [bool; 3] = std::array::from_fn(|at| keys[at] && !session.goto.keys[at]);
     session.goto.keys = keys;
-    let jumps = session.mode == MapMode::Pan && session.looks.navigation == Navigation::Jumps;
-    if !jumps || !session.at_hand() || session.is_frozen() {
+    if session.mode != MapMode::Pan || !session.at_hand() || session.is_frozen() {
         return;
     }
     if pressed[2] {
         open_list(&mut session, event.entity, &atlas, &characters, &players);
     }
-    if (pressed[0] || pressed[1])
+    if session.looks.navigation == Navigation::Jumps
+        && (pressed[0] || pressed[1])
         && let Some(level) = atlas.level(session.model())
     {
         let points = points(&session, level, &characters);

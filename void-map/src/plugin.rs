@@ -1083,6 +1083,16 @@ impl MapSession {
         }
     }
 
+    /// The view goes by [`goto`], and not under the mouse: by jumps, or on a target.
+    fn steered(&self) -> bool {
+        self.looks.navigation == Navigation::Jumps || self.goto.target().is_some()
+    }
+
+    /// What each key does right now.
+    fn hint(&self) -> Text {
+        hint(self.looks.navigation, self.goto.target().is_some())
+    }
+
     /// Which way hovers go by: the look, unless the view is held off what it is on.
     fn pointing(&self) -> [f64; 3] {
         let eye = self.eye();
@@ -1162,9 +1172,10 @@ impl MapSession {
             MapMode::Pan => {
                 let turn = self.mouse.report(yaw, pitch);
                 if turn.delta != [0.0, 0.0] && self.travel.is_none() && !self.is_frozen() {
-                    match self.looks.navigation {
-                        Navigation::Free => self.pan.apply(turn.delta),
-                        Navigation::Jumps => self.goto.push(turn.delta),
+                    if self.steered() {
+                        self.goto.push(turn.delta);
+                    } else {
+                        self.pan.apply(turn.delta);
                     }
                 }
                 turn.recentre.then_some(PlayerRotation {
@@ -3100,7 +3111,7 @@ fn right_click(
 }
 
 /// What each key does, named as the player has them bound.
-fn hint(navigation: Navigation) -> Text {
+fn hint(navigation: Navigation, following: bool) -> Text {
     let key = Text::keybind;
     let start = Text::new("").color(TextColor::White);
     let start = if LOOK_OPEN {
@@ -3110,11 +3121,7 @@ fn hint(navigation: Navigation) -> Text {
     } else {
         start
     };
-    let start = match navigation {
-        Navigation::Free => start,
-        Navigation::Jumps => goto::hint(start),
-    };
-    start
+    goto::hint(start, navigation, following)
         .append(key("key.left"))
         .append(Text::new(" / "))
         .append(key("key.right"))
@@ -3223,7 +3230,7 @@ fn close_wheel(
     players.send(
         player,
         SystemChat {
-            content: hint(session.looks.navigation).to_nbt(),
+            content: session.hint().to_nbt(),
             overlay: true,
         },
     );
@@ -3317,7 +3324,7 @@ fn tick_sessions(
             let content = if session.wheel.is_some() {
                 wheel_hint()
             } else {
-                hint(session.looks.navigation)
+                session.hint()
             };
             players.send(
                 player,
@@ -3464,11 +3471,12 @@ fn tick_sessions(
             MapMode::Pan => {
                 let [_, out, closer] = session.keys;
                 session.zoom.tick(out, closer);
-                if session.looks.navigation == Navigation::Jumps {
-                    goto::steer(&mut session, player, &atlas, &characters, &players);
+                if session.steered() {
+                    goto::steer(&mut session, &atlas, &characters);
                 } else if let Some(level) = atlas.level(Model::Detail) {
                     session.pan.tick(|at| on_land(&level.scene, at));
                 }
+                goto::tell_tab_list(&mut session.goto, player, &players);
             }
         }
     }
@@ -4427,11 +4435,21 @@ mod tests {
 
     #[test]
     fn the_hint_names_the_player_s_own_keys() {
-        let hint = format!("{:?}", hint(Navigation::Jumps).to_compound());
+        let hint = format!("{:?}", hint(Navigation::Jumps, false).to_compound());
         let keys = ["key.left", "key.right", "key.sprint", "key.sneak"];
         for action in keys.into_iter().chain(["key.forward", "key.jump"]) {
             assert!(hint.contains(action), "{action}: {hint}");
         }
+    }
+
+    /// The list is there in both modes, and the keys of targets only by jumps.
+    #[test]
+    fn the_hint_offers_the_list_in_both_modes() {
+        let free = format!("{:?}", hint(Navigation::Free, false).to_compound());
+        assert!(free.contains("key.jump"), "{free}");
+        assert!(!free.contains("key.forward"), "{free}");
+        let following = format!("{:?}", hint(Navigation::Free, true).to_compound());
+        assert_ne!(free, following);
     }
 
     fn map_registry() -> CommandRegistry {
@@ -4520,6 +4538,42 @@ mod tests {
         session.turn(20.0, 0.0);
         assert_eq!(session.pan.offset(), [0.0, 0.0]);
         assert_eq!(session.goto.flick(), Some([1.0, 0.0]));
+    }
+
+    /// A target taken from the list holds the view like a jump, and nothing else changes:
+    /// a gesture of the mouse lets go of it, and the view slides again.
+    #[test]
+    fn a_target_holds_a_free_view_until_the_mouse_moves() {
+        let mut session = session(MapMode::Pan);
+        session.rig = Some(Rig {
+            camera: None,
+            eye: None,
+            eye_box: Entity::PLACEHOLDER,
+        });
+        session.turn(0.0, 0.0);
+        assert!(!session.steered());
+        session.goto.choose(&crate::goto::Point {
+            target: crate::goto::Target::You,
+            name: "Moi".to_string(),
+            at: [0.0, 0.0],
+            closed: false,
+        });
+        assert!(session.steered());
+        session.turn(20.0, 0.0);
+        assert_eq!(session.pan.offset(), [0.0, 0.0]);
+        assert_eq!(session.goto.flick(), Some([1.0, 0.0]));
+        session.goto.clear();
+        assert_eq!(session.looks.navigation, Navigation::Free);
+        session.turn(40.0, 0.0);
+        assert_ne!(session.pan.offset(), [0.0, 0.0]);
+    }
+
+    /// An item display shows a flat item from behind: a mark would read mirrored.
+    #[test]
+    fn an_icon_turns_its_face_to_the_camera_at_any_size() {
+        for display in [icon_display(1.0), icon_display(3.0).brightness(4, 4)] {
+            assert_eq!(display.transform.left_rotation, HALF_TURN);
+        }
     }
 
     /// A look that stopped on the client's position tick used to go unseen, so that

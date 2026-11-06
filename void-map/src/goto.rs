@@ -1,9 +1,11 @@
 //! Going from one point of interest to the next, instead of sliding over the map.
 //!
 //! [`Navigation::Jumps`] takes the view away from the mouse: a flick goes to the nearest
-//! [`Point`] that way, and [`list`] offers them all, in a dialog. Whatever picked it, a
-//! [`Target`] stays in the middle of the screen as long as it is the target, so that one
-//! who walks is followed. [`Goto`] holds that, and `plugin::goto` feeds it from the session.
+//! [`Point`] that way. [`list`] offers them all, in a dialog, however the view moves.
+//! Whatever picked it, a [`Target`] stays in the middle of the screen as long as it is the
+//! target, so that one who walks is followed. In [`Navigation::Free`] the mouse lets go of
+//! it, and the navigation never changed. [`Goto`] holds that, and `plugin::goto` feeds it
+//! from the session.
 //!
 //! Nothing here knows of the height of the view, so a zoom goes on at any time.
 //!

@@ -267,7 +267,10 @@ alone. The chunks still to come go out in the new look.
 ## Going by jumps
 
 With `/map move sauts` the mouse no longer slides the view. `goto` holds where it is going,
-and `plugin::goto` feeds that from the session. A target is the player's own marker, a
+and `plugin::goto` feeds that from the session. The list works in free navigation as well:
+a row taken from it holds the view like a jump, until a gesture of the mouse lets go of the
+target. That leaves the view where it is, under the mouse, and nothing else: the navigation
+is a setting, and a target never changes it. A target is the player's own marker, a
 character or a waypoint: the view glides to it and keeps it in the middle of the screen, at
 any zoom and on any model, for as long as it is the target. So someone walking or sailing
 is followed. The boss bar names the target. What ends that is another target, or a right
@@ -276,7 +279,7 @@ click, which also leaves the view where it is.
 - A flick of the mouse goes to the nearest point that way, within 60° of it, and one
   gesture is one jump, however long: the mouse has to rest for a quarter of a second.
 - Forward and back go down and up the list, around, from where the target is in it.
-- Jump opens the list, a dialog of every point: `Moi`, the characters and the waypoints,
+- Jump opens the list, in both navigations, a dialog of every point: `Moi`, the characters and the waypoints,
   the closed ones in grey. A click or Enter on a row goes there, and the list stays open
   to try another. Escape or Fermer closes it.
 - Left and right zoom, during a glide as well. A click on a waypoint in the middle works
