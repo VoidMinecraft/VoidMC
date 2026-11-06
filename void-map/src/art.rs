@@ -11,6 +11,7 @@ use crate::alphabet::LETTERS;
 use crate::cursor;
 use crate::markers::MarkerKind;
 use crate::noise::fractal;
+use crate::transition;
 use crate::wheel::CATEGORIES;
 
 /// How wide the detail panel and the bubble's name are.
@@ -61,8 +62,6 @@ const SHIFT_BITS: u32 = 10;
 const FIRST_LETTERS: u32 = 0xE400;
 const LETTERS_PER_ROW: u32 = 0x100;
 const FONT: &str = "assets/minecraft/font/default.json";
-const MINECART: &str = "assets/minecraft/textures/entity/minecart/minecart.png";
-const MINECART_SIZE: (u32, u32) = (64, 32);
 /// The skin of what sees for the eye on a flight. A spectator sees through invisibility, so
 /// for the ticks before the view moves onto it, the mannequin would show around the eye
 /// as a ghost. With nothing on its skin, there is nothing to show.
@@ -1123,12 +1122,10 @@ fn shifts() -> String {
     )
 }
 
-/// Adds the panels and the font that draws them. Also turns minecarts black, for the
-/// one around the eye: looking up at it would otherwise show its floor on the black sky.
+/// Adds the panels and the font that draws them.
 pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
-    let black = Image::filled(MINECART_SIZE.0, MINECART_SIZE.1, [0, 0, 0, 255]);
-    pack.add(MINECART, black.to_png());
+    transition::install(pack, crate::plugin::FIRST_MODEL_BLOCK);
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());
     let mut providers = vec![shifts()];
     for subject in SUBJECTS {

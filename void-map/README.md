@@ -33,9 +33,29 @@ next segment arrives before the last one ends, so that they never stall. At the 
 get their exact place, since the engine rounds angles, and come to rest before anything
 takes over from them. Going from a player to an entity without an eye would move the view
 by the height of one, so a flight from or to the eye is seen through an invisible
-mannequin riding the display entity. A rider cannot turn smoothly, so flights keep the
-look they start with. The player's `walking_speed` undoes the wider view a client gives
-someone flying: an eye and a camera see the same thing.
+mannequin riding the display entity. A display entity turns as it glides. A rider's view
+takes its pitch from moves, which the client eases over three ticks, and its yaw from its
+head, which only comes as a byte: `EntityPositionSync` and `SetHeadRotation` once a tick
+make a smooth turn, two small packets for each tick of the turn. The player's
+`walking_speed` undoes the wider view a client gives someone flying: an eye and a camera
+see the same thing.
+
+How the view goes is a `Flow`, chosen apart for the way in and the way out, and an outro
+is the flight of its intro, backwards. All end exactly in the eye, or on the view:
+
+- `/map intro 1`, `Envol`: straight up, tilting down to the ground under the player, then
+  back from straight over their marker.
+- `/map intro 2`, `Spirale`: up a widening spiral, turning a whole circle, then out of one
+  on the model.
+- `/map intro 3`, `Vol plané`: ahead and up like a bird, then in from low over the land.
+- `/map intro 4`, `Saut dans le ciel`: eyes on the sky and up into it, then down from low
+  over the land onto the view.
+
+`/map outro` takes the same numbers. Either one, from inside the map, also plays that flow
+over without leaving: the world stays on the client, so that an eye flies over it while
+the player stays on the rig, and a veil covers each cut. `PreviewFlow(player, part, flow)`
+does that for anything else, and changes no choice: that is
+`ChooseLook(player, LookChoice::Intro(Some(flow)))`, or `Outro`.
 
 The sky only goes nearly black: by day a dark brown stays, and at night the moon and the
 stars show under the model. The level's clock has the last word over the biome there.
@@ -77,7 +97,12 @@ The three models sit in a row on the client, far enough apart for a camera to ju
 one to the next instead of gliding, and at a scale that keeps the middle of the screen
 in the same place at the same size. The chunks of the models next to the view go out
 during the pan, after those of its own, so a threshold moves the camera and sends
-nothing. The client still redraws the sections around its new place.
+nothing. The client still redraws the sections around its new place, which takes it some
+50 ms with a render distance of 8. Those sections would then fade in from the colour of
+the fog over `chunkSectionFadeInTime`, most of a second of a dark map, so the pack
+overrides `chunksection.glsl` for them to be whole at once, east of `FIRST_MODEL_BLOCK`
+only. What is left of a threshold is those 50 ms, with the sky in the first frames, and
+markers that come back a moment later, since they are new entities.
 
 Chunks are built and encoded once, on start for the default look and clouds, and on
 first use for the others. In the map a client is told to keep a far larger radius with
@@ -134,9 +159,11 @@ look, starting and ending at rest, and the player then lands at the real place,
 `ARRIVAL_CLEARANCE` above the ground. In a look, that entity takes over from the eye.
 Crouching calls the dive off. A closed region refuses to be travelled to, and says so.
 
-A spectator only clicks when the look hits an entity. So a minecart surrounds the eye,
-which sits just under its floor: the cart is always hit, and looking down it never
-shows. A left click sends `SpectateEntity`, a right click sends `Interact`.
+A spectator only clicks when the look hits an entity. So an `interaction` surrounds the
+eye: it is always hit, and it has no model, so that nothing can show of it, even to a
+spectator, who sees invisible entities. A left click sends `SpectateEntity`, a right click
+sends `Interact`. A client with no pack keeps a chest minecart for its crosshair, and
+neither box exists during a flight, which takes no clicks.
 
 The model fits a client render distance of 8. Below that its far rim is cut. The last
 13 blocks of a render distance fade out, which the server cannot change: both views
@@ -154,7 +181,7 @@ a height of 4 make one pixel of the picture one pixel of the gui, as in the cros
 so it stays sharp at every gui scale. A change of look is a new text, with no fade.
 
 The client's crosshair stays as it is. A spectator only sees it over an entity with a
-menu, so a plain minecart around the eye leaves it off, and nothing has to tell the map
+menu, so the `interaction` around the eye leaves it off, and nothing has to tell the map
 from the rest of the game. A client that refused the pack gets a chest minecart, and its
 own crosshair.
 
@@ -203,8 +230,9 @@ figure glows, with a text display over it.
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
 `buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
-declares the level, `plugin` runs the sessions, `players` shows the characters, `cursor`
-draws the pointer, and `telemetry` measures the characters.
+declares the level, `plugin` runs the sessions and `plugin::preview` plays a flow over,
+`players` shows the characters, `cursor` draws the pointer, and `telemetry` measures the
+characters.
 
 ## Logs
 

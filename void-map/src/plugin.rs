@@ -86,6 +86,9 @@ const RENDER_GAP: i32 = 34;
 /// this close for the client to keep them and the real world at once, in one square: what
 /// a player comes back to is already there.
 const FIRST_ANCHOR_CHUNK: i32 = WORLD_KEPT_REACH + RENDER_GAP + DETAIL_PAN_REACH;
+/// Nothing of a model lies west of this block, and nothing of the world the player keeps
+/// lies east of it.
+pub(crate) const FIRST_MODEL_BLOCK: i32 = (FIRST_ANCHOR_CHUNK - DETAIL_PAN_REACH) * 16;
 const CHUNKS_BETWEEN_ANCHORS: i32 = 128;
 /// The rows of models, north to south, and how far they stand apart.
 const ANCHOR_ROWS: i32 = 9;
@@ -174,8 +177,8 @@ const CARD_SCALE_PER_BLOCK: f64 = 0.09;
 const PLAIN_CARD_BACKGROUND: i32 = 0xD8_10_14_1C_u32 as i32;
 const CLEAR: i32 = 0;
 
-/// A spectator only clicks when the look hits an entity. A minecart around the eye is
-/// always hit. The eye sits under its floor, looking down, so the cart never shows.
+/// A spectator only clicks when the look hits an entity, so a box goes around the eye. The
+/// eye sits just inside its floor, where it can look down and still be in the box.
 const EYE_BOX_DROP: f64 = 0.02;
 /// Displays vanish past 64 blocks times this, and the camera is further than that.
 const VIEW_RANGE: f32 = 8.0;
@@ -3949,7 +3952,7 @@ mod tests {
         assert_eq!(
             actions.matches,
             [
-                "look", "pan", "stop", "style", "me", "zone", "blocks", "move"
+                "look", "pan", "stop", "style", "me", "zone", "blocks", "move", "intro", "outro"
             ]
         );
         for action in ["style", "me", "zone", "blocks", "move"] {

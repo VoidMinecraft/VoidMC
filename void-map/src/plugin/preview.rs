@@ -130,7 +130,7 @@ pub(super) fn start(
             let [x, y, z] = flight.start();
             let at = under_eye(Position { x, y, z });
             let camera = spawn_eye_camera(&mut commands, at, session.rotation);
-            send_veil(&players, player);
+            veil_on(&session, &players, player);
             let stage = Stage::Leaving(flight);
             session.preview = Some(Preview::new(flow, stage, Some(camera)));
         }
@@ -143,6 +143,19 @@ pub(super) fn start(
             session.preview = Some(Preview::new(flow, Stage::Closing, None));
             set_off(&mut session, travel, &mut displays, &mut commands);
         }
+    }
+}
+
+/// A client with no pack has no veil, and sees each cut as it is.
+fn veil_on(session: &MapSession, players: &Players, player: Entity) {
+    if session.drawn {
+        send_veil(players, player);
+    }
+}
+
+fn veil_off(session: &MapSession, players: &Players, player: Entity) {
+    if session.drawn {
+        players.send(player, veil_out());
     }
 }
 
@@ -197,14 +210,14 @@ pub(super) fn tick(
                     && let (Some(eye), Some(vehicle)) = (eye, vehicle)
                 {
                     players.send(player, SetCamera { camera_id: eye.0 });
-                    players.send(player, veil_out());
+                    veil_off(&session, &players, player);
                     commands.entity(vehicle).try_insert(flight);
                     preview.to(Stage::Rising(flight));
                 }
             }
             Stage::Rising(flight) => {
                 if ticks + VEIL_FADE == flight.length() {
-                    send_veil(&players, player);
+                    veil_on(&session, &players, player);
                 }
                 if ticks >= flight.length() {
                     let opening = session.way_to_marker(preview.flow, OPENING_TICKS);
@@ -253,7 +266,7 @@ pub(super) fn tick(
                 let near = home.chunks_in_radius(NEAR_WORLD_CHUNKS);
                 let whole = near.iter().all(|chunk| session.world.contains(chunk));
                 if (whole && ticks > VEIL_FADE) || ticks >= LANDING_PATIENCE_TICKS {
-                    players.send(player, veil_out());
+                    veil_off(&session, &players, player);
                     if let Some(vehicle) = vehicle {
                         commands.entity(vehicle).try_insert(flight);
                     }
@@ -277,7 +290,7 @@ pub(super) fn tick(
             }
             Stage::Holding => {
                 if ticks >= HOLD_TICKS {
-                    send_veil(&players, player);
+                    veil_on(&session, &players, player);
                     preview.to(Stage::Returning);
                 }
             }
@@ -289,7 +302,7 @@ pub(super) fn tick(
                     if let Some(camera) = preview.camera {
                         despawn_eye_camera(camera, &mut commands);
                     }
-                    players.send(player, veil_out());
+                    veil_off(&session, &players, player);
                     session.preview = None;
                     continue;
                 }

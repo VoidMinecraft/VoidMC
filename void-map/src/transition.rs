@@ -9,6 +9,8 @@ use bevy_ecs::prelude::Component;
 use voidmc::components::{Position, Rotation};
 use voidmc_protocol::clientbound::{ClientboundPacket, SetTitleText, SetTitlesAnimation};
 
+use voidmc_ui::ResourcePack;
+
 use crate::art;
 use crate::pointer::{ease, look_direction};
 
@@ -62,6 +64,35 @@ const LEAP_HEIGHT: f64 = 56.0;
 const LEAP_MODEL_SHARE: f64 = 0.25;
 /// Where a leap still looks on the model, low over the land, as it comes out of the sky.
 const LEAP_PITCH: f32 = 32.0;
+
+/// The include of the terrain shaders that holds what the client says of each section.
+const SECTION_SHADER_FILE: &str = "assets/minecraft/shaders/include/chunksection.glsl";
+
+/// A section just built fades in from the colour of the fog, for most of a second, unless it
+/// is close by. That is what shows as a flash when a view jumps to another model, whose
+/// sections are all new: the sky of the map is black, and so is the fog. So on the models,
+/// and nowhere else, a section is whole at once. The block keeps its layout: only a name
+/// changes, and what the shader reads under the old one.
+fn section_shader(first_model_block: i32) -> String {
+    format!(
+        "#version 330\n\n\
+         layout(std140) uniform ChunkSection {{\n    \
+         mat4 ModelViewMat;\n    \
+         float SectionFade;\n    \
+         ivec2 TextureSize;\n    \
+         ivec3 ChunkPosition;\n\
+         }};\n\n\
+         #define ChunkVisibility (ChunkPosition.x >= {first_model_block} ? 1.0 : SectionFade)\n"
+    )
+}
+
+/// Adds what the way between models needs of the pack.
+pub fn install(pack: &mut ResourcePack, first_model_block: i32) {
+    pack.add(
+        SECTION_SHADER_FILE,
+        section_shader(first_model_block).into_bytes(),
+    );
+}
 
 /// What brings the veil over the screen. A title is the one thing that covers it
 /// from the server and fades on its own.
@@ -526,6 +557,24 @@ mod tests {
             }
             assert_eq!(flight.looking(), look);
         }
+    }
+
+    /// The client binds this block by its name and reads it by its layout.
+    #[test]
+    fn the_section_shader_keeps_the_layout_of_the_block() {
+        let shader = section_shader(1312);
+        let members = [
+            "mat4 ModelViewMat",
+            "float SectionFade",
+            "ivec2 TextureSize",
+        ];
+        let at: Vec<_> = members
+            .iter()
+            .map(|one| shader.find(one).unwrap())
+            .collect();
+        assert!(at.is_sorted());
+        assert!(shader.contains("uniform ChunkSection"));
+        assert!(shader.contains("ChunkPosition.x >= 1312"));
     }
 
     #[test]
