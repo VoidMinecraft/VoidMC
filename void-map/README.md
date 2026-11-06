@@ -152,6 +152,10 @@ Regions are data in `regions`: each is discovered, undiscovered or locked, and t
 only takes the colours of a region down a little to show it. `Regions::demo` is a fixed
 example.
 
+A waypoint of a closed region is drawn in greys by the pack, as an item model of its own,
+with a question mark or a red lock over it. A client without the pack gets the usual item,
+darker. The sign of a region stands clear of its waypoints.
+
 ## The pointer
 
 The pointer is a title of one glyph, from a font of its own. The client centres a title

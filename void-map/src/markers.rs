@@ -9,12 +9,6 @@ const ATTEMPTS_PER_MARKER: usize = 64;
 
 const NAME_STARTS: [&str; 6] = ["Port", "Val", "Mont", "Roche", "Fort", "Bourg"];
 const NAME_ENDS: [&str; 6] = ["Brume", "Clair", "Noir", "Givre", "Cendre", "Sombre"];
-const KINDS: [MarkerKind; 4] = [
-    MarkerKind::Village,
-    MarkerKind::Ruins,
-    MarkerKind::Mine,
-    MarkerKind::Lighthouse,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkerKind {
@@ -25,6 +19,8 @@ pub enum MarkerKind {
 }
 
 impl MarkerKind {
+    pub const ALL: [Self; 4] = [Self::Village, Self::Ruins, Self::Mine, Self::Lighthouse];
+
     /// Name shown to players.
     pub fn label(self) -> &'static str {
         match self {
@@ -91,7 +87,7 @@ impl MarkerField {
             }
             markers.push(Marker {
                 name: numbered(&names, markers.len()),
-                kind: KINDS[random.below(KINDS.len() as u64) as usize],
+                kind: MarkerKind::ALL[random.below(MarkerKind::ALL.len() as u64) as usize],
                 x,
                 z,
                 height,

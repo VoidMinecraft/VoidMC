@@ -194,6 +194,8 @@ const CLOUD_DRIFT: f64 = 4.0;
 /// The highest a cloud starts, as a share of the model's height over the sea: a camera
 /// zoomed all the way in stays over it.
 const CLOUD_HEIGHT: f64 = 0.62;
+/// How far the sign of a region stands from a waypoint, in world blocks.
+const SIGN_CLEARANCE: f64 = 90.0;
 /// How far from its real place a figure is shown on a coarser model, in cells.
 const STAND_REACH: i32 = 4;
 const HATCH_WIDTH: i32 = 3;
@@ -746,7 +748,13 @@ impl Scene {
 
     /// The model cell a world block falls on.
     /// The land of a region cell closest to the middle of that land, if it has any.
-    pub fn middle_of_land(&self, regions: &Regions, region: &Region) -> Option<(i32, i32)> {
+    /// It stays clear of `taken`, the cells of what stands there, if the region has room.
+    pub fn middle_of_land(
+        &self,
+        regions: &Regions,
+        region: &Region,
+        taken: &[(i32, i32)],
+    ) -> Option<(i32, i32)> {
         let radius = self.scale.radius;
         let cells: Vec<_> = (-radius..radius)
             .flat_map(|x| (-radius..radius).map(move |z| (x, z)))
@@ -762,7 +770,15 @@ impl Scene {
         let middle = (middle.0 / count, middle.1 / count);
         let from_middle =
             |cell: &&(i32, i32)| (cell.0 - middle.0).pow(2) + (cell.1 - middle.1).pow(2);
-        cells.iter().min_by_key(from_middle).copied()
+        let reach = self.scale.cells(SIGN_CLEARANCE) as i32;
+        let clear = |cell: &&(i32, i32)| {
+            let apart = |other: &(i32, i32)| {
+                (cell.0 - other.0).pow(2) + (cell.1 - other.1).pow(2) >= reach * reach
+            };
+            taken.iter().all(apart)
+        };
+        let free = cells.iter().filter(clear).min_by_key(from_middle);
+        free.or(cells.iter().min_by_key(from_middle)).copied()
     }
 
     /// How far from the middle the model's chunks go.

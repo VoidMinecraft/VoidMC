@@ -11,6 +11,7 @@ use crate::alphabet::LETTERS;
 use crate::cursor;
 use crate::markers::MarkerKind;
 use crate::noise::fractal;
+use crate::regions::RegionState;
 use crate::wheel::CATEGORIES;
 
 /// How wide the detail panel and the bubble's name are.
@@ -636,6 +637,111 @@ fn draw_icon(image: &mut Image, subject: Subject, left: u32, top: u32) {
     }
 }
 
+/// Pixels of the texture of an icon of a closed place, on a side.
+const CLOSED_ICON_SIZE: u32 = 32;
+const CLOSED_LIGHT: [u8; 4] = [196, 198, 204, 255];
+const CLOSED_DARK: [u8; 4] = [128, 130, 136, 255];
+const CLOSED_EDGE: [u8; 4] = [46, 47, 52, 255];
+const LOCK_COLOUR: [u8; 4] = [214, 62, 54, 255];
+
+/// The two states a place can be closed in, each with the mark it gets.
+const CLOSED_STATES: [(RegionState, &str, [&str; 16], [u8; 4]); 2] = [
+    (RegionState::Undiscovered, "unknown", QUESTION, SIGN_COLOUR),
+    (RegionState::Locked, "locked", LOCK, LOCK_COLOUR),
+];
+
+/// Sets the pixels of a drawing and the edge around them, on what is under it.
+fn stamp(image: &mut Image, pixels: &[(u32, u32, [u8; 4])]) {
+    for (x, y, _) in pixels {
+        for (dx, dy) in [(0, 1), (2, 1), (1, 0), (1, 2)] {
+            let (x, y) = (x + dx, y + dy);
+            if (1..=image.width()).contains(&x) && (1..=image.height()).contains(&y) {
+                image.set(x - 1, y - 1, CLOSED_EDGE);
+            }
+        }
+    }
+    for (x, y, color) in pixels {
+        image.set(*x, *y, *color);
+    }
+}
+
+/// The icon of a place that is not open: its drawing in greys, under the mark of its state.
+fn closed_icon(kind: MarkerKind, mark: &[&str; 16], colour: [u8; 4]) -> Image {
+    let mut image = Image::new(CLOSED_ICON_SIZE, CLOSED_ICON_SIZE);
+    let place = Subject::Place(kind).icon();
+    let drawn = place.iter().enumerate().flat_map(|(row, line)| {
+        line.bytes().enumerate().flat_map(move |(column, pixel)| {
+            let color = match pixel {
+                b'#' => Some(CLOSED_DARK),
+                b'o' => Some(CLOSED_LIGHT),
+                _ => None,
+            };
+            let (x, y) = (column as u32 * 2, row as u32 * 2);
+            let square = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)];
+            color
+                .into_iter()
+                .flat_map(move |color| square.map(|(x, y)| (x, y, color)))
+        })
+    });
+    stamp(&mut image, &drawn.collect::<Vec<_>>());
+    let corner = CLOSED_ICON_SIZE - 16;
+    // On a dark disc, so that the mark stays apart from the drawing it sits on.
+    let middle = f64::from(CLOSED_ICON_SIZE) - 8.5;
+    for y in corner - 2..CLOSED_ICON_SIZE {
+        for x in corner - 2..CLOSED_ICON_SIZE {
+            if (f64::from(x) - middle).hypot(f64::from(y) - middle) <= 9.5 {
+                image.set(x, y, CLOSED_EDGE);
+            }
+        }
+    }
+    let sign = mark.iter().enumerate().flat_map(|(row, line)| {
+        let on = line.bytes().enumerate().filter(|(_, pixel)| *pixel == b'#');
+        on.map(move |(column, _)| (corner + column as u32, corner + row as u32, colour))
+    });
+    stamp(&mut image, &sign.collect::<Vec<_>>());
+    image
+}
+
+fn closed_name(kind: MarkerKind, state: &str) -> String {
+    let kind = match kind {
+        MarkerKind::Village => "village",
+        MarkerKind::Ruins => "ruins",
+        MarkerKind::Mine => "mine",
+        MarkerKind::Lighthouse => "lighthouse",
+    };
+    format!("closed_{kind}_{state}")
+}
+
+/// The item model that draws a place in a closed region, which comes with the pack.
+pub fn closed_item_model(kind: MarkerKind, state: RegionState) -> Option<String> {
+    let (_, name, ..) = CLOSED_STATES.iter().find(|(one, ..)| *one == state)?;
+    Some(format!("voidmap:{}", closed_name(kind, name)))
+}
+
+fn install_closed_icons(pack: &mut ResourcePack) {
+    for kind in MarkerKind::ALL {
+        for (_, state, mark, colour) in CLOSED_STATES {
+            let name = closed_name(kind, state);
+            let texture = closed_icon(kind, &mark, colour).to_png();
+            pack.add(format!("assets/voidmap/textures/item/{name}.png"), texture);
+            let model = format!(
+                r#"{{"parent":"minecraft:item/generated","textures":{{"layer0":"voidmap:item/{name}"}}}}"#
+            );
+            pack.add(
+                format!("assets/voidmap/models/item/{name}.json"),
+                model.into_bytes(),
+            );
+            let item = format!(
+                r#"{{"model":{{"type":"minecraft:model","model":"voidmap:item/{name}"}}}}"#
+            );
+            pack.add(
+                format!("assets/voidmap/items/{name}.json"),
+                item.into_bytes(),
+            );
+        }
+    }
+}
+
 /// The sheet: a dark panel with a header in the colour of its subject.
 fn sheet(subject: Subject) -> Image {
     let accent = subject.accent();
@@ -1127,6 +1233,7 @@ fn shifts() -> String {
 /// one around the eye: looking up at it would otherwise show its floor on the black sky.
 pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
+    install_closed_icons(pack);
     let black = Image::filled(MINECART_SIZE.0, MINECART_SIZE.1, [0, 0, 0, 255]);
     pack.add(MINECART, black.to_png());
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());
@@ -1366,6 +1473,43 @@ mod tests {
         let last = FIRST_LETTERS + (text_rows().len() as u32 + 1) * LETTERS_PER_ROW;
         assert!(last <= 0xF8FF);
         assert!(LETTERS.len() <= LETTERS_PER_ROW as usize);
+    }
+
+    #[test]
+    fn a_closed_place_has_a_model_in_the_pack_and_an_open_one_has_none() {
+        let mut pack = ResourcePack::new("test");
+        install(&mut pack);
+        assert_eq!(
+            closed_item_model(MarkerKind::Mine, RegionState::Discovered),
+            None
+        );
+        for kind in MarkerKind::ALL {
+            for state in [RegionState::Undiscovered, RegionState::Locked] {
+                let model = closed_item_model(kind, state).unwrap();
+                let name = model.strip_prefix("voidmap:").unwrap();
+                assert!(pack.contains(&format!("assets/voidmap/items/{name}.json")));
+                assert!(pack.contains(&format!("assets/voidmap/models/item/{name}.json")));
+                assert!(pack.contains(&format!("assets/voidmap/textures/item/{name}.png")));
+            }
+        }
+    }
+
+    /// Only the mark of its state may have a colour.
+    #[test]
+    fn a_closed_icon_is_grey_under_its_mark() {
+        let image = closed_icon(MarkerKind::Mine, &LOCK, LOCK_COLOUR);
+        let mut drawn = 0;
+        for y in 0..CLOSED_ICON_SIZE {
+            for x in 0..CLOSED_ICON_SIZE {
+                let [red, green, blue, alpha] = image.pixel(x, y);
+                let grey = red.abs_diff(green) < 12 && green.abs_diff(blue) < 12;
+                if alpha > 0 {
+                    drawn += 1;
+                    assert!(grey || [red, green, blue, alpha] == LOCK_COLOUR, "{x} {y}");
+                }
+            }
+        }
+        assert!(drawn > 100);
     }
 
     #[test]

@@ -42,7 +42,9 @@ use voidmc_protocol::{
 };
 use voidmc_ui::{PackSettled, Text};
 
-use crate::art::{Card, EYE_SKIN, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
+use crate::art::{
+    Card, EYE_SKIN, Mark, Style, Subject, WHEEL_MIDDLE_DROP, closed_item_model, sign, wheel_face,
+};
 use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
 use crate::fence::Border;
@@ -132,6 +134,8 @@ const CAMERA_GLIDE_TICKS: u8 = 3;
 /// Above the tallest landmark, in its blocks.
 const ICON_LIFT: f64 = 10.0;
 const ICON_SCALE: f32 = 5.0;
+/// The light of the item of a closed waypoint, out of 15, for a client without the pack.
+const CLOSED_ICON_LIGHT: u8 = 4;
 const ICON_HOVER_GROWTH: f32 = 1.6;
 /// The head floats over the player's spot, on a pin always drawn right under it.
 const MINI_HEAD_LIFT: f64 = 4.0;
@@ -211,6 +215,24 @@ fn icon(kind: MarkerKind) -> ItemStack {
         MarkerKind::Mine => "minecraft:iron_pickaxe",
         MarkerKind::Lighthouse => "minecraft:lantern",
     })
+}
+
+/// What a waypoint shows, for a client with the pack or without. The pack draws one of a
+/// closed region in greys, with the mark of its state.
+fn waypoint_icon(kind: MarkerKind, state: RegionState, drawn: bool) -> ItemStack {
+    let stack = icon(kind);
+    match closed_item_model(kind, state).filter(|_| drawn) {
+        Some(model) => {
+            // An identifier is a string, and these are short enough for a one-byte length.
+            let mut body = vec![model.len() as u8];
+            body.extend_from_slice(model.as_bytes());
+            stack.with_component(DataComponent::Raw {
+                type_id: component_ids::ITEM_MODEL,
+                body,
+            })
+        }
+        None => stack,
+    }
 }
 
 /// How the mouse drives the map.
@@ -333,6 +355,8 @@ struct Waypoint {
     marker: Marker,
     /// On the model, from its centre.
     at: [f64; 3],
+    /// That of its region.
+    state: RegionState,
 }
 
 const CLOUDS: ChunkLook = ChunkLook {
@@ -376,6 +400,7 @@ impl Level {
             .map(|(marker, cell)| {
                 scene.build(cell, marker.kind);
                 let top = scene.top(cell.0, cell.1).unwrap_or(scene::SEA_Y);
+                let state = regions.at(f64::from(marker.x), f64::from(marker.z)).state;
                 Waypoint {
                     marker,
                     at: [
@@ -383,13 +408,14 @@ impl Level {
                         f64::from(top + 1),
                         f64::from(cell.1) + 0.5,
                     ],
+                    state,
                 }
             })
             .collect();
         let signs = regions
             .closed()
             .filter_map(|region| {
-                let (x, z) = scene.middle_of_land(regions, region)?;
+                let (x, z) = scene.middle_of_land(regions, region, &cells)?;
                 let top = scene.top(x, z)?;
                 let at = [f64::from(x) + 0.5, f64::from(top), f64::from(z) + 0.5];
                 Some((at, region.state))
@@ -1369,7 +1395,15 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
         let [x, y, z] = waypoint.at;
         let at = session.on_model(x, y + ICON_LIFT * build, z);
         let scale = ICON_SCALE * session.marker_scale();
-        icons.push(spawn_icon(commands, at, icon(waypoint.marker.kind), scale));
+        let item = waypoint_icon(waypoint.marker.kind, waypoint.state, session.drawn);
+        let entity = spawn_icon(commands, at, item, scale);
+        // Without the pack there is only the item, so a closed one is at least darker.
+        if waypoint.state != RegionState::Discovered && !session.drawn {
+            commands
+                .entity(entity)
+                .insert(display(scale).brightness(CLOSED_ICON_LIGHT, CLOSED_ICON_LIGHT));
+        }
+        icons.push(entity);
     }
     let you = model_spot(level, &session.position).map(|at| You {
         parts: spawn_you(session, at, build, commands),
@@ -3861,6 +3895,24 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_waypoint_draws_its_own_model_with_the_pack_only() {
+        let kind = MarkerKind::Mine;
+        let has_model = |stack: ItemStack| !stack.components.is_empty();
+        assert!(has_model(waypoint_icon(kind, RegionState::Locked, true)));
+        assert!(has_model(waypoint_icon(
+            kind,
+            RegionState::Undiscovered,
+            true
+        )));
+        assert!(!has_model(waypoint_icon(kind, RegionState::Locked, false)));
+        assert!(!has_model(waypoint_icon(
+            kind,
+            RegionState::Discovered,
+            true
+        )));
+    }
+
+    #[test]
     fn map_completes_its_actions_and_its_styles() {
         let world = World::new();
         let registry = map_registry();
@@ -4069,6 +4121,7 @@ mod tests {
                 height: 70,
             },
             at: [0.0; 3],
+            state: RegionState::Discovered,
         };
         let player = Position {
             x: 340.0,

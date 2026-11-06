@@ -38,6 +38,7 @@ pub mod component_ids {
     pub const MAX_STACK_SIZE: i32 = 1;
     pub const MAX_DAMAGE: i32 = 2;
     pub const DAMAGE: i32 = 3;
+    pub const ITEM_MODEL: i32 = 10;
     pub const REPAIR_COST: i32 = 19;
     pub const PROFILE: i32 = 70;
 }
