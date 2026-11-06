@@ -60,6 +60,20 @@ const PAN_RETURN_LEAST: f64 = 0.3;
 /// How much of the way to the aim the view covers in a tick. It ends on a long tail of
 /// short moves: a client gliding to the last one has nothing left to overshoot with.
 const VIEW_SHARE: f64 = 0.45;
+/// A client that finds an entity further than this from where it is told to go jumps
+/// there instead of gliding, then glides back to what it was still doing.
+const CLIENT_SNAP_DISTANCE: f64 = 64.0;
+/// The most the view moves in a tick. A camera glides a few ticks behind it, and has to
+/// stay clear of [`CLIENT_SNAP_DISTANCE`] however fast the mouse goes.
+const MAX_VIEW_STEP: f64 = 12.0;
+/// A client is this many ticks behind at worst: the glide, and one for the network.
+const CLIENT_LAG_TICKS: f64 = 4.0;
+const _: () = assert!(
+    MAX_VIEW_STEP * CLIENT_LAG_TICKS < CLIENT_SNAP_DISTANCE,
+    "a fast pan would make the client jump"
+);
+/// How far the aim runs ahead of the view, so that turning back answers at once.
+const MAX_AIM_LEAD: f64 = MAX_VIEW_STEP / VIEW_SHARE;
 const VIEW_ARRIVED: f64 = 0.01;
 
 /// How far off the middle of the screen a marker gets picked up, and let go of.
@@ -227,7 +241,7 @@ impl Zoom {
             };
             self.wanted = (self.wanted * change).clamp(CLOSEST_ZOOM, FARTHEST_ZOOM);
         }
-        self.shown = glide(self.shown, self.wanted);
+        self.shown = glide_height(self.shown, self.wanted);
     }
 
     pub fn height(self) -> f64 {
@@ -235,13 +249,23 @@ impl Zoom {
     }
 }
 
-fn glide(from: f64, to: f64) -> f64 {
-    let left = to - from;
-    if left.abs() < VIEW_ARRIVED {
+/// Most of the way there, in one number: a height has no speed to keep to.
+fn glide_height(from: f64, to: f64) -> f64 {
+    if (to - from).abs() < VIEW_ARRIVED {
         to
     } else {
-        from + left * VIEW_SHARE
+        from + (to - from) * VIEW_SHARE
     }
+}
+
+fn glide(from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
+    let left = [to[0] - from[0], to[1] - from[1]];
+    let distance = left[0].hypot(left[1]);
+    if distance < VIEW_ARRIVED {
+        return to;
+    }
+    let share = VIEW_SHARE.min(MAX_VIEW_STEP / distance);
+    [from[0] + left[0] * share, from[1] + left[1] * share]
 }
 
 /// What one rotation report amounts to.
@@ -348,6 +372,9 @@ impl Pan {
                 self.aim[axis] += step / f64::from(moves) * give;
             }
         }
+        let lead = [self.aim[0] - self.view[0], self.aim[1] - self.view[1]];
+        let kept = (MAX_AIM_LEAD / lead[0].hypot(lead[1]).max(f64::EPSILON)).min(1.0);
+        self.aim = [self.view[0] + lead[0] * kept, self.view[1] + lead[1] * kept];
     }
 
     /// Glides the view to the aim, and brings an aim past the rim back once the mouse rests.
@@ -360,10 +387,7 @@ impl Pan {
                 .min(distance);
             self.aim = [self.aim[0] + way[0] * back, self.aim[1] + way[1] * back];
         }
-        self.view = [
-            glide(self.view[0], self.aim[0]),
-            glide(self.view[1], self.aim[1]),
-        ];
+        self.view = glide(self.view, self.aim);
     }
 
     /// Where the middle of the screen is headed.
@@ -442,6 +466,43 @@ mod tests {
     use voidmc::DefaultWorldGenerator;
 
     use super::*;
+
+    /// The view is what the client follows. Past a certain speed it jumped back and
+    /// forth by tens of blocks, on quick turns back above all.
+    #[test]
+    fn the_view_never_outruns_what_a_client_can_glide_to() {
+        let mut pan = Pan::default();
+        for tick in 0..200 {
+            let way = if (tick / 4) % 2 == 0 { 40.0 } else { -40.0 };
+            let before = pan.view();
+            pan.apply([way, way / 2.0], |_| true);
+            pan.tick(|_| true);
+            let after = pan.view();
+            let moved = (after[0] - before[0]).hypot(after[1] - before[1]);
+            assert!(moved <= MAX_VIEW_STEP + 1e-9, "{moved} on tick {tick}");
+        }
+    }
+
+    #[test]
+    fn turning_back_answers_within_a_few_ticks() {
+        let mut pan = Pan::default();
+        for _ in 0..20 {
+            pan.apply([40.0, 0.0], |_| true);
+            pan.tick(|_| true);
+        }
+        let mut last = pan.view()[0];
+        let mut ticks = 0;
+        loop {
+            pan.apply([-40.0, 0.0], |_| true);
+            pan.tick(|_| true);
+            ticks += 1;
+            if pan.view()[0] < last {
+                break;
+            }
+            last = pan.view()[0];
+        }
+        assert!(ticks <= 2, "{ticks}");
+    }
 
     fn dive() -> Dive {
         Dive::new([0.0, 100.0, 40.0], [150.0, 40.0], [10.0, 70.0, 0.0], 16.0)
@@ -812,7 +873,7 @@ mod tests {
     fn a_pan_has_a_top_speed() {
         let mut pan = Pan::default();
         pan.apply([150.0, 0.0], |_| true);
-        assert_eq!(pan.offset(), [MAX_PAN_STEP, 0.0]);
+        assert_eq!(pan.offset(), [MAX_AIM_LEAD, 0.0]);
     }
 
     #[test]
@@ -876,6 +937,7 @@ mod tests {
             let mut pan = Pan::default();
             for _ in 0..1000 {
                 pan.apply(delta, |at| over(&scene, at));
+                pan.tick(|at| over(&scene, at));
             }
             let (past, _) = off_model(pan.offset(), &|at| over(&scene, at));
             assert!(past > 0.0, "{angle} stopped short");
