@@ -15,8 +15,8 @@ use crate::{
     CommandRegistry, RegistryDataStore, ServerConfigResource, WorldGen,
     components::{
         ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance, KeepAliveState,
-        LoadedChunks, MinecraftEntityId, PlayerDimension, Position, PreviousPosition, Rotation,
-        TeleportState,
+        LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerUuid, Position, PreviousPosition,
+        Rotation, TeleportState,
     },
     events::PlayerJoinEvent,
     network::PacketEvent,
@@ -107,6 +107,8 @@ fn handle_finish_configuration(
     players: Players,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
+    uuids: Query<&PlayerUuid>,
+    entity_ids: Query<&MinecraftEntityId>,
 ) {
     // Determine spawn position
     let spawn_y = config.spawn_y.unwrap_or_else(|| {
@@ -118,7 +120,12 @@ fn handle_finish_configuration(
     });
     let spawn_chunk = ChunkPos::from_block(config.spawn_x, config.spawn_z);
 
-    let minecraft_entity_id = MinecraftEntityId::allocate();
+    let stable_id = uuids
+        .get(event.entity)
+        .ok()
+        .filter(|_| config.stable_player_ids)
+        .map(|uuid| MinecraftEntityId::of_player(uuid.0));
+    let minecraft_entity_id = player_entity_id(stable_id, entity_ids.iter().copied());
 
     // Update entity with new components
     commands.entity(event.entity).insert((
@@ -250,6 +257,16 @@ fn handle_finish_configuration(
     });
 }
 
+/// An id already in the world gives way to a fresh one: two uuids can fold to the same value.
+fn player_entity_id(
+    stable: Option<MinecraftEntityId>,
+    mut taken: impl Iterator<Item = MinecraftEntityId>,
+) -> MinecraftEntityId {
+    stable
+        .filter(|id| !taken.any(|other| other == *id))
+        .unwrap_or_else(MinecraftEntityId::allocate)
+}
+
 fn send_teleport(players: &Players, player: Entity, x: f64, y: f64, z: f64) {
     players.send(
         player,
@@ -266,4 +283,27 @@ fn send_teleport(players: &Players, player: Entity, x: f64, y: f64, z: f64) {
             flags: clientbound::TeleportFlags::empty(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn a_player_keeps_its_id_from_one_run_to_the_next() {
+        let uuid = Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        let id = MinecraftEntityId::of_player(uuid);
+        assert_eq!(id, MinecraftEntityId::of_player(uuid));
+        assert!(id.0 >= 0x4000_0000);
+        assert_eq!(player_entity_id(Some(id), std::iter::empty()), id);
+    }
+
+    #[test]
+    fn a_stable_id_gives_way_when_it_is_taken() {
+        let id = MinecraftEntityId::of_player(Uuid::nil());
+        assert_ne!(player_entity_id(Some(id), std::iter::once(id)), id);
+        assert!(player_entity_id(None, std::iter::empty()).0 < 0x4000_0000);
+    }
 }

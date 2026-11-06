@@ -41,6 +41,9 @@ pub struct ServerConfig {
     pub packet_ingest_budget_ms: u64,
     pub max_chunk_generations_per_tick: usize,
     pub slow_tick_ms: u64,
+    /// A player keeps its entity id across restarts, which is what lets `voidmc-keeper`
+    /// hand a client over without touching its world. On by `VOIDMC_STABLE_PLAYER_IDS`.
+    pub stable_player_ids: bool,
     pub frame_limits: FrameLimits,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
@@ -66,6 +69,7 @@ impl Default for ServerConfig {
             packet_ingest_budget_ms: 4,
             max_chunk_generations_per_tick: 8,
             slow_tick_ms: 200,
+            stable_player_ids: std::env::var_os("VOIDMC_STABLE_PLAYER_IDS").is_some(),
             frame_limits: FrameLimits::default(),
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
@@ -170,6 +174,11 @@ impl ServerConfigBuilder {
         self
     }
 
+    pub fn stable_player_ids(mut self, stable: bool) -> Self {
+        self.config.stable_player_ids = stable;
+        self
+    }
+
     pub fn frame_limits(mut self, limits: FrameLimits) -> Self {
         self.config.frame_limits = limits;
         self
@@ -218,6 +227,7 @@ pub struct ServerConfigResource {
     pub packet_ingest_budget_ms: u64,
     pub max_chunk_generations_per_tick: usize,
     pub slow_tick_ms: u64,
+    pub stable_player_ids: bool,
 }
 
 impl From<&ServerConfig> for ServerConfigResource {
@@ -242,6 +252,7 @@ impl From<&ServerConfig> for ServerConfigResource {
             packet_ingest_budget_ms: config.packet_ingest_budget_ms,
             max_chunk_generations_per_tick: config.max_chunk_generations_per_tick,
             slow_tick_ms: config.slow_tick_ms,
+            stable_player_ids: config.stable_player_ids,
         }
     }
 }

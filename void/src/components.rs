@@ -56,6 +56,15 @@ impl MinecraftEntityId {
         static NEXT: AtomicI32 = AtomicI32::new(1);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
+
+    /// The id a player keeps from one run of the server to the next, above any
+    /// [`allocate`](Self::allocate) can reach.
+    pub fn of_player(uuid: Uuid) -> Self {
+        let (high, low) = uuid.as_u64_pair();
+        let folded = high ^ low;
+        let bits = (folded ^ (folded >> 32)) as u32;
+        Self((0x4000_0000 | (bits & 0x3FFF_FFFF)) as i32)
+    }
 }
 
 impl Default for MinecraftEntityId {
