@@ -177,21 +177,16 @@ const CLOUD: i32 = b::WHITE_CONCRETE;
 /// on every model.
 const CLOUD_SPACING: f64 = 72.0;
 /// The share of the cells that do.
-const CLOUD_CHANCE: f64 = 0.8;
+const CLOUD_CHANCE: f64 = 0.6;
 /// A pixel of a cloud, in world blocks: a cell of the coarsest model, on the same grid. Each
 /// is at least a cell on all of them, so that none can lose a part of the drawing.
 const CLOUD_PIXEL: f64 = OVERVIEW.blocks_per_cell as f64;
-/// The length of a cloud, along its axis, in world blocks.
-const CLOUD_LENGTH: [f64; 2] = [16.0, 64.0];
-/// The radius of its puffs.
-const CLOUD_PUFF: [f64; 2] = [10.0, 17.0];
-/// How far a puff strays from the axis: much more than a pixel and a cloud is no longer one
-/// shape, but a corner.
-const CLOUD_STRAY: f64 = 4.0;
+/// How high in a puff each layer of a cloud starts: 0 at its edge, 1 at its middle.
+const CLOUD_LAYERS: [f64; 4] = [0.0, 0.3, 0.55, 0.78];
 /// How far a cloud turns from its west-east axis, as a share of a turn.
 const CLOUD_TILT: f64 = 0.09;
-/// How high in a puff each layer of a cloud starts: 0 at its edge, 1 at its middle.
-const CLOUD_LAYERS: [f64; 3] = [0.0, 0.34, 0.62];
+/// One cloud in this many is a wisp, the only ones with no relief.
+const CLOUD_WISP_EVERY: usize = 12;
 /// How far south of its place a cloud is drawn, in world blocks. The camera looks north
 /// and down, so that a cloud high up shows further north than what it hangs over.
 const CLOUD_LEAN: f64 = 48.0;
@@ -203,7 +198,7 @@ const CLOUD_ALTITUDE: [f64; 2] = [78.0, 100.0];
 const CLOUD_CLEARANCE: i32 = 2;
 /// The highest a cloud starts, in blocks over the sea: a camera zoomed all the way in on
 /// the detail model stays over it, and the others are further up.
-const CLOUD_CEILING: i32 = 34;
+const CLOUD_CEILING: i32 = 32;
 /// How far the sign of a region stands from a waypoint, in world blocks.
 const SIGN_CLEARANCE: f64 = 90.0;
 /// How far from its real place a figure is shown on a coarser model, in cells.
@@ -344,46 +339,137 @@ pub struct Scene {
     clouds: HashMap<(i32, i32), Vec<i32>>,
 }
 
-/// One cloud: a few round puffs along an axis, the same on every model, at a place of the
-/// world. Each is its own shape, which comes from where it hangs.
+/// What a cloud looks like from above.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CloudForm {
+    /// A long bank, tallest in the middle.
+    Bank,
+    /// A bank that curves round.
+    Crescent,
+    /// A round mass with a tower in it.
+    Heap,
+    /// Two masses and a low waist between them.
+    Twin,
+    /// A small shred, one layer thick.
+    Wisp,
+}
+
+impl CloudForm {
+    const WITH_RELIEF: [Self; 4] = [Self::Bank, Self::Crescent, Self::Heap, Self::Twin];
+
+    /// The form of a cloud, by its place in the list. Forms take turns: there are too few
+    /// clouds for rolls to come out even.
+    fn in_turn(index: usize) -> Self {
+        if index % CLOUD_WISP_EVERY == CLOUD_WISP_EVERY - 1 {
+            return Self::Wisp;
+        }
+        Self::WITH_RELIEF[index % Self::WITH_RELIEF.len()]
+    }
+
+    /// How long it runs, in world blocks.
+    fn length(self) -> [f64; 2] {
+        match self {
+            Self::Bank => [36.0, 72.0],
+            Self::Crescent => [40.0, 68.0],
+            Self::Heap => [14.0, 26.0],
+            Self::Twin => [40.0, 60.0],
+            Self::Wisp => [6.0, 14.0],
+        }
+    }
+
+    /// The radius of its puffs, at their largest.
+    fn puff(self) -> [f64; 2] {
+        match self {
+            Self::Heap => [18.0, 24.0],
+            Self::Wisp => [7.0, 10.0],
+            _ => [15.0, 21.0],
+        }
+    }
+
+    /// How far a puff strays from the axis, in world blocks: much more than a pixel and a
+    /// long cloud is no longer one shape, but a corner.
+    fn stray(self) -> f64 {
+        match self {
+            Self::Heap => 9.0,
+            Self::Wisp => 2.0,
+            _ => 4.0,
+        }
+    }
+
+    /// How much of its size a puff keeps, at this share of the way along, from -0.5 to 0.5.
+    fn belly(self, along: f64) -> f64 {
+        match self {
+            Self::Twin => 0.62 + along.abs() * 0.76,
+            _ => 1.0 - along.abs() * 0.9,
+        }
+    }
+}
+
+/// A round part of a cloud.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Puff {
+    /// Its middle, in world blocks.
+    at: [f64; 2],
+    radius: f64,
+    /// How many layers it reaches, at its middle.
+    layers: usize,
+}
+
+/// One cloud: a few round puffs, each with its height, the same on every model, at a place
+/// of the world. Each is its own shape, which comes from where it hangs.
 #[derive(Debug, Clone, PartialEq)]
 struct Cloud {
-    /// Their middles and radii, in world blocks.
-    puffs: Vec<[f64; 3]>,
-    /// How many layers it has at its middle.
-    layers: usize,
+    form: CloudForm,
+    puffs: Vec<Puff>,
     /// How high it hangs, in world blocks over the sea.
     altitude: f64,
 }
 
 impl Cloud {
     /// The cloud over a place, drawn from four rolls per step of the shape.
-    fn grown(middle: [f64; 2], cell: (i32, i32)) -> Self {
+    fn grown(middle: [f64; 2], cell: (i32, i32), form: CloudForm) -> Self {
         let roll = |step: u32| scatter(CLOUD_SEED + 10 * step, cell.0, cell.1);
         let between = |[low, high]: [f64; 2], share: f64| low + (high - low) * share;
-        let [length, tilt, layers, altitude] = roll(1);
-        // Small clouds are the common ones.
-        let length = between(CLOUD_LENGTH, length * length);
+        let [length, tilt, altitude, side] = roll(1);
+        let length = between(form.length(), length);
         let tilt = (tilt * 2.0 - 1.0) * CLOUD_TILT * std::f64::consts::TAU;
         let axis = [tilt.cos(), tilt.sin()];
-        let count = (length / CLOUD_PUFF[0] / 1.6).ceil().max(2.0) as u32;
+        // Half a turn of a crescent bends it by this much at its ends, either way.
+        let bend = if form == CloudForm::Crescent {
+            length * if side < 0.5 { 0.42 } else { -0.42 }
+        } else {
+            0.0
+        };
+        let count = match form {
+            CloudForm::Wisp => 2,
+            CloudForm::Heap => 4,
+            _ => (length / 12.0).ceil() as u32,
+        };
         let puffs = (0..count)
             .map(|index| {
-                let [along, across, size, _] = roll(2 + index);
+                let [along, across, size, height] = roll(2 + index);
                 let along = (f64::from(index) + 0.2 + along * 0.6) / f64::from(count) - 0.5;
-                let across = (across * 2.0 - 1.0) * CLOUD_STRAY;
-                // The ends of a cloud are thinner than its middle.
-                let belly = 1.0 - along.abs() * 0.9;
-                [
-                    middle[0] + axis[0] * along * length - axis[1] * across,
-                    middle[1] + axis[1] * along * length + axis[0] * across,
-                    between(CLOUD_PUFF, size) * belly,
-                ]
+                let across = (across * 2.0 - 1.0) * form.stray() + bend * (along * along * 4.0);
+                let belly = form.belly(along);
+                let layers = if form == CloudForm::Wisp {
+                    1
+                } else {
+                    // Two at the least, and the tall ones where the cloud is thick.
+                    2 + (height * belly * 2.99) as usize
+                };
+                Puff {
+                    at: [
+                        middle[0] + axis[0] * along * length - axis[1] * across,
+                        middle[1] + axis[1] * along * length + axis[0] * across,
+                    ],
+                    radius: between(form.puff(), size) * belly,
+                    layers,
+                }
             })
             .collect();
         Self {
+            form,
             puffs,
-            layers: 1 + (layers * (length / CLOUD_LENGTH[1] * 2.0 + 1.0)) as usize,
             altitude: between(CLOUD_ALTITUDE, altitude),
         }
     }
@@ -392,7 +478,8 @@ impl Cloud {
     fn bounds(&self) -> [f64; 4] {
         self.puffs.iter().fold(
             [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
-            |[west, north, east, south], [x, z, radius]| {
+            |[west, north, east, south], puff| {
+                let ([x, z], radius) = (puff.at, puff.radius);
                 [
                     west.min(x - radius),
                     north.min(z - radius),
@@ -405,13 +492,12 @@ impl Cloud {
 
     /// How many layers stand at a world block.
     fn layers_at(&self, x: f64, z: f64) -> usize {
-        let height = self
-            .puffs
-            .iter()
-            .map(|[puff_x, puff_z, radius]| 1.0 - (puff_x - x).hypot(puff_z - z) / radius)
-            .fold(f64::MIN, f64::max);
-        let reached = CLOUD_LAYERS.iter().filter(|start| height > **start);
-        reached.count().min(self.layers)
+        let reached = |puff: &Puff| {
+            let height = 1.0 - (puff.at[0] - x).hypot(puff.at[1] - z) / puff.radius;
+            let layers = CLOUD_LAYERS.iter().filter(|start| height > **start);
+            layers.count().min(puff.layers)
+        };
+        self.puffs.iter().map(reached).max().unwrap_or(0)
     }
 
     fn overlaps(&self, other: &Self) -> bool {
@@ -439,7 +525,8 @@ fn cloud_list(regions: &Regions) -> Vec<Cloud> {
             {
                 continue;
             }
-            let cloud = Cloud::grown([at[0], at[1] + CLOUD_LEAN], (cell_x, cell_z));
+            let form = CloudForm::in_turn(clouds.len());
+            let cloud = Cloud::grown([at[0], at[1] + CLOUD_LEAN], (cell_x, cell_z), form);
             let [west, north, east, south] = cloud.bounds();
             let inside = |low: f64, high: f64| low >= -WORLD_RADIUS && high <= WORLD_RADIUS;
             if inside(west, east)
@@ -1618,8 +1705,20 @@ mod tests {
         assert!(drawings.len() * 4 >= clouds.len() * 3, "{}", drawings.len());
     }
 
+    /// The layers of each pixel of a cloud, as a model draws them.
+    fn pixels_of(cloud: &Cloud) -> Vec<usize> {
+        let [west, north, east, south] = cloud.bounds();
+        let pixel = |world: f64| (world / CLOUD_PIXEL).floor() as i32;
+        let middle = |pixel: i32| (f64::from(pixel) + 0.5) * CLOUD_PIXEL;
+        (pixel(north)..=pixel(south))
+            .flat_map(|z| (pixel(west)..=pixel(east)).map(move |x| (x, z)))
+            .map(|(x, z)| cloud.layers_at(middle(x), middle(z)))
+            .filter(|layers| *layers > 0)
+            .collect()
+    }
+
     #[test]
-    fn clouds_come_in_all_sizes_and_up_to_three_layers() {
+    fn clouds_come_in_all_sizes_and_forms() {
         let clouds = cloud_list(&Regions::demo());
         let width = |cloud: &Cloud| cloud.bounds()[2] - cloud.bounds()[0];
         let widths: Vec<_> = clouds.iter().map(width).collect();
@@ -1629,8 +1728,31 @@ mod tests {
                 (low.min(*width), high.max(*width))
             });
         assert!(most > least * 2.0, "{least} {most}");
-        let layers: BTreeSet<_> = clouds.iter().map(|cloud| cloud.layers).collect();
-        assert!(layers.len() >= 3 && layers.iter().all(|n| (1..=3).contains(n)));
+        for form in CloudForm::WITH_RELIEF {
+            let seen = clouds.iter().filter(|cloud| cloud.form == form).count();
+            assert!(seen >= 3, "{form:?}: {seen}");
+        }
+    }
+
+    /// A slab of one layer reads as a sticker on the map: there are few, and they are small.
+    #[test]
+    fn nearly_every_cloud_has_relief_and_the_flat_ones_are_small() {
+        let clouds = cloud_list(&Regions::demo());
+        let drawn: Vec<_> = clouds.iter().map(pixels_of).collect();
+        let is_flat = |pixels: &&Vec<usize>| pixels.iter().all(|layers| *layers < 2);
+        let flat: Vec<_> = drawn.iter().filter(is_flat).collect();
+        assert!(
+            flat.len() * 8 <= drawn.len(),
+            "{} {}",
+            flat.len(),
+            drawn.len()
+        );
+        assert!(flat.iter().all(|pixels| pixels.len() <= 8), "{flat:?}");
+        for pixels in drawn.iter().filter(|pixels| !is_flat(pixels)) {
+            let raised = pixels.iter().filter(|layers| **layers > 1).count();
+            assert!(raised * 3 >= pixels.len(), "{pixels:?}");
+        }
+        assert!(drawn.iter().any(|pixels| pixels.contains(&4)));
     }
 
     /// The pixels of the clouds of a model, each with how many layers it has.
@@ -1685,12 +1807,15 @@ mod tests {
     }
 
     #[test]
-    fn a_cloud_is_a_few_flat_layers() {
+    fn a_cloud_is_a_few_layers() {
         for scale in [OVERVIEW, MIDDLE, DETAIL] {
             let scene = closed_scene(scale);
             for blocks in scene.clouds.values() {
                 let layers = blocks.len() as i32 / scale.build;
-                assert!((1..=3).contains(&layers), "{layers}");
+                assert!(
+                    (1..=CLOUD_LAYERS.len() as i32).contains(&layers),
+                    "{layers}"
+                );
             }
         }
     }

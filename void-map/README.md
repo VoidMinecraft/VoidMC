@@ -224,8 +224,10 @@ alone. The chunks still to come go out in the new look.
   `LookChoice::Me`.
 - `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
   stripes, behind a fence with a lock, or drained of colour with a large question mark.
-  A cloud is a few round puffs of white blocks on one to three flat layers, as in a game.
-  Its shape comes from a fixed seed and where it hangs, so no two are alike. It is drawn in
+  A cloud is a few round puffs of white blocks, each up to its own height of two to four
+  layers, as in a game. Banks, crescents, heaps and twins take turns, and only a small wisp
+  now and then stays one layer thick: a large one reads as a sticker on the map. The rest of
+  its shape comes from a fixed seed and where it hangs, so no two are alike. It is drawn in
   pixels of the world, on the grid of the overview's cells, so that every model draws the
   same pixels: a cell a pixel there, a cell or two on the middle model and two or three up
   close. It hangs at the same height in the world, on a model's own scale, as a cloud
