@@ -171,10 +171,11 @@ pub fn alive(client: &Client) -> bool {
         || command.contains(&format!("bot-run {} ", client.name))
 }
 
-struct Lock(PathBuf);
+/// One `voidc` at a time between a check and what it guards.
+pub struct Lock(PathBuf);
 
 impl Lock {
-    fn take() -> std::io::Result<Self> {
+    pub fn take() -> std::io::Result<Self> {
         fs::create_dir_all(home())?;
         let path = home().join("lock");
         for _ in 0..500 {

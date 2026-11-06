@@ -2,6 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
+use crate::condition::{self, DEFAULT_WAIT_MS};
 use crate::registry;
 
 /// Sends one verb to a client and returns its JSON line.
@@ -24,13 +25,9 @@ pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> 
 
 /// How long a verb may take: a `wait_until` carries its own limit.
 pub fn timeout_of(verb: &str) -> Duration {
-    let words: Vec<&str> = verb.split_whitespace().collect();
-    if words.first() != Some(&"wait_until") {
-        return Duration::from_secs(30);
-    }
-    let limit = match words.last().and_then(|last| last.parse::<u64>().ok()) {
-        Some(ms) if words.len() > 2 => ms,
-        _ => 20_000,
+    let limit = match verb.trim().split_once(' ') {
+        Some(("wait_until", rest)) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
+        _ => return Duration::from_secs(30),
     };
     Duration::from_millis(limit + 5_000)
 }
@@ -46,6 +43,10 @@ mod tests {
             Duration::from_secs(65)
         );
         assert_eq!(timeout_of("wait_until chunks>=1"), Duration::from_secs(25));
+        assert_eq!(
+            timeout_of("wait_until chunks >= 100"),
+            Duration::from_secs(25)
+        );
         assert_eq!(timeout_of("state"), Duration::from_secs(30));
     }
 }

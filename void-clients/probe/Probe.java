@@ -46,6 +46,7 @@ import org.lwjgl.system.macosx.ObjCRuntime;
 
 /** Runs the game and answers verbs on a unix socket, one line in, one JSON line out. */
 public class Probe {
+  private static final Pattern NUMBER = Pattern.compile("-?\\d+(\\.\\d+)?");
   private static final Pattern CONDITION = Pattern.compile("^(\\w+)\\s*(>=|<=|==|!=|~)\\s*(.*)$");
   private static final String LEVEL = System.getProperty("void.level", "render");
   private static final String SERVER = System.getProperty("void.server");
@@ -176,7 +177,7 @@ public class Probe {
     switch (verb) {
       case "state" -> reply.putAll(onGame(Probe::fields));
       case "act" -> onGame(() -> { player().connection.sendCommand(rest); return 0; });
-      case "wait_until" -> reply.putAll(waitUntil(w));
+      case "wait_until" -> reply.putAll(waitUntil(rest));
       case "assert" -> {
         Map<String, Object> fields = onGame(Probe::fields);
         if (!holds(rest, fields)) throw new AssertionError(rest + " is false: " + fields);
@@ -265,15 +266,21 @@ public class Probe {
     return ((net.minecraft.network.chat.Component) content).getString();
   }
 
-  private static Map<String, Object> waitUntil(String[] w) throws Exception {
-    long limit = w.length > 2 && w[w.length - 1].matches("\\d+") ? Long.parseLong(w[w.length - 1]) : DEFAULT_WAIT_MS;
-    int end = w.length > 2 && w[w.length - 1].matches("\\d+") ? w.length - 1 : w.length;
-    String condition = String.join(" ", Arrays.copyOfRange(w, 1, end));
+  private static Map<String, Object> waitUntil(String rest) throws Exception {
+    String condition = rest.trim();
+    long limit = DEFAULT_WAIT_MS;
+    int cut = condition.lastIndexOf(' ');
+    if (cut > 0 && condition.substring(cut + 1).matches("\\d+") && parse(condition.substring(0, cut)) != null) {
+      limit = Long.parseLong(condition.substring(cut + 1));
+      condition = condition.substring(0, cut);
+    }
+    Matcher parts = parse(condition);
+    if (parts == null) throw new IllegalArgumentException(refusal(condition));
     long start = System.currentTimeMillis();
     while (true) {
       try {
         Map<String, Object> fields = onGame(Probe::fields);
-        if (holds(condition, fields)) {
+        if (holds(parts, fields)) {
           fields.put("waited_ms", System.currentTimeMillis() - start);
           return fields;
         }
@@ -284,22 +291,40 @@ public class Probe {
     }
   }
 
-  private static boolean holds(String condition, Map<String, Object> fields) {
+  private static Matcher parse(String condition) {
     Matcher parts = CONDITION.matcher(condition.trim());
-    if (!parts.matches()) throw new IllegalArgumentException("bad condition " + condition);
+    if (!parts.matches() || parts.group(3).isBlank()) return null;
+    boolean order = parts.group(2).equals(">=") || parts.group(2).equals("<=");
+    if (order && !NUMBER.matcher(parts.group(3).trim()).matches()) return null;
+    return parts;
+  }
+
+  private static String refusal(String condition) {
+    return "bad condition " + condition + ": field op value, and >= or <= need a number";
+  }
+
+  private static boolean holds(String condition, Map<String, Object> fields) {
+    Matcher parts = parse(condition);
+    if (parts == null) throw new IllegalArgumentException(refusal(condition));
+    return holds(parts, fields);
+  }
+
+  private static boolean holds(Matcher parts, Map<String, Object> fields) {
     Object actual = fields.get(parts.group(1));
     if (actual == null) return false;
     String op = parts.group(2), expected = parts.group(3).trim();
     if (op.equals("~")) return actual.toString().contains(expected);
-    if (actual instanceof Number number && expected.matches("-?[\\d.]+")) {
-      int order = Double.compare(number.doubleValue(), Double.parseDouble(expected));
+    boolean order = op.equals(">=") || op.equals("<=");
+    if (actual instanceof Number number && NUMBER.matcher(expected).matches()) {
+      int compared = Double.compare(number.doubleValue(), Double.parseDouble(expected));
       return switch (op) {
-        case ">=" -> order >= 0;
-        case "<=" -> order <= 0;
-        case "==" -> order == 0;
-        default -> order != 0;
+        case ">=" -> compared >= 0;
+        case "<=" -> compared <= 0;
+        case "==" -> compared == 0;
+        default -> compared != 0;
       };
     }
+    if (order) throw new IllegalArgumentException(parts.group(1) + " is " + actual + ", not a number");
     return op.equals("==") == actual.toString().equals(expected);
   }
 

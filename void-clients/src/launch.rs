@@ -196,8 +196,8 @@ fn idle_minutes(registry: &Registry) -> u32 {
         .unwrap_or(registry.idle_minutes)
 }
 
-/// Starts the game, detached from the caller, and returns its pid.
-pub fn game(registry: &Registry, client: &Client) -> Result<u32, String> {
+/// Prepares the game: version, build and files, everything slow before the start itself.
+pub fn game(registry: &Registry, client: &Client) -> Result<Command, String> {
     let version = version_json()?;
     let mut classes = class_path(&version);
     let built = build(&classes)?;
@@ -296,19 +296,20 @@ pub fn game(registry: &Registry, client: &Client) -> Result<u32, String> {
             "--quickPlayMultiplayer",
             &server,
         ]);
-    spawn(command, &dir)
+    Ok(command)
 }
 
-pub fn bot(client: &Client) -> Result<u32, String> {
+pub fn bot(client: &Client) -> Result<Command, String> {
     let dir = registry::client_dir(&client.name);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(registry::home().join("run")).map_err(|e| e.to_string())?;
     let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
     command.args(["bot-run", &client.name, &client.port.to_string()]);
-    spawn(command, &dir)
+    Ok(command)
 }
 
-fn spawn(mut command: Command, dir: &Path) -> Result<u32, String> {
+/// Starts a prepared client, detached from the caller, and returns its pid.
+pub fn spawn(mut command: Command, dir: &Path) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     let log = log_file(dir)?;
     let error = log.try_clone().map_err(|e| e.to_string())?;

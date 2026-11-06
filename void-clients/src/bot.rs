@@ -15,6 +15,7 @@ use voidmc_protocol::clientbound as cb;
 use voidmc_protocol::serverbound as sb;
 use voidmc_protocol::{PROTOCOL_VERSION, State as Phase};
 
+use crate::condition::{self, Condition};
 use crate::registry;
 
 const VERSION: Version = Version::V26_1_2;
@@ -23,7 +24,6 @@ const CONFIGURATION: &str = "configuration";
 const PLAY: &str = "play";
 const PACK_ACCEPTED_DOWNLOADED_LOADED: [i32; 3] = [3, 4, 0];
 const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
-const DEFAULT_WAIT_MS: u64 = 20_000;
 
 macro_rules! packets {
     ($($constant:ident: $state:ident $direction:literal $name:literal,)*) => {
@@ -419,37 +419,6 @@ fn stay_connected(name: String, port: u16, writer: Writer, world: Shared) {
     }
 }
 
-/// `field op value`, with `>=`, `<=`, `==`, `!=` and `~` for "contains".
-pub fn holds(condition: &str, fields: &Value) -> Result<bool, String> {
-    let (field, op, expected) = ["<=", ">=", "==", "!=", "~"]
-        .iter()
-        .find_map(|op| {
-            condition
-                .split_once(op)
-                .map(|(f, e)| (f.trim(), *op, e.trim()))
-        })
-        .ok_or_else(|| format!("bad condition {condition}"))?;
-    let actual = &fields[field];
-    if actual.is_null() {
-        return Ok(false);
-    }
-    let text = actual
-        .as_str()
-        .map_or_else(|| actual.to_string(), str::to_string);
-    if op == "~" {
-        return Ok(text.contains(expected));
-    }
-    if let (Some(a), Ok(b)) = (actual.as_f64(), expected.parse::<f64>()) {
-        return Ok(match op {
-            ">=" => a >= b,
-            "<=" => a <= b,
-            "==" => a == b,
-            _ => a != b,
-        });
-    }
-    Ok((op == "==") == (text == expected))
-}
-
 fn answer(line: &str, writer: &Writer, world: &Shared) -> Result<Value, String> {
     let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
     match verb {
@@ -465,30 +434,24 @@ fn answer(line: &str, writer: &Writer, world: &Shared) -> Result<Value, String> 
             Ok(json!({}))
         }
         "assert" => {
+            let condition = Condition::parse(rest)?;
             let fields = world.lock().unwrap().fields();
-            if holds(rest, &fields)? {
+            if condition.holds(&fields)? {
                 Ok(fields)
             } else {
                 Err(format!("{rest} is false: {fields}"))
             }
         }
         "wait_until" => {
-            let words: Vec<&str> = rest.split_whitespace().collect();
-            let timed = words.len() > 1 && words[words.len() - 1].parse::<u64>().is_ok();
-            let limit = if timed {
-                words[words.len() - 1].parse().unwrap_or(DEFAULT_WAIT_MS)
-            } else {
-                DEFAULT_WAIT_MS
-            };
-            let condition = words[..words.len() - usize::from(timed)].join(" ");
+            let (condition, limit) = condition::wait(rest)?;
             let start = Instant::now();
             loop {
                 let fields = world.lock().unwrap().fields();
-                if holds(&condition, &fields)? {
+                if condition.holds(&fields)? {
                     return Ok(fields);
                 }
                 if start.elapsed() > Duration::from_millis(limit) {
-                    return Err(format!("timed out on {condition}"));
+                    return Err(format!("timed out on {rest}"));
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -551,23 +514,6 @@ pub fn run(name: &str, port: u16) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn conditions_compare_numbers_and_text() {
-        let fields = json!({"chunks": 814, "state": "connected", "chat": "Bienvenue sur la carte"});
-        assert!(holds("chunks>=800", &fields).unwrap());
-        assert!(!holds("chunks<=800", &fields).unwrap());
-        assert!(holds("state==connected", &fields).unwrap());
-        assert!(holds("state!=disconnected", &fields).unwrap());
-        assert!(holds("chat~carte", &fields).unwrap());
-        assert!(holds("chunks == 814", &fields).unwrap());
-    }
-
-    #[test]
-    fn a_missing_field_is_false_and_a_bad_condition_an_error() {
-        assert!(!holds("nope>=1", &json!({})).unwrap());
-        assert!(holds("chunks", &json!({})).is_err());
-    }
 
     #[test]
     fn leaving_a_level_forgets_what_was_on_it() {
