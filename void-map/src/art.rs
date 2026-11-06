@@ -63,6 +63,12 @@ const LETTERS_PER_ROW: u32 = 0x100;
 const FONT: &str = "assets/minecraft/font/default.json";
 const MINECART: &str = "assets/minecraft/textures/entity/minecart/minecart.png";
 const MINECART_SIZE: (u32, u32) = (64, 32);
+/// The skin of what sees for the eye on a flight. A spectator sees through invisibility, so
+/// for the ticks before the view moves onto it, the mannequin would show around the eye
+/// as a ghost. With nothing on its skin, there is nothing to show.
+pub const EYE_SKIN: &str = "voidmap:entity/nobody";
+const EYE_SKIN_FILE: &str = "assets/voidmap/textures/entity/nobody.png";
+const SKIN_SIZE: u32 = 64;
 
 /// The client's glyph atlas is 256 wide, so that the veil comes in tiles. The title that
 /// shows it draws four times larger: this covers a screen at any gui scale over 1.
@@ -1123,6 +1129,7 @@ pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
     let black = Image::filled(MINECART_SIZE.0, MINECART_SIZE.1, [0, 0, 0, 255]);
     pack.add(MINECART, black.to_png());
+    pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());
     let mut providers = vec![shifts()];
     for subject in SUBJECTS {
         let index = subject.index();

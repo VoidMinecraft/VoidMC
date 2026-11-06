@@ -42,7 +42,7 @@ use voidmc_protocol::{
 };
 use voidmc_ui::{PackSettled, Text};
 
-use crate::art::{Card, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
+use crate::art::{Card, EYE_SKIN, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
 use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
 use crate::markers::{Marker, MarkerField, MarkerKind};
@@ -173,8 +173,6 @@ const CLEAR: i32 = 0;
 /// A spectator only clicks when the look hits an entity. A minecart around the eye is
 /// always hit. The eye sits under its floor, looking down, so the cart never shows.
 const EYE_BOX_DROP: f64 = 0.02;
-/// Nobody sees it. A mannequin needs one anyway.
-const EYE_SKIN: &str = "entity/player/wide/steve";
 /// Displays vanish past 64 blocks times this, and the camera is further than that.
 const VIEW_RANGE: f32 = 8.0;
 const GLOW: i32 = 0xFFE9A0;
@@ -2675,11 +2673,6 @@ fn left_click(
             f64::from(marker.z),
         ));
         select(&mut session, Some(index), &mut displays);
-        let said = format!(
-            "{} sélectionné. Clic gauche à nouveau : s'y rendre.",
-            marker.name
-        );
-        messages.message(player, said).send();
     }
 }
 
