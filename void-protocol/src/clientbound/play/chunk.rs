@@ -65,6 +65,14 @@ pub struct SetCenterChunk {
     pub chunk_z: i32,
 }
 
+/// How far from its centre a client keeps chunks. Its render distance only goes down
+/// to this, never up.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SetChunkCacheRadius {
+    #[codec(varint32)]
+    pub radius: i32,
+}
+
 // ============================================================================
 // Chunk Heightmaps
 // ============================================================================

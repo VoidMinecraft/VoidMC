@@ -28,6 +28,7 @@ pub const DEFAULT_ZOOM: f64 = 95.0;
 pub const COARSE_ABOVE: f64 = 105.0;
 /// Back to the detail model. The gap stops a held height from flipping between the two.
 pub const DETAIL_BELOW: f64 = 96.0;
+const _: () = assert!(DETAIL_BELOW < COARSE_ABOVE, "a steady zoom needs a gap");
 /// What a tick with the key held multiplies the height by. It feels the same at any height.
 const ZOOM_PER_TICK: f64 = 1.03;
 
@@ -376,11 +377,113 @@ impl Pan {
     }
 }
 
+/// A dive into a waypoint lasts this many ticks.
+pub const DIVE_TICKS: u32 = 30;
+/// It ends this far from the waypoint, along the look, in blocks of a build.
+pub const DIVE_STOP: f64 = 16.0;
+/// How steeply it ends up looking at the waypoint.
+pub const DIVE_PITCH: f32 = 62.0;
+
+/// Starts and ends at rest, with no jolt at either end.
+fn ease(share: f64) -> f64 {
+    share.powi(3) * (share * (share * 6.0 - 15.0) + 10.0)
+}
+
+/// The view flying down to a point of the model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dive {
+    from: [f64; 3],
+    to: [f64; 3],
+    look: [f32; 2],
+    ticks: u32,
+}
+
+impl Dive {
+    /// From an eye and how it looks, to `stop` blocks short of a target.
+    pub fn new(eye: [f64; 3], look: [f32; 2], target: [f64; 3], stop: f64) -> Self {
+        let way = look_direction(REST_YAW, DIVE_PITCH);
+        let to = std::array::from_fn(|axis| target[axis] - way[axis] * stop);
+        Self {
+            from: eye,
+            to,
+            look,
+            ticks: 0,
+        }
+    }
+
+    /// Moves on a tick. Says when it has arrived.
+    pub fn tick(&mut self) -> bool {
+        self.ticks = (self.ticks + 1).min(DIVE_TICKS);
+        self.ticks == DIVE_TICKS
+    }
+
+    fn progress(&self) -> f64 {
+        ease(f64::from(self.ticks) / f64::from(DIVE_TICKS))
+    }
+
+    pub fn at(&self) -> [f64; 3] {
+        let progress = self.progress();
+        std::array::from_fn(|axis| self.from[axis] + (self.to[axis] - self.from[axis]) * progress)
+    }
+
+    /// The yaw and pitch of the view, turning by the short way.
+    pub fn looking(&self) -> [f32; 2] {
+        let progress = self.progress() as f32;
+        let [yaw, pitch] = self.look;
+        [
+            yaw + shortest_turn(yaw, REST_YAW) * progress,
+            pitch + (DIVE_PITCH - pitch) * progress,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use voidmc::DefaultWorldGenerator;
 
     use super::*;
+
+    fn dive() -> Dive {
+        Dive::new([0.0, 100.0, 40.0], [150.0, 40.0], [10.0, 70.0, 0.0], 16.0)
+    }
+
+    #[test]
+    fn a_dive_starts_where_the_view_is_without_a_turn() {
+        let dive = dive();
+        assert_eq!(dive.at(), [0.0, 100.0, 40.0]);
+        assert_eq!(dive.looking(), [150.0, 40.0]);
+    }
+
+    #[test]
+    fn a_dive_ends_looking_at_its_target_from_its_distance() {
+        let mut dive = dive();
+        for _ in 1..DIVE_TICKS {
+            assert!(!dive.tick());
+        }
+        assert!(dive.tick());
+        let [yaw, pitch] = dive.looking();
+        let way = look_direction(yaw, pitch);
+        let at = dive.at();
+        for (axis, target) in [10.0, 70.0, 0.0].iter().enumerate() {
+            assert!((at[axis] + way[axis] * 16.0 - target).abs() < 1e-3);
+        }
+    }
+
+    /// Slow, then fast, then slow: both ends are soft, and it never goes back.
+    #[test]
+    fn a_dive_speeds_up_and_slows_down() {
+        let mut dive = dive();
+        let mut steps = Vec::new();
+        let mut last = dive.at()[1];
+        for _ in 0..DIVE_TICKS {
+            dive.tick();
+            steps.push(last - dive.at()[1]);
+            last = dive.at()[1];
+        }
+        let middle = steps[steps.len() / 2];
+        assert!(steps.iter().all(|step| *step >= 0.0));
+        assert!(steps[0] < middle / 10.0 && steps[steps.len() - 1] < middle / 10.0);
+    }
     use crate::plugin::CHUNKS_PER_TICK;
     use crate::regions::Regions;
     use crate::scene::{DETAIL, OVERVIEW, Scene};
@@ -607,11 +710,6 @@ mod tests {
             zoom.tick(false, false);
         }
         assert_eq!(zoom.height(), wanted);
-    }
-
-    #[test]
-    fn the_gap_between_the_models_holds_a_steady_zoom() {
-        assert!(DETAIL_BELOW < COARSE_ABOVE);
     }
 
     /// Whether a point shows in a window of this shape, at the default field of view.

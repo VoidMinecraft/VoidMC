@@ -86,6 +86,54 @@ const FOREST_SEED: u32 = 60;
 const CANOPY_SEED: u32 = 70;
 const PATH_SEED: u32 = 80;
 
+/// What a model is built of, for a player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Blocks {
+    /// Flat colours, as on a printed map.
+    #[default]
+    Flat,
+    /// The blocks of the world, with their textures.
+    Real,
+}
+
+impl Blocks {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Flat => "Couleurs plates",
+            Self::Real => "Vrais blocs",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Flat => Self::Real,
+            Self::Real => Self::Flat,
+        }
+    }
+}
+
+/// Everything a player can change about the chunks of a model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct ChunkLook {
+    pub zone: ZoneLook,
+    pub blocks: Blocks,
+}
+
+/// The block of the world that a colour of the palette stands for.
+fn real_block(block: i32) -> i32 {
+    match block {
+        GRASS | FOREST => b::GRASS_BLOCK,
+        CANOPY => b::OAK_LEAVES,
+        ROCK => b::STONE,
+        SNOW => b::SNOW_BLOCK,
+        SAND => b::SAND,
+        SOIL => b::DIRT,
+        PATH => b::DIRT_PATH,
+        SHALLOW_WATER | DEEP_WATER => b::WATER,
+        other => other,
+    }
+}
+
 const GRASS: i32 = b::LIME_CONCRETE;
 const FOREST: i32 = b::GREEN_CONCRETE;
 const CANOPY: i32 = b::LIME_TERRACOTTA;
@@ -281,9 +329,9 @@ impl Scene {
                 (x, z.saturating_sub(reach)),
                 (x, (z + reach).min(size - 1)),
             ];
-            column.border = around.iter().any(|(x, z)| {
-                states[z * size + x].is_some_and(|state| state != column.state)
-            });
+            column.border = around
+                .iter()
+                .any(|(x, z)| states[z * size + x].is_some_and(|state| state != column.state));
         }
     }
 
@@ -373,9 +421,12 @@ impl Scene {
             })
             .collect();
         let count = i32::try_from(cells.len()).ok().filter(|count| *count > 0)?;
-        let middle = cells.iter().fold((0, 0), |sum, cell| (sum.0 + cell.0, sum.1 + cell.1));
+        let middle = cells
+            .iter()
+            .fold((0, 0), |sum, cell| (sum.0 + cell.0, sum.1 + cell.1));
         let middle = (middle.0 / count, middle.1 / count);
-        let from_middle = |cell: &&(i32, i32)| (cell.0 - middle.0).pow(2) + (cell.1 - middle.1).pow(2);
+        let from_middle =
+            |cell: &&(i32, i32)| (cell.0 - middle.0).pow(2) + (cell.1 - middle.1).pow(2);
         cells.iter().min_by_key(from_middle).copied()
     }
 
@@ -501,7 +552,7 @@ impl Scene {
         chunk_z: i32,
         biome: BiomeId,
         count: usize,
-        look: ZoneLook,
+        look: ChunkLook,
     ) -> Chunk {
         let mut builder = ChunkBuilder::new(chunk_x, chunk_z)
             .biome(biome.0)
@@ -517,8 +568,10 @@ impl Scene {
                 };
                 let closed = column.state != RegionState::Discovered;
                 let tint = |block| {
-                    if closed && look == ZoneLook::Faded {
+                    if closed && look.zone == ZoneLook::Faded {
                         faded(block)
+                    } else if look.blocks == Blocks::Real {
+                        real_block(block)
                     } else {
                         column.state.tint(block)
                     }
@@ -536,7 +589,7 @@ impl Scene {
                 }
                 if closed {
                     let mut set = |y, block| builder.set_block(local_x, y, local_z, block);
-                    self.zone_look(look, x, z, column, &mut set);
+                    self.zone_look(look.zone, x, z, column, &mut set);
                 }
             }
         }

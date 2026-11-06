@@ -16,31 +16,53 @@ never flickers. A click acts on that marker and nothing else.
 - `/map` or `/map look`: the overview, with the whole island on screen. The player
   looks around, and the client turns the view with no delay. They stand south of the
   model, so straight down is off the land. `REST_PITCH` sets the angle, and the height
-  of the eye follows from it, so that the land stays centred in the frame. The stop is
-  the land's shape: a look past the rim is pulled back to its closest point, so the
-  middle of the screen stays on the island, with absolute rotations because reports can
-  be late.
+  of the eye follows from it, so that the land stays centred in the frame. Nothing
+  corrects the look while the mouse moves: it can leave the island by a wide margin, and
+  once the mouse rests it drifts back by small relative steps. There is no stop to hit.
 - `/map pan`: exploration, on a model about three times larger than the overview, which
   streams around the camera. The player rides an invisible entity, and `SetCamera` shows
   the game from it, with a look that never changes. A rider reports its rotation every
-  tick whatever the camera is, and those differences slide the camera, up to a top
-  speed that chunks can follow. It only moves over columns of the model, so the middle
-  of the screen reaches the real rim everywhere and slides along it. Past 45° of pitch the player is turned back with an
-  absolute `PlayerRotation`: the client answers with exactly that pitch, which tells
-  the recentring from mouse movement however fast the mouse goes.
+  tick whatever the camera is, and those differences slide the camera. The rim is
+  elastic: past it the view resists over `PAN_MARGIN` blocks, and comes back once the
+  mouse rests. The view eases to a stop, which lets the camera glide over three ticks
+  without overshooting. Past 45° of pitch the player is turned back with an absolute
+  `PlayerRotation`: the client answers with exactly that pitch, which tells the
+  recentring from mouse movement however fast the mouse goes.
 
-The jump key changes mode, the left and right keys change the height of the exploration
-view, and the boss bar names the mode. The hint on screen names the player's own keys.
+The jump key changes mode, and the boss bar names the mode. The hint on screen names the
+player's own keys. In exploration the left and right keys zoom for as long as they are
+held, read from `PlayerInput`. A render distance cannot show the land from far above, so
+past `COARSE_ABOVE` the view moves to the overview model, whose blocks are larger, and
+back under `DETAIL_BELOW`.
 
-The marker in the middle of the screen shows a panel stuck to it. `/map style 1`, `2` or
-`3` picks its look: a card with icon and name, a thin band, or a tag with one line of
-information. Selecting a marker adds its status and description under the panel. The
-engine's command arguments form one chain with no sub-literals, so the style number can
-follow any action: `/map pan 2` opens exploration with the band, and `/map style` alone
-moves on to the next style.
+Chunks are built and encoded once, on start for the default look and on first use for
+the others. In the map a client is told to keep a far larger radius with
+`SetChunkCacheRadius`, which does not change what it renders, and the server's radius
+again on the way out. So a chunk it has seen does not go out twice in a pan.
 
-The player's own marker is their head on a pin. Only the account id goes out, so an
-offline account shows the default skin of its id.
+## Looks
+
+The engine's command arguments form one chain with no sub-literals, so one option
+follows any action, and one that does not fit the action is refused. Each action alone
+moves on to the next choice. Choices last for the connection and apply at once.
+
+- `/map style 1` to `4`: a full sheet, text alone, a round bubble with the name under it,
+  or a large title over a flourish. `/map pan 2` opens exploration with that style.
+- `/map me 1` to `4`: the player's own marker, as a small pin, an arrow on the ground that
+  points where they look, a ring on the ground, or their head on a small disc. Only the
+  account id goes out, so an offline account shows the default skin of its id.
+- `/map zone 1` to `4`: closed regions, under clouds of blocks, with diagonal stripes,
+  behind a fence with a lock, or drained of colour with a large question mark.
+- `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
+  world with their textures. Their tint comes from the `voidmc:map` biome.
+
+## Travelling
+
+A first left click on a marker selects it, which shows its status and description. A
+second one dives into it: over `DIVE_TICKS` a camera entity flies down to it, starting
+and ending at rest, and the player then lands at the real place, `ARRIVAL_CLEARANCE`
+above the ground. In a look, that entity takes over from the eye, looking the same way.
+Crouching calls the dive off. A closed region refuses to be travelled to, and says so.
 
 A spectator only clicks when the look hits an entity, and only sees the crosshair when
 that entity has a menu. So a chest minecart surrounds the eye, which sits just under
@@ -58,8 +80,15 @@ example.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`buildings`, `markers`, `pointer` and `art`. `dimension` declares the level, and `plugin`
-runs the sessions.
+`buildings`, `markers`, `pointer` and `art`. `dimension` declares the level, `plugin` runs
+the sessions, and `telemetry` measures them.
+
+## Logs
+
+`RUST_LOG=voidmc_map=debug` adds structured events for late ticks, gaps between the
+client's reports, looks past the limits, slow chunk sends, zoom keys and model changes.
+Entering, leaving, modes, hovers and clicks are at `info`, along with a summary of each
+session every 200 ticks.
 
 ## Running it
 

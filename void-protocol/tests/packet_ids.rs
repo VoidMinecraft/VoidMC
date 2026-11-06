@@ -144,6 +144,7 @@ const SPECS: &[EnumSpec] = &[
                 "minecraft:set_border_warning_distance",
             ),
             ("SetCenterChunk", "minecraft:set_chunk_cache_center"),
+            ("SetChunkCacheRadius", "minecraft:set_chunk_cache_radius"),
             ("SetCursorItem", "minecraft:set_cursor_item"),
             ("SetEntityData", "minecraft:set_entity_data"),
             ("SetHeldSlot", "minecraft:set_held_slot"),

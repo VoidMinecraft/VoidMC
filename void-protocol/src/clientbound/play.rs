@@ -208,6 +208,8 @@ pub enum PlayPacket {
     SetCamera(SetCamera),
     #[codec(packet_id = 0x5E)]
     SetCenterChunk(SetCenterChunk),
+    #[codec(packet_id = 0x5F)]
+    SetChunkCacheRadius(SetChunkCacheRadius),
     #[codec(packet_id = 0x60)]
     SetCursorItem(SetCursorItem),
     #[codec(packet_id = 0x62)]

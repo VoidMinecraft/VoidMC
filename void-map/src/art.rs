@@ -302,7 +302,11 @@ fn drop_shape() -> Image {
             };
             if inside {
                 let hole = dx.hypot(f64::from(y) - centre) <= 1.8;
-                let color = if hole { [255, 255, 255, 255] } else { PIN_COLOUR };
+                let color = if hole {
+                    [255, 255, 255, 255]
+                } else {
+                    PIN_COLOUR
+                };
                 image.set(x as u32, y as u32, color);
             }
         }
@@ -954,8 +958,18 @@ pub fn install(pack: &mut ResourcePack) {
         );
     }
     let shapes = [
-        ("name_tag", rounded(WIDTH, NAME_TAG_HEIGHT), NAME_TAG, NAME_TAG_TOP),
-        ("detail", rounded(WIDTH, DETAIL_HEIGHT), DETAIL, BUBBLE_DETAIL_TOP),
+        (
+            "name_tag",
+            rounded(WIDTH, NAME_TAG_HEIGHT),
+            NAME_TAG,
+            NAME_TAG_TOP,
+        ),
+        (
+            "detail",
+            rounded(WIDTH, DETAIL_HEIGHT),
+            DETAIL,
+            BUBBLE_DETAIL_TOP,
+        ),
         ("flourish", flourish(), FLOURISH, FLOURISH_TOP),
     ];
     for (name, image, glyph, top) in shapes {
@@ -1116,7 +1130,10 @@ mod tests {
     fn panels_take_the_colour_of_their_subject() {
         let mine = sheet(Subject::Place(MarkerKind::Mine));
         let you = sheet(Subject::You);
-        assert_ne!(mine.pixel(SHEET_WIDTH / 2, 8), you.pixel(SHEET_WIDTH / 2, 8));
+        assert_ne!(
+            mine.pixel(SHEET_WIDTH / 2, 8),
+            you.pixel(SHEET_WIDTH / 2, 8)
+        );
     }
 
     #[test]
