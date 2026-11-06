@@ -125,6 +125,13 @@ alone. The chunks still to come go out in the new look.
   the others: rough stakes, a rampart with towers, a hedge, a striped band painted on the
   land and the sea, or a wall of coloured glass. Two closed regions share one band, on the
   side of the more closed one.
+- `/map weather 1` to `3`: nothing, flakes and drops over the regions that have them, or
+  the rain and snow of the client. A region has a `Climate`, which is also the biome of its
+  columns. The client draws its own rain and snow only around the camera, whatever is under
+  the middle of the screen, so they cover the whole view and change as the camera crosses
+  a border. Particles stay over their region, wherever it is on screen: they fall on the
+  line from the eye to the land, close to the eye, or they would be smaller than a pixel.
+  The land, the sky and the fog keep their colours under either. A choice sends no block.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
   world with their textures. Their tint comes from the `voidmc:map` biome.
 - `/map move a` to `d`: how a pan follows the mouse, to compare them. `a` is a critically

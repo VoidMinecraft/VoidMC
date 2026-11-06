@@ -16,7 +16,7 @@ use crate::buildings::landmark;
 use crate::fence::{Border, Stretch};
 use crate::markers::MarkerKind;
 use crate::noise::{fractal, scatter};
-use crate::regions::{Region, RegionState, Regions, ZoneLook, faded};
+use crate::regions::{Climate, Region, RegionState, Regions, ZoneLook, faded};
 use crate::terrain::Terrain;
 use crate::window::Window;
 
@@ -256,6 +256,7 @@ struct Column {
     /// What covers the ground up to the sea.
     water: i32,
     state: RegionState,
+    climate: Climate,
     /// How far into the band along a more open region, from 1, or 0 outside of it.
     ring: u8,
     /// Part of a tower of a rampart.
@@ -471,13 +472,13 @@ impl Scene {
             );
             let (world_x, world_z) = (scale.world(x), scale.world(z));
             let relief = fractal(RELIEF_SEED, world_x, world_z, RELIEF_SIZE) * RELIEF;
-            let state = regions.at(world_x, world_z).state;
+            let region = regions.at(world_x, world_z);
             columns.push(Self::column_at(
                 scale,
                 [world_x, world_z],
                 smoothed + relief,
                 biomes[index],
-                state,
+                region,
             ));
         }
         Self::prune_canopies(&mut columns, size, scale.build);
@@ -605,13 +606,13 @@ impl Scene {
         let at = |index: usize| ((index % size) as f64, (index / size) as f64);
         let (spacing, radius) = (scale.cells(TOWER_SPACING), scale.cells(TOWER_RADIUS));
         let mut towers: Vec<usize> = Vec::new();
-        for index in 0..columns.len() {
+        for (index, column) in columns.iter().enumerate() {
             let (x, z) = at(index);
             let free = towers.iter().all(|tower| {
                 let (tower_x, tower_z) = at(*tower);
                 (tower_x - x).hypot(tower_z - z) >= spacing
             });
-            if free && columns[index].is_some_and(|column| column.ring == middle) {
+            if free && column.is_some_and(|column| column.ring == middle) {
                 towers.push(index);
             }
         }
@@ -635,7 +636,7 @@ impl Scene {
         [x, z]: [f64; 2],
         elevation: f64,
         biome: BiomeId,
-        state: RegionState,
+        region: &Region,
     ) -> Option<Column> {
         let from_rim = rim_radius(x, z) - x.hypot(z);
         if from_rim < 0.0 {
@@ -674,7 +675,8 @@ impl Scene {
             } else {
                 DEEP_WATER
             },
-            state,
+            state: region.state,
+            climate: region.climate,
             ring: 0,
             tower: false,
         })
@@ -703,6 +705,11 @@ impl Scene {
     /// Highest block of a column, or `None` off the model.
     pub fn top(&self, x: i32, z: i32) -> Option<i32> {
         self.column(x, z).map(Column::top)
+    }
+
+    /// What falls on a column, or `None` off the model.
+    pub fn climate(&self, x: i32, z: i32) -> Option<Climate> {
+        self.column(x, z).map(|column| column.climate)
     }
 
     /// Whether a block rises out of a column, that a figure would stand in.
@@ -1007,13 +1014,13 @@ impl Scene {
         &self,
         chunk_x: i32,
         chunk_z: i32,
-        biome: BiomeId,
+        biome_of: impl Fn(Climate) -> BiomeId,
         count: usize,
         look: ChunkLook,
     ) -> Chunk {
         let mut builder = ChunkBuilder::new(chunk_x, chunk_z)
-            .biome(biome.0)
-            .biome_registry_size(count);
+            .biome_registry_size(count)
+            .biomes_from(|x, _, z| biome_of(self.climate(x, z).unwrap_or_default()).0);
         for local_z in 0..16u8 {
             for local_x in 0..16u8 {
                 let (x, z) = (
@@ -1047,6 +1054,7 @@ mod tests {
             name: "Tout",
             site: [0.0, 0.0],
             state: RegionState::Discovered,
+            climate: Climate::Clear,
         }])
     }
 
@@ -1141,6 +1149,27 @@ mod tests {
     }
 
     #[test]
+    fn a_chunk_takes_the_biome_of_the_climate_under_it() {
+        let scene = demo_scene();
+        let on_a_cell = (-OVERVIEW.radius..OVERVIEW.radius).filter(|at| at.rem_euclid(4) == 0);
+        let (x, z) = on_a_cell
+            .clone()
+            .flat_map(|x| on_a_cell.clone().map(move |z| (x, z)))
+            .find(|&(x, z)| scene.climate(x, z) == Some(Climate::Snow))
+            .expect("a region of snow");
+        let biome_of = |climate| BiomeId(i32::from(climate == Climate::Snow));
+        let chunk = scene.chunk(
+            x.div_euclid(16),
+            z.div_euclid(16),
+            biome_of,
+            2,
+            ChunkLook::default(),
+        );
+        let cell = (x.rem_euclid(16) / 4 + z.rem_euclid(16) / 4 * 4) as usize;
+        assert_eq!(chunk.sections[8].biome_cells()[cell], 1);
+    }
+
+    #[test]
     fn a_look_of_the_zones_leaves_the_open_land_alone() {
         let terrain = Terrain::sample(&DefaultWorldGenerator::default(), &OVERVIEW.window());
         let scene = Scene::new(&terrain, SEA, OVERVIEW, &open());
@@ -1184,11 +1213,13 @@ mod tests {
                 name: "Ouest",
                 site: [-200.0, 0.0],
                 state: RegionState::Undiscovered,
+                climate: Climate::Clear,
             },
             Region {
                 name: "Est",
                 site: [200.0, 0.0],
                 state: RegionState::Locked,
+                climate: Climate::Clear,
             },
         ]);
         let generator = land();
@@ -1353,6 +1384,7 @@ mod tests {
             name: "Fermee",
             site: [0.0, 0.0],
             state: RegionState::Locked,
+            climate: Climate::Clear,
         }]);
         let generator = land();
         let terrain = Terrain::sample(&generator, &OVERVIEW.window());
@@ -1463,7 +1495,7 @@ mod tests {
                 zone,
                 ..ChunkLook::default()
             };
-            scene.chunk(x, z, BiomeId::plains(), 1, look)
+            scene.chunk(x, z, |_| BiomeId::plains(), 1, look)
         };
         let (x, z) = scene
             .clouds

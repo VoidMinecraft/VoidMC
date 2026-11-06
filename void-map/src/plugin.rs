@@ -67,6 +67,7 @@ use crate::transition::{
     CLOSING_TICKS, FLIGHT_GLIDE_TICKS, Flight, OPENING_TICKS, RISE_TICKS, SWAP_TICKS, TURN_TICKS,
     VEIL_FADE, veil_in, veil_out,
 };
+use crate::weather::{self, Weather};
 use crate::wheel::{CATEGORIES, Wheel, stepped};
 
 /// `WorldGenerator` does not expose its water level. This is the one of
@@ -136,6 +137,8 @@ const ICON_LIFT: f64 = 10.0;
 const ICON_SCALE: f32 = 5.0;
 /// The light of the item of a closed waypoint, out of 15, for a client without the pack.
 const CLOSED_ICON_LIGHT: u8 = 4;
+/// How far a view goes around what it looks at, as a share of its height.
+const VIEW_REACH: f64 = 0.9;
 const ICON_HOVER_GROWTH: f32 = 1.6;
 /// The head floats over the player's spot, on a pin always drawn right under it.
 const MINI_HEAD_LIFT: f64 = 4.0;
@@ -439,7 +442,13 @@ impl Level {
         self.chunks.entry((at, look)).or_insert_with(|| {
             let packet = self
                 .scene
-                .chunk(at.0, at.1, info.biome, info.biome_count, look)
+                .chunk(
+                    at.0,
+                    at.1,
+                    |climate| info.biome_of(climate),
+                    info.biome_count,
+                    look,
+                )
                 .to_packet();
             let mut bytes = Vec::new();
             packet.encode(&mut bytes);
@@ -769,6 +778,8 @@ enum PassageKind {
 /// A player in the map, and how to put them back.
 #[derive(Component)]
 pub struct MapSession {
+    /// Whether the client was told to show its rain and snow.
+    raining: bool,
     mode: MapMode,
     site: Site,
     position: Position,
@@ -1203,6 +1214,7 @@ impl Plugin for MapPlugin {
                 fly,
                 tick_passages,
                 run_wheels,
+                let_it_fall,
             ),
         )
         .add_observer(rise)
@@ -1632,6 +1644,7 @@ fn rise(
         )
         .id();
     let mut session = MapSession {
+        raining: false,
         mode,
         site,
         position: *position,
@@ -3227,6 +3240,7 @@ pub struct MapLooks {
     zone: ZoneLook,
     blocks: Blocks,
     border: Border,
+    weather: Weather,
     motion: Motion,
     inertia: bool,
 }
@@ -3301,6 +3315,7 @@ pub enum LookChoice {
     Zone(Option<ZoneLook>),
     Blocks(Option<Blocks>),
     Border(Option<Border>),
+    Weather(Option<Weather>),
     Motion(Option<Motion>),
     /// Turns inertia on or off.
     Inertia,
@@ -3357,6 +3372,10 @@ fn choose_look(
             looks.border = border.unwrap_or(looks.border.next());
             format!("Frontière : {}", looks.border.label())
         }
+        LookChoice::Weather(weather) => {
+            looks.weather = weather.unwrap_or(looks.weather.next());
+            format!("Météo : {}", looks.weather.label())
+        }
         LookChoice::Motion(motion) => {
             looks.motion = motion.unwrap_or(looks.motion.next());
             format!("Déplacement : {}", looks.motion.label())
@@ -3391,6 +3410,43 @@ fn choose_look(
             respawn_signs(&atlas, &mut session, &mut commands);
         }
         session.pan.drive(looks.motion, looks.inertia);
+    }
+}
+
+/// Shows what falls on the regions, as each player chose. The rain of the client stops on
+/// the way out of the map and for a dive, which go through the real sky. This server has no
+/// weather of its own: one with rain would have to give it back here.
+fn let_it_fall(
+    mut sessions: Query<(Entity, &mut MapSession)>,
+    atlas: Res<Atlas>,
+    players: Players,
+) {
+    for (player, mut session) in &mut sessions {
+        let on_map = session.rig.is_some() && !session.leaving() && session.travel.is_none();
+        let raining = on_map && session.looks.weather == Weather::Sky;
+        if raining != session.raining {
+            session.raining = raining;
+            for event in Weather::sky_events(raining) {
+                players.send(player, event);
+            }
+        }
+        if !on_map || session.looks.weather != Weather::Particles {
+            continue;
+        }
+        let Some(level) = atlas.level(session.model()) else {
+            continue;
+        };
+        let [x, y, z] = session.eye();
+        let way = look_direction(session.look.yaw, session.look.pitch);
+        let height = y - f64::from(scene::SEA_Y);
+        let along = height / -way[1].min(-0.1);
+        let middle = [x + way[0] * along, z + way[2] * along];
+        let reach = height * VIEW_REACH;
+        for mut drops in weather::falling(&level.scene, [x, y, z], middle, reach, session.ticks) {
+            let at = session.on_model(drops.x, drops.y, drops.z);
+            (drops.x, drops.y, drops.z) = (at.x, at.y, at.z);
+            players.send(player, drops);
+        }
     }
 }
 
@@ -3555,6 +3611,7 @@ enum MapAction {
     Zone,
     Blocks,
     Border,
+    Weather,
     Move,
 }
 
@@ -3624,6 +3681,15 @@ impl Pick {
         }
     }
 
+    fn weather(self) -> Option<Weather> {
+        match self {
+            Self::One => Some(Weather::Clear),
+            Self::Two => Some(Weather::Particles),
+            Self::Three => Some(Weather::Sky),
+            _ => None,
+        }
+    }
+
     fn motion(self) -> Option<Motion> {
         match self {
             Self::A => Some(Motion::Damped),
@@ -3669,6 +3735,7 @@ fn map_command() -> Command {
                 ("zone", MapAction::Zone),
                 ("blocks", MapAction::Blocks),
                 ("border", MapAction::Border),
+                ("weather", MapAction::Weather),
                 ("move", MapAction::Move),
             ]),
         )
@@ -3721,6 +3788,7 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Zone => Some(choice(pick, Pick::zone, LookChoice::Zone)),
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
             MapAction::Border => Some(choice(pick, Pick::border, LookChoice::Border)),
+            MapAction::Weather => Some(choice(pick, Pick::weather, LookChoice::Weather)),
             MapAction::Move if pick == Some(Pick::Inertia) => Some(LookChoice::Inertia),
             MapAction::Move => Some(choice(pick, Pick::motion, LookChoice::Motion)),
         };
@@ -3770,6 +3838,7 @@ mod tests {
 
     fn session(mode: MapMode) -> MapSession {
         MapSession {
+            raining: false,
             mode,
             site: Site::of(0),
             position: Position {
@@ -3920,10 +3989,10 @@ mod tests {
         assert_eq!(
             actions.matches,
             [
-                "look", "pan", "stop", "style", "me", "zone", "blocks", "border", "move"
+                "look", "pan", "stop", "style", "me", "zone", "blocks", "border", "weather", "move"
             ]
         );
-        for action in ["style", "me", "zone", "blocks", "border", "move"] {
+        for action in ["style", "me", "zone", "blocks", "border", "weather", "move"] {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");
@@ -4105,6 +4174,8 @@ mod tests {
         let atlas = Atlas {
             info: MapLevel {
                 biome: voidmc::BiomeId::plains(),
+                rain: voidmc::BiomeId::plains(),
+                snow: voidmc::BiomeId::plains(),
                 biome_count: 1,
             },
             regions: Regions::demo(),
