@@ -1030,7 +1030,7 @@ struct Label {
 /// What a session shows of the characters.
 #[derive(Component, Debug, Default)]
 struct Figures {
-    /// What the figures are placed for: another model moves them all.
+    /// What the figures are placed for. Another model takes new ones: see [`show`].
     model: Option<Scale>,
     shown: BTreeMap<u128, Figure>,
     label: Option<Label>,
@@ -1225,18 +1225,15 @@ fn world_spot(view: &MapView, [x, y, z]: [f64; 3]) -> Position {
     }
 }
 
-type Bodies<'w, 's> = Query<
-    'w,
-    's,
-    (
-        &'static mut Position,
-        &'static mut Rotation,
-        Option<&'static mut Attributes>,
-        Option<&'static mut Display>,
-    ),
->;
+type Bodies<'w, 's> = Query<'w, 's, (&'static mut Position, &'static mut Rotation)>;
 
 /// Keeps every session's figures on the characters.
+///
+/// A model taking over gets figures of its own, not the ones of the last model moved
+/// across. A client glides an entity to a place, and a jump of more than 64 blocks only
+/// cuts that short for one packet: what it was gliding to is still there, over land it
+/// has no room on, and pulls the entity back. On the empty chunks between two models the
+/// entity stops ticking, and it stays there for good. A new entity has none of that.
 fn show(
     characters: Res<Characters>,
     atlas: Res<Atlas>,
@@ -1254,9 +1251,8 @@ fn show(
         let figures = &mut *figures;
         let model = view.scene.scale();
         let size = size_on(model);
-        let moved_model = figures.model.replace(model) != Some(model);
-        if moved_model && let Some(label) = figures.drop_label() {
-            commands.entity(label).try_despawn();
+        if figures.model.replace(model) != Some(model) {
+            figures.clear(&mut commands);
         }
 
         let places: BTreeMap<u128, [f64; 3]> = characters
@@ -1296,7 +1292,7 @@ fn show(
                 figures.shown.insert(*id, shown);
                 continue;
             };
-            figure.at = if moved_model || character.afloat {
+            figure.at = if character.afloat {
                 [*x, *y, *z]
             } else {
                 let wanted_y = height_ahead(view.scene, figure.at, [*x, *y, *z]);
@@ -1317,20 +1313,17 @@ fn show(
                     figure.boat = None;
                 }
                 (Some(boat), true) => {
-                    if let Ok((mut position, mut rotation, _, display)) = bodies.get_mut(boat) {
+                    if let Ok((mut position, mut rotation)) = bodies.get_mut(boat) {
                         position.set_if_neq(lifted(spot, size));
                         rotation.set_if_neq(Rotation {
                             yaw: character.yaw,
                             pitch: 0.0,
                         });
-                        if moved_model && let Some(mut display) = display {
-                            display.transform = boat_transform(size);
-                        }
                     }
                 }
                 (None, false) => {}
             }
-            if let Ok((mut position, mut rotation, ..)) = bodies.get_mut(figure.entity) {
+            if let Ok((mut position, mut rotation)) = bodies.get_mut(figure.entity) {
                 if position.set_if_neq(spot) {
                     cost.moves += 1;
                 }
@@ -1338,12 +1331,6 @@ fn show(
                     yaw: character.yaw,
                     pitch: 0.0,
                 });
-            }
-            if figure.size != size
-                && let Ok((_, _, Some(mut attributes), _)) = bodies.get_mut(figure.entity)
-            {
-                figure.size = size;
-                attributes.set_base(EntityAttribute::Scale, size);
             }
         }
 

@@ -289,6 +289,12 @@ it was. This is why it is not a mannequin: vanilla draws an entity up to 64 bloc
 the size of its box, and so nothing smaller than about 20 pixels on a 760 pixels window,
 whatever the zoom. A player on the client, `RemotePlayer`, goes ten times as far.
 
+A model taking over gets figures of its own, and boats, rather than moving those of the
+last one across: a client glides an entity to where it was told, and a jump past 64 blocks
+leaves what it was gliding to in place. An entity then flies back towards the last model,
+and a boat ends up stopped on the empty chunks between two models, where nothing ticks. In
+the same tick as the camera they are simply there, the same share of the land away.
+
 A character can be `afloat`. On a lake, every third walker takes a boat: `lakes_of` finds
 the water with at least two `Landing`s, each a spot of ground a few cells from it, walks
 them to the closest one, and sends them `CROSSINGS` times across before they land and walk
