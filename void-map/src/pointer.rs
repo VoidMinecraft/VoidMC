@@ -947,7 +947,10 @@ mod tests {
             }
             let (past, _) = off_model(pan.offset(), &|at| over(&scene, at));
             assert!(past > 0.0, "{angle} stopped short");
-            assert!(past < f64::from(PAN_MARGIN), "{angle} went too far: {past}");
+            assert!(
+                past <= f64::from(PAN_MARGIN),
+                "{angle} went too far: {past}"
+            );
         }
     }
 

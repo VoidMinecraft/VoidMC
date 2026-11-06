@@ -222,7 +222,15 @@ pub enum MapMode {
     Pan,
 }
 
+/// The whole-map view is set aside for now: its code stays, players just can't reach it.
+const LOOK_OPEN: bool = false;
+
 impl MapMode {
+    /// What a player gets when asking for this.
+    fn reachable(self) -> Self {
+        if LOOK_OPEN { self } else { Self::Pan }
+    }
+
     fn other(self) -> Self {
         match self {
             Self::Look => Self::Pan,
@@ -2801,10 +2809,15 @@ fn right_click(
 /// What each key does, named as the player has them bound.
 fn hint() -> Text {
     let key = Text::keybind;
-    Text::new("")
-        .color(TextColor::White)
-        .append(key("key.jump"))
-        .append(Text::new(" : changer de vue   |   "))
+    let start = Text::new("").color(TextColor::White);
+    let start = if LOOK_OPEN {
+        start
+            .append(key("key.jump"))
+            .append(Text::new(" : changer de vue   |   "))
+    } else {
+        start
+    };
+    start
         .append(key("key.left"))
         .append(Text::new(" / "))
         .append(key("key.right"))
@@ -3165,7 +3178,7 @@ fn read_keys(
         }
     } else if sneak && going != Some(Ending::World(None)) {
         commands.trigger(CloseMap(event.entity));
-    } else if jump && session.rig.is_some() && session.travel.is_none() {
+    } else if LOOK_OPEN && jump && session.rig.is_some() && session.travel.is_none() {
         commands.trigger(OpenMap(event.entity, session.mode.other()));
     }
 }
@@ -3636,7 +3649,7 @@ fn run_map(ctx: &mut CommandContext) {
     ctx.with_world_mut(|world| {
         let chosen = match action.unwrap_or(MapAction::Look) {
             MapAction::Look => {
-                world.trigger(OpenMap(player, MapMode::Look));
+                world.trigger(OpenMap(player, MapMode::Look.reachable()));
                 pick.map(|_| choice(pick, Pick::style, LookChoice::Style))
             }
             MapAction::Pan => {
@@ -3813,13 +3826,7 @@ mod tests {
     #[test]
     fn the_hint_names_the_player_s_own_keys() {
         let hint = format!("{:?}", hint().to_compound());
-        for action in [
-            "key.jump",
-            "key.left",
-            "key.right",
-            "key.sprint",
-            "key.sneak",
-        ] {
+        for action in ["key.left", "key.right", "key.sprint", "key.sneak"] {
             assert!(hint.contains(action), "{action}: {hint}");
         }
     }

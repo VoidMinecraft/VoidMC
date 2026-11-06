@@ -18,10 +18,11 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Motion {
     Damped,
+    /// The evenest of them, and the one that feels right in the hand.
+    #[default]
     Slack,
     Lead,
     /// The shortest delay among those that end nearly where the mouse does.
-    #[default]
     Predicted,
 }
 
