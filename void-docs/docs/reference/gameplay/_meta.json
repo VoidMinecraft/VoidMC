@@ -103,5 +103,10 @@
     "type": "file",
     "name": "registry",
     "label": "Registry System"
+  },
+  {
+    "type": "file",
+    "name": "npcs",
+    "label": "NPCs & Conversations"
   }
 ]

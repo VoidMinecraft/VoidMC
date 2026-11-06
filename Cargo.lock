@@ -2161,6 +2161,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "voidmc-npc"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "flume",
+ "serde_json",
+ "tracing",
+ "uuid",
+ "voidmc",
+ "voidmc-codec",
+ "voidmc-protocol",
+ "voidmc-ui",
+]
+
+[[package]]
+name = "voidmc-npc-demo"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "flume",
+ "tracing",
+ "tracing-subscriber",
+ "voidmc",
+ "voidmc-npc",
+ "voidmc-ui",
+]
+
+[[package]]
 name = "voidmc-protocol"
 version = "0.3.0"
 dependencies = [

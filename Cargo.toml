@@ -8,6 +8,8 @@ members = [
   "void-example",
   "void-map",
   "void-net",
+  "void-npc",
+  "void-npc-demo",
   "void-protocol",
   "void-ui",
   "void-codec",

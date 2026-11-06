@@ -1,0 +1,23 @@
+[package]
+name = "voidmc-npc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "NPCs that talk on the vanilla client: scenes, conversations and interfaces of their own"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+voidmc = { version = "0.2.0", path = "../void" }
+voidmc-codec = { version = "0.1.1", path = "../void-codec" }
+voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
+voidmc-ui = { version = "0.1.0", path = "../void-ui" }
+bevy_app = "0.18.0"
+bevy_ecs = "0.18.0"
+serde_json = "1.0"
+tracing = "0.1.44"
+uuid = "1.16.0"
+
+[dev-dependencies]
+flume = "0.12.0"

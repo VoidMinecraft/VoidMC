@@ -19,6 +19,8 @@ This file gives AI coding agents the minimum project context needed to make safe
 - `void-ui/`: vanilla client UI: dialogs, glyph grids, generated resource packs
 - `void-checkers/`: checkers demo built on `void-ui` (lib + bin)
 - `void-map/`: full-screen server map, a block model driven by the mouse (lib + bin)
+- `void-npc/`: NPCs that talk: scenes, conversations, interfaces, props and gestures on the vanilla client
+- `void-npc-demo/`: a merchant and a fortune teller built on `void-npc` (lib + bin)
 - `void-net/`: async networking layer
 - `void-protocol/`: protocol packet types and related tests
 - `void-codec/`: encode/decode primitives and tests
@@ -46,7 +48,7 @@ This file gives AI coding agents the minimum project context needed to make safe
 - Add tests for behavior changes.
 - Update docs/examples when public APIs change.
 - Check crate edition before using language features:
-  - `void`, `void-example`, `void-demo`, `void-net`, `void-protocol`: edition 2024
+  - `void`, `void-example`, `void-demo`, `void-npc`, `void-npc-demo`, `void-net`, `void-protocol`: edition 2024
   - `void-codec`, `void-codec-macros`: edition 2021
 
 ## Reference Docs
