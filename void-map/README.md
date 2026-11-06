@@ -427,25 +427,31 @@ figure glows, with a text display over it.
 
 ## Scenes of life
 
-`life` plays what goes on around the characters: gulls in small flocks that fly about and
-land, a train going round its line with a stop at each station, someone fishing from a pier,
-someone out for a walk with balloons. Animations in the dialog turns them all off.
+`life` plays what goes on around the characters: skeins of gulls on long rounds over the lakes
+and the shores, a train going round its line with a stop at each station, someone fishing from
+a pier, hot-air balloons drifting over the land with their shadows under them. Animations in
+the dialog turns them all off.
 
-A `LifeScene` is data, and it serialises: its `way`, a spot, a route of turns or a zone to
-roam over, its `cast`, the models and how each follows the way, and the `marks` it leaves on
-the map, rails or a pier. A hand-written one, which the tests read:
+A `LifeScene` is data, and it serialises: its `way`, a spot or a route of turns, its `cast`,
+the models and how each follows the way, and the `marks` it leaves on the map, rails or a pier.
+A route that ends `Round` is one curve through its turns, with no corner. A hand-written one,
+which the tests read:
 
 ```json
 {
   "name": "Le ballon de Lou",
   "way": {"Route": {
-    "turns": [{"at": [0, 0]}, {"at": [40, 0], "rest": 60}],
-    "ends": "BackAndForth",
+    "turns": [
+      {"at": [0, 0], "above": 60},
+      {"at": [200, 40], "above": 60},
+      {"at": [120, 240], "above": 80}
+    ],
+    "ends": "Round",
     "speed": 0.2
   }},
   "cast": [
-    {"model": "Stroller", "size": 14.4},
-    {"model": "Balloons", "size": 20, "up": 12, "behind": 1.5, "bob": 0.5}
+    {"model": "Balloon", "size": 42, "bob": 1},
+    {"model": "BalloonShadow", "size": 34, "on_the_ground": true}
   ]
 }
 ```
@@ -455,20 +461,36 @@ play a scene, and `Land` all it asks of a map: the height of the ground, water, 
 of the world falls on the model. It reads no generator, which a test holds it to. A map made
 from the world gets its scenes from `life::habitat`, which reads them off a `Land`, and
 `build_atlas` hands them on. A map made by hand has a file instead, and from there it is the
-same road: `Scene::lay_all` draws the marks on each model, `Life::new` plays them.
+same road: `Life::new` works out a `Course` on each bare model, the heights of each way, and
+`Scene::lay_all` then draws the marks at those heights.
+
+A way never follows the steps of a terrace. What flies goes by the highest of what is ahead,
+in long swells. A line goes up a terrace by a ramp, always over the land, and over water on a
+viaduct high enough for a boat. Both ends of an actor keep to the way, as bogies do: it faces
+from one to the other and tilts as they climb. What has a `bank` leans into its turns, through
+the transform of its display, since an entity has no roll. `behind` and `beside` place an actor
+in a formation, which turns with the way, and a way eases into a stop and out of it.
 
 Where an actor is at a tick is a function of that tick, with no state, so nothing runs for a
 scene nobody looks at, and looking ahead is as cheap as looking at now. An actor is an item
 display of a model of the pack, told every `STEP_TICKS` where it will be `GLIDE_TICKS` ahead:
-the client glides there at a steady pace, and the next place comes before it arrives. That is
-two moves a second for what moves, and none for what stands still. A gull beating its wings,
+the client glides there at a steady pace, and the next place comes before it arrives. A client
+and a server do not keep quite the same time, so a glide is twice a step: the tick it loses
+now and then is made up over the whole glide. That is two moves a second for what moves, and
+none for what stands still. A gull beating its wings,
 the smoke of the locomotive and the rings around a float are animated textures, which a client
 plays by itself: all the copies of a texture go together, so a flock takes three, out of step.
 
 A scene whose actors are out of sight of the eye has no entity. A model taking over gets new
 ones, as figures do. Sizes are in world blocks, so that an actor follows the zoom as a block
 does, with `least`, in blocks of the model, for what would be under a pixel on the far one.
-Rails are a ladder of sleepers on the close model and a plain line on the others.
+A line is at least three cells wide on every model, in cells and not in world blocks, for it
+to read the same at each zoom. `VOID_MAP_TRACK` picks its look until one is chosen: `sleepers`,
+`pale` or `embankment`.
+
+What is built over water stays water. A `Deck` on a column takes nothing from what is under it:
+walkers do not go on it, and a boat sails under a viaduct and round its piers. On land, a line
+is crossed where a path does, so that a loop of rails is neither a road nor a wall.
 
 `map life` in the logs says what all this costs, every 200 ticks.
 

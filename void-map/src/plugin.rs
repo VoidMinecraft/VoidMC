@@ -1457,10 +1457,11 @@ fn build_atlas(mut atlas: ResMut<Atlas>, generator: Res<WorldGen>, mut commands:
     let (mut overview, mut middle, mut detail) = (overview, middle, detail);
     let scenes = detail.scenes(&atlas.regions);
     tracing::info!(scenes = scenes.len(), "map scenes found");
+    let models = [&overview.scene, &middle.scene, &detail.scene];
+    commands.insert_resource(Life::new(&scenes, &models));
     for level in [&mut overview, &mut middle, &mut detail] {
         level.scene.lay_all(&scenes);
     }
-    commands.insert_resource(Life::new(&scenes));
     let started = Instant::now();
     overview.prepare(atlas.info);
     middle.prepare(atlas.info);

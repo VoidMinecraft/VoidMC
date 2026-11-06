@@ -22,14 +22,14 @@ const ALL: [Model; 11] = [
     Model::Gull,
     Model::GullOffBeat,
     Model::GullLastBeat,
-    Model::GullPerched,
     Model::Locomotive,
     Model::Carriage,
     Model::Wagon,
     Model::Angler,
     Model::Float,
-    Model::Stroller,
-    Model::Balloons,
+    Model::Balloon,
+    Model::BalloonBlue,
+    Model::BalloonShadow,
 ];
 
 /// What a box is painted with: a block of the game, or a drawing of the pack.
@@ -42,9 +42,7 @@ const WHITE: Paint = "minecraft:block/white_concrete";
 const RED: Paint = "minecraft:block/red_concrete";
 const YELLOW: Paint = "minecraft:block/yellow_concrete";
 const BLUE: Paint = "minecraft:block/blue_concrete";
-const CYAN: Paint = "minecraft:block/light_blue_concrete";
 const GREEN: Paint = "minecraft:block/green_concrete";
-const ORANGE: Paint = "minecraft:block/orange_concrete";
 const WOOD: Paint = "minecraft:block/spruce_planks";
 const SKIN: Paint = "minecraft:block/sandstone_top";
 const STRAW: Paint = "minecraft:block/hay_block_top";
@@ -78,9 +76,16 @@ const GULL: [Paint; 3] = [
     "voidmap:block/life_gull_1",
     "voidmap:block/life_gull_2",
 ];
-const GULL_PERCHED: Paint = "voidmap:block/life_gull_perched";
 const FLOAT: Paint = "voidmap:block/life_float";
 const SMOKE: Paint = "voidmap:block/life_smoke";
+const BALLOON_RED: Paint = "voidmap:block/life_balloon_red";
+const BALLOON_BLUE: Paint = "voidmap:block/life_balloon_blue";
+const BALLOON_SHADOW: Paint = "voidmap:block/life_balloon_shadow";
+
+/// A drawing level with the middle of its model, for it to lean about itself.
+const fn level(paint: Paint) -> [Part; 1] {
+    [part([0.0, 8.0, 0.0], [16.0, 8.0, 16.0], paint)]
+}
 
 /// Heads of a person: a large one, as a person is seen from above.
 const fn person(shirt: Paint, trousers: Paint) -> [Part; 5] {
@@ -95,10 +100,10 @@ const fn person(shirt: Paint, trousers: Paint) -> [Part; 5] {
 
 fn parts(model: Model) -> Vec<Part> {
     match model {
-        Model::Gull => flat(GULL[0]).to_vec(),
-        Model::GullOffBeat => flat(GULL[1]).to_vec(),
-        Model::GullLastBeat => flat(GULL[2]).to_vec(),
-        Model::GullPerched => flat(GULL_PERCHED).to_vec(),
+        Model::Gull => level(GULL[0]).to_vec(),
+        Model::GullOffBeat => level(GULL[1]).to_vec(),
+        Model::GullLastBeat => level(GULL[2]).to_vec(),
+        Model::BalloonShadow => flat(BALLOON_SHADOW).to_vec(),
         Model::Float => flat(FLOAT).to_vec(),
         Model::Locomotive => vec![
             part([4.5, 0.5, 0.0], [11.5, 2.0, 16.0], BLACK),
@@ -144,41 +149,58 @@ fn parts(model: Model) -> Vec<Part> {
             ]);
             parts
         }
-        Model::Stroller => person(RED, GREY).to_vec(),
-        Model::Balloons => {
-            let ball = |x: f32, y: f32, z: f32, paint: Paint| {
-                [
-                    part(
-                        [x - 2.0, y - 3.0, z - 2.0],
-                        [x + 2.0, y + 3.0, z + 2.0],
-                        paint,
-                    ),
-                    part(
-                        [x - 3.0, y - 2.0, z - 2.0],
-                        [x + 3.0, y + 2.0, z + 2.0],
-                        paint,
-                    ),
-                    part(
-                        [x - 2.0, y - 2.0, z - 3.0],
-                        [x + 2.0, y + 2.0, z + 3.0],
-                        paint,
-                    ),
-                ]
-            };
-            let string = |x: f32, z: f32, top: f32| {
-                part([x - 0.15, 0.0, z - 0.15], [x + 0.15, top, z + 0.15], WHITE)
-            };
-            let mut parts = vec![
-                string(8.0, 8.0, 8.0),
-                string(5.0, 9.0, 11.0),
-                string(11.0, 9.0, 11.0),
-            ];
-            parts.extend(ball(8.0, 12.0, 6.0, RED));
-            parts.extend(ball(4.0, 13.0, 10.0, CYAN));
-            parts.extend(ball(12.0, 13.0, 10.0, ORANGE));
-            parts
-        }
+        Model::Balloon => balloon(BALLOON_RED, YELLOW),
+        Model::BalloonBlue => balloon(BALLOON_BLUE, WHITE),
     }
+}
+
+/// A balloon: its envelope in rounds, each a cross of two boxes, which from above comes
+/// close to a circle, on four ropes over a basket.
+fn balloon(gores: Paint, crown: Paint) -> Vec<Part> {
+    /// Each round from its bottom to its top, and how far from the middle it reaches.
+    const ROUNDS: [[f32; 3]; 8] = [
+        [4.0, 5.0, 1.4],
+        [5.0, 6.0, 2.8],
+        [6.0, 7.2, 4.3],
+        [7.2, 8.6, 5.6],
+        [8.6, 11.8, 6.6],
+        [11.8, 13.6, 5.8],
+        [13.6, 15.0, 4.4],
+        [15.0, 16.0, 2.6],
+    ];
+    let cross = |[from, to, far]: [f32; 3], paint: Paint| {
+        let near = far * 0.72;
+        [
+            part(
+                [8.0 - far, from, 8.0 - near],
+                [8.0 + far, to, 8.0 + near],
+                paint,
+            ),
+            part(
+                [8.0 - near, from, 8.0 - far],
+                [8.0 + near, to, 8.0 + far],
+                paint,
+            ),
+        ]
+    };
+    let rope = |x: f32, z: f32| part([x, 1.2, z], [x + 0.25, 4.6, z + 0.25], GREY);
+    let mut parts = vec![
+        part([6.9, 0.0, 6.9], [9.1, 1.4, 9.1], WOOD),
+        part([6.7, 1.2, 6.7], [9.3, 1.5, 9.3], BLACK),
+        rope(6.9, 6.9),
+        rope(8.85, 6.9),
+        rope(6.9, 8.85),
+        rope(8.85, 8.85),
+    ];
+    for (at, round) in ROUNDS.into_iter().enumerate() {
+        let paint = if at + 1 == ROUNDS.len() || at == 0 {
+            crown
+        } else {
+            gores
+        };
+        parts.extend(cross(round, paint));
+    }
+    parts
 }
 
 impl Model {
@@ -187,28 +209,27 @@ impl Model {
             Self::Gull => "life_gull",
             Self::GullOffBeat => "life_gull_off",
             Self::GullLastBeat => "life_gull_last",
-            Self::GullPerched => "life_gull_perched",
             Self::Locomotive => "life_locomotive",
             Self::Carriage => "life_carriage",
             Self::Wagon => "life_wagon",
             Self::Angler => "life_angler",
             Self::Float => "life_float",
-            Self::Stroller => "life_stroller",
-            Self::Balloons => "life_balloons",
+            Self::Balloon => "life_balloon",
+            Self::BalloonBlue => "life_balloon_blue",
+            Self::BalloonShadow => "life_balloon_shadow",
         }
     }
 
     /// What a client without the pack gets: a flat sprite, as close as the game has.
     fn plain_item(self) -> &'static str {
         match self {
-            Self::Gull | Self::GullOffBeat | Self::GullLastBeat | Self::GullPerched => {
-                "minecraft:feather"
-            }
+            Self::Gull | Self::GullOffBeat | Self::GullLastBeat => "minecraft:feather",
             Self::Locomotive | Self::Carriage => "minecraft:furnace_minecart",
             Self::Wagon => "minecraft:chest_minecart",
             Self::Angler | Self::Float => "minecraft:fishing_rod",
-            Self::Stroller => "minecraft:armor_stand",
-            Self::Balloons => "minecraft:red_dye",
+            Self::Balloon => "minecraft:red_dye",
+            Self::BalloonBlue => "minecraft:blue_dye",
+            Self::BalloonShadow => "minecraft:black_dye",
         }
     }
 
@@ -365,25 +386,6 @@ const GULL_FRAMES: [[&str; 16]; 4] = [
     ],
 ];
 
-const GULL_RESTING: [&str; 16] = [
-    "................",
-    "................",
-    "................",
-    "................",
-    "................",
-    ".......oo.......",
-    ".......ww.......",
-    "......wwww......",
-    "......wwww......",
-    "......gwwg......",
-    "......gwwg......",
-    ".......gg.......",
-    ".......kk.......",
-    "................",
-    "................",
-    "................",
-];
-
 /// The order of the frames of a beat, starting at a point of it.
 fn beat(start: usize) -> String {
     let frames = [0, 3, 1, 2, 2, 1, 3, 0];
@@ -399,6 +401,40 @@ fn gull_strip() -> Image {
     let mut image = Image::new(SIDE, SIDE * frames);
     for (index, frame) in GULL_FRAMES.iter().enumerate() {
         draw(&mut image, index as u32 * SIDE, frame, gull_colour);
+    }
+    image
+}
+
+/// The gores of a balloon, side by side: from above and from the side alike, the faces of
+/// a box take the drawing by where they are in the model.
+fn gores(one: [u8; 4], other: [u8; 4]) -> Image {
+    let mut image = Image::new(SIDE, SIDE);
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            image.set(x, y, if (x / 2) % 2 == 0 { one } else { other });
+        }
+    }
+    image
+}
+
+/// A round of shade, soft at its rim, as a fine screen of dots. Half see-through pixels
+/// would do on land, but they hide the real water behind them, and the bed of a lake
+/// shows through as a pale patch: a pixel here is either all there or not at all.
+fn balloon_shadow() -> Image {
+    /// How far into the screen a dot comes, in sixteenths.
+    const SCREEN: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+    const FINE_SIDE: u32 = SIDE * 4;
+    let mut image = Image::new(FINE_SIDE, FINE_SIDE);
+    let middle = f64::from(FINE_SIDE) / 2.0 - 0.5;
+    for y in 0..FINE_SIDE {
+        for x in 0..FINE_SIDE {
+            let far = (f64::from(x) - middle).hypot(f64::from(y) - middle) / middle;
+            let shade = 0.56 * (1.0 - far.powi(4));
+            let dot = f64::from(SCREEN[y as usize % 4][x as usize % 4]) / 16.0;
+            if far <= 1.0 && dot < shade {
+                image.set(x, y, [10, 14, 24, 255]);
+            }
+        }
     }
     image
 }
@@ -496,12 +532,20 @@ pub fn install(pack: &mut ResourcePack) {
         pack.add(file.clone(), gull_strip().to_png());
         pack.add(format!("{file}.mcmeta"), beat(start).into_bytes());
     }
-    let mut perched = Image::new(SIDE, SIDE);
-    draw(&mut perched, 0, &GULL_RESTING, gull_colour);
-    pack.add(
-        format!("{TEXTURES}/life_gull_perched.png"),
-        perched.to_png(),
-    );
+    let textures = [
+        (
+            "life_balloon_red",
+            gores([214, 52, 44, 255], [244, 232, 208, 255]),
+        ),
+        (
+            "life_balloon_blue",
+            gores([44, 96, 190, 255], [240, 196, 70, 255]),
+        ),
+        ("life_balloon_shadow", balloon_shadow()),
+    ];
+    for (name, image) in textures {
+        pack.add(format!("{TEXTURES}/{name}.png"), image.to_png());
+    }
     let file = format!("{TEXTURES}/life_float.png");
     pack.add(file.clone(), float_strip().to_png());
     pack.add(format!("{file}.mcmeta"), FLOAT_FRAMES.as_bytes().to_vec());
