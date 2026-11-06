@@ -164,46 +164,31 @@ const SOIL: i32 = b::BROWN_TERRACOTTA;
 const PATH: i32 = b::BROWN_CONCRETE;
 const BRIDGE: i32 = b::SPRUCE_PLANKS;
 const CLOUD_SEED: u32 = 90;
+/// What a cloud is made of, wherever it hangs. The faces of a block take care of its shade.
+const CLOUD: i32 = b::WHITE_CONCRETE;
 /// Each cell of a grid this wide may hold one cloud, in world blocks: clouds are the same
 /// on every model.
-const CLOUD_SPACING: f64 = 104.0;
+const CLOUD_SPACING: f64 = 84.0;
 /// The share of the cells that do.
-const CLOUD_CHANCE: f64 = 0.85;
-/// A pixel of a cloud's drawing, in world blocks: a cell of the overview.
-const CLOUD_PIXEL: f64 = 8.0;
-/// Small clouds as a game draws them, seen from above with north up. A digit says how
-/// many layers stand there: the lowest one is the shade, which shows along the south edge
-/// where nothing covers it, and the two others are the light side.
-const CLOUD_SHAPES: [&[&str]; 4] = [
-    &[
-        "....2222......",
-        "..22333322.22.",
-        ".2233333322332",
-        "22333333333332",
-        "22233333333222",
-        ".111111111111.",
-    ],
-    &[
-        "...222......",
-        ".2233322.22.",
-        "223333332332",
-        "222333333222",
-        ".1111111111.",
-    ],
-    &[
-        "..2222...",
-        ".2233322.",
-        "223333322",
-        "222333222",
-        ".1111111.",
-    ],
-    &["..22...", ".23322.", "2233322", ".11111."],
-];
+const CLOUD_CHANCE: f64 = 0.8;
+/// A pixel of a cloud, in world blocks: its edge stays that of a drawing on the close
+/// model. A coarser one draws it cell by cell.
+const CLOUD_PIXEL: f64 = 6.0;
+/// The length of a cloud, along its axis, in world blocks.
+const CLOUD_LENGTH: [f64; 2] = [30.0, 118.0];
+/// The radius of its puffs.
+const CLOUD_PUFF: [f64; 2] = [11.0, 25.0];
+/// How far a cloud turns from its west-east axis, as a share of a turn.
+const CLOUD_TILT: f64 = 0.09;
+/// How high in a puff each layer of a cloud starts: 0 at its edge, 1 at its middle.
+const CLOUD_LAYERS: [f64; 4] = [0.0, 0.34, 0.58, 0.78];
 /// How far south of its place a cloud is drawn, in world blocks. The camera looks north
 /// and down, so that a cloud high up shows further north than what it hangs over.
 const CLOUD_LEAN: f64 = 48.0;
 /// Over the land under it, in blocks of a landmark: more than the tallest one.
 const CLOUD_CLEARANCE: i32 = 8;
+/// The most a cloud hangs over that, in layers: no two hang alike.
+const CLOUD_DRIFT: f64 = 4.0;
 /// The highest a cloud starts, as a share of the model's height over the sea: a camera
 /// zoomed all the way in stays over it.
 const CLOUD_HEIGHT: f64 = 0.62;
@@ -277,105 +262,113 @@ pub struct Scene {
     scale: Scale,
     columns: Vec<Option<Column>>,
     buildings: HashMap<(i32, i32), Vec<(i32, i32)>>,
-    /// The blocks of the clouds over each column, worked out once, on and off the land.
-    clouds: HashMap<(i32, i32), Vec<(i32, i32)>>,
+    /// The heights of the clouds over each column, worked out once, on and off the land.
+    clouds: HashMap<(i32, i32), Vec<i32>>,
 }
 
-/// What a cloud is made of: its light side and its one shade.
-fn cloud_blocks(state: RegionState) -> (i32, i32) {
-    match state {
-        RegionState::Locked => (b::LIGHT_GRAY_CONCRETE, b::GRAY_CONCRETE),
-        RegionState::Undiscovered | RegionState::Discovered => {
-            (b::WHITE_CONCRETE, b::LIGHT_GRAY_CONCRETE)
-        }
-    }
-}
-
-/// One cloud: a drawing, the same on every model, at a place of the world.
-#[derive(Debug, Clone, Copy)]
+/// One cloud: a few round puffs along an axis, the same on every model, at a place of the
+/// world. Each is its own shape, which comes from where it hangs.
+#[derive(Debug, Clone, PartialEq)]
 struct Cloud {
-    /// World block of its north-west corner.
-    corner: [f64; 2],
-    shape: &'static [&'static str],
-    mirrored: bool,
+    /// Their middles and radii, in world blocks.
+    puffs: Vec<[f64; 3]>,
+    /// How many layers it has at its middle.
+    layers: usize,
+    /// How many layers it hangs over the lowest clouds.
+    drift: i32,
 }
 
 impl Cloud {
-    fn span(self) -> [f64; 2] {
-        let width = self.shape.first().map_or(0, |row| row.len());
-        [
-            width as f64 * CLOUD_PIXEL,
-            self.shape.len() as f64 * CLOUD_PIXEL,
-        ]
+    /// The cloud over a place, drawn from four rolls per step of the shape.
+    fn grown(middle: [f64; 2], cell: (i32, i32)) -> Self {
+        let roll = |step: u32| scatter(CLOUD_SEED + 10 * step, cell.0, cell.1);
+        let between = |[low, high]: [f64; 2], share: f64| low + (high - low) * share;
+        let [length, tilt, layers, drift] = roll(1);
+        // Small clouds are the common ones.
+        let length = between(CLOUD_LENGTH, length * length);
+        let tilt = (tilt * 2.0 - 1.0) * CLOUD_TILT * std::f64::consts::TAU;
+        let axis = [tilt.cos(), tilt.sin()];
+        let count = (length / CLOUD_PUFF[0] / 1.6).ceil().max(2.0) as u32;
+        let puffs = (0..count)
+            .map(|index| {
+                let [along, across, size, _] = roll(2 + index);
+                let along = (f64::from(index) + 0.2 + along * 0.6) / f64::from(count) - 0.5;
+                let across = (across * 2.0 - 1.0) * CLOUD_PUFF[0];
+                // The ends of a cloud are thinner than its middle.
+                let belly = 1.0 - along.abs() * 1.2;
+                [
+                    middle[0] + axis[0] * along * length - axis[1] * across,
+                    middle[1] + axis[1] * along * length + axis[0] * across,
+                    between(CLOUD_PUFF, size) * belly,
+                ]
+            })
+            .collect();
+        Self {
+            puffs,
+            layers: 1 + (layers * (length / CLOUD_LENGTH[1] * 3.0 + 1.0)) as usize,
+            drift: (drift * CLOUD_DRIFT) as i32,
+        }
+    }
+
+    /// Its bounds, as west, north, east and south, in world blocks.
+    fn bounds(&self) -> [f64; 4] {
+        self.puffs.iter().fold(
+            [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
+            |[west, north, east, south], [x, z, radius]| {
+                [
+                    west.min(x - radius),
+                    north.min(z - radius),
+                    east.max(x + radius),
+                    south.max(z + radius),
+                ]
+            },
+        )
     }
 
     /// How many layers stand at a world block.
-    fn layers(self, x: f64, z: f64) -> u8 {
-        let pixel = |from: f64, at: f64| ((at - from) / CLOUD_PIXEL).floor();
-        let (col, row) = (pixel(self.corner[0], x), pixel(self.corner[1], z));
-        if col < 0.0 || row < 0.0 {
-            return 0;
-        }
-        let drawn = self.shape.get(row as usize).and_then(|line| {
-            let col = col as usize;
-            let col = if self.mirrored {
-                line.len().checked_sub(col + 1)?
-            } else {
-                col
-            };
-            line.as_bytes().get(col)
-        });
-        drawn.map_or(0, |digit| digit.saturating_sub(b'0').min(9))
+    fn layers_at(&self, x: f64, z: f64) -> usize {
+        let height = self
+            .puffs
+            .iter()
+            .map(|[puff_x, puff_z, radius]| 1.0 - (puff_x - x).hypot(puff_z - z) / radius)
+            .fold(f64::MIN, f64::max);
+        let reached = CLOUD_LAYERS.iter().filter(|start| height > **start);
+        reached.count().min(self.layers)
     }
 
-    fn overlaps(self, other: Self) -> bool {
-        let ([width, depth], [other_width, other_depth]) = (self.span(), other.span());
-        self.corner[0] < other.corner[0] + other_width
-            && other.corner[0] < self.corner[0] + width
-            && self.corner[1] < other.corner[1] + other_depth
-            && other.corner[1] < self.corner[1] + depth
+    fn overlaps(&self, other: &Self) -> bool {
+        let ([west, north, east, south], [other_west, other_north, other_east, other_south]) =
+            (self.bounds(), other.bounds());
+        west < other_east && other_west < east && north < other_south && other_north < south
     }
 }
 
 /// The clouds of the closed regions. They depend on the world alone, so a cloud stays
 /// where it is from one model to the next.
-fn cloud_list(regions: &Regions) -> Vec<(Cloud, RegionState)> {
+fn cloud_list(regions: &Regions) -> Vec<Cloud> {
     let cells = (WORLD_RADIUS / CLOUD_SPACING).ceil() as i32;
-    let mut clouds: Vec<(Cloud, RegionState)> = Vec::new();
+    let mut clouds: Vec<Cloud> = Vec::new();
     for cell_z in -cells..=cells {
         for cell_x in -cells..=cells {
-            let [jitter_x, jitter_z, chance, pick] = scatter(CLOUD_SEED, cell_x, cell_z);
+            let [jitter_x, jitter_z, chance, _] = scatter(CLOUD_SEED, cell_x, cell_z);
             let at = [
                 (f64::from(cell_x) + 0.2 + jitter_x * 0.6) * CLOUD_SPACING,
                 (f64::from(cell_z) + 0.2 + jitter_z * 0.6) * CLOUD_SPACING,
             ];
-            let state = regions.at(at[0], at[1]).state;
-            if state == RegionState::Discovered
+            if regions.at(at[0], at[1]).state == RegionState::Discovered
                 || chance >= CLOUD_CHANCE
                 || at[0].hypot(at[1]) > rim_radius(at[0], at[1])
             {
                 continue;
             }
-            let count = CLOUD_SHAPES.len() as f64;
-            let shape = CLOUD_SHAPES[((pick * count) as usize).min(CLOUD_SHAPES.len() - 1)];
-            let mut cloud = Cloud {
-                corner: at,
-                shape,
-                mirrored: (pick * count).fract() < 0.5,
-            };
-            let [width, depth] = cloud.span();
-            let snap = |value: f64| (value / CLOUD_PIXEL).round() * CLOUD_PIXEL;
-            cloud.corner = [
-                snap(at[0] - width / 2.0),
-                snap(at[1] + CLOUD_LEAN - depth / 2.0),
-            ];
-            let inside =
-                |value: f64, span: f64| value >= -WORLD_RADIUS && value + span <= WORLD_RADIUS;
-            if inside(cloud.corner[0], width)
-                && inside(cloud.corner[1], depth)
-                && !clouds.iter().any(|(other, _)| cloud.overlaps(*other))
+            let cloud = Cloud::grown([at[0], at[1] + CLOUD_LEAN], (cell_x, cell_z));
+            let [west, north, east, south] = cloud.bounds();
+            let inside = |low: f64, high: f64| low >= -WORLD_RADIUS && high <= WORLD_RADIUS;
+            if inside(west, east)
+                && inside(north, south)
+                && !clouds.iter().any(|other| cloud.overlaps(other))
             {
-                clouds.push((cloud, state));
+                clouds.push(cloud);
             }
         }
     }
@@ -487,7 +480,7 @@ impl Scene {
         columns: &[Option<Column>],
         scale: Scale,
         regions: &Regions,
-    ) -> HashMap<(i32, i32), Vec<(i32, i32)>> {
+    ) -> HashMap<(i32, i32), Vec<i32>> {
         let size = i32::from(scale.size());
         let ground_at = |x: i32, z: i32| {
             let (col, row) = (x + scale.radius, z + scale.radius);
@@ -497,14 +490,19 @@ impl Scene {
                 .map(|column| column.ground)
         };
         let highest = SEA_Y + (f64::from(scale.max_y - SEA_Y) * CLOUD_HEIGHT) as i32;
-        let mut blocks: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
-        for (cloud, state) in cloud_list(regions) {
-            let [west, north] = cloud.corner;
-            let [width, depth] = cloud.span();
+        let mut blocks: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
+        for cloud in cloud_list(regions) {
+            let [west, north, east, south] = cloud.bounds();
             let cell = |world: f64| scale.cells(world).floor() as i32;
-            let cells: Vec<(i32, i32, u8)> = (cell(north)..=cell(north + depth))
-                .flat_map(|z| (cell(west)..=cell(west + width)).map(move |x| (x, z)))
-                .map(|(x, z)| (x, z, cloud.layers(scale.world(x), scale.world(z))))
+            // A whole number of cells to a pixel, or the drawing would catch on the grid.
+            let pixel = scale.cells(CLOUD_PIXEL).round().max(1.0) as i32;
+            let drawn = |cell: i32| {
+                let first = cell.div_euclid(pixel) * pixel;
+                (scale.world(first) + scale.world(first + pixel - 1)) / 2.0
+            };
+            let cells: Vec<(i32, i32, usize)> = (cell(north)..=cell(south))
+                .flat_map(|z| (cell(west)..=cell(east)).map(move |x| (x, z)))
+                .map(|(x, z)| (x, z, cloud.layers_at(drawn(x), drawn(z))))
                 .filter(|(_, _, layers)| *layers > 0)
                 .collect();
             let land = cells
@@ -512,15 +510,10 @@ impl Scene {
                 .filter_map(|(x, z, _)| ground_at(*x, *z))
                 .max()
                 .unwrap_or(SEA_Y);
-            let bottom = (land + CLOUD_CLEARANCE * scale.build).min(highest);
-            let (light, shade) = cloud_blocks(state);
+            let bottom = (land + (CLOUD_CLEARANCE + cloud.drift) * scale.build).min(highest);
             for (x, z, layers) in cells {
-                let column = blocks.entry((x, z)).or_default();
-                for layer in 0..i32::from(layers) {
-                    let block = if layer == 0 { shade } else { light };
-                    let from = bottom + layer * scale.build;
-                    column.extend((0..scale.build).map(|y| (from + y, block)));
-                }
+                let top = bottom + layers as i32 * scale.build;
+                blocks.entry((x, z)).or_default().extend(bottom..top);
             }
         }
         blocks
@@ -794,8 +787,8 @@ impl Scene {
     fn paint(&self, x: i32, z: i32, look: ChunkLook, set: &mut impl FnMut(i32, i32)) {
         // Clouds drift over open land and past the shore, so they answer to no column.
         if look.zone == ZoneLook::Clouds {
-            for (y, block) in self.clouds.get(&(x, z)).into_iter().flatten() {
-                set(*y, *block);
+            for y in self.clouds.get(&(x, z)).into_iter().flatten() {
+                set(*y, CLOUD);
             }
         }
         let Some(column) = self.column(x, z) else {
@@ -1158,24 +1151,64 @@ mod tests {
     }
 
     fn cloud_tops(scene: &Scene) -> impl Iterator<Item = ((i32, i32), i32)> + '_ {
-        scene.clouds.iter().map(|(cell, blocks)| {
-            let top = blocks.iter().map(|(y, _)| *y).max().unwrap_or(0);
-            (*cell, top)
-        })
+        scene
+            .clouds
+            .iter()
+            .map(|(cell, heights)| (*cell, heights.iter().copied().max().unwrap_or(0)))
     }
 
     #[test]
     fn clouds_are_the_same_every_time_and_on_every_model() {
-        let world_cells = |scene: &Scene| {
-            let scale = scene.scale();
-            let mut clouds = cloud_list(&Regions::demo());
-            clouds.sort_by(|a, b| a.0.corner[0].total_cmp(&b.0.corner[0]));
-            (scale, clouds.len())
-        };
         let (first, second) = (closed_scene(OVERVIEW), closed_scene(OVERVIEW));
         assert_eq!(first.clouds, second.clouds);
         assert!(!first.clouds.is_empty());
-        assert_eq!(world_cells(&first).1, world_cells(&closed_scene(DETAIL)).1);
+        assert_eq!(cloud_list(&Regions::demo()), cloud_list(&Regions::demo()));
+    }
+
+    /// Their outlines, each moved to the same place, as a game would draw them.
+    #[test]
+    fn no_two_clouds_are_the_same_drawing() {
+        let clouds = cloud_list(&Regions::demo());
+        assert!(clouds.len() >= 8, "{}", clouds.len());
+        let drawing = |cloud: &Cloud| {
+            let [west, north, east, south] = cloud.bounds();
+            let cell = |from: f64, step: i32| from + f64::from(step) * CLOUD_PIXEL;
+            let steps = |from: f64, to: f64| ((to - from) / CLOUD_PIXEL).ceil() as i32;
+            (0..steps(north, south))
+                .flat_map(|z| (0..steps(west, east)).map(move |x| (x, z)))
+                .map(|(x, z)| cloud.layers_at(cell(west, x), cell(north, z)))
+                .collect::<Vec<_>>()
+        };
+        let drawings: BTreeSet<_> = clouds.iter().map(drawing).collect();
+        assert_eq!(drawings.len(), clouds.len());
+    }
+
+    #[test]
+    fn clouds_come_in_all_sizes_and_up_to_four_layers() {
+        let clouds = cloud_list(&Regions::demo());
+        let width = |cloud: &Cloud| cloud.bounds()[2] - cloud.bounds()[0];
+        let widths: Vec<_> = clouds.iter().map(width).collect();
+        let (least, most) = widths
+            .iter()
+            .fold((f64::MAX, 0.0_f64), |(low, high), width| {
+                (low.min(*width), high.max(*width))
+            });
+        assert!(most > least * 2.0, "{least} {most}");
+        let layers: BTreeSet<_> = clouds.iter().map(|cloud| cloud.layers).collect();
+        assert!(layers.len() >= 3 && layers.iter().all(|n| (1..=4).contains(n)));
+    }
+
+    #[test]
+    fn a_cloud_is_of_one_colour_in_every_region() {
+        let scene = closed_scene(DETAIL);
+        let look = ChunkLook {
+            zone: ZoneLook::Clouds,
+            ..ChunkLook::default()
+        };
+        for ((x, z), heights) in &scene.clouds {
+            let column = column_in(&scene, *x, *z, look);
+            assert!(heights.iter().all(|y| column[y] == CLOUD), "{x} {z}");
+        }
     }
 
     #[test]
@@ -1192,26 +1225,17 @@ mod tests {
     #[test]
     fn only_closed_regions_have_clouds() {
         assert!(scene(&land()).clouds.is_empty());
-        for (cloud, state) in cloud_list(&Regions::demo()) {
-            let [width, depth] = cloud.span();
-            let middle = [cloud.corner[0] + width / 2.0, cloud.corner[1] + depth / 2.0];
-            assert_ne!(state, RegionState::Discovered, "{middle:?}");
-        }
+        assert!(!closed_scene(OVERVIEW).clouds.is_empty());
     }
 
     #[test]
     fn clouds_stay_apart_and_on_the_model() {
         let clouds = cloud_list(&Regions::demo());
-        for (index, (cloud, _)) in clouds.iter().enumerate() {
-            let [width, depth] = cloud.span();
-            assert!(cloud.corner[0] >= -WORLD_RADIUS && cloud.corner[1] >= -WORLD_RADIUS);
-            assert!(cloud.corner[0] + width <= WORLD_RADIUS);
-            assert!(cloud.corner[1] + depth <= WORLD_RADIUS);
-            assert!(
-                clouds[..index]
-                    .iter()
-                    .all(|(other, _)| !cloud.overlaps(*other))
-            );
+        for (index, cloud) in clouds.iter().enumerate() {
+            let [west, north, east, south] = cloud.bounds();
+            assert!(west >= -WORLD_RADIUS && north >= -WORLD_RADIUS);
+            assert!(east <= WORLD_RADIUS && south <= WORLD_RADIUS);
+            assert!(clouds[..index].iter().all(|other| !cloud.overlaps(other)));
         }
     }
 
@@ -1235,12 +1259,12 @@ mod tests {
                     .is_none_or(|column| column.state == RegionState::Discovered)
             })
             .expect("a cloud past a border");
-        let (y, block) = scene.clouds[&(x, z)][0];
+        let y = scene.clouds[&(x, z)][0];
         let built = chunk(x.div_euclid(16), z.div_euclid(16), ZoneLook::Clouds);
         let (local_x, local_z) = (x.rem_euclid(16) as u8, z.rem_euclid(16) as u8);
         let (section, local_y) = ((y + 64) as usize / 16, (y + 64).rem_euclid(16) as u8);
         let found = built.sections[section].get_block_state(local_x, local_y, local_z);
-        assert_eq!(found, block);
+        assert_eq!(found, CLOUD);
     }
 
     #[test]

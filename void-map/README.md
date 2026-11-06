@@ -116,7 +116,8 @@ alone. The chunks still to come go out in the new look.
   of its id.
 - `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
   stripes, behind a fence with a lock, or drained of colour with a large question mark.
-  A cloud is one of a few drawings of up to three flat layers, as in a game, and hangs
+  A cloud is a few round puffs of white blocks on one to four flat layers, as in a game.
+  Its shape comes from a fixed seed and where it hangs, so no two are alike, and it stays
   at the same place of the world on every model. It is built with the model, not on
   opening the map.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
