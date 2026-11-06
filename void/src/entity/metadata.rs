@@ -177,6 +177,21 @@ impl MetadataSource for ItemEntity {
     }
 }
 
+/// Shows every layer of a skin on a `minecraft:player` no client plays, which would
+/// otherwise wait for a client to say which of them it wants.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+pub struct AllSkinLayers;
+
+impl MetadataSource for AllSkinLayers {
+    fn write(&self, meta: &mut EntityMetadata) {
+        meta.set(mannequin_index::MODEL_PARTS, Value::Byte(ALL_MODEL_PARTS));
+    }
+
+    fn clear(meta: &mut EntityMetadata) {
+        meta.set(mannequin_index::MODEL_PARTS, Value::Byte(0));
+    }
+}
+
 /// Synched data of a `minecraft:mannequin`: a player's model with no player behind it,
 /// which the client animates from how it moves. `description` is the line under its
 /// name, and `None` drops the "NPC" label vanilla gives it.
@@ -662,6 +677,7 @@ pub(super) fn register(app: &mut App) {
         .add_metadata_source::<ItemEntity>()
         .add_metadata_source::<EndCrystal>()
         .add_metadata_source::<Mannequin>()
+        .add_metadata_source::<AllSkinLayers>()
         .add_metadata_source::<Display>()
         .add_metadata_source::<BlockDisplay>()
         .add_metadata_source::<ItemDisplay>()

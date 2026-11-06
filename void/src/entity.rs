@@ -25,8 +25,8 @@ pub use effects::{
     StatusEffectsState,
 };
 pub use metadata::{
-    Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal, EntityMetadata,
-    Glowing, Invisible, ItemDisplay, ItemDisplayContext, Mannequin, MetadataSource,
+    AllSkinLayers, Billboard, BlockDisplay, CustomName, Display, DisplayTransform, EndCrystal,
+    EntityMetadata, Glowing, Invisible, ItemDisplay, ItemDisplayContext, Mannequin, MetadataSource,
     MetadataSourceAppExt, NoGravity, Silent, TextAlignment, TextDisplay,
 };
 pub use passengers::{Mount, Passengers};

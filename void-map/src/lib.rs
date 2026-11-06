@@ -22,6 +22,8 @@ pub mod noise;
 pub mod players;
 pub mod plugin;
 pub mod pointer;
+#[cfg(feature = "profile")]
+pub mod profile;
 pub mod regions;
 pub mod scene;
 pub mod telemetry;

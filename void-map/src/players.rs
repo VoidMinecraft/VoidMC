@@ -4,31 +4,38 @@
 //! It does not say who plays them. [`Simulation`] fills it with walkers for now, and a
 //! system that copies connected players into it would show them the same way.
 //!
-//! A figure is a `minecraft:mannequin`, one per character and per session, since each
-//! session has its own model. The client animates it from how it moves, and it stays
-//! out of the way of the pointer: the eye sits inside its box, so the look always hits
-//! that first. Hovering one is decided here, the same way as for a marker, and only
-//! when no marker wants the look.
+//! A figure is a `minecraft:player` no client plays, one per character and per session,
+//! since each session has its own model. A mannequin would do, but a client only draws one
+//! up to 64 blocks times the size of its box, and a player ten times as far: only that
+//! lets a figure be as small as the model calls for. The client animates it from how it
+//! moves, and it stays out of the way of the pointer: the eye sits inside its box, so the
+//! look always hits that first. Hovering one is decided here, the same way as for a
+//! marker, and only when no marker wants the look.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
+use uuid::Uuid;
 use voidmc::{
-    Attributes, Billboard, Display, DisplayTransform, EntityAttribute, EntityBuilder, EntityKind,
-    Glowing, Mannequin, NoGravity, Silent, TextDisplay, WorldGen,
-    components::{Position, Rotation},
+    AllSkinLayers, Attributes, Billboard, Display, DisplayTransform, EntityAttribute,
+    EntityBuilder, EntityKind, Glowing, NoGravity, Players, Silent, TextDisplay, WorldGen,
+    components::{EntityUuid, Position, Rotation},
 };
-use voidmc_protocol::clientbound::ResolvableProfile;
+use voidmc_protocol::clientbound::{
+    PlayerInfoActions, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, ResolvableProfile,
+};
 
 use crate::plugin::{Atlas, MapSession, MapView};
 use crate::pointer::{AimReach, aimed_within};
-use crate::scene::{Scale, Scene, WORLD_RADIUS};
+use crate::scene::{SEA_Y, Scale, Scene, WORLD_RADIUS};
 
 /// Walkers when `VOID_MAP_WALKERS` does not say otherwise.
 const WALKERS: usize = 20;
 const SEED: u64 = 0x766f_6964_7761_6c6b;
+/// Keeps the ids of figures apart from those of characters.
+const FIGURE_IDS: u64 = 0x6669_6775_7265_7321;
 
 /// A vanilla player's walk, in blocks per tick.
 const WALK_SPEED: f64 = 4.317 / 20.0;
@@ -58,18 +65,14 @@ const AROUND: [[i32; 2]; 8] = [
     [-1, -1],
 ];
 
-/// A figure this large is drawn this far, and no further. Vanilla ties the distance to
-/// the size of the box, and at the true scale of a model a figure would vanish 8 to 20
-/// blocks from the eye, which is always further. So each figure takes the size its
-/// distance calls for, which also keeps them all the same size on screen.
-const DRAWN_PER_SCALE: f64 = 64.0;
-/// So that a figure moving away stays drawn until the next step of its size. It also
-/// sets how large they all look: from above, not much more than a head shows.
-const DRAWN_MARGIN: f64 = 1.3;
-/// Vanilla's limits for the `scale` attribute.
-const SCALE_LIMITS: (f64, f64) = (0.0625, 16.0);
-/// A figure follows its distance by steps of this much.
-const SIZE_STEP: f64 = 0.05;
+/// A client draws a player of size 1 this far, and no further: 64 blocks times ten times
+/// the average side of its box, which is one block at that size.
+#[cfg(test)]
+const DRAWN_PER_SCALE: f64 = 640.0;
+/// How much larger than life a figure is, on every model: at the true scale, a person
+/// would be a few pixels. From the heights of a zoom, this makes one a large pawn close up
+/// and a speck from the farthest.
+const LARGER_THAN_LIFE: f64 = 8.0;
 const PLAYER_HEIGHT: f64 = 1.8;
 /// Just under a whole block: what still falls in the same one.
 const CELL_INSIDE: f64 = 0.999;
@@ -77,8 +80,7 @@ const CELL_INSIDE: f64 = 0.999;
 const CLIMB_SPEED: f64 = 0.2;
 /// The furthest ahead a moving figure looks for the ground, in blocks of the model.
 const STEP_AHEAD: f64 = 1.3;
-/// How close to the middle of the screen a figure has to be to be named. At the size
-/// figures are drawn, this is about their body.
+/// How close to the middle of the screen a figure has to be to be named, at the least.
 const FIGURE_REACH: AimReach = AimReach {
     enter: 1.2,
     leave: 1.8,
@@ -96,27 +98,8 @@ const LABEL_GAP: f64 = 0.15;
 
 const SUMMARY_PERIOD: u32 = 200;
 
-/// Default skins of the client, so that no account and no download is involved.
-const SKINS: [(&str, bool); 18] = [
-    ("entity/player/wide/steve", false),
-    ("entity/player/slim/alex", true),
-    ("entity/player/wide/ari", false),
-    ("entity/player/slim/efe", true),
-    ("entity/player/wide/kai", false),
-    ("entity/player/slim/makena", true),
-    ("entity/player/wide/noor", false),
-    ("entity/player/slim/sunny", true),
-    ("entity/player/wide/zuri", false),
-    ("entity/player/slim/steve", true),
-    ("entity/player/wide/alex", false),
-    ("entity/player/slim/ari", true),
-    ("entity/player/wide/efe", false),
-    ("entity/player/slim/kai", true),
-    ("entity/player/wide/makena", false),
-    ("entity/player/slim/noor", true),
-    ("entity/player/wide/sunny", false),
-    ("entity/player/slim/zuri", true),
-];
+/// The default skins of the client, which picks one from the hash of an id.
+const DEFAULT_SKINS: u128 = 18;
 
 const NAMES: [&str; 20] = [
     "Ambre", "Basile", "Camille", "Dorian", "Elsa", "Fanny", "Gaspard", "Hugo", "Iris", "Jules",
@@ -538,7 +521,6 @@ impl Walk {
             let leg_end = path.get(leg).copied().unwrap_or(stop);
             let [x, z] = between(leg_start, leg_end, dice.share());
             let block = [x.floor() as i32, z.floor() as i32];
-            let (body, slim) = SKINS[index % SKINS.len()];
             let name = match index / NAMES.len() {
                 0 => NAMES[index].to_string(),
                 round => format!("{}{}", NAMES[index % NAMES.len()], round + 1),
@@ -547,7 +529,7 @@ impl Walk {
                 id,
                 Character {
                     name,
-                    skin: ResolvableProfile::textured(body, slim),
+                    skin: default_skin(index),
                     position: Position {
                         x,
                         y: f64::from(surface(block[0], block[1]) + 1),
@@ -706,9 +688,60 @@ fn height_ahead(scene: &Scene, from: [f64; 3], at: [f64; 3]) -> f64 {
     top.map_or(at[1], |top| at[1].max(f64::from(top + 1)))
 }
 
-/// The smallest size that still gets drawn from this far.
-fn size_for(distance: f64) -> f64 {
-    (distance * DRAWN_MARGIN / DRAWN_PER_SCALE).clamp(SCALE_LIMITS.0, SCALE_LIMITS.1)
+/// The size of a figure on a model. The same person is the same share of the land on all
+/// of them, so a figure follows the zoom as a block does, and a model taking over from
+/// another shows it where it was, as large as it was.
+fn size_on(scale: Scale) -> f64 {
+    LARGER_THAN_LIFE / f64::from(scale.blocks_per_cell)
+}
+
+/// One of the skins of the client, so that no account and no download is involved.
+fn default_skin(index: usize) -> ResolvableProfile {
+    ResolvableProfile {
+        id: Some(Uuid::from_u128(index as u128 % DEFAULT_SKINS)),
+        ..ResolvableProfile::default()
+    }
+}
+
+/// What the client hashes an id into, as `java.util.UUID` does.
+fn java_hash(id: Uuid) -> u32 {
+    let (high, low) = id.as_u64_pair();
+    let both = high ^ low;
+    (both >> 32) as u32 ^ both as u32
+}
+
+/// The id of a character's figure: never that of an account, which a client would take
+/// for the player it stands for, but with its hash, and so with its default skin. The hash
+/// settles 32 of its bits, so the character has to show in all the others.
+fn figure_id(character: u128, skin: &ResolvableProfile) -> Uuid {
+    let mut dice = Dice((character >> 64) as u64 ^ character as u64 ^ FIGURE_IDS);
+    let id = Uuid::from_u64_pair(dice.next(), dice.next());
+    let wanted = skin.id.map_or(0, java_hash);
+    Uuid::from_u128(id.as_u128() ^ u128::from(java_hash(id) ^ wanted))
+}
+
+/// What a client has to know of a figure before it can show one. It is not listed, and an
+/// empty name leaves nothing over its head.
+fn figure_entry(id: Uuid, character: &Character) -> PlayerInfoEntry {
+    PlayerInfoEntry {
+        uuid: id,
+        properties: character.skin.properties.clone(),
+        ..PlayerInfoEntry::default()
+    }
+}
+
+/// How far from the middle of the screen a figure can be named: about its body, which
+/// takes more of the screen the closer it is.
+fn reach_for(size: f64, distance: f64) -> AimReach {
+    let body = (PLAYER_HEIGHT * size / 2.0 / distance.max(1.0))
+        .atan()
+        .to_degrees();
+    let enter = FIGURE_REACH.enter.max(body);
+    AimReach {
+        enter,
+        leave: enter * FIGURE_REACH.leave / FIGURE_REACH.enter,
+        switch: FIGURE_REACH.switch,
+    }
 }
 
 fn apart(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -753,28 +786,60 @@ struct Figures {
     model: Option<Scale>,
     shown: BTreeMap<u128, Figure>,
     label: Option<Label>,
+    /// The figures the client was told about, which outlive what it shows.
+    introduced: BTreeSet<Uuid>,
 }
 
 impl Figures {
     fn clear(&mut self, commands: &mut Commands) {
         let figures = std::mem::take(&mut self.shown);
-        let label = self.label.take().map(|label| label.entity);
+        let label = self.drop_label();
         for entity in figures.values().map(|f| f.entity).chain(label) {
             commands.entity(entity).try_despawn();
         }
     }
+
+    fn drop_label(&mut self) -> Option<Entity> {
+        self.label.take().map(|label| label.entity)
+    }
+
+    /// The id of a character's figure, once the client of a session knows it.
+    fn introduce(
+        &mut self,
+        id: u128,
+        character: &Character,
+        player: Entity,
+        players: &Players,
+    ) -> Uuid {
+        let figure = figure_id(id, &character.skin);
+        if self.introduced.insert(figure) {
+            let entry = figure_entry(figure, character);
+            players.send(
+                player,
+                PlayerInfoUpdate::single(PlayerInfoActions::ADD_PLAYER, entry),
+            );
+        }
+        figure
+    }
 }
 
-fn spawn_figure(commands: &mut Commands, at: Position, character: &Character, size: f64) -> Entity {
-    EntityBuilder::new(EntityKind::Mannequin)
+fn spawn_figure(
+    commands: &mut Commands,
+    at: Position,
+    id: Uuid,
+    character: &Character,
+    size: f64,
+) -> Entity {
+    EntityBuilder::new(EntityKind::Player)
         .position(at)
         .rotation(character.yaw, 0.0)
         .gravity(false)
         .block_collision(false)
         .settle_ticks(0)
         .with_bundle((
-            Mannequin::new(character.skin.clone()),
-            Attributes::for_kind(EntityKind::Mannequin).base(EntityAttribute::Scale, size),
+            EntityUuid(id),
+            AllSkinLayers,
+            Attributes::for_kind(EntityKind::Player).base(EntityAttribute::Scale, size),
             NoGravity,
             Silent,
         ))
@@ -853,22 +918,24 @@ fn world_spot(view: &MapView, [x, y, z]: [f64; 3]) -> Position {
 fn show(
     characters: Res<Characters>,
     atlas: Res<Atlas>,
-    mut sessions: Query<(&MapSession, &mut Figures)>,
+    mut sessions: Query<(Entity, &MapSession, &mut Figures)>,
     mut bodies: Query<(&mut Position, &mut Rotation)>,
     mut attributes: Query<&mut Attributes>,
     mut cost: ResMut<Cost>,
+    players: Players,
     mut commands: Commands,
 ) {
     let started = Instant::now();
-    for (session, mut figures) in &mut sessions {
+    for (player, session, mut figures) in &mut sessions {
         let Some(view) = session.view(&atlas) else {
             continue;
         };
         let figures = &mut *figures;
         let model = view.scene.scale();
-        if figures.model != Some(model) {
-            figures.clear(&mut commands);
-            figures.model = Some(model);
+        let size = size_on(model);
+        let moved_model = figures.model.replace(model) != Some(model);
+        if moved_model && let Some(label) = figures.drop_label() {
+            commands.entity(label).try_despawn();
         }
 
         let places: BTreeMap<u128, [f64; 3]> = characters
@@ -888,14 +955,18 @@ fn show(
             let character = &characters.0[id];
             let Some(figure) = figures.shown.get_mut(id) else {
                 let at = [*x, *y, *z];
-                let size = size_for(apart(at, view.eye));
                 let spot = world_spot(&view, at);
-                let entity = spawn_figure(&mut commands, spot, character, size);
+                let figure = figures.introduce(*id, character, player, &players);
+                let entity = spawn_figure(&mut commands, spot, figure, character, size);
                 figures.shown.insert(*id, Figure { entity, at, size });
                 continue;
             };
-            let wanted_y = height_ahead(view.scene, figure.at, [*x, *y, *z]);
-            figure.at = [*x, climbed(figure.at[1], wanted_y), *z];
+            figure.at = if moved_model {
+                [*x, *y, *z]
+            } else {
+                let wanted_y = height_ahead(view.scene, figure.at, [*x, *y, *z]);
+                [*x, climbed(figure.at[1], wanted_y), *z]
+            };
             if let Ok((mut position, mut rotation)) = bodies.get_mut(figure.entity) {
                 if position.set_if_neq(world_spot(&view, figure.at)) {
                     cost.moves += 1;
@@ -905,12 +976,11 @@ fn show(
                     pitch: 0.0,
                 });
             }
-            let wanted = size_for(apart(figure.at, view.eye));
-            if (wanted / figure.size - 1.0).abs() > SIZE_STEP
+            if figure.size != size
                 && let Ok(mut attributes) = attributes.get_mut(figure.entity)
             {
-                figure.size = wanted;
-                attributes.set_base(EntityAttribute::Scale, wanted);
+                figure.size = size;
+                attributes.set_base(EntityAttribute::Scale, size);
             }
         }
 
@@ -943,9 +1013,10 @@ fn hover(
     let current = figures
         .label
         .and_then(|label| ids.iter().position(|id| *id == label.id));
+    let reach = reach_for(size_on(view.scene.scale()), view.eye[1] - f64::from(SEA_Y));
     let picked = view.aim.and_then(|aim| {
         let points = figures.shown.values().map(|figure| figure.up(0.5));
-        aimed_within(FIGURE_REACH, view.eye, aim, points, current).map(|index| ids[index])
+        aimed_within(reach, view.eye, aim, points, current).map(|index| ids[index])
     });
     let over = |figure: &Figure| world_spot(view, figure.up(1.0 + LABEL_GAP));
 
@@ -985,10 +1056,15 @@ fn give_figures(
 fn take_figures(
     event: On<bevy_ecs::lifecycle::Remove, MapSession>,
     mut figures: Query<&mut Figures>,
+    players: Players,
     mut commands: Commands,
 ) {
     if let Ok(mut figures) = figures.get_mut(event.entity) {
         figures.clear(&mut commands);
+        let uuids = std::mem::take(&mut figures.introduced)
+            .into_iter()
+            .collect();
+        players.send(event.entity, PlayerInfoRemove { uuids });
         commands.entity(event.entity).try_remove::<Figures>();
     }
 }
@@ -1015,6 +1091,7 @@ mod tests {
 
     use super::*;
     use crate::plugin::SEA_LEVEL;
+    use crate::pointer::{COARSE_ABOVE, COARSEST_ABOVE, FARTHEST_ZOOM};
     use crate::regions::Regions;
     use crate::scene::{DETAIL, MIDDLE, OVERVIEW};
     use crate::terrain::Terrain;
@@ -1355,16 +1432,55 @@ mod tests {
     }
 
     #[test]
-    fn a_figure_is_large_enough_to_be_drawn_from_where_it_is_seen() {
-        for distance in [60.0, 150.0, 300.0] {
-            assert!(size_for(distance) * DRAWN_PER_SCALE >= distance);
+    fn a_figure_is_the_same_share_of_the_land_on_every_model() {
+        let world_size = |scale: Scale| size_on(scale) * f64::from(scale.blocks_per_cell);
+        assert_eq!(world_size(DETAIL), world_size(MIDDLE));
+        assert_eq!(world_size(DETAIL), world_size(OVERVIEW));
+    }
+
+    /// Past a height, a view stands on the next model, as far from it as the heights say.
+    #[test]
+    fn a_figure_is_drawn_from_as_far_as_each_model_is_seen() {
+        for (scale, farthest) in [
+            (DETAIL, COARSE_ABOVE),
+            (MIDDLE, COARSEST_ABOVE),
+            (OVERVIEW, FARTHEST_ZOOM),
+        ] {
+            let on_model = farthest * f64::from(DETAIL.blocks_per_cell);
+            let distance = on_model / f64::from(scale.blocks_per_cell);
+            assert!(size_on(scale) * DRAWN_PER_SCALE > distance * 2.0);
         }
     }
 
     #[test]
     fn a_figure_stays_within_what_the_attribute_allows() {
-        assert_eq!(size_for(0.0), SCALE_LIMITS.0);
-        assert_eq!(size_for(1e6), SCALE_LIMITS.1);
+        for scale in [DETAIL, MIDDLE, OVERVIEW] {
+            assert!((0.0625..=16.0).contains(&size_on(scale)));
+        }
+    }
+
+    #[test]
+    fn a_figure_keeps_the_default_skin_of_its_character_but_not_its_id() {
+        for index in 0..30 {
+            let skin = default_skin(index);
+            let id = figure_id(0x1234 + index as u128, &skin);
+            assert_eq!(java_hash(id), java_hash(skin.id.unwrap()));
+            assert_ne!(Some(id), skin.id);
+        }
+    }
+
+    #[test]
+    fn two_characters_with_the_same_skin_are_two_figures() {
+        let skin = default_skin(3);
+        assert_ne!(figure_id(3, &skin), figure_id(3 + 18, &skin));
+    }
+
+    #[test]
+    fn a_figure_close_up_can_be_named_all_along_its_body() {
+        assert_eq!(reach_for(0.75, 100.0).enter, FIGURE_REACH.enter);
+        let close = reach_for(2.0, 20.0);
+        assert!(close.enter > 4.0, "{}", close.enter);
+        assert!(close.leave > close.enter);
     }
 
     #[test]

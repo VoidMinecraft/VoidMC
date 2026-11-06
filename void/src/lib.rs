@@ -51,12 +51,12 @@ pub use commands::{
 };
 pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
 pub use entity::{
-    AttributeInstance, Attributes, Billboard, BlockDisplay, CustomName, Display, DisplayTransform,
-    Effect, EffectCategory, EffectDuration, EffectInstance, EndCrystal, EntityAttribute,
-    EntityBuilder, EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin, EntityShownEvent,
-    Glowing, Hidden, Invisible, ItemDisplay, ItemDisplayContext, Mannequin, MetadataSource,
-    MetadataSourceAppExt, Modifier, ModifierOperation, Mount, NoGravity, Passengers, Silent,
-    StatusEffects, TextAlignment, TextDisplay,
+    AllSkinLayers, AttributeInstance, Attributes, Billboard, BlockDisplay, CustomName, Display,
+    DisplayTransform, Effect, EffectCategory, EffectDuration, EffectInstance, EndCrystal,
+    EntityAttribute, EntityBuilder, EntityHiddenEvent, EntityKind, EntityMetadata, EntityPlugin,
+    EntityShownEvent, Glowing, Hidden, Invisible, ItemDisplay, ItemDisplayContext, Mannequin,
+    MetadataSource, MetadataSourceAppExt, Modifier, ModifierOperation, Mount, NoGravity,
+    Passengers, Silent, StatusEffects, TextAlignment, TextDisplay,
 };
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};

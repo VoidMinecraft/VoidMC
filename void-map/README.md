@@ -183,15 +183,19 @@ walker turns back rather than leave it. The two coarser models draw the shores a
 trees a little elsewhere, so there a figure stands on the closest free cell, and goes
 unseen if there is none near.
 
-Each one is a `minecraft:mannequin`, in each session, placed from its world position
-onto the current model. A move goes out every tick, the client glides over three, and it
-turns and swings the legs from how the entity moves. The legs hardly swing in a look:
-the client reads them from blocks per tick, and a walk is a share of a block on a model.
+Each one is a `minecraft:player` no client plays, in each session, placed from its world
+position onto the current model. A move goes out every tick, the client glides over three,
+and it turns and swings the legs from how the entity moves. The legs hardly swing in a
+look: the client reads them from blocks per tick, and a walk is a share of a block on a
+model. A figure comes with a player info entry, unlisted and with no name: the client
+needs one to show it, and an empty name leaves nothing over its head. Its id is made so
+that it hashes like that of its skin, which is how a client picks a default skin.
 
-Figures are not at the scale of the model. Vanilla draws an entity up to 64 blocks times
-the size of its box, so at a true scale they would vanish far closer than the camera
-stands. Each takes the size its distance calls for, in steps, which also keeps them the
-same size on screen. `DRAWN_MARGIN` sets how large that is.
+A figure is the same share of the land on every model, `LARGER_THAN_LIFE` times the true
+scale, so it follows the zoom as a block does, and a model taking over shows it the size
+it was. This is why it is not a mannequin: vanilla draws an entity up to 64 blocks times
+the size of its box, and so nothing smaller than about 20 pixels on a 760 pixels window,
+whatever the zoom. A player on the client, `RemotePlayer`, goes ten times as far.
 
 The look never reaches a figure, since it hits the box around the eye first, and clicks
 only go to markers. So the name is decided on the server like a hover of a marker, within
@@ -207,6 +211,9 @@ declares the level, `plugin` runs the sessions, `players` shows the characters, 
 draws the pointer, and `telemetry` measures the characters.
 
 ## Logs
+
+Built with `--features profile`, each update slower than `VOID_MAP_SLOW_TICK` (25 ms by
+default) logs its largest systems, and a summary of them follows every 200 updates.
 
 `RUST_LOG=voidmc_map=debug` adds structured events for late ticks, gaps between the
 client's reports, looks past the limits, slow chunk sends, zoom keys and model changes.
