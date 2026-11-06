@@ -95,6 +95,28 @@ fn build_update_tags(registries: &RegistryDataStore) -> clientbound::UpdateTags 
         });
     }
 
+    for (registry_id, tag_id, entry_ids) in registries.added_tags() {
+        let Some(registry) = registries.get_registry(registry_id) else {
+            continue;
+        };
+        let entries = entry_ids
+            .iter()
+            .filter_map(|id| registry.entries.iter().position(|e| e.entry_id == *id))
+            .map(|index| index as i32)
+            .collect();
+        let entry = clientbound::TagEntry {
+            tag_id: tag_id.to_string(),
+            entries,
+        };
+        match out.iter_mut().find(|tags| tags.registry_id == registry_id) {
+            Some(tags) => tags.tags.push(entry),
+            None => out.push(clientbound::RegistryTags {
+                registry_id: registry_id.to_string(),
+                tags: vec![entry],
+            }),
+        }
+    }
+
     clientbound::UpdateTags { registries: out }
 }
 
@@ -266,4 +288,34 @@ fn send_teleport(players: &Players, player: Entity, x: f64, y: f64, z: f64) {
             flags: clientbound::TeleportFlags::empty(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
+
+    use super::*;
+
+    #[test]
+    fn a_tag_of_a_new_registry_goes_out_with_the_place_of_its_entries() {
+        let entry = |id: &str| RegistryEntry {
+            entry_id: id.to_string(),
+            data: None,
+        };
+        let mut registries = RegistryDataStore::default();
+        registries.add_registry(RegistryData {
+            registry_id: "minecraft:dialog".to_string(),
+            entries: vec![entry("a:one"), entry("a:two")],
+        });
+        registries.add_tag("minecraft:dialog", "minecraft:menu", &["a:two", "a:none"]);
+        let update = build_update_tags(&registries);
+        let dialogs = update
+            .registries
+            .iter()
+            .find(|tags| tags.registry_id == "minecraft:dialog");
+        let tags = &dialogs.expect("the registry goes out").tags;
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].tag_id, "minecraft:menu");
+        assert_eq!(tags[0].entries, [1]);
+    }
 }

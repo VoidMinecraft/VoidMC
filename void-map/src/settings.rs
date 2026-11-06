@@ -4,7 +4,8 @@
 //! [`settings`] is the only list of what can be changed, and [`PREVIEWS`] of what can be
 //! watched. The dialog, its clicks and the name that comes up all follow from those.
 
-use voidmc::TextColor;
+use voidmc::{RegistryDataStore, TextColor};
+use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 use voidmc_ui::{Button, Dialog, Image, ResourcePack, Text};
 
 use crate::art::Style;
@@ -16,6 +17,11 @@ use crate::scene::Blocks;
 const NAMESPACE: &str = "voidmap:settings";
 /// The boss bar sits right where a title goes, and the buttons say what this is.
 const TITLE: &str = " ";
+const MENU_BUTTON: &str = "Réglages carte";
+const DIALOGS: &str = "minecraft:dialog";
+/// The dialogs of the client's menu, and this one in it.
+const MENU_TAG: &str = "minecraft:pause_screen_additions";
+const MENU_DIALOG: &str = "voidmap:settings";
 const CLOSE: &str = "Fermer";
 const PREVIEW_ROW: &str = "Aperçus";
 /// Choices side by side, next to the name of the setting.
@@ -142,7 +148,7 @@ pub enum Action {
 }
 
 impl Action {
-    fn id(self) -> String {
+    pub(crate) fn id(self) -> String {
         match self {
             Self::Set(setting, choice) => format!("{NAMESPACE}/set/{setting}/{choice}"),
             Self::Preview(preview) => format!("{NAMESPACE}/preview/{preview}"),
@@ -197,14 +203,33 @@ fn row_of(title: &str, choices: Vec<Button>) -> Vec<Button> {
 
 /// All the settings and what each is on, for the looks of a player.
 pub fn dialog(looks: MapLooks) -> Dialog {
+    grid(Some(looks))
+}
+
+/// A button in the menu of the client, the only one a pointer can reach from the map. The
+/// client shows this as it is, without asking: it knows nothing of what is on, and the
+/// first click brings [`dialog`] instead.
+pub fn register(store: &mut RegistryDataStore) {
+    let dialog = grid(None).external_title(Text::new(MENU_BUTTON));
+    store.add_registry(RegistryData {
+        registry_id: DIALOGS.to_string(),
+        entries: vec![RegistryEntry {
+            entry_id: MENU_DIALOG.to_string(),
+            data: Some(dialog.to_nbt()),
+        }],
+    });
+    store.add_tag(DIALOGS, MENU_TAG, &[MENU_DIALOG]);
+}
+
+fn grid(looks: Option<MapLooks>) -> Dialog {
     let settings = settings()
         .into_iter()
         .enumerate()
         .flat_map(|(at, setting)| {
-            let now = (setting.current)(looks);
+            let now = looks.map(|looks| (setting.current)(looks));
             let choices = setting.labels.iter().enumerate();
-            let choices =
-                choices.map(|(index, label)| choice(label, index == now, Action::Set(at, index)));
+            let choices = choices
+                .map(|(index, label)| choice(label, Some(index) == now, Action::Set(at, index)));
             row_of(setting.name, choices.collect())
         });
     let previews = PREVIEWS.iter().enumerate();

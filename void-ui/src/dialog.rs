@@ -59,6 +59,7 @@ impl Button {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Dialog {
     title: Text,
+    external_title: Option<Text>,
     body: Vec<(Text, i32)>,
     buttons: Vec<Button>,
     exit: Option<Button>,
@@ -69,11 +70,19 @@ impl Dialog {
     pub fn new(title: Text, button: Button) -> Self {
         Self {
             title,
+            external_title: None,
             body: Vec::new(),
             buttons: vec![button],
             exit: None,
             columns: 1,
         }
+    }
+
+    /// What a button that leads to this dialog says, in the menus of the client. It says
+    /// the title otherwise.
+    pub fn external_title(mut self, title: Text) -> Self {
+        self.external_title = Some(title);
+        self
     }
 
     /// Adds a block of text, wrapped at `width` GUI pixels.
@@ -127,6 +136,9 @@ impl Dialog {
             ("columns", Tag::Int(self.columns)),
             ("actions", Tag::List(List::Compound(buttons))),
         ];
+        if let Some(title) = &self.external_title {
+            tags.push(("external_title", Tag::Compound(title.to_compound())));
+        }
         if let Some(exit) = &self.exit {
             tags.push(("exit_action", Tag::Compound(exit.to_compound())));
         }

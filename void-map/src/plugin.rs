@@ -1177,7 +1177,9 @@ pub struct MapPlugin;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        let info = biome::register(&mut app.world_mut().resource_mut::<RegistryDataStore>());
+        let mut registries = app.world_mut().resource_mut::<RegistryDataStore>();
+        let info = biome::register(&mut registries);
+        settings::register(&mut registries);
         app.insert_resource(Atlas {
             info,
             regions: Regions::demo(),
@@ -3458,9 +3460,12 @@ fn click_settings(
         return;
     };
     let player = event.player;
+    // The client's menu opens them on its own, off the map too.
     let Ok(mut session) = sessions.get_mut(player) else {
+        players.send(player, Dialog::close());
         return;
     };
+    session.settings = true;
     match action {
         Action::Set(setting, choice) => {
             commands.trigger(ChooseLook(player, LookChoice::Setting(setting, choice)));
@@ -4132,6 +4137,33 @@ mod tests {
         session.travel = None;
         session.wheel = None;
         assert_eq!(session.wanted_cursor(), Wanted::Nothing);
+    }
+
+    #[test]
+    fn a_click_on_a_setting_applies_it_at_once_and_keeps_the_settings_open() {
+        let mut app = engine();
+        let world = app.world_mut();
+        let player = world.spawn(session(MapMode::Pan)).id();
+        let id = Action::Set(0, 2).id();
+        world.trigger(UiClick { player, id });
+        world.flush();
+        let session = world.get::<MapSession>(player).unwrap();
+        assert_eq!(session.looks.style, Style::ALL[2]);
+        assert!(session.settings);
+        assert_eq!(world.get::<MapLooks>(player), Some(&session.looks));
+    }
+
+    #[test]
+    fn closing_the_settings_only_closes_them() {
+        let mut app = engine();
+        let world = app.world_mut();
+        let player = world.spawn(session(MapMode::Pan)).id();
+        let id = Action::Close.id();
+        world.trigger(UiClick { player, id });
+        world.flush();
+        let session = world.get::<MapSession>(player).unwrap();
+        assert!(!session.settings);
+        assert_eq!(session.looks, MapLooks::default());
     }
 
     #[test]

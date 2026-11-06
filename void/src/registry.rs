@@ -10,6 +10,8 @@ use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 #[derive(Resource)]
 pub struct RegistryDataStore {
     pub registries: Vec<RegistryData>,
+    /// Tags on top of the vanilla ones: registry, tag and the entries in it.
+    tags: Vec<(String, String, Vec<String>)>,
     sent: AtomicBool,
 }
 
@@ -17,6 +19,7 @@ impl Default for RegistryDataStore {
     fn default() -> Self {
         Self {
             registries: default_registry_data(),
+            tags: Vec::new(),
             sent: AtomicBool::new(false),
         }
     }
@@ -59,6 +62,21 @@ impl RegistryDataStore {
         if let Some(reg) = self.get_registry_mut(registry_id) {
             reg.entries.push(entry);
         }
+    }
+
+    /// Puts entries in a tag, sent to clients along with the vanilla tags. Vanilla reads
+    /// some tags of its own, such as `minecraft:pause_screen_additions` of dialogs.
+    pub fn add_tag(&mut self, registry_id: &str, tag_id: &str, entry_ids: &[&str]) {
+        let entries = entry_ids.iter().map(ToString::to_string).collect();
+        self.tags
+            .push((registry_id.to_string(), tag_id.to_string(), entries));
+    }
+
+    /// The tags added with [`Self::add_tag`].
+    pub(crate) fn added_tags(&self) -> impl Iterator<Item = (&str, &str, &[String])> {
+        self.tags
+            .iter()
+            .map(|(registry, tag, entries)| (registry.as_str(), tag.as_str(), entries.as_slice()))
     }
 
     /// Remove an entry from a registry, returning it if found.

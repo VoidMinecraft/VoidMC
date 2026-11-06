@@ -103,8 +103,12 @@ a client that refused the pack keeps its own and a blurred map. The mouse has no
 catch up with on closing: the client puts its pointer back in the middle and ignores the
 next move. The first row under the settings plays an animation, see below.
 
-The mouse never leaves the middle of the screen in the map, so a button of the view could
-not be pointed at. The way to the dialog is the key that the hint names.
+The mouse never leaves the middle of the screen in the map, so a button drawn on the view
+could not be pointed at. The way to the dialog is the key that the hint names, or Réglages
+carte in the client's own menu, on Escape: a dialog in the `minecraft:dialog` registry and in
+the tag `minecraft:pause_screen_additions`. The client opens that one on its own, so it
+shows no choice as on until the first click brings the real one. Off the map, a click on it
+closes it. Fermer goes back to the menu it came from.
 
 The wheel of `wheel.rs` is out of reach behind `WHEEL_OPEN`, until the dialog is settled.
 It opens while sprint is held, drawn in the pack: the mouse across turns between Panneau,
@@ -241,9 +245,10 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel`, `settings` and `art`. `biome`
-declares the level, `plugin` runs the sessions, `players` shows the characters, `cursor`
-draws the pointer, and `telemetry` measures the characters.
+`buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
+declares the level, `plugin` runs the sessions, `settings` lists what can be changed,
+`players` shows the characters, `cursor` draws the pointer, and `telemetry` measures the
+characters.
 
 ## Logs
 
