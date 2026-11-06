@@ -176,6 +176,7 @@ dependencies = [
  "slotmap",
  "smallvec",
  "thiserror 2.0.17",
+ "tracing",
  "variadics_please",
 ]
 
@@ -2143,6 +2144,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ussr-nbt",
+ "uuid",
  "voidmc",
  "voidmc-codec",
  "voidmc-data",

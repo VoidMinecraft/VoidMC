@@ -19,6 +19,11 @@ bevy_ecs = "0.18.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 ussr-nbt = "0.2.1"
+uuid = "1.16.0"
+
+[features]
+# Logs where the time of a slow tick goes, system by system.
+profile = ["bevy_ecs/trace", "bevy_ecs/debug"]
 
 [dev-dependencies]
 flume = "0.12.0"

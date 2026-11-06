@@ -177,6 +177,21 @@ impl MetadataSource for ItemEntity {
     }
 }
 
+/// Shows every layer of a skin on a `minecraft:player` no client plays, which would
+/// otherwise wait for a client to say which of them it wants.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
+pub struct AllSkinLayers;
+
+impl MetadataSource for AllSkinLayers {
+    fn write(&self, meta: &mut EntityMetadata) {
+        meta.set(mannequin_index::MODEL_PARTS, Value::Byte(ALL_MODEL_PARTS));
+    }
+
+    fn clear(meta: &mut EntityMetadata) {
+        meta.set(mannequin_index::MODEL_PARTS, Value::Byte(0));
+    }
+}
+
 /// Synched data of a `minecraft:mannequin`: a player's model with no player behind it,
 /// which the client animates from how it moves. `description` is the line under its
 /// name, and `None` drops the "NPC" label vanilla gives it.
@@ -436,6 +451,8 @@ impl MetadataSource for ItemDisplay {
 #[require(Display)]
 pub struct TextDisplay {
     pub text: String,
+    /// Shown instead of `text`, for what a plain string cannot say.
+    pub component: Option<Nbt>,
     pub line_width: i32,
     pub background_color: Option<i32>,
     pub opacity: i8,
@@ -456,6 +473,7 @@ impl TextDisplay {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
+            component: None,
             line_width: 200,
             background_color: None,
             opacity: -1,
@@ -463,6 +481,12 @@ impl TextDisplay {
             see_through: false,
             alignment: TextAlignment::Center,
         }
+    }
+
+    /// A full text component, such as a sprite of a player's face.
+    pub fn component(mut self, component: Nbt) -> Self {
+        self.component = Some(component);
+        self
     }
 
     pub fn line_width(mut self, width: i32) -> Self {
@@ -515,7 +539,11 @@ impl MetadataSource for TextDisplay {
     fn write(&self, meta: &mut EntityMetadata) {
         meta.set(
             display_index::TEXT,
-            Value::Component(text_component(&self.text)),
+            Value::Component(
+                self.component
+                    .clone()
+                    .unwrap_or_else(|| text_component(&self.text)),
+            ),
         );
         meta.set(display_index::TEXT_LINE_WIDTH, Value::Int(self.line_width));
         meta.set(
@@ -662,6 +690,7 @@ pub(super) fn register(app: &mut App) {
         .add_metadata_source::<ItemEntity>()
         .add_metadata_source::<EndCrystal>()
         .add_metadata_source::<Mannequin>()
+        .add_metadata_source::<AllSkinLayers>()
         .add_metadata_source::<Display>()
         .add_metadata_source::<BlockDisplay>()
         .add_metadata_source::<ItemDisplay>()

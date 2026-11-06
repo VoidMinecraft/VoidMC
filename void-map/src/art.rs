@@ -68,6 +68,26 @@ const FONT: &str = "assets/minecraft/font/default.json";
 /// as a ghost. With nothing on its skin, there is nothing to show.
 pub const EYE_SKIN: &str = "voidmap:entity/nobody";
 const EYE_SKIN_FILE: &str = "assets/voidmap/textures/entity/nobody.png";
+/// What an item takes to look like the boat of the pack, in its `item_model`.
+pub const BOAT_MODEL: &str = "voidmap:boat";
+const BOAT_ITEM_FILE: &str = "assets/voidmap/items/boat.json";
+const BOAT_MODEL_FILE: &str = "assets/voidmap/models/item/boat.json";
+const BOAT_ITEM: &str = r#"{"model":{"type":"minecraft:model","model":"voidmap:item/boat"}}"#;
+/// The boxes of a boat, from and to, in sixteenths of a block, and whether they are of
+/// the darker wood. Its bow is north, and the middle of the item, its waterline.
+const BOAT_BOXES: [([f32; 3], [f32; 3], bool); 11] = [
+    ([4.5, 8.0, 1.0], [11.5, 9.0, 15.0], true),
+    ([3.5, 8.0, 3.5], [4.5, 12.0, 15.0], false),
+    ([11.5, 8.0, 3.5], [12.5, 12.0, 15.0], false),
+    ([3.5, 8.0, 15.0], [12.5, 12.0, 16.0], false),
+    ([4.5, 8.0, 2.0], [6.0, 12.0, 3.5], false),
+    ([10.0, 8.0, 2.0], [11.5, 12.0, 3.5], false),
+    ([6.0, 8.0, 0.5], [7.5, 12.0, 2.0], false),
+    ([8.5, 8.0, 0.5], [10.0, 12.0, 2.0], false),
+    ([7.5, 8.0, 0.0], [8.5, 12.0, 0.5], false),
+    ([4.5, 10.0, 11.0], [11.5, 10.5, 12.5], false),
+    ([4.5, 10.0, 5.0], [11.5, 10.5, 6.5], false),
+];
 const SKIN_SIZE: u32 = 64;
 
 /// The client's glyph atlas is 256 wide, so that the veil comes in tiles. The title that
@@ -240,10 +260,8 @@ impl Style {
 pub enum Mark {
     /// A small drop pointing at the ground.
     Pin,
-    /// An arrow to lay on the ground.
+    /// An arrow facing the camera, that turns to say where the player was looking.
     Arrow,
-    /// A ring to lay on the ground.
-    Ring,
     /// A disc for a head to sit on.
     Disc,
     Lock,
@@ -252,10 +270,9 @@ pub enum Mark {
     Tip,
 }
 
-const MARKS: [Mark; 7] = [
+const MARKS: [Mark; 6] = [
     Mark::Pin,
     Mark::Arrow,
-    Mark::Ring,
     Mark::Disc,
     Mark::Lock,
     Mark::Unknown,
@@ -316,7 +333,6 @@ impl Mark {
             (true, _) => format!("§f{}", self.glyph()),
             (false, Self::Pin) => "§c▼".into(),
             (false, Self::Arrow) => "§c▲".into(),
-            (false, Self::Ring) => "§c○".into(),
             (false, Self::Disc) => "§f●".into(),
             (false, Self::Lock) => "§7X".into(),
             (false, Self::Unknown) => "§7?".into(),
@@ -333,7 +349,6 @@ impl Mark {
         match self {
             Self::Pin => drop_shape(),
             Self::Arrow => arrow(),
-            Self::Ring => ring(),
             Self::Disc => disc(24, FILL, EDGE),
             Self::Lock => bitmap_of(&LOCK, SIGN_COLOUR, 2),
             Self::Unknown => bitmap_of(&QUESTION, SIGN_COLOUR, 2),
@@ -390,20 +405,6 @@ fn arrow() -> Image {
             let dx = (f64::from(x) - 8.0).abs();
             if dx <= half && dx >= notch {
                 image.set(x as u32, y as u32, PIN_COLOUR);
-            }
-        }
-    }
-    image
-}
-
-fn ring() -> Image {
-    let size = 25;
-    let mut image = Image::new(size, size);
-    for y in 0..size {
-        for x in 0..size {
-            let from = (f64::from(x) - 12.0).hypot(f64::from(y) - 12.0);
-            if (9.5..=12.0).contains(&from) {
-                image.set(x, y, PIN_COLOUR);
             }
         }
     }
@@ -1123,11 +1124,34 @@ fn shifts() -> String {
     )
 }
 
+/// The model of a boat, in plain wood, as the client takes it.
+fn boat_model() -> String {
+    let faces = |texture: &str| {
+        let face = |side: &str| format!(r#""{side}":{{"texture":"{texture}"}}"#);
+        let sides = ["north", "south", "east", "west", "up", "down"].map(face);
+        sides.join(",")
+    };
+    let element = |(from, to, dark): &([f32; 3], [f32; 3], bool)| {
+        let texture = if *dark { "#dark" } else { "#oak" };
+        format!(
+            r#"{{"from":{from:?},"to":{to:?},"faces":{{{}}}}}"#,
+            faces(texture)
+        )
+    };
+    let elements: Vec<_> = BOAT_BOXES.iter().map(element).collect();
+    format!(
+        r#"{{"textures":{{"particle":"minecraft:block/oak_planks","oak":"minecraft:block/oak_planks","dark":"minecraft:block/dark_oak_planks"}},"elements":[{}]}}"#,
+        elements.join(",")
+    )
+}
+
 /// Adds the panels and the font that draws them.
 pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
     settings::install(pack);
     transition::install(pack, crate::plugin::FIRST_MODEL_BLOCK);
+    pack.add(BOAT_ITEM_FILE, BOAT_ITEM.as_bytes().to_vec());
+    pack.add(BOAT_MODEL_FILE, boat_model().into_bytes());
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());
     let mut providers = vec![shifts()];
     for subject in SUBJECTS {

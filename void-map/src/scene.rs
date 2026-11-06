@@ -4,7 +4,7 @@
 //! enough, but its waves are bent and smoothed, because a regular world reads as a
 //! chequerboard at this size.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::{NonZeroU8, NonZeroU16};
 
 use voidmc::BiomeId;
@@ -269,6 +269,52 @@ impl Column {
 
     fn is_land(self) -> bool {
         self.ground >= SEA_Y
+    }
+}
+
+/// The blocks of one column, by height. Comparing two looks goes through tens of thousands
+/// of them, and a map of each column took longer than a tick.
+struct PaintedColumn {
+    blocks: [i32; PaintedColumn::HEIGHTS],
+    lowest: i32,
+    highest: i32,
+}
+
+impl PaintedColumn {
+    const HEIGHTS: usize = 384;
+    const BOTTOM: i32 = -64;
+
+    fn new() -> Self {
+        Self {
+            blocks: [b::AIR; Self::HEIGHTS],
+            lowest: i32::MAX,
+            highest: i32::MIN,
+        }
+    }
+
+    fn set(&mut self, y: i32, block: i32) {
+        if let Some(slot) = self.blocks.get_mut((y - Self::BOTTOM) as usize) {
+            *slot = block;
+            self.lowest = self.lowest.min(y);
+            self.highest = self.highest.max(y);
+        }
+    }
+
+    fn get(&self, y: i32) -> i32 {
+        self.blocks[(y - Self::BOTTOM) as usize]
+    }
+
+    /// The heights this column or another one have anything at.
+    fn span(&self, other: &Self) -> std::ops::RangeInclusive<i32> {
+        self.lowest.min(other.lowest)..=self.highest.max(other.highest)
+    }
+
+    fn clear(&mut self) {
+        if self.lowest <= self.highest {
+            let (from, to) = (self.lowest - Self::BOTTOM, self.highest - Self::BOTTOM);
+            self.blocks[from as usize..=to as usize].fill(b::AIR);
+        }
+        (self.lowest, self.highest) = (i32::MAX, i32::MIN);
     }
 }
 
@@ -646,18 +692,45 @@ impl Scene {
             })
     }
 
-    /// The closest cell a figure may be shown on, around a cell, and the height of the
-    /// ground there. A model coarser than the one walkers go by has its shores and its
-    /// trees a little elsewhere.
-    pub fn stand_near(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+    /// Whether a boat may be shown here: on the water, and under no bridge.
+    fn floatable(&self, x: i32, z: i32) -> bool {
+        self.column(x, z).is_some_and(|column| !column.is_land())
+    }
+
+    /// Whether a boat can sail here: there is water all around it.
+    pub fn sailable(&self, x: i32, z: i32) -> bool {
+        (-1..=1)
+            .flat_map(|dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+            .all(|(x, z)| self.floatable(x, z))
+    }
+
+    /// The closest cell around another that passes a test.
+    fn closest(
+        &self,
+        x: i32,
+        z: i32,
+        fits: impl Fn(&Self, i32, i32) -> bool,
+    ) -> Option<(i32, i32)> {
         (0..=STAND_REACH).find_map(|ring| {
             (-ring..=ring)
                 .flat_map(|dz| (-ring..=ring).map(move |dx| (dx, dz)))
                 .filter(|(dx, dz)| dx.abs().max(dz.abs()) == ring)
-                .filter(|(dx, dz)| self.standable(x + dx, z + dz))
+                .filter(|(dx, dz)| fits(self, x + dx, z + dz))
                 .min_by_key(|(dx, dz)| dx * dx + dz * dz)
                 .map(|(dx, dz)| (x + dx, z + dz))
         })
+    }
+
+    /// The closest cell a figure may be shown on, around a cell, and the height of the
+    /// ground there. A model coarser than the one walkers go by has its shores and its
+    /// trees a little elsewhere.
+    pub fn stand_near(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+        self.closest(x, z, Self::standable)
+    }
+
+    /// The closest cell a boat may be shown on, for the same reason.
+    pub fn float_near(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+        self.closest(x, z, Self::floatable)
     }
 
     /// The model cell a world block falls on.
@@ -679,6 +752,18 @@ impl Scene {
         let from_middle =
             |cell: &&(i32, i32)| (cell.0 - middle.0).pow(2) + (cell.1 - middle.1).pow(2);
         cells.iter().min_by_key(from_middle).copied()
+    }
+
+    /// The chunks with anything on them, on the land or in the air past it. All the others
+    /// are the same empty chunk.
+    pub fn filled_chunks(&self) -> HashSet<(i32, i32)> {
+        let radius = self.scale.radius;
+        let land = (-radius..=radius)
+            .flat_map(|x| (-radius..=radius).map(move |z| (x, z)))
+            .filter(|(x, z)| self.column(*x, *z).is_some());
+        land.chain(self.clouds.keys().copied())
+            .map(|(x, z)| (x.div_euclid(16), z.div_euclid(16)))
+            .collect()
     }
 
     /// How far from the middle the model's chunks go.
@@ -836,6 +921,7 @@ impl Scene {
         to: ChunkLook,
     ) -> Vec<SectionChange> {
         let mut sections: BTreeMap<i32, Vec<VarI64>> = BTreeMap::new();
+        let (mut before, mut after) = (PaintedColumn::new(), PaintedColumn::new());
         for local_z in 0..16u8 {
             for local_x in 0..16u8 {
                 let (x, z) = (
@@ -848,18 +934,11 @@ impl Scene {
                 if from.blocks == to.blocks && !closed && !self.clouds.contains_key(&(x, z)) {
                     continue;
                 }
-                let column_in = |look| {
-                    let mut blocks = BTreeMap::new();
-                    self.paint(x, z, look, &mut |y, block| {
-                        blocks.insert(y, block);
-                    });
-                    blocks
-                };
-                let (before, after) = (column_in(from), column_in(to));
-                let heights = before.keys().chain(after.keys()).copied();
-                for y in heights.collect::<BTreeSet<_>>() {
-                    let block = after.get(&y).copied().unwrap_or(b::AIR);
-                    if before.get(&y).copied().unwrap_or(b::AIR) != block {
+                self.paint(x, z, from, &mut |y, block| before.set(y, block));
+                self.paint(x, z, to, &mut |y, block| after.set(y, block));
+                for y in before.span(&after) {
+                    let block = after.get(y);
+                    if before.get(y) != block {
                         let height = y.rem_euclid(16) as u8;
                         sections
                             .entry(y.div_euclid(16))
@@ -867,6 +946,8 @@ impl Scene {
                             .push(SectionBlocksUpdate::block(local_x, height, local_z, block));
                     }
                 }
+                before.clear();
+                after.clear();
             }
         }
         sections

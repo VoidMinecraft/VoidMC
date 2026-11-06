@@ -110,6 +110,11 @@ first use for the others. In the map a client is told to keep a far larger radiu
 moves, and the server's radius again on the way out. So a chunk it has seen does not go
 out twice.
 
+What a player's chunks do in a tick is held to `CHUNKS_TIME_PER_TICK`: a chunk built for
+the first time, a repaint or a chunk of the real world cost far more than a chunk that is
+ready, and past that time the rest waits for the next tick. All the empty chunks past the
+rim are one chunk in the caches, which a pan would otherwise build one by one on its ticks.
+
 ## Looks
 
 The engine's command arguments form one chain with no sub-literals, so one option
@@ -174,11 +179,11 @@ alone. The chunks still to come go out in the new look.
 
 - `/map style 1` to `4`: a full sheet, text alone, a round bubble with the name under it,
   or a large title over a flourish. `/map pan 2` opens exploration with that style.
-- `/map me 1` to `8`: the player's own marker, as a small pin, an arrow on the ground that
-  points where they look, a ring on the ground, their head on a small disc, their head
-  with a small arrow right under it, on a bubble that points down, over a ring, or over
-  the arrow. Only the account id goes out, so an offline account shows the default skin
-  of its id.
+- `/map me 1` to `3`: the player's own marker, flat and facing the camera: a small pin, an
+  arrow that turns to where they were looking, or their face on a disc with a small arrow
+  under it. A face is a text object, so it stays a picture. Only the account id goes out,
+  so an offline account shows the default skin of its id. `Me::ALL` lists them, each as a
+  `LookChoice::Me`.
 - `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
   stripes, behind a fence with a lock, or drained of colour with a large question mark.
   A cloud is one of a few drawings of up to three flat layers, as in a game, and hangs
@@ -241,8 +246,8 @@ middle with a shader on all text, and it fades unless sent again.
 
 ## Characters
 
-`Characters` lists who the map shows: a name, a skin, a place in the real world and a
-yaw. It does not say who plays them. For now `Walk` fills it with `VOID_MAP_WALKERS`
+`Characters` lists who the map shows: a name, a skin, a place in the real world, a yaw
+and whether they are on the water. It does not say who plays them. For now `Walk` fills it with `VOID_MAP_WALKERS`
 walkers, 20 by default, who go on foot between waypoints. To show connected players, a
 system copies them into the same list, with their account's profile as the skin.
 
@@ -253,15 +258,32 @@ walker turns back rather than leave it. The two coarser models draw the shores a
 trees a little elsewhere, so there a figure stands on the closest free cell, and goes
 unseen if there is none near.
 
-Each one is a `minecraft:mannequin`, in each session, placed from its world position
-onto the current model. A move goes out every tick, the client glides over three, and it
-turns and swings the legs from how the entity moves. The legs hardly swing in a look:
-the client reads them from blocks per tick, and a walk is a share of a block on a model.
+Each one is a `minecraft:player` no client plays, in each session, placed from its world
+position onto the current model. A move goes out every tick, the client glides over three,
+and it turns and swings the legs from how the entity moves. The legs hardly swing in a
+look: the client reads them from blocks per tick, and a walk is a share of a block on a
+model. A figure comes with a player info entry, unlisted and with no name: the client
+needs one to show it, and an empty name leaves nothing over its head. Its id is made so
+that it hashes like that of its skin, which is how a client picks a default skin.
 
-Figures are not at the scale of the model. Vanilla draws an entity up to 64 blocks times
-the size of its box, so at a true scale they would vanish far closer than the camera
-stands. Each takes the size its distance calls for, in steps, which also keeps them the
-same size on screen. `DRAWN_MARGIN` sets how large that is.
+A figure is the same share of the land on every model, `LARGER_THAN_LIFE` times the true
+scale, so it follows the zoom as a block does, and a model taking over shows it the size
+it was. This is why it is not a mannequin: vanilla draws an entity up to 64 blocks times
+the size of its box, and so nothing smaller than about 20 pixels on a 760 pixels window,
+whatever the zoom. A player on the client, `RemotePlayer`, goes ten times as far.
+
+A character can be `afloat`. On a lake, every third walker takes a boat: `lakes_of` finds
+the water with at least two `Landing`s, each a spot of ground a few cells from it, walks
+them to the closest one, and sends them `CROSSINGS` times across before they land and walk
+on to a place. Water is searched like ground, in a `Ground` of its own, and bridges close
+a lake off. Some start on the water, so that boats show from the first moment.
+
+A boat is an item display of a model of the pack, not a `minecraft:oak_boat`: an entity of
+the game has no scale and is drawn no further than a mannequin. A client without the pack
+gets the flat sprite of the boat. The figure rides it, which sits it down, and its body
+follows the boat with no move of its own. A rider hangs under its vehicle, so the display
+stands higher than it looks, for the feet to stay in the top block of the water: a client
+shows nothing of an entity whose feet are in a section it cannot see.
 
 The look never reaches a figure, since it hits the box around the eye first, and clicks
 only go to markers. So the name is decided on the server like a hover of a marker, within
@@ -279,6 +301,9 @@ declares the level, `plugin` runs the sessions, `plugin::preview` plays a flow o
 characters.
 
 ## Logs
+
+Built with `--features profile`, each update slower than `VOID_MAP_SLOW_TICK` (25 ms by
+default) logs its largest systems, and a summary of them follows every 200 updates.
 
 `RUST_LOG=voidmc_map=debug` adds structured events for late ticks, gaps between the
 client's reports, looks past the limits, slow chunk sends, zoom keys and model changes.
