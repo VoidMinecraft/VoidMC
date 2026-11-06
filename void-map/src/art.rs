@@ -68,6 +68,26 @@ const MINECART_SIZE: (u32, u32) = (64, 32);
 /// as a ghost. With nothing on its skin, there is nothing to show.
 pub const EYE_SKIN: &str = "voidmap:entity/nobody";
 const EYE_SKIN_FILE: &str = "assets/voidmap/textures/entity/nobody.png";
+/// What an item takes to look like the boat of the pack, in its `item_model`.
+pub const BOAT_MODEL: &str = "voidmap:boat";
+const BOAT_ITEM_FILE: &str = "assets/voidmap/items/boat.json";
+const BOAT_MODEL_FILE: &str = "assets/voidmap/models/item/boat.json";
+const BOAT_ITEM: &str = r#"{"model":{"type":"minecraft:model","model":"voidmap:item/boat"}}"#;
+/// The boxes of a boat, from and to, in sixteenths of a block, and whether they are of
+/// the darker wood. Its bow is north, and the middle of the item, its waterline.
+const BOAT_BOXES: [([f32; 3], [f32; 3], bool); 11] = [
+    ([4.5, 8.0, 1.0], [11.5, 9.0, 15.0], true),
+    ([3.5, 8.0, 3.5], [4.5, 12.0, 15.0], false),
+    ([11.5, 8.0, 3.5], [12.5, 12.0, 15.0], false),
+    ([3.5, 8.0, 15.0], [12.5, 12.0, 16.0], false),
+    ([4.5, 8.0, 2.0], [6.0, 12.0, 3.5], false),
+    ([10.0, 8.0, 2.0], [11.5, 12.0, 3.5], false),
+    ([6.0, 8.0, 0.5], [7.5, 12.0, 2.0], false),
+    ([8.5, 8.0, 0.5], [10.0, 12.0, 2.0], false),
+    ([7.5, 8.0, 0.0], [8.5, 12.0, 0.5], false),
+    ([4.5, 10.0, 11.0], [11.5, 10.5, 12.5], false),
+    ([4.5, 10.0, 5.0], [11.5, 10.5, 6.5], false),
+];
 const SKIN_SIZE: u32 = 64;
 
 /// The client's glyph atlas is 256 wide, so that the veil comes in tiles. The title that
@@ -1106,8 +1126,31 @@ fn shifts() -> String {
 
 /// Adds the panels and the font that draws them. Also turns minecarts black, for the
 /// one around the eye: looking up at it would otherwise show its floor on the black sky.
+/// The model of a boat, in plain wood, as the client takes it.
+fn boat_model() -> String {
+    let faces = |texture: &str| {
+        let face = |side: &str| format!(r#""{side}":{{"texture":"{texture}"}}"#);
+        let sides = ["north", "south", "east", "west", "up", "down"].map(face);
+        sides.join(",")
+    };
+    let element = |(from, to, dark): &([f32; 3], [f32; 3], bool)| {
+        let texture = if *dark { "#dark" } else { "#oak" };
+        format!(
+            r#"{{"from":{from:?},"to":{to:?},"faces":{{{}}}}}"#,
+            faces(texture)
+        )
+    };
+    let elements: Vec<_> = BOAT_BOXES.iter().map(element).collect();
+    format!(
+        r#"{{"textures":{{"particle":"minecraft:block/oak_planks","oak":"minecraft:block/oak_planks","dark":"minecraft:block/dark_oak_planks"}},"elements":[{}]}}"#,
+        elements.join(",")
+    )
+}
+
 pub fn install(pack: &mut ResourcePack) {
     cursor::install(pack);
+    pack.add(BOAT_ITEM_FILE, BOAT_ITEM.as_bytes().to_vec());
+    pack.add(BOAT_MODEL_FILE, boat_model().into_bytes());
     let black = Image::filled(MINECART_SIZE.0, MINECART_SIZE.1, [0, 0, 0, 255]);
     pack.add(MINECART, black.to_png());
     pack.add(EYE_SKIN_FILE, Image::new(SKIN_SIZE, SKIN_SIZE).to_png());

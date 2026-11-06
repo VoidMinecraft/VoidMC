@@ -171,8 +171,8 @@ middle with a shader on all text, and it fades unless sent again.
 
 ## Characters
 
-`Characters` lists who the map shows: a name, a skin, a place in the real world and a
-yaw. It does not say who plays them. For now `Walk` fills it with `VOID_MAP_WALKERS`
+`Characters` lists who the map shows: a name, a skin, a place in the real world, a yaw
+and whether they are on the water. It does not say who plays them. For now `Walk` fills it with `VOID_MAP_WALKERS`
 walkers, 20 by default, who go on foot between waypoints. To show connected players, a
 system copies them into the same list, with their account's profile as the skin.
 
@@ -196,6 +196,19 @@ scale, so it follows the zoom as a block does, and a model taking over shows it 
 it was. This is why it is not a mannequin: vanilla draws an entity up to 64 blocks times
 the size of its box, and so nothing smaller than about 20 pixels on a 760 pixels window,
 whatever the zoom. A player on the client, `RemotePlayer`, goes ten times as far.
+
+A character can be `afloat`. On a lake, every third walker takes a boat: `lakes_of` finds
+the water with at least two `Landing`s, each a spot of ground a few cells from it, walks
+them to the closest one, and sends them `CROSSINGS` times across before they land and walk
+on to a place. Water is searched like ground, in a `Ground` of its own, and bridges close
+a lake off. Some start on the water, so that boats show from the first moment.
+
+A boat is an item display of a model of the pack, not a `minecraft:oak_boat`: an entity of
+the game has no scale and is drawn no further than a mannequin. A client without the pack
+gets the flat sprite of the boat. The figure rides it, which sits it down, and its body
+follows the boat with no move of its own. A rider hangs under its vehicle, so the display
+stands higher than it looks, for the feet to stay in the top block of the water: a client
+shows nothing of an entity whose feet are in a section it cannot see.
 
 The look never reaches a figure, since it hits the box around the eye first, and clicks
 only go to markers. So the name is decided on the server like a hover of a marker, within

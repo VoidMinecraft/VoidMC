@@ -646,18 +646,45 @@ impl Scene {
             })
     }
 
-    /// The closest cell a figure may be shown on, around a cell, and the height of the
-    /// ground there. A model coarser than the one walkers go by has its shores and its
-    /// trees a little elsewhere.
-    pub fn stand_near(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+    /// Whether a boat may be shown here: on the water, and under no bridge.
+    fn floatable(&self, x: i32, z: i32) -> bool {
+        self.column(x, z).is_some_and(|column| !column.is_land())
+    }
+
+    /// Whether a boat can sail here: there is water all around it.
+    pub fn sailable(&self, x: i32, z: i32) -> bool {
+        (-1..=1)
+            .flat_map(|dz| (-1..=1).map(move |dx| (x + dx, z + dz)))
+            .all(|(x, z)| self.floatable(x, z))
+    }
+
+    /// The closest cell around another that passes a test.
+    fn closest(
+        &self,
+        x: i32,
+        z: i32,
+        fits: impl Fn(&Self, i32, i32) -> bool,
+    ) -> Option<(i32, i32)> {
         (0..=STAND_REACH).find_map(|ring| {
             (-ring..=ring)
                 .flat_map(|dz| (-ring..=ring).map(move |dx| (dx, dz)))
                 .filter(|(dx, dz)| dx.abs().max(dz.abs()) == ring)
-                .filter(|(dx, dz)| self.standable(x + dx, z + dz))
+                .filter(|(dx, dz)| fits(self, x + dx, z + dz))
                 .min_by_key(|(dx, dz)| dx * dx + dz * dz)
                 .map(|(dx, dz)| (x + dx, z + dz))
         })
+    }
+
+    /// The closest cell a figure may be shown on, around a cell, and the height of the
+    /// ground there. A model coarser than the one walkers go by has its shores and its
+    /// trees a little elsewhere.
+    pub fn stand_near(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+        self.closest(x, z, Self::standable)
+    }
+
+    /// The closest cell a boat may be shown on, for the same reason.
+    pub fn float_near(&self, x: i32, z: i32) -> Option<(i32, i32)> {
+        self.closest(x, z, Self::floatable)
     }
 
     /// The model cell a world block falls on.

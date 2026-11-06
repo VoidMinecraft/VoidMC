@@ -1116,6 +1116,11 @@ pub(crate) struct MapView<'a> {
 }
 
 impl MapSession {
+    /// Whether the client has the pack, and so what it draws.
+    pub(crate) fn has_pack(&self) -> bool {
+        self.drawn
+    }
+
     pub(crate) fn view<'a>(&self, atlas: &'a Atlas) -> Option<MapView<'a>> {
         let Position { x, z, .. } = self.on_model(0.0, 0.0, 0.0);
         let level = atlas.level(self.model())?;
@@ -1149,6 +1154,14 @@ impl Atlas {
         self.detail.as_ref().is_some_and(|level| {
             let cell = level.scene.cell_of(x, z);
             cell.is_some_and(|(x, z)| level.scene.walkable(x, z))
+        })
+    }
+
+    /// Whether a boat can be on this block of the world, by the same model.
+    pub(crate) fn sailable(&self, x: i32, z: i32) -> bool {
+        self.detail.as_ref().is_some_and(|level| {
+            let cell = level.scene.cell_of(x, z);
+            cell.is_some_and(|(x, z)| level.scene.sailable(x, z))
         })
     }
 }

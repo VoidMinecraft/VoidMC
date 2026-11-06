@@ -20,13 +20,17 @@ use bevy_ecs::prelude::*;
 use uuid::Uuid;
 use voidmc::{
     AllSkinLayers, Attributes, Billboard, Display, DisplayTransform, EntityAttribute,
-    EntityBuilder, EntityKind, Glowing, NoGravity, Players, Silent, TextDisplay, WorldGen,
+    EntityBuilder, EntityKind, Glowing, ItemDisplay, ItemDisplayContext, ItemStack, NoGravity,
+    Passengers, Players, Silent, TextDisplay, WorldGen,
     components::{EntityUuid, Position, Rotation},
 };
+use voidmc_codec::Encode;
 use voidmc_protocol::clientbound::{
     PlayerInfoActions, PlayerInfoEntry, PlayerInfoRemove, PlayerInfoUpdate, ResolvableProfile,
 };
+use voidmc_protocol::slot::DataComponent;
 
+use crate::art::BOAT_MODEL;
 use crate::plugin::{Atlas, MapSession, MapView};
 use crate::pointer::{AimReach, aimed_within};
 use crate::scene::{SEA_Y, Scale, Scene, WORLD_RADIUS};
@@ -39,6 +43,18 @@ const FIGURE_IDS: u64 = 0x6669_6775_7265_7321;
 
 /// A vanilla player's walk, in blocks per tick.
 const WALK_SPEED: f64 = 4.317 / 20.0;
+/// A boat going about its way, in blocks per tick.
+const SAIL_SPEED: f64 = 0.25;
+/// How many times a boat goes across its lake before anyone gets off it.
+const CROSSINGS: usize = 3;
+/// One walker in this many goes by boat when a lake is on the way.
+const SAILORS_EVERY: usize = 3;
+/// Ground this close to the water, in cells, can have a boat waiting.
+const LANDING_REACH: i32 = 4;
+/// How many places around a lake boats leave from.
+const LANDINGS_PER_LAKE: usize = 5;
+/// Water with fewer cells than this is no lake to sail on.
+const SMALLEST_LAKE: u32 = 60;
 /// How far a walker turns in a tick, in degrees.
 const TURN_SPEED: f32 = 24.0;
 /// How long a walker stays at a place, in ticks.
@@ -74,6 +90,15 @@ const DRAWN_PER_SCALE: f64 = 640.0;
 /// and a speck from the farthest.
 const LARGER_THAN_LIFE: f64 = 8.0;
 const PLAYER_HEIGHT: f64 = 1.8;
+/// The scale of the model of a boat, for a figure of size 1: as wide next to a person as
+/// a boat of the game is.
+const BOAT_SIZE: f64 = 2.45;
+/// How far under its vehicle a rider of size 1 has its feet.
+const RIDER_DROP: f64 = 0.6;
+/// How far into a block of water the feet of a rider are.
+const RIDER_FEET: f64 = 0.01;
+/// `minecraft:item_model`, which the protocol has no name for.
+const ITEM_MODEL: i32 = 10;
 /// Just under a whole block: what still falls in the same one.
 const CELL_INSIDE: f64 = 0.999;
 /// How fast a figure climbs a terrace of the model, in blocks per tick.
@@ -115,6 +140,8 @@ pub struct Character {
     pub position: Position,
     /// The way they face, in Minecraft degrees.
     pub yaw: f32,
+    /// On the water, in a boat.
+    pub afloat: bool,
 }
 
 /// Everyone the map shows, by a stable id: an account's UUID, for a real player.
@@ -156,9 +183,41 @@ struct Walker {
     path: Vec<[f64; 2]>,
     /// The turn they are walking to.
     leg: usize,
+    /// What comes after the last turn, before they get to rest.
+    then: VecDeque<Stretch>,
+    /// Whether they take a boat when they can.
+    sailor: bool,
     resting: u64,
     /// The block whose ground they stand on.
     block: [i32; 2],
+}
+
+/// A part of a way that is all on foot or all by boat.
+#[derive(Debug, Clone, PartialEq)]
+struct Stretch {
+    afloat: bool,
+    /// Where it starts: a step from where the last one ended, over the shore.
+    from: [f64; 2],
+    path: Vec<[f64; 2]>,
+}
+
+/// Where boats leave from and land.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Landing {
+    /// On the ground, where a walker stops.
+    shore: [f64; 2],
+    /// A step away, where the boat is.
+    water: [f64; 2],
+    /// The closest place, which someone landing here walks to.
+    place: usize,
+}
+
+/// A piece of water with somewhere to land, or more.
+#[derive(Debug, Clone, PartialEq)]
+struct Lake {
+    landings: Vec<Landing>,
+    /// The way across, from anywhere on it.
+    posts: Signposts,
 }
 
 /// Somewhere walkers go.
@@ -413,6 +472,8 @@ impl Ground {
 #[derive(Debug, Clone)]
 pub struct Walk {
     ground: Ground,
+    water: Ground,
+    lakes: Vec<Lake>,
     places: Vec<Place>,
     walkers: Vec<Walker>,
     dice: Dice,
@@ -475,16 +536,154 @@ fn pick<'a, T>(from: &'a [T], dice: &mut Dice) -> Option<&'a T> {
     from.get(dice.next() as usize % from.len().max(1))
 }
 
+fn cells_apart(a: [i32; 2], b: [i32; 2]) -> i32 {
+    (a[0] - b[0]).pow(2) + (a[1] - b[1]).pow(2)
+}
+
+/// Each cell of a piece of water with the closest ground a walker can reach, if there is
+/// any close enough, by piece.
+fn shores_of(
+    water: &Ground,
+    ground: &Ground,
+    reached: &BTreeSet<u32>,
+) -> BTreeMap<u32, Vec<[[i32; 2]; 2]>> {
+    let around: Vec<[i32; 2]> = {
+        let reach = -LANDING_REACH..=LANDING_REACH;
+        let mut cells: Vec<_> = reach
+            .clone()
+            .flat_map(|dz| reach.clone().map(move |dx| [dx, dz]))
+            .collect();
+        cells.sort_by_key(|cell| cells_apart(*cell, [0, 0]));
+        cells
+    };
+    let mut shores: BTreeMap<u32, Vec<[[i32; 2]; 2]>> = BTreeMap::new();
+    for (index, piece) in water.pieces.iter().enumerate() {
+        if *piece == 0 || water.sizes[*piece as usize] < SMALLEST_LAKE {
+            continue;
+        }
+        let [x, z] = cell_of_index(index);
+        let shore = around
+            .iter()
+            .map(|[dx, dz]| [x + dx, z + dz])
+            .find(|cell| reached.contains(&ground.piece(*cell)));
+        if let Some(shore) = shore {
+            shores.entry(*piece).or_default().push([shore, [x, z]]);
+        }
+    }
+    shores
+}
+
+/// A few of those shores, as far from each other as they can be.
+fn spread(shores: &[[[i32; 2]; 2]]) -> Vec<[[i32; 2]; 2]> {
+    let mut chosen: Vec<[[i32; 2]; 2]> = shores.first().copied().into_iter().collect();
+    while chosen.len() < LANDINGS_PER_LAKE {
+        let from_chosen = |shore: &[[i32; 2]; 2]| {
+            let apart = chosen.iter().map(|one| cells_apart(one[0], shore[0]));
+            apart.min().unwrap_or(0)
+        };
+        let farthest = shores.iter().max_by_key(|shore| from_chosen(shore));
+        match farthest.filter(|shore| from_chosen(shore) > 0) {
+            Some(shore) => chosen.push(*shore),
+            None => break,
+        }
+    }
+    chosen
+}
+
+/// Every lake a walker can set off on, with at least two places to land.
+fn lakes_of(
+    water: &Ground,
+    ground: &Ground,
+    middles: &[[f64; 2]],
+    anchors: &[Option<[i32; 2]>],
+) -> Vec<Lake> {
+    let reached: BTreeSet<u32> = anchors
+        .iter()
+        .flatten()
+        .map(|at| ground.piece(*at))
+        .collect();
+    let closest_place = |shore: [i32; 2]| {
+        let piece = ground.piece(shore);
+        let [x, z] = middle_of(shore);
+        (0..middles.len())
+            .filter(|place| anchors[*place].is_some_and(|at| ground.piece(at) == piece))
+            .min_by_key(|place| {
+                let [px, pz] = middles[*place];
+                (px - x).hypot(pz - z) as i64
+            })
+    };
+    let lake = |shores: Vec<[[i32; 2]; 2]>| {
+        let chosen = spread(&shores);
+        let landing = |[shore, water]: [[i32; 2]; 2]| {
+            Some(Landing {
+                shore: middle_of(shore),
+                water: middle_of(water),
+                place: closest_place(shore)?,
+            })
+        };
+        let landings: Vec<_> = chosen.iter().copied().filter_map(landing).collect();
+        let posts = water.signposts(cell_at(landings.first()?.water));
+        (landings.len() >= 2).then_some(Lake { landings, posts })
+    };
+    shores_of(water, ground, &reached)
+        .into_values()
+        .filter_map(lake)
+        .collect()
+}
+
+/// By boat, across the lake closest to where a walker stands, then on foot to a place.
+/// Gives where they end up, the way to the boat, and the rest of it.
+fn voyage(
+    world: (&Ground, &Ground, &[Lake]),
+    places: &[Place],
+    dice: &mut Dice,
+    from: usize,
+    here: [f64; 2],
+) -> Option<(usize, Vec<[f64; 2]>, VecDeque<Stretch>)> {
+    let (ground, water, lakes) = world;
+    let away = |landing: &Landing| {
+        let [x, z] = landing.shore;
+        (x - here[0]).hypot(z - here[1]) as i64
+    };
+    let nearest = |lake: &'_ Lake| lake.landings.iter().map(away).min().unwrap_or(i64::MAX);
+    let lake = lakes.iter().min_by_key(|lake| nearest(lake))?;
+    let board = *lake.landings.iter().min_by_key(|landing| away(landing))?;
+    let (mut land, mut sail) = (board, Vec::new());
+    for _ in 0..CROSSINGS {
+        let others: Vec<_> = lake.landings.iter().filter(|l| **l != land).collect();
+        let next = **pick(&others, dice)?;
+        sail.extend(water.route(&lake.posts, land.water, next.water)?);
+        land = next;
+    }
+    let stop = *pick(&places[land.place].stops, dice)?;
+    let walk = ground.route(&places[from].posts, here, board.shore)?;
+    let stroll = ground.route(&places[land.place].posts, land.shore, stop)?;
+    let then = VecDeque::from([
+        Stretch {
+            afloat: true,
+            from: board.water,
+            path: sail,
+        },
+        Stretch {
+            afloat: false,
+            from: land.shore,
+            path: stroll,
+        },
+    ]);
+    Some((land.place, walk, then))
+}
+
 impl Walk {
     /// Puts `count` walkers on the ways between places, and in `characters`.
     pub fn start(
         count: usize,
         places: &[[i32; 2]],
-        walkable: impl Fn(i32, i32) -> bool,
+        (walkable, sailable): (impl Fn(i32, i32) -> bool, impl Fn(i32, i32) -> bool),
         surface: impl Fn(i32, i32) -> i32,
         characters: &mut Characters,
     ) -> Self {
         let ground = Ground::new(&walkable);
+        let water = Ground::new(&sailable);
         let mut dice = Dice(SEED);
         let middles: Vec<[f64; 2]> = places
             .iter()
@@ -504,6 +703,7 @@ impl Walk {
                 posts: anchors[from].map_or(Signposts(Vec::new()), |at| ground.signposts(at)),
             })
             .collect();
+        let lakes = lakes_of(&water, &ground, &middles, &anchors);
         let homes: Vec<usize> = (0..places.len())
             .filter(|place| !places[*place].stops.is_empty())
             .collect();
@@ -514,11 +714,26 @@ impl Walk {
             let Some(&stop) = pick(&places[from].stops, &mut dice) else {
                 continue;
             };
-            let (place, path) = next_stop(&ground, &places, &mut dice, from, stop);
+            let sailor = index % SAILORS_EVERY == SAILORS_EVERY - 1;
+            let world = (&ground, &water, lakes.as_slice());
+            let trip = sailor
+                .then(|| voyage(world, &places, &mut dice, from, stop))
+                .flatten();
+            // Those who sail start on the water, for boats to show from the first moment.
+            let (place, path, then, afloat, start) = match trip {
+                Some((place, _, mut then)) => match then.pop_front() {
+                    Some(first) => (place, first.path, then, true, first.from),
+                    None => (place, Vec::new(), then, false, stop),
+                },
+                None => {
+                    let (place, path) = next_stop(&ground, &places, &mut dice, from, stop);
+                    (place, path, VecDeque::new(), false, stop)
+                }
+            };
             // Somewhere on the way already, so that the map is not empty for a minute.
             let leg = dice.next() as usize % path.len().max(1);
-            let leg_start = leg.checked_sub(1).map_or(stop, |turn| path[turn]);
-            let leg_end = path.get(leg).copied().unwrap_or(stop);
+            let leg_start = leg.checked_sub(1).map_or(start, |turn| path[turn]);
+            let leg_end = path.get(leg).copied().unwrap_or(start);
             let [x, z] = between(leg_start, leg_end, dice.share());
             let block = [x.floor() as i32, z.floor() as i32];
             let name = match index / NAMES.len() {
@@ -536,6 +751,7 @@ impl Walk {
                         z,
                     },
                     yaw: yaw_towards(leg_end[0] - x, leg_end[1] - z),
+                    afloat,
                 },
             );
             let resting = if path.is_empty() {
@@ -549,12 +765,16 @@ impl Walk {
                 left: (from, stop),
                 path,
                 leg,
+                then,
+                sailor,
                 resting,
                 block,
             });
         }
         Self {
             ground,
+            water,
+            lakes,
             places,
             walkers,
             dice,
@@ -565,6 +785,8 @@ impl Walk {
     pub fn step(&mut self, characters: &mut Characters, surface: impl Fn(i32, i32) -> i32) {
         let Self {
             ground,
+            water,
+            lakes,
             places,
             walkers,
             dice,
@@ -578,8 +800,15 @@ impl Walk {
                 walker.resting -= 1;
                 if walker.resting == 0 {
                     walker.left = (walker.place, here);
-                    (walker.place, walker.path) =
-                        next_stop(ground, places, dice, walker.place, here);
+                    let world = (&*ground, &*water, lakes.as_slice());
+                    let trip = walker
+                        .sailor
+                        .then(|| voyage(world, places, dice, walker.place, here))
+                        .flatten();
+                    (walker.place, walker.path, walker.then) = trip.unwrap_or_else(|| {
+                        let (place, path) = next_stop(ground, places, dice, walker.place, here);
+                        (place, path, VecDeque::new())
+                    });
                     walker.leg = 0;
                     if walker.path.is_empty() {
                         walker.resting = dice.within(REST_TICKS);
@@ -587,7 +816,11 @@ impl Walk {
                 }
                 continue;
             }
-            let mut left = WALK_SPEED;
+            let mut left = if character.afloat {
+                SAIL_SPEED
+            } else {
+                WALK_SPEED
+            };
             while left > 0.0 && walker.resting == 0 {
                 let [x, z] = walker.path[walker.leg];
                 let (dx, dz) = (x - character.position.x, z - character.position.z);
@@ -597,7 +830,7 @@ impl Walk {
                         character.position.x + dx / length * left,
                         character.position.z + dz / length * left,
                     ];
-                    if !ground.holds(next) {
+                    if !character.afloat && !ground.holds(next) {
                         walker.turn_back(ground, places, dice, here);
                         break;
                     }
@@ -611,7 +844,16 @@ impl Walk {
                 left -= length;
                 walker.leg += 1;
                 if walker.leg == walker.path.len() {
-                    walker.resting = dice.within(REST_TICKS);
+                    match walker.then.pop_front() {
+                        Some(stretch) => {
+                            character.afloat = stretch.afloat;
+                            [character.position.x, character.position.z] = stretch.from;
+                            walker.path = stretch.path;
+                            walker.leg = 0;
+                            break;
+                        }
+                        None => walker.resting = dice.within(REST_TICKS),
+                    }
                 }
             }
             let block = [
@@ -633,6 +875,7 @@ impl Walker {
         self.place = place;
         let way = ground.route(&places[place].posts, here, stop);
         self.path = way.unwrap_or_default();
+        self.then.clear();
         self.leg = 0;
         if self.path.is_empty() {
             self.resting = dice.within(REST_TICKS);
@@ -648,8 +891,8 @@ struct Simulation {
 }
 
 /// Where a place of the world stands on a model, in blocks from its centre: on ground a
-/// figure may be on, or nowhere.
-fn place_on(scene: &Scene, position: &Position) -> Option<[f64; 3]> {
+/// figure may be on, or on water for a boat, or nowhere.
+fn place_on(scene: &Scene, position: &Position, afloat: bool) -> Option<[f64; 3]> {
     let (block_x, block_z) = (position.x.floor() as i32, position.z.floor() as i32);
     let (x, z) = scene.cell_of(block_x, block_z)?;
     let scale = scene.scale();
@@ -659,7 +902,12 @@ fn place_on(scene: &Scene, position: &Position) -> Option<[f64; 3]> {
     let (corner_x, corner_z) = scale.window().block_at(col, row);
     let model_x = f64::from(x) + (position.x - f64::from(corner_x)) / per_cell;
     let model_z = f64::from(z) + (position.z - f64::from(corner_z)) / per_cell;
-    let (stand_x, stand_z) = scene.stand_near(x, z)?;
+    let near = if afloat {
+        scene.float_near(x, z)
+    } else {
+        scene.stand_near(x, z)
+    };
+    let (stand_x, stand_z) = near?;
     let inside = |at: f64, cell: i32| at.clamp(f64::from(cell), f64::from(cell) + CELL_INSIDE);
     Some([
         inside(model_x, stand_x),
@@ -759,6 +1007,8 @@ fn climbed(from: f64, to: f64) -> f64 {
 #[derive(Debug, Clone, Copy)]
 struct Figure {
     entity: Entity,
+    /// What it sits in, on the water.
+    boat: Option<Entity>,
     /// On the model, from its centre.
     at: [f64; 3],
     size: f64,
@@ -794,7 +1044,8 @@ impl Figures {
     fn clear(&mut self, commands: &mut Commands) {
         let figures = std::mem::take(&mut self.shown);
         let label = self.drop_label();
-        for entity in figures.values().map(|f| f.entity).chain(label) {
+        let boats = figures.values().filter_map(|f| f.boat);
+        for entity in figures.values().map(|f| f.entity).chain(boats).chain(label) {
             commands.entity(entity).try_despawn();
         }
     }
@@ -842,6 +1093,68 @@ fn spawn_figure(
             Attributes::for_kind(EntityKind::Player).base(EntityAttribute::Scale, size),
             NoGravity,
             Silent,
+        ))
+        .spawn(commands)
+        .id()
+}
+
+/// A boat of the pack, or the flat one of the game for a client without it.
+fn boat_item(has_pack: bool) -> ItemStack {
+    let boat = ItemStack::of("minecraft:oak_boat", 1).expect("a vanilla item");
+    if !has_pack {
+        return boat;
+    }
+    let mut body = Vec::new();
+    BOAT_MODEL.to_string().encode(&mut body);
+    boat.with_component(DataComponent::Raw {
+        type_id: ITEM_MODEL,
+        body,
+    })
+}
+
+/// How far over the water a boat stands, from where it floats, for its rider to be seen.
+/// A rider hangs under what it rides, in proportion to its size, and a client that finds
+/// an entity's feet in a section it cannot see through draws nothing of it: under the
+/// surface, that is every section. So the feet stay in the highest block of the water.
+fn boat_lift(size: f64) -> f64 {
+    RIDER_DROP * size + RIDER_FEET - 1.0
+}
+
+fn lifted(spot: Position, size: f64) -> Position {
+    Position {
+        y: spot.y + boat_lift(size),
+        ..spot
+    }
+}
+
+/// Brings what is drawn back down to the water.
+fn boat_transform(size: f64) -> DisplayTransform {
+    DisplayTransform::default()
+        .translation(0.0, -boat_lift(size) as f32, 0.0)
+        .uniform_scale((size * BOAT_SIZE) as f32)
+}
+
+/// A display, not the boat of the game: that one has no scale and is drawn no further
+/// than a mannequin. The figure rides it, which sits it down, and goes where it goes.
+fn spawn_boat(
+    commands: &mut Commands,
+    at: Position,
+    yaw: f32,
+    size: f64,
+    has_pack: bool,
+    rider: Entity,
+) -> Entity {
+    EntityBuilder::new(EntityKind::ItemDisplay)
+        .position(at)
+        .rotation(yaw, 0.0)
+        .with_bundle((
+            Display::default()
+                .transform(boat_transform(size))
+                .brightness(15, 15)
+                .view_range(LABEL_VIEW_RANGE)
+                .teleport_ticks(GLIDE_TICKS),
+            ItemDisplay::new(boat_item(has_pack)).context(ItemDisplayContext::None),
+            Passengers::new([rider]),
         ))
         .spawn(commands)
         .id()
@@ -896,8 +1209,8 @@ fn walk(
             let Some(places) = atlas.places() else {
                 return;
             };
-            let walkable = |x, z| atlas.walkable(x, z);
-            let started = Walk::start(count, &places, walkable, surface, &mut characters);
+            let world = (|x, z| atlas.walkable(x, z), |x, z| atlas.sailable(x, z));
+            let started = Walk::start(count, &places, world, surface, &mut characters);
             let ways = started.places.iter().map(|p| p.ways.len()).sum::<usize>() / 2;
             tracing::info!(walkers = count, places = places.len(), ways, "map walkers");
             *walk = Some(started);
@@ -921,6 +1234,7 @@ type Bodies<'w, 's> = Query<
         &'static mut Position,
         &'static mut Rotation,
         Option<&'static mut Attributes>,
+        Option<&'static mut Display>,
     ),
 >;
 
@@ -950,12 +1264,15 @@ fn show(
         let places: BTreeMap<u128, [f64; 3]> = characters
             .0
             .iter()
-            .filter_map(|(id, c)| Some((*id, place_on(view.scene, &c.position)?)))
+            .filter_map(|(id, c)| Some((*id, place_on(view.scene, &c.position, c.afloat)?)))
             .collect();
         figures.shown.retain(|id, figure| {
             let stays = places.contains_key(id);
             if !stays {
                 commands.entity(figure.entity).try_despawn();
+                if let Some(boat) = figure.boat {
+                    commands.entity(boat).try_despawn();
+                }
             }
             stays
         });
@@ -967,17 +1284,56 @@ fn show(
                 let spot = world_spot(&view, at);
                 let figure = figures.introduce(*id, character, player, &players);
                 let entity = spawn_figure(&mut commands, spot, figure, character, size);
-                figures.shown.insert(*id, Figure { entity, at, size });
+                let boat = character.afloat.then(|| {
+                    let pack = session.has_pack();
+                    let afloat = lifted(spot, size);
+                    spawn_boat(&mut commands, afloat, character.yaw, size, pack, entity)
+                });
+                let shown = Figure {
+                    entity,
+                    boat,
+                    at,
+                    size,
+                };
+                figures.shown.insert(*id, shown);
                 continue;
             };
-            figure.at = if moved_model {
+            figure.at = if moved_model || character.afloat {
                 [*x, *y, *z]
             } else {
                 let wanted_y = height_ahead(view.scene, figure.at, [*x, *y, *z]);
                 [*x, climbed(figure.at[1], wanted_y), *z]
             };
-            if let Ok((mut position, mut rotation, _)) = bodies.get_mut(figure.entity) {
-                if position.set_if_neq(world_spot(&view, figure.at)) {
+            let spot = world_spot(&view, figure.at);
+            match (figure.boat, character.afloat) {
+                (None, true) => {
+                    let pack = session.has_pack();
+                    let yaw = character.yaw;
+                    let rider = figure.entity;
+                    let afloat = lifted(spot, size);
+                    let boat = spawn_boat(&mut commands, afloat, yaw, size, pack, rider);
+                    figure.boat = Some(boat);
+                }
+                (Some(boat), false) => {
+                    commands.entity(boat).try_despawn();
+                    figure.boat = None;
+                }
+                (Some(boat), true) => {
+                    if let Ok((mut position, mut rotation, _, display)) = bodies.get_mut(boat) {
+                        position.set_if_neq(lifted(spot, size));
+                        rotation.set_if_neq(Rotation {
+                            yaw: character.yaw,
+                            pitch: 0.0,
+                        });
+                        if moved_model && let Some(mut display) = display {
+                            display.transform = boat_transform(size);
+                        }
+                    }
+                }
+                (None, false) => {}
+            }
+            if let Ok((mut position, mut rotation, ..)) = bodies.get_mut(figure.entity) {
+                if position.set_if_neq(spot) {
                     cost.moves += 1;
                 }
                 rotation.set_if_neq(Rotation {
@@ -986,7 +1342,7 @@ fn show(
                 });
             }
             if figure.size != size
-                && let Ok((_, _, Some(mut attributes))) = bodies.get_mut(figure.entity)
+                && let Ok((_, _, Some(mut attributes), _)) = bodies.get_mut(figure.entity)
             {
                 figure.size = size;
                 attributes.set_base(EntityAttribute::Scale, size);
@@ -1106,10 +1462,20 @@ mod tests {
     use crate::terrain::Terrain;
     use crate::testing::Flat;
 
+    fn dry(_: i32, _: i32) -> bool {
+        false
+    }
+
     fn walkers(count: usize) -> (Walk, Characters) {
         let mut characters = Characters::default();
         let places = [[0, 0], [200, 0], [0, 200]];
-        let walk = Walk::start(count, &places, |_, _| true, |_, _| 70, &mut characters);
+        let walk = Walk::start(
+            count,
+            &places,
+            (|_, _| true, dry),
+            |_, _| 70,
+            &mut characters,
+        );
         (walk, characters)
     }
 
@@ -1180,10 +1546,96 @@ mod tests {
         let mut characters = Characters::default();
         let places = [[0, 0], [100, 0], [0, 100]];
         let land = |x: i32, _: i32| !(40..60).contains(&x);
-        let walk = Walk::start(4, &places, land, |_, _| 70, &mut characters);
+        let walk = Walk::start(4, &places, (land, dry), |_, _| 70, &mut characters);
         assert_eq!(walk.places[0].ways, [2]);
         assert_eq!(walk.places[1].ways, [] as [usize; 0]);
         assert_eq!(walk.places[2].ways, [0]);
+    }
+
+    /// Land, with a lake in the middle of it.
+    fn around_a_lake(count: usize) -> (Walk, Characters) {
+        let lake = |x: i32, z: i32| x.abs() < 90 && z.abs() < 90;
+        let land = move |x: i32, z: i32| !lake(x, z);
+        let water = move |x: i32, z: i32| x.abs() < 87 && z.abs() < 87;
+        let mut characters = Characters::default();
+        let places = [[-150, 0], [150, 0], [0, 150]];
+        let world = (land, water);
+        let walk = Walk::start(count, &places, world, |_, _| 70, &mut characters);
+        (walk, characters)
+    }
+
+    #[test]
+    fn a_lake_has_several_landings_a_walker_can_reach() {
+        let (walk, _) = around_a_lake(1);
+        assert_eq!(walk.lakes.len(), 1);
+        let landings = &walk.lakes[0].landings;
+        assert!(landings.len() >= 2);
+        for landing in landings {
+            assert!(walk.ground.holds(landing.shore), "{landing:?}");
+            assert!(walk.water.holds(landing.water), "{landing:?}");
+        }
+    }
+
+    #[test]
+    fn a_sailor_leaves_the_water_and_comes_back_to_it() {
+        let (mut walk, mut characters) = around_a_lake(SAILORS_EVERY);
+        let id = walk.walkers[SAILORS_EVERY - 1].id;
+        assert!(characters.0[&id].afloat);
+        let (mut landed, mut sailed_again) = (false, false);
+        for _ in 0..40_000 {
+            walk.step(&mut characters, |_, _| 70);
+            let character = &characters.0[&id];
+            let at = [character.position.x, character.position.z];
+            if character.afloat {
+                assert!(walk.water.holds(at), "{at:?}");
+                sailed_again |= landed;
+            } else {
+                assert!(walk.ground.holds(at), "{at:?}");
+                landed = true;
+            }
+        }
+        assert!(landed && sailed_again, "{landed} {sailed_again}");
+    }
+
+    #[test]
+    fn only_sailors_take_to_the_water() {
+        let (mut walk, mut characters) = around_a_lake(SAILORS_EVERY - 1);
+        for _ in 0..5000 {
+            walk.step(&mut characters, |_, _| 70);
+            assert!(characters.0.values().all(|character| !character.afloat));
+        }
+    }
+
+    #[test]
+    fn with_no_lake_a_sailor_walks() {
+        let (mut walk, mut characters) = walkers(SAILORS_EVERY);
+        for _ in 0..2000 {
+            walk.step(&mut characters, |_, _| 70);
+            assert!(characters.0.values().all(|character| !character.afloat));
+        }
+    }
+
+    #[test]
+    fn a_boat_is_shown_on_the_water_of_each_model() {
+        let scenes = real_scenes();
+        for scene in &scenes {
+            let scale = scene.scale();
+            let cell = (-scale.radius..scale.radius)
+                .flat_map(|x| (-scale.radius..scale.radius).map(move |z| (x, z)))
+                .find(|(x, z)| scene.sailable(*x, *z))
+                .expect("a lake");
+            let per_cell = f64::from(scale.blocks_per_cell);
+            let world = at(
+                (f64::from(cell.0) + 0.5) * per_cell,
+                (f64::from(cell.1) + 0.5) * per_cell,
+            );
+            let [x, y, z] = place_on(scene, &world, true).expect("on the water");
+            assert_eq!(y, f64::from(SEA_Y + 1));
+            assert!(
+                scene.sailable(x.floor() as i32, z.floor() as i32)
+                    || scene.top(x as i32, z as i32) == Some(SEA_Y)
+            );
+        }
     }
 
     #[test]
@@ -1235,14 +1687,26 @@ mod tests {
     fn a_bridge_is_a_way_across() {
         let land = |x: i32, z: i32| !(40..60).contains(&x) || (-3..3).contains(&z);
         let mut characters = Characters::default();
-        let walk = Walk::start(1, &[[0, 30], [100, 30]], land, |_, _| 70, &mut characters);
+        let walk = Walk::start(
+            1,
+            &[[0, 30], [100, 30]],
+            (land, dry),
+            |_, _| 70,
+            &mut characters,
+        );
         assert_eq!(walk.places[0].ways, [1]);
     }
 
     #[test]
     fn a_place_with_no_ground_gets_nobody() {
         let mut characters = Characters::default();
-        let walk = Walk::start(3, &[[0, 0]], |_, _| false, |_, _| 70, &mut characters);
+        let walk = Walk::start(
+            3,
+            &[[0, 0]],
+            (|_, _| false, dry),
+            |_, _| 70,
+            &mut characters,
+        );
         assert!(walk.walkers.is_empty());
         assert!(characters.0.is_empty());
     }
@@ -1251,7 +1715,7 @@ mod tests {
     fn a_place_nothing_leads_to_keeps_its_walkers_around_it() {
         let land = |x: i32, z: i32| x.abs() < 60 && z.abs() < 60;
         let mut characters = Characters::default();
-        let mut walk = Walk::start(1, &[[0, 0]], land, |_, _| 70, &mut characters);
+        let mut walk = Walk::start(1, &[[0, 0]], (land, dry), |_, _| 70, &mut characters);
         for _ in 0..4000 {
             walk.step(&mut characters, |_, _| 70);
         }
@@ -1263,7 +1727,7 @@ mod tests {
     fn walkers_only_stop_where_they_can_walk() {
         let land = |x: i32, _: i32| x >= 0;
         let mut characters = Characters::default();
-        let walk = Walk::start(1, &[[0, 0]], land, |_, _| 70, &mut characters);
+        let walk = Walk::start(1, &[[0, 0]], (land, dry), |_, _| 70, &mut characters);
         assert!(!walk.places[0].stops.is_empty());
         assert!(walk.places[0].stops.iter().all(|stop| stop[0] >= 0.0));
     }
@@ -1337,8 +1801,8 @@ mod tests {
             let per_cell = f64::from(scale.blocks_per_cell);
             // Across a cell boundary too: the place must not jump from one to the other.
             for start in [-40.0, 0.0, 17.5] {
-                let from = place_on(&scene, &at(start, 3.0)).unwrap();
-                let to = place_on(&scene, &at(start + 5.0, 3.0)).unwrap();
+                let from = place_on(&scene, &at(start, 3.0), false).unwrap();
+                let to = place_on(&scene, &at(start + 5.0, 3.0), false).unwrap();
                 assert!(((to[0] - from[0]) - 5.0 / per_cell).abs() < 1e-9);
                 assert_eq!(from[2], to[2]);
             }
@@ -1348,7 +1812,7 @@ mod tests {
     #[test]
     fn the_model_stands_for_the_world_around_the_origin() {
         let scene = scene(OVERVIEW);
-        let [x, _, z] = place_on(&scene, &at(80.0, -160.0)).unwrap();
+        let [x, _, z] = place_on(&scene, &at(80.0, -160.0), false).unwrap();
         assert!((x - 10.0).abs() <= 1.0, "{x}");
         assert!((z + 20.0).abs() <= 1.0, "{z}");
     }
@@ -1356,7 +1820,7 @@ mod tests {
     #[test]
     fn a_figure_stands_on_the_top_of_its_column() {
         let scene = scene(OVERVIEW);
-        let [x, y, z] = place_on(&scene, &at(8.0, 8.0)).unwrap();
+        let [x, y, z] = place_on(&scene, &at(8.0, 8.0), false).unwrap();
         let top = scene.top(x.floor() as i32, z.floor() as i32).unwrap();
         assert_eq!(y, f64::from(top + 1));
     }
@@ -1380,19 +1844,33 @@ mod tests {
                 .is_some_and(|(x, z)| detail.walkable(x, z))
         };
         let places = crate::plugin::marker_places(&voidmc::DefaultWorldGenerator::default());
+        let sailable = |x: i32, z: i32| {
+            detail
+                .cell_of(x, z)
+                .is_some_and(|(x, z)| detail.sailable(x, z))
+        };
         let mut characters = Characters::default();
-        let mut walk = Walk::start(20, &places, walkable, |_, _| 70, &mut characters);
+        let world = (walkable, sailable);
+        let mut walk = Walk::start(20, &places, world, |_, _| 70, &mut characters);
         assert_eq!(walk.walkers.len(), 20);
         assert!(walk.places.iter().any(|place| place.ways.len() >= 4));
+        assert!(walk.lakes.len() >= 2, "{}", walk.lakes.len());
+        let (mut afloat, mut on_foot) = (0u32, 0u32);
         let (mut shown, mut hidden) = ([0u32; 3], [0u32; 3]);
         for _ in 0..6000 {
             walk.step(&mut characters, |_, _| 70);
             for character in characters.0.values() {
                 let position = character.position;
                 let (block_x, block_z) = (position.x.floor() as i32, position.z.floor() as i32);
-                assert!(walkable(block_x, block_z), "{position:?}");
+                if character.afloat {
+                    afloat += 1;
+                    assert!(sailable(block_x, block_z), "{position:?}");
+                } else {
+                    on_foot += 1;
+                    assert!(walkable(block_x, block_z), "{position:?}");
+                }
                 for (index, scene) in scenes.iter().enumerate() {
-                    match place_on(scene, &position) {
+                    match place_on(scene, &position, character.afloat) {
                         Some(_) => shown[index] += 1,
                         None => hidden[index] += 1,
                     }
@@ -1400,6 +1878,8 @@ mod tests {
             }
         }
         assert_eq!(hidden[2], 0);
+        let share = f64::from(afloat) / f64::from(afloat + on_foot);
+        assert!((0.05..0.5).contains(&share), "{share}");
         for index in 0..2 {
             let share = f64::from(hidden[index]) / f64::from(shown[index] + hidden[index]);
             assert!(share < 0.02, "{index}: {share}");
@@ -1437,7 +1917,7 @@ mod tests {
 
     #[test]
     fn nobody_shows_off_the_model() {
-        assert_eq!(place_on(&scene(OVERVIEW), &at(100_000.0, 0.0)), None);
+        assert_eq!(place_on(&scene(OVERVIEW), &at(100_000.0, 0.0), false), None);
     }
 
     #[test]
