@@ -50,12 +50,46 @@ is the flight of its intro, backwards. All end exactly in the eye, or on the vie
 - `/map intro 3`, `Vol plané`: ahead and up like a bird, then in from low over the land.
 - `/map intro 4`, `Saut dans le ciel`: eyes on the sky and up into it, then down from low
   over the land onto the view.
+- `/map intro 5`, `Soucoupe`: a film, see below, with the flight of `Envol` on the model.
 
 `/map outro` takes the same numbers. Either one, from inside the map, also plays that flow
 over without leaving: the world stays on the client, so that an eye flies over it while
 the player stays on the rig, and a veil covers each cut. `PreviewFlow(player, part, flow)`
 does that for anything else, and changes no choice: that is
 `ChooseLook(player, LookChoice::Intro(Some(flow)))`, or `Outro`.
+
+### The saucer
+
+`Soucoupe` is seen from outside. On the way in, the camera leaves the head through its top
+and draws back, a saucer comes over the player, its beam takes them up struggling, and it
+goes off into the sky with the camera after it. On the way out it comes down from the sky,
+the beam lets them down, they land dizzy, it leaves, and the camera comes back over the
+head and down into the eye.
+
+`abduction.rs` says what happens at each tick of a `Scene`, and `plugin::abduction` plays it
+for any `Flight` that has one, real or preview. So that is all it takes for both, and
+nothing of it is in the passages: the scene starts when such a flight does and takes its
+clock from it. It ends when the camera goes, for whatever reason, which covers a player
+leaving midway. What it is made of goes out to all who see the chunk, like the cameras.
+
+- A client does not draw its own player while it looks through something else, so there
+  is one body on screen, a mannequin with the account's skin. It draws the inside of a head
+  too: the body only exists while the camera is out of it, and over the head the look stays
+  level for it to be out of frame when it comes and goes.
+- A body is not a rider, which sits and stops its limbs: a client swings the limbs of what
+  moves along the ground, so it goes round the beam by a move each tick, and glides over
+  three ticks as any living entity. Its `Stance` adds what a client animates by itself: the
+  shaking of the frozen, the pose of an elytra, in which the pitch turns the whole body,
+  and the spin of a riptide.
+- The saucer and the beam are item displays of the pack and glide by segments, as cameras
+  do. The beam is one sheet that the client turns to the camera, and it grows by
+  interpolation. A client with no pack gets a pressure plate and a glass pane.
+- The film is shot from the first of four sides with room for the camera, in the blocks
+  around the player. It settles that as the flight starts, which still leaves the eye or
+  the sky. With none, it goes up as far as the land asks. The saucer still comes through
+  any roof.
+- The veil holds a little longer on the way out, or the sections a client fades in would
+  show around the player for as long as the camera stays up there.
 
 The sky only goes nearly black: by day a dark brown stays, and at night the moon and the
 stars show under the model. The level's clock has the last word over the biome there.
@@ -369,9 +403,11 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `goto`, `transition`, `wheel`
-and `art`. `biome` declares the level, `plugin` runs the sessions, `plugin::preview` plays a
-flow over, `plugin::goto` moves a view by jumps, `settings` lists what can be changed, `players` shows the characters, `cursor`
+`fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `goto`, `transition`,
+`abduction`, `wheel` and `art`. `biome` declares the level, `plugin` runs the sessions,
+`plugin::preview` plays a flow over, `plugin::abduction` plays the film of the saucer,
+`plugin::goto` moves a view by jumps, `settings` lists what can be changed, `players`
+shows the characters, `cursor`
 draws the pointer, and `telemetry` measures the characters.
 
 ## Logs
