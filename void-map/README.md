@@ -120,7 +120,10 @@ alone. The chunks still to come go out in the new look.
   at the same place of the world on every model. It is built with the model, not on
   opening the map.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
-  world with their textures. Their tint comes from the `voidmc:map` biome.
+  world with their textures. Their tint comes from the `voidmc:map` biome. Real water is
+  translucent, and the client draws it after a text seen through the land, which writes no
+  depth: over water a card comes out tinted. Without see-through, the card's own letters
+  fall behind its background, so that stays as it is.
 - `/map move a` to `d`: how a pan follows the mouse, to compare them. `a` is a critically
   damped spring, `b` a dead zone, `c` looks ahead by the speed of the mouse, `d` predicts
   between two reports. `/map move inertie` makes any of them go on for a moment once the

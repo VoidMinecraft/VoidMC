@@ -2898,8 +2898,9 @@ fn open_wheel(session: &mut MapSession, player: Entity, commands: &mut Commands)
     let middle = (WHEEL_MIDDLE_DROP - LINE_HEIGHT) * WHEEL_SCALE / PIXELS_PER_BLOCK;
     let text = TextDisplay::new(String::new())
         .line_width(CARD_LINE_WIDTH)
-        .background_color(CLEAR)
-        .see_through();
+        .background_color(CLEAR);
+    // Not seen through the land: the client draws that before translucent blocks, and real
+    // water went over the whole wheel.
     let display = spawn_card(commands, Position { x, y, z }, text, WHEEL_SCALE, middle);
     session.wheel = Some(OpenWheel {
         wheel: Wheel::default(),
