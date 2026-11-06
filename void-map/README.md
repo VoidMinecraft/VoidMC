@@ -219,7 +219,7 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`fence`, `buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
+`fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
 declares the level, `plugin` runs the sessions, `players` shows the characters, `cursor`
 draws the pointer, and `telemetry` measures the characters.
 
