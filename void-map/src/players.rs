@@ -30,6 +30,8 @@ use voidmc_protocol::clientbound::{
 };
 use voidmc_protocol::slot::{DataComponent, component_ids};
 
+use voidmc_ui::Text;
+
 use crate::art::BOAT_MODEL;
 use crate::plugin::{Atlas, MapSession, MapView};
 use crate::pointer::{AimReach, aimed_within};
@@ -890,7 +892,7 @@ struct Simulation {
 
 /// Where a place of the world stands on a model, in blocks from its centre: on ground a
 /// figure may be on, or on water for a boat, or nowhere.
-fn place_on(scene: &Scene, position: &Position, afloat: bool) -> Option<[f64; 3]> {
+pub(crate) fn place_on(scene: &Scene, position: &Position, afloat: bool) -> Option<[f64; 3]> {
     let (block_x, block_z) = (position.x.floor() as i32, position.z.floor() as i32);
     let (x, z) = scene.cell_of(block_x, block_z)?;
     let scale = scene.scale();
@@ -967,11 +969,15 @@ fn figure_id(character: u128, skin: &ResolvableProfile) -> Uuid {
 }
 
 /// What a client has to know of a figure before it can show one. It is not listed, and an
-/// empty name leaves nothing over its head.
-fn figure_entry(id: Uuid, character: &Character) -> PlayerInfoEntry {
+/// empty name leaves nothing over its head. The name of the tab list is another one, which
+/// only that list shows, in the order `order` says.
+fn figure_entry(id: Uuid, character: &Character, order: i32) -> PlayerInfoEntry {
     PlayerInfoEntry {
         uuid: id,
         properties: character.skin.properties.clone(),
+        listed: true,
+        display_name: Some(Text::new(character.name.as_str()).to_nbt()),
+        list_order: order,
         ..PlayerInfoEntry::default()
     }
 }
@@ -1062,11 +1068,13 @@ impl Figures {
     ) -> Uuid {
         let figure = figure_id(id, &character.skin);
         if self.introduced.insert(figure) {
-            let entry = figure_entry(figure, character);
-            players.send(
-                player,
-                PlayerInfoUpdate::single(PlayerInfoActions::ADD_PLAYER, entry),
-            );
+            let order = -(self.introduced.len() as i32);
+            let entry = figure_entry(figure, character, order);
+            let actions = PlayerInfoActions::ADD_PLAYER
+                | PlayerInfoActions::UPDATE_LISTED
+                | PlayerInfoActions::UPDATE_DISPLAY_NAME
+                | PlayerInfoActions::UPDATE_LIST_ORDER;
+            players.send(player, PlayerInfoUpdate::single(actions, entry));
         }
         figure
     }

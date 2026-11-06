@@ -71,7 +71,7 @@ const COAST_OVER: f64 = 0.05;
 pub const CLIENT_SNAP_DISTANCE: f64 = 64.0;
 /// The most the view moves in a tick. A camera glides a few ticks behind it, and has to
 /// stay clear of [`CLIENT_SNAP_DISTANCE`] however fast the mouse goes.
-const MAX_VIEW_STEP: f64 = 12.0;
+pub const MAX_VIEW_STEP: f64 = 12.0;
 /// A client is this many ticks behind at worst: the glide, and one for the network.
 const CLIENT_LAG_TICKS: f64 = 4.0;
 const _: () = assert!(
@@ -425,6 +425,16 @@ impl Pan {
                 ..Self::at(self.view)
             };
         }
+    }
+
+    /// Puts the view there, for what moves it some other way than the mouse. A client
+    /// glides there, so it has to stay within a step of where the view was.
+    pub fn place(&mut self, at: [f64; 2]) {
+        self.step = [at[0] - self.view[0], at[1] - self.view[1]];
+        self.view = at;
+        self.aim = at;
+        self.moved = [0.0; 2];
+        self.coast = None;
     }
 
     /// The view looks north: turning right is east, looking down is south.

@@ -203,11 +203,55 @@ alone. The chunks still to come go out in the new look.
   a border. Particles stay over their region, wherever it is on screen: they fall on the
   line from the eye to the land, close to the eye, or they would be smaller than a pixel.
   The land, the sky and the fog keep their colours under either. A choice sends no block.
+- `/map move libre` or `sauts`: the view slides under the mouse, or goes from point to
+  point, see below. Déplacement in the dialog is the same choice.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
   world with their textures. Their tint comes from the `voidmc:map` biome. Real water is
   translucent, and the client draws it after a text seen through the land, which writes no
   depth: over water a card comes out tinted. Without see-through, the card's own letters
   fall behind its background, so that stays as it is.
+
+## Going by jumps
+
+With `/map move sauts` the mouse no longer slides the view. `goto` holds where it is going,
+and `plugin::goto` feeds that from the session. A target is the player's own marker, a
+character or a waypoint: the view glides to it and keeps it in the middle of the screen, at
+any zoom and on any model, for as long as it is the target. So someone walking or sailing
+is followed. The boss bar names the target. What ends that is another target, or a right
+click, which also leaves the view where it is.
+
+- A flick of the mouse goes to the nearest point that way, within 60° of it, and one
+  gesture is one jump, however long: the mouse has to rest for a quarter of a second.
+- Forward and back go down and up the list, around, from where the target is in it.
+- Jump opens the list, a dialog of every point: `Moi`, the characters and the waypoints,
+  the closed ones in grey. A click or Enter on a row goes there, and the list stays open
+  to try another. Escape or Fermer closes it.
+- Left and right zoom, during a glide as well. A click on a waypoint in the middle works
+  as it does anywhere, up to a dive.
+
+The glide is a `SmoothDamp` towards the target, recomputed each tick: it starts and ends on
+a curve, keeps its speed if the target changes, and stays under `MAX_VIEW_STEP`. A pan goes
+by the sea, so a target that stands high is aimed at along the ray of the middle of the
+screen, or a marker would come out north of it.
+
+The client sends nothing when Tab is pressed: `keyPlayerList` is only read by `Gui`, to draw
+its list. It cannot show a choice either, as it takes no click. So the keys of jumps are
+those of `PlayerInput`, and Tab has two other uses. Held on the map, it shows the list the
+server fills: the characters by name, with a display name that only that list shows, and
+who the view is on in its footer. In a dialog the key belongs to the screen: it moves down
+the rows, scrolling them as it goes, as the arrows do, and Enter presses the row. A move
+of that focus sends nothing either, so the view only moves on Enter.
+
+The client scrolls a dialog that does not fit, by itself: the buttons are in a scroll area
+as high as the screen allows, with a bar, which the wheel moves. Sending the dialog again
+would put the scroll back to the top and lose the focus, so a click on a row sends nothing,
+and the list does not say which row is the target: the boss bar and the view do.
+
+A dialog cannot stand on one side: the client centres every element, and the only cell a
+grid has is a button, which has a sprite and takes a stop of the Tab key even with no action.
+So the list stays in the middle, narrow, and the view makes way: while it is open the view
+stands `LIST_SHIFT` of its height west of the target, which shows right of the list. Hovers
+then go by the target instead of the look, so that its card or its name stay up.
 
 ## Travelling
 
@@ -276,8 +320,9 @@ Each one is a `minecraft:player` no client plays, in each session, placed from i
 position onto the current model. A move goes out every tick, the client glides over three,
 and it turns and swings the legs from how the entity moves. The legs hardly swing in a
 look: the client reads them from blocks per tick, and a walk is a share of a block on a
-model. A figure comes with a player info entry, unlisted and with no name: the client
-needs one to show it, and an empty name leaves nothing over its head. Its id is made so
+model. A figure comes with a player info entry with no name: the client
+needs one to show it, and an empty name leaves nothing over its head. It is listed under a
+display name, which only the tab list shows. Its id is made so
 that it hashes like that of its skin, which is how a client picks a default skin.
 
 A figure is the same share of the land on every model, `LARGER_THAN_LIFE` times the true
@@ -308,9 +353,9 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and
-`art`. `biome` declares the level, `plugin` runs the sessions, `plugin::preview` plays a
-flow over, `settings` lists what can be changed, `players` shows the characters, `cursor`
+`fence`, `weather`, `buildings`, `markers`, `pointer`, `motion`, `goto`, `transition`, `wheel`
+and `art`. `biome` declares the level, `plugin` runs the sessions, `plugin::preview` plays a
+flow over, `plugin::goto` moves a view by jumps, `settings` lists what can be changed, `players` shows the characters, `cursor`
 draws the pointer, and `telemetry` measures the characters.
 
 ## Logs

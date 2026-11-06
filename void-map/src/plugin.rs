@@ -50,9 +50,10 @@ use crate::art::{
 use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
 use crate::fence::Border;
+use crate::goto::{Goto, Navigation};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::motion::Motion;
-use crate::players::PlayersPlugin;
+use crate::players::{Characters, PlayersPlugin};
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
     DIVE_TICKS, FreeLook, MIDDLE_BELOW, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH,
@@ -73,6 +74,7 @@ use crate::transition::{
 use crate::weather::{self, Weather};
 use crate::wheel::{CATEGORIES, Wheel, stepped};
 
+mod goto;
 mod preview;
 
 pub use preview::{FlowPart, PreviewFlow};
@@ -836,6 +838,8 @@ pub struct MapSession {
     rig: Option<Rig>,
     mouse: Mouse,
     pan: Pan,
+    /// Where the view is going, by jumps.
+    goto: Goto,
     zoom: Zoom,
     /// The model of a pan, from its height.
     pan_model: Model,
@@ -1012,6 +1016,27 @@ impl MapSession {
         }
     }
 
+    /// Which way hovers go by: the look, unless the view is held off what it is on.
+    fn pointing(&self) -> [f64; 3] {
+        let eye = self.eye();
+        self.goto
+            .held_on
+            .map_or(look_direction(self.look.yaw, self.look.pitch), |point| {
+                let to: [f64; 3] = std::array::from_fn(|axis| point[axis] - eye[axis]);
+                let length = to.iter().map(|v| v * v).sum::<f64>().sqrt();
+                to.map(|v| v / length.max(f64::EPSILON))
+            })
+    }
+
+    /// Nothing else has the view, so a key can act on it.
+    fn at_hand(&self) -> bool {
+        self.rig.is_some()
+            && self.travel.is_none()
+            && self.cut.is_none()
+            && self.preview.is_none()
+            && self.veiled.is_none()
+    }
+
     /// The camera holds still and nothing reacts to the mouse.
     fn is_frozen(&self) -> bool {
         self.wheel.is_some() || self.preview.is_some()
@@ -1070,7 +1095,10 @@ impl MapSession {
             MapMode::Pan => {
                 let turn = self.mouse.report(yaw, pitch);
                 if turn.delta != [0.0, 0.0] && self.travel.is_none() && !self.is_frozen() {
-                    self.pan.apply(turn.delta);
+                    match self.looks.navigation {
+                        Navigation::Free => self.pan.apply(turn.delta),
+                        Navigation::Jumps => self.goto.push(turn.delta),
+                    }
                 }
                 turn.recentre.then_some(PlayerRotation {
                     yaw: 0.0,
@@ -1227,7 +1255,7 @@ impl MapSession {
         let Position { x, z, .. } = self.on_model(0.0, 0.0, 0.0);
         let level = atlas.level(self.model())?;
         let eye = self.eye();
-        let direction = look_direction(self.look.yaw, self.look.pitch);
+        let direction = self.pointing();
         let free = self.rig.is_some()
             && self.travel.is_none()
             && self.hovered.is_none()
@@ -1312,6 +1340,9 @@ impl Plugin for MapPlugin {
         .add_observer(choose_look)
         .add_observer(click_settings)
         .add_observer(play_preview)
+        .add_observer(goto::read_keys)
+        .add_observer(goto::click)
+        .add_observer(goto::forget_tab_list)
         .add_observer(preview::start)
         .add_observer(player_left)
         .add_plugins((PlayersPlugin, CursorPlugin));
@@ -1724,6 +1755,7 @@ fn rise(
         rig: None,
         mouse: Mouse::default(),
         pan: Pan::default(),
+        goto: Goto::default(),
         zoom: Zoom::default(),
         pan_model: Model::Detail,
         sized_for: Zoom::default().height(),
@@ -2574,8 +2606,7 @@ fn hover_of(level: &Level, session: &MapSession) -> Option<Hover> {
         Hover::Waypoint(index) => index,
         Hover::You => count,
     });
-    let direction = look_direction(session.look.yaw, session.look.pitch);
-    let aimed = aimed(session.eye(), direction, points, current)?;
+    let aimed = aimed(session.eye(), session.pointing(), points, current)?;
     Some(if aimed < count {
         Hover::Waypoint(aimed)
     } else {
@@ -2693,7 +2724,10 @@ fn bar_title(level: &Level, session: &MapSession) -> String {
             let marker = &level.waypoints[index].marker;
             format!("{mode} - {}", marker.name)
         }
-        _ => mode.to_string(),
+        _ => session
+            .goto
+            .name()
+            .map_or(mode.to_string(), |name| format!("{mode} - {name}")),
     }
 }
 
@@ -2965,11 +2999,12 @@ fn right_click(
     if counts_as_click(&mut session, event.packet.entity_id, &ids) {
         tracing::info!(?player, "map right click");
         select(&mut session, None, &mut displays);
+        session.goto.clear();
     }
 }
 
 /// What each key does, named as the player has them bound.
-fn hint() -> Text {
+fn hint(navigation: Navigation) -> Text {
     let key = Text::keybind;
     let start = Text::new("").color(TextColor::White);
     let start = if LOOK_OPEN {
@@ -2978,6 +3013,10 @@ fn hint() -> Text {
             .append(Text::new(" : changer de vue   |   "))
     } else {
         start
+    };
+    let start = match navigation {
+        Navigation::Free => start,
+        Navigation::Jumps => goto::hint(start),
     };
     start
         .append(key("key.left"))
@@ -3088,7 +3127,7 @@ fn close_wheel(
     players.send(
         player,
         SystemChat {
-            content: hint().to_nbt(),
+            content: hint(session.looks.navigation).to_nbt(),
             overlay: true,
         },
     );
@@ -3170,6 +3209,7 @@ fn tick_sessions(
     mut displays: Query<&mut Display>,
     ids: Query<&MinecraftEntityId>,
     atlas: Res<Atlas>,
+    characters: Res<Characters>,
     players: Players,
     mut commands: Commands,
 ) {
@@ -3181,7 +3221,7 @@ fn tick_sessions(
             let content = if session.wheel.is_some() {
                 wheel_hint()
             } else {
-                hint()
+                hint(session.looks.navigation)
             };
             players.send(
                 player,
@@ -3328,7 +3368,9 @@ fn tick_sessions(
             MapMode::Pan => {
                 let [_, out, closer] = session.keys;
                 session.zoom.tick(out, closer);
-                if let Some(level) = atlas.level(Model::Detail) {
+                if session.looks.navigation == Navigation::Jumps {
+                    goto::steer(&mut session, player, &atlas, &characters, &players);
+                } else if let Some(level) = atlas.level(Model::Detail) {
                     session.pan.tick(|at| on_land(&level.scene, at));
                 }
             }
@@ -3350,11 +3392,7 @@ fn read_keys(
     let sprint = event.sprint;
     let pressed = sprint && !session.sprinting;
     session.sprinting = sprint;
-    let free = session.rig.is_some()
-        && session.travel.is_none()
-        && session.cut.is_none()
-        && session.preview.is_none()
-        && session.veiled.is_none();
+    let free = session.at_hand();
     let usable = free && session.drawn;
     if !WHEEL_OPEN {
         if pressed && free && !session.settings {
@@ -3410,6 +3448,7 @@ pub struct MapLooks {
     pub(crate) weather: Weather,
     pub(crate) motion: Motion,
     pub(crate) inertia: bool,
+    pub(crate) navigation: Navigation,
     pub(crate) intro: Flow,
     pub(crate) outro: Flow,
 }
@@ -3465,6 +3504,8 @@ pub enum LookChoice {
     Motion(Option<Motion>),
     /// Turns inertia on or off.
     Inertia,
+    /// How the mouse moves a pan.
+    Navigation(Option<Navigation>),
     /// A choice of `settings`, both by their place in their list.
     Setting(usize, usize),
     /// How the view gets to the map.
@@ -3537,6 +3578,10 @@ fn choose_look(
             let state = if looks.inertia { "oui" } else { "non" };
             format!("Inertie : {state}")
         }
+        LookChoice::Navigation(navigation) => {
+            looks.navigation = navigation.unwrap_or(looks.navigation.next());
+            format!("Déplacement : {}", looks.navigation.label())
+        }
         LookChoice::Setting(setting, choice) => {
             let Some(setting) = settings::settings().into_iter().nth(setting) else {
                 return;
@@ -3578,6 +3623,9 @@ fn choose_look(
             respawn_signs(&atlas, &mut session, &mut commands);
         }
         session.pan.drive(looks.motion, looks.inertia);
+        if before.navigation != looks.navigation {
+            goto::start_over(&mut session);
+        }
         if session.settings {
             players.send(player, settings::dialog(looks).packet());
         }
@@ -3897,6 +3945,7 @@ enum MapAction {
     Blocks,
     Border,
     Weather,
+    Move,
     Intro,
     Outro,
 }
@@ -3914,6 +3963,8 @@ enum Pick {
     Eight,
     Flat,
     Real,
+    Free,
+    Jumps,
 }
 
 impl Pick {
@@ -3976,6 +4027,14 @@ impl Pick {
         }
     }
 
+    fn navigation(self) -> Option<Navigation> {
+        match self {
+            Self::Free => Some(Navigation::Free),
+            Self::Jumps => Some(Navigation::Jumps),
+            _ => None,
+        }
+    }
+
     fn blocks(self) -> Option<Blocks> {
         match self {
             Self::Flat => Some(Blocks::Flat),
@@ -4012,6 +4071,7 @@ fn map_command() -> Command {
                 ("blocks", MapAction::Blocks),
                 ("border", MapAction::Border),
                 ("weather", MapAction::Weather),
+                ("move", MapAction::Move),
                 ("intro", MapAction::Intro),
                 ("outro", MapAction::Outro),
             ]),
@@ -4029,6 +4089,8 @@ fn map_command() -> Command {
                 ("8", Pick::Eight),
                 ("flat", Pick::Flat),
                 ("real", Pick::Real),
+                ("libre", Pick::Free),
+                ("sauts", Pick::Jumps),
             ]),
         )
         .handler(run_map)
@@ -4061,6 +4123,7 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
             MapAction::Border => Some(choice(pick, Pick::border, LookChoice::Border)),
             MapAction::Weather => Some(choice(pick, Pick::weather, LookChoice::Weather)),
+            MapAction::Move => Some(choice(pick, Pick::navigation, LookChoice::Navigation)),
             MapAction::Intro => Some(choice(pick, Pick::flow, LookChoice::Intro)),
             MapAction::Outro => Some(choice(pick, Pick::flow, LookChoice::Outro)),
         };
@@ -4141,6 +4204,7 @@ mod tests {
             rig: None,
             mouse: Mouse::default(),
             pan: Pan::default(),
+            goto: Goto::default(),
             zoom: Zoom::default(),
             pan_model: Model::Detail,
             sized_for: Zoom::default().height(),
@@ -4259,8 +4323,9 @@ mod tests {
 
     #[test]
     fn the_hint_names_the_player_s_own_keys() {
-        let hint = format!("{:?}", hint().to_compound());
-        for action in ["key.left", "key.right", "key.sprint", "key.sneak"] {
+        let hint = format!("{:?}", hint(Navigation::Jumps).to_compound());
+        let keys = ["key.left", "key.right", "key.sprint", "key.sneak"];
+        for action in keys.into_iter().chain(["key.forward", "key.jump"]) {
             assert!(hint.contains(action), "{action}: {hint}");
         }
     }
@@ -4298,18 +4363,59 @@ mod tests {
             actions.matches,
             [
                 "look", "pan", "stop", "style", "me", "zone", "blocks", "border", "weather",
-                "intro", "outro"
+                "move", "intro", "outro"
             ]
         );
-        for action in ["style", "me", "zone", "blocks", "border", "weather"] {
+        for action in ["style", "me", "zone", "blocks", "border", "weather", "move"] {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");
             assert_eq!(
                 options.matches,
-                ["1", "2", "3", "4", "5", "6", "7", "8", "flat", "real"]
+                [
+                    "1", "2", "3", "4", "5", "6", "7", "8", "flat", "real", "libre", "sauts"
+                ]
             );
         }
+    }
+
+    /// However high a point stands and whatever the zoom, it ends up on the ray of the
+    /// middle of the screen. Going by the ground would leave a marker off to the north.
+    #[test]
+    fn a_target_ends_up_in_the_middle_of_the_screen() {
+        for (point, model) in [
+            ([10.0, 90.0, -20.0], Model::Detail),
+            ([-30.0, 110.0, 40.0], Model::Detail),
+            ([4.0, 80.0, 7.0], Model::Middle),
+        ] {
+            let mut session = session(MapMode::Pan);
+            session.pan_model = model;
+            session.look = session.rest();
+            session.pan = Pan::at(goto::view_on(&session, point));
+            let eye = session.eye();
+            let way = look_direction(session.look.yaw, session.look.pitch);
+            let to: [f64; 3] = std::array::from_fn(|axis| point[axis] - eye[axis]);
+            let along: f64 = (0..3).map(|axis| to[axis] * way[axis]).sum();
+            let off: f64 = (0..3)
+                .map(|axis| (to[axis] - way[axis] * along).powi(2))
+                .sum();
+            assert!(off.sqrt() < 1e-6, "{point:?} is {} off", off.sqrt());
+        }
+    }
+
+    #[test]
+    fn by_jumps_the_mouse_no_longer_slides_the_view() {
+        let mut session = session(MapMode::Pan);
+        session.rig = Some(Rig {
+            camera: None,
+            eye: None,
+            eye_box: Entity::PLACEHOLDER,
+        });
+        session.looks.navigation = Navigation::Jumps;
+        session.turn(0.0, 0.0);
+        session.turn(20.0, 0.0);
+        assert_eq!(session.pan.offset(), [0.0, 0.0]);
+        assert_eq!(session.goto.flick(), Some([1.0, 0.0]));
     }
 
     /// A look that stopped on the client's position tick used to go unseen, so that

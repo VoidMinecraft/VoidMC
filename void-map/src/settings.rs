@@ -10,6 +10,7 @@ use voidmc_ui::{Button, Dialog, Image, ResourcePack, Text};
 
 use crate::art::Style;
 use crate::fence::Border;
+use crate::goto::Navigation;
 use crate::plugin::{MapLooks, Me};
 use crate::regions::ZoneLook;
 use crate::scene::Blocks;
@@ -118,6 +119,12 @@ pub fn settings() -> Vec<Setting> {
         Setting::new("Météo", &Weather::ALL, Weather::label, |looks| {
             &mut looks.weather
         }),
+        Setting::new(
+            "Déplacement",
+            &Navigation::ALL,
+            Navigation::label,
+            |looks| &mut looks.navigation,
+        ),
         Setting::new("Intro", &Flow::ALL, Flow::label, |looks| &mut looks.intro),
         Setting::new("Outro", &Flow::ALL, Flow::label, |looks| &mut looks.outro),
     ]
