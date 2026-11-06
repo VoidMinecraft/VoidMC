@@ -161,6 +161,13 @@ const MINI_HEAD_LIFT: f64 = 4.0;
 /// A face is 8 pixels wide: a little less than the disc behind it.
 const MINI_HEAD_SCALE: f32 = 11.0;
 const FACE_PIXELS: f32 = 8.0;
+/// How far a face stands over its line of text, in its pixels.
+const FACE_OVER_LINE: f32 = 1.0;
+/// How far right of the entity the client draws the middle of a line of text, in its
+/// pixels: a pixel, less half of the gap a glyph of the font keeps after it, which a face
+/// does not have.
+const FACE_ASIDE: f32 = 1.0;
+const DISC_ASIDE: f32 = 0.5;
 /// How far in front of the disc a face stands, as a share of its scale, for the two not to
 /// fight over the same depth.
 const FACE_FRONT: f32 = 0.01;
@@ -673,9 +680,14 @@ impl Part {
                     .uniform_scale(scale)
             }
             Self::Head => {
-                let centre = LINE_HEIGHT - FACE_PIXELS / 2.0;
+                let centre = LINE_HEIGHT + FACE_OVER_LINE - FACE_PIXELS / 2.0;
+                let aside = FACE_ASIDE - DISC_ASIDE * DISC_SCALE / MINI_HEAD_SCALE;
                 DisplayTransform::default()
-                    .translation(0.0, -centre * scale / PIXELS_PER_BLOCK, FACE_FRONT * scale)
+                    .translation(
+                        -aside * scale / PIXELS_PER_BLOCK,
+                        -centre * scale / PIXELS_PER_BLOCK,
+                        FACE_FRONT * scale,
+                    )
                     .uniform_scale(scale)
             }
             Self::Tip(under) => {
