@@ -74,20 +74,36 @@ pub const BOAT_MODEL: &str = "voidmap:boat";
 const BOAT_ITEM_FILE: &str = "assets/voidmap/items/boat.json";
 const BOAT_MODEL_FILE: &str = "assets/voidmap/models/item/boat.json";
 const BOAT_ITEM: &str = r#"{"model":{"type":"minecraft:model","model":"voidmap:item/boat"}}"#;
-/// The boxes of a boat, from and to, in sixteenths of a block, and whether they are of
-/// the darker wood. Its bow is north, and the middle of the item, its waterline.
-const BOAT_BOXES: [([f32; 3], [f32; 3], bool); 11] = [
-    ([4.5, 8.0, 1.0], [11.5, 9.0, 15.0], true),
-    ([3.5, 8.0, 3.5], [4.5, 12.0, 15.0], false),
-    ([11.5, 8.0, 3.5], [12.5, 12.0, 15.0], false),
-    ([3.5, 8.0, 15.0], [12.5, 12.0, 16.0], false),
-    ([4.5, 8.0, 2.0], [6.0, 12.0, 3.5], false),
-    ([10.0, 8.0, 2.0], [11.5, 12.0, 3.5], false),
-    ([6.0, 8.0, 0.5], [7.5, 12.0, 2.0], false),
-    ([8.5, 8.0, 0.5], [10.0, 12.0, 2.0], false),
-    ([7.5, 8.0, 0.0], [8.5, 12.0, 0.5], false),
-    ([4.5, 10.0, 11.0], [11.5, 10.5, 12.5], false),
-    ([4.5, 10.0, 5.0], [11.5, 10.5, 6.5], false),
+/// What a box of a boat is made of.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BoatPart {
+    Wood,
+    DarkWood,
+    Sail,
+}
+
+/// The boxes of a boat, from and to, in sixteenths of a block. Its bow is north, and the
+/// middle of the item, its waterline. The mast stands ahead of where its rider sits, and
+/// the wind fills the sail forward of it, away from them: the map looks at it from nearly
+/// straight above, where a flat sail would be a line.
+const BOAT_BOXES: [([f32; 3], [f32; 3], BoatPart); 17] = [
+    ([4.5, 8.0, 1.0], [11.5, 9.0, 15.0], BoatPart::DarkWood),
+    ([3.5, 8.0, 3.5], [4.5, 12.0, 15.0], BoatPart::Wood),
+    ([11.5, 8.0, 3.5], [12.5, 12.0, 15.0], BoatPart::Wood),
+    ([3.5, 8.0, 15.0], [12.5, 12.0, 16.0], BoatPart::Wood),
+    ([4.5, 8.0, 2.0], [6.0, 12.0, 3.5], BoatPart::Wood),
+    ([10.0, 8.0, 2.0], [11.5, 12.0, 3.5], BoatPart::Wood),
+    ([6.0, 8.0, 0.5], [7.5, 12.0, 2.0], BoatPart::Wood),
+    ([8.5, 8.0, 0.5], [10.0, 12.0, 2.0], BoatPart::Wood),
+    ([7.5, 8.0, 0.0], [8.5, 12.0, 0.5], BoatPart::Wood),
+    ([4.5, 10.0, 11.0], [11.5, 10.5, 12.5], BoatPart::Wood),
+    ([4.5, 10.0, 5.0], [11.5, 10.5, 6.5], BoatPart::Wood),
+    ([7.5, 9.0, 3.5], [8.5, 26.0, 4.5], BoatPart::DarkWood),
+    ([3.0, 24.0, 3.25], [13.0, 24.75, 4.0], BoatPart::DarkWood),
+    ([3.5, 21.0, 2.5], [12.5, 24.0, 3.25], BoatPart::Sail),
+    ([3.0, 18.0, 1.0], [13.0, 21.0, 2.5], BoatPart::Sail),
+    ([3.0, 15.0, 0.25], [13.0, 18.0, 1.5], BoatPart::Sail),
+    ([3.5, 13.0, 1.0], [12.5, 15.0, 2.0], BoatPart::Sail),
 ];
 const SKIN_SIZE: u32 = 64;
 
@@ -1237,8 +1253,12 @@ fn boat_model() -> String {
         let sides = ["north", "south", "east", "west", "up", "down"].map(face);
         sides.join(",")
     };
-    let element = |(from, to, dark): &([f32; 3], [f32; 3], bool)| {
-        let texture = if *dark { "#dark" } else { "#oak" };
+    let element = |(from, to, part): &([f32; 3], [f32; 3], BoatPart)| {
+        let texture = match part {
+            BoatPart::Wood => "#oak",
+            BoatPart::DarkWood => "#dark",
+            BoatPart::Sail => "#sail",
+        };
         format!(
             r#"{{"from":{from:?},"to":{to:?},"faces":{{{}}}}}"#,
             faces(texture)
@@ -1246,7 +1266,7 @@ fn boat_model() -> String {
     };
     let elements: Vec<_> = BOAT_BOXES.iter().map(element).collect();
     format!(
-        r#"{{"textures":{{"particle":"minecraft:block/oak_planks","oak":"minecraft:block/oak_planks","dark":"minecraft:block/dark_oak_planks"}},"elements":[{}]}}"#,
+        r#"{{"textures":{{"particle":"minecraft:block/oak_planks","oak":"minecraft:block/oak_planks","dark":"minecraft:block/dark_oak_planks","sail":"minecraft:block/white_wool"}},"elements":[{}]}}"#,
         elements.join(",")
     )
 }

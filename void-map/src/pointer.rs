@@ -262,6 +262,8 @@ impl FreeLook {
 pub struct Zoom {
     wanted: f64,
     shown: f64,
+    /// What `shown` was a tick ago.
+    last: f64,
 }
 
 impl Default for Zoom {
@@ -269,6 +271,7 @@ impl Default for Zoom {
         Self {
             wanted: DEFAULT_ZOOM,
             shown: DEFAULT_ZOOM,
+            last: DEFAULT_ZOOM,
         }
     }
 }
@@ -284,11 +287,17 @@ impl Zoom {
             };
             self.wanted = (self.wanted * change).clamp(CLOSEST_ZOOM, FARTHEST_ZOOM);
         }
+        self.last = self.shown;
         self.shown = glide_height(self.shown, self.wanted);
     }
 
     pub fn height(self) -> f64 {
         self.shown
+    }
+
+    /// The height this many ticks ago, going by how fast it changes now.
+    pub fn height_behind(self, ticks: f64) -> f64 {
+        self.shown * (self.last / self.shown).powf(ticks)
     }
 }
 
@@ -665,6 +674,21 @@ mod tests {
     #[test]
     fn a_marker_past_the_threshold_is_not_picked_up() {
         assert_eq!(aimed(EYE, DOWN, [at_angle(AIM_ENTER + 0.5)], None), None);
+    }
+
+    #[test]
+    fn a_height_behind_goes_back_at_the_speed_of_the_zoom() {
+        let mut zoom = Zoom::default();
+        zoom.tick(false, false);
+        assert_eq!(zoom.height_behind(2.0), zoom.height());
+        for _ in 0..20 {
+            zoom.tick(true, false);
+        }
+        let before = zoom.height();
+        zoom.tick(true, false);
+        let step = zoom.height() / before;
+        assert!((zoom.height_behind(1.0) - before).abs() < 1e-9);
+        assert!((zoom.height_behind(2.0) - before / step).abs() < 1e-9);
     }
 
     #[test]

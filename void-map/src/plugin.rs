@@ -53,7 +53,7 @@ use crate::fence::Border;
 use crate::goto::{Goto, Navigation};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::motion::Motion;
-use crate::players::{Characters, PlayersPlugin};
+use crate::players::{Characters, PlayersPlugin, figure_height};
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
     DIVE_TICKS, FreeLook, MIDDLE_BELOW, Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH,
@@ -149,6 +149,10 @@ const WORLD_CHUNKS_PER_TICK: usize = 32;
 /// stops dead, because the client adds what the entity moved on its own to the target
 /// of a glide: `Pan` eases the view to a stop for that reason.
 const CAMERA_GLIDE_TICKS: u8 = 3;
+/// How far behind what it was told a gliding camera is, as measured on a client. A model
+/// taking over puts the camera there, not where it was told: a jump has no glide, and the
+/// whole view would leap ahead by that much in the middle of a zoom.
+const CAMERA_LAG_TICKS: f64 = 2.7;
 
 /// Above the tallest landmark, in its blocks.
 const ICON_LIFT: f64 = 10.0;
@@ -158,11 +162,16 @@ const CLOSED_ICON_LIGHT: u8 = 4;
 /// How far a view goes around what it looks at, as a share of its height.
 const VIEW_REACH: f64 = 0.9;
 const ICON_HOVER_GROWTH: f32 = 1.6;
-/// The head floats over the player's spot, on a disc that points down at it.
-const MINI_HEAD_LIFT: f64 = 4.0;
 /// A face is 8 pixels wide: a little less than the disc behind it.
 const MINI_HEAD_SCALE: f32 = 11.0;
 const FACE_PIXELS: f32 = 8.0;
+/// How far a face stands over its line of text, in its pixels.
+const FACE_OVER_LINE: f32 = 1.0;
+/// How far right of the entity the client draws the middle of a line of text, in its
+/// pixels: a pixel, less half of the gap a glyph of the font keeps after it, which a face
+/// does not have.
+const FACE_ASIDE: f32 = 1.0;
+const DISC_ASIDE: f32 = 0.5;
 /// How far in front of the disc a face stands, as a share of its scale, for the two not to
 /// fight over the same depth.
 const FACE_FRONT: f32 = 0.01;
@@ -177,8 +186,6 @@ const DISC_RADIUS: f32 = 12.0 * DISC_SCALE / PIXELS_PER_BLOCK;
 const DISC_SCALE: f32 = 5.0;
 const PIN_SCALE: f32 = 7.0;
 const ARROW_SCALE: f32 = 8.0;
-/// Over the ground, in blocks of a build: it faces the camera, and would sink in.
-const ARROW_LIFT: f64 = 2.0;
 const SIGN_LIFT: f64 = 14.0;
 const SIGN_SCALE: f32 = 5.0;
 /// A pan starts this far north of the player, for each block of height, to keep their
@@ -671,23 +678,58 @@ impl Part {
             Self::Disc => {
                 let centre = LINE_HEIGHT - Mark::Disc.height() as f32 / 2.0;
                 DisplayTransform::default()
-                    .translation(0.0, -centre * scale / PIXELS_PER_BLOCK, 0.0)
+                    .translation(
+                        0.0,
+                        self.rise(scale) - centre * scale / PIXELS_PER_BLOCK,
+                        0.0,
+                    )
                     .uniform_scale(scale)
             }
             Self::Head => {
-                let centre = LINE_HEIGHT - FACE_PIXELS / 2.0;
+                let centre = LINE_HEIGHT + FACE_OVER_LINE - FACE_PIXELS / 2.0;
+                let aside = FACE_ASIDE - DISC_ASIDE * DISC_SCALE / MINI_HEAD_SCALE;
                 DisplayTransform::default()
-                    .translation(0.0, -centre * scale / PIXELS_PER_BLOCK, FACE_FRONT * scale)
+                    .translation(
+                        -aside * scale / PIXELS_PER_BLOCK,
+                        self.rise(scale) - centre * scale / PIXELS_PER_BLOCK,
+                        FACE_FRONT * scale,
+                    )
                     .uniform_scale(scale)
             }
             Self::Tip(under) => {
                 let line = LINE_HEIGHT / PIXELS_PER_BLOCK;
                 DisplayTransform::default()
-                    .translation(0.0, -(under / TIP_SCALE + line) * scale, 0.0)
+                    .translation(
+                        0.0,
+                        self.rise(scale) - (under / TIP_SCALE + line) * scale,
+                        0.0,
+                    )
                     .uniform_scale(scale)
             }
         }
     }
+
+    /// How far up the screen it goes for the marker to stand on the head of the player's
+    /// figure: seen from nearly straight above, it would cover it from any height. What a
+    /// billboard shows has its up on the screen.
+    fn rise(self, scale: f32) -> f32 {
+        let of_marker = match self {
+            Self::Pin => 0.0,
+            Self::Arrow(_) => arrow_half(),
+            Self::Disc | Self::Head | Self::Tip(_) => head_rise(),
+        };
+        of_marker * scale / self.size()
+    }
+}
+
+/// Half of an arrow, in blocks where the marker scale is 1.
+fn arrow_half() -> f32 {
+    Mark::Arrow.height() as f32 / 2.0 * ARROW_SCALE / PIXELS_PER_BLOCK
+}
+
+/// From the tip under a head to the middle of its disc, where the marker scale is 1.
+fn head_rise() -> f32 {
+    DISC_RADIUS + Mark::Tip.height() as f32 * TIP_SCALE / PIXELS_PER_BLOCK
 }
 
 /// Turns an arrow in the plane of the screen, around its own middle. What a billboard
@@ -699,7 +741,11 @@ fn arrow_transform(yaw: f32, scale: f32) -> DisplayTransform {
     let centre = (LINE_HEIGHT - Mark::Arrow.height() as f32 / 2.0) * scale / PIXELS_PER_BLOCK;
     let (sin, cos) = turn.sin_cos();
     DisplayTransform::default()
-        .translation(centre * sin, -centre * cos, 0.0)
+        .translation(
+            centre * sin,
+            Part::Arrow(yaw).rise(scale) - centre * cos,
+            0.0,
+        )
         .left_rotation([0.0, 0.0, half_sin, half_cos])
         .uniform_scale(scale)
 }
@@ -843,6 +889,8 @@ pub struct MapSession {
     zoom: Zoom,
     /// The model of a pan, from its height.
     pan_model: Model,
+    /// The camera has yet to jump to the model that just took over.
+    model_taking_over: bool,
     /// The height of the view the markers are sized for.
     sized_for: f64,
     free: FreeLook,
@@ -932,9 +980,13 @@ impl MapSession {
     /// The view of a pan on a model. The same point of the sea stays in the middle of
     /// the screen at the same size, whichever model it is on.
     fn pan_view(&self, model: Model) -> [f64; 3] {
+        self.pan_view_from(model, self.zoom.height())
+    }
+
+    fn pan_view_from(&self, model: Model, zoom: f64) -> [f64; 3] {
         let ratio = model.ratio();
         let [x, z] = self.pan.view();
-        let height = self.zoom.height() * ratio;
+        let height = zoom * ratio;
         [
             x * ratio,
             f64::from(scene::SEA_Y) + height,
@@ -1000,6 +1052,11 @@ impl MapSession {
 
     /// Where the entity to see through goes. In a look, it stands in for the eye.
     fn camera_at(&self) -> Position {
+        if self.model_taking_over && self.travel.is_none() {
+            let height = self.zoom.height_behind(CAMERA_LAG_TICKS);
+            let [x, y, z] = self.pan_view_from(self.model(), height);
+            return self.on_model(x, y, z);
+        }
         let [x, y, z] = match &self.travel {
             Some(travel) => self.vehicle_at(travel.flight.target()),
             None => self.vehicle_at(self.eye()),
@@ -1184,13 +1241,9 @@ impl MapSession {
         part.transform(self.part_scale(part))
     }
 
-    /// How far over the ground the player's marker is aimed at, in blocks of a build.
+    /// How far over the ground the player's marker is aimed at: at the head of their figure.
     fn you_lift(&self) -> f64 {
-        match self.looks.me {
-            Me::Pin => 0.0,
-            Me::Arrow => ARROW_LIFT,
-            Me::Head => MINI_HEAD_LIFT,
-        }
+        figure_height(self.model().scale())
     }
 
     fn sign_scale(&self) -> f32 {
@@ -1243,6 +1296,17 @@ pub(crate) struct MapView<'a> {
     pub eye: [f64; 3],
     /// Where the middle of the screen points, when no marker has the look.
     pub aim: Option<[f64; 3]>,
+    /// The player, if the model reaches where they are.
+    pub you: Option<Yourself>,
+}
+
+/// The player, as their figure needs them.
+pub(crate) struct Yourself {
+    /// On the model, on the ground under their marker.
+    pub at: [f64; 3],
+    /// In the real world.
+    pub position: Position,
+    pub yaw: f32,
 }
 
 impl MapSession {
@@ -1267,6 +1331,11 @@ impl MapSession {
             origin: [x, z],
             eye,
             aim: free.then_some(direction),
+            you: self.pins.you.as_ref().map(|you| Yourself {
+                at: you.at,
+                position: self.position,
+                yaw: self.rotation.yaw,
+            }),
         })
     }
 }
@@ -1535,7 +1604,7 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
         icons.push(entity);
     }
     let you = model_spot(level, &session.position).map(|at| You {
-        parts: spawn_you(session, at, build, commands),
+        parts: spawn_you(session, at, commands),
         at,
     });
     let signs = spawn_signs(level, session, build, commands);
@@ -1555,9 +1624,8 @@ fn respawn_you(session: &mut MapSession, commands: &mut Commands) {
     for (entity, _) in you.parts {
         commands.entity(entity).try_despawn();
     }
-    let build = f64::from(session.model().scale().build);
     session.pins.you = Some(You {
-        parts: spawn_you(session, you.at, build, commands),
+        parts: spawn_you(session, you.at, commands),
         at: you.at,
     });
 }
@@ -1577,12 +1645,11 @@ fn respawn_signs(atlas: &Atlas, session: &mut MapSession, commands: &mut Command
 fn spawn_you(
     session: &MapSession,
     [x, y, z]: [f64; 3],
-    build: f64,
     commands: &mut Commands,
 ) -> Vec<(Entity, Part)> {
     let text = |mark: Mark| mark.text(session.drawn);
     let drawn = |part: Part| display(1.0).transform(session.part_transform(part));
-    let at = session.on_model(x, y + session.you_lift() * build, z);
+    let at = session.on_model(x, y + session.you_lift(), z);
     match session.looks.me {
         Me::Pin => {
             let entity = spawn_mark(commands, at, text(Mark::Pin), drawn(Part::Pin));
@@ -1758,6 +1825,7 @@ fn rise(
         goto: Goto::default(),
         zoom: Zoom::default(),
         pan_model: Model::Detail,
+        model_taking_over: false,
         sized_for: Zoom::default().height(),
         free: FreeLook::default(),
         telemetry: Telemetry::default(),
@@ -2191,6 +2259,7 @@ fn switch_model(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands
     }
     tracing::debug!(?model, height, "map model");
     session.pan_model = model;
+    session.model_taking_over = true;
     session.hovered = None;
     session.selected = None;
     despawn_pins(session, commands);
@@ -2595,7 +2664,7 @@ fn marker_points(level: &Level, session: &MapSession) -> Vec<[f64; 3]> {
         .pins
         .you
         .iter()
-        .map(|you| [you.at[0], you.at[1] + session.you_lift() * build, you.at[2]]);
+        .map(|you| [you.at[0], you.at[1] + session.you_lift(), you.at[2]]);
     icons.chain(you).collect()
 }
 
@@ -2650,14 +2719,16 @@ fn marker_top(level: &Level, session: &MapSession, hover: Hover) -> Option<([f64
         }
         Hover::You => {
             let [x, y, z] = session.pins.you.as_ref()?.at;
-            let scale = session.marker_scale();
+            let at = [x, y + session.you_lift(), z];
+            // As large as it is drawn, which a hover changes.
+            let scale = session.part_scale(Part::Disc) / DISC_SCALE;
             match session.looks.me {
                 Me::Pin => {
                     let height = Mark::Pin.height() as f32 / PIXELS_PER_BLOCK;
-                    Some(([x, y, z], height * PIN_SCALE * scale))
+                    Some((at, height * PIN_SCALE * scale))
                 }
-                Me::Arrow => Some(([x, y + ARROW_LIFT * build, z], ARROW_SCALE * scale / 4.0)),
-                Me::Head => Some(([x, y + MINI_HEAD_LIFT * build, z], DISC_RADIUS * scale)),
+                Me::Arrow => Some((at, 2.0 * arrow_half() * scale)),
+                Me::Head => Some((at, (head_rise() + DISC_RADIUS) * scale)),
             }
         }
     }
@@ -2756,6 +2827,8 @@ fn follow_view(
                 position.set_if_neq(at);
             }
         }
+
+        session.model_taking_over = false;
 
         if let Some(mut rotation) = rig.camera.and_then(|camera| rotations.get_mut(camera).ok()) {
             rotation.set_if_neq(session.camera_rotation());
@@ -4207,6 +4280,7 @@ mod tests {
             goto: Goto::default(),
             zoom: Zoom::default(),
             pan_model: Model::Detail,
+            model_taking_over: false,
             sized_for: Zoom::default().height(),
             free: FreeLook::default(),
             telemetry: Telemetry::default(),

@@ -103,7 +103,10 @@ nothing. The client still redraws the sections around its new place, which takes
 the fog over `chunkSectionFadeInTime`, most of a second of a dark map, so the pack
 overrides `chunksection.glsl` for them to be whole at once, east of `FIRST_MODEL_BLOCK`
 only. What is left of a threshold is those 50 ms, with the sky in the first frames, and
-markers that come back a moment later, since they are new entities.
+markers that come back a moment later, since they are new entities. A camera glides some
+ticks behind what it was told, and a jump does not: in the middle of a zoom, it goes to the
+height the client was showing, and the glide takes over from there, or the whole view would
+leap ahead.
 
 Chunks are built and encoded once, on start for the default look and clouds, and on
 first use for the others. In the map a client is told to keep a far larger radius with
@@ -331,6 +334,18 @@ it was. This is why it is not a mannequin: vanilla draws an entity up to 64 bloc
 the size of its box, and so nothing smaller than about 20 pixels on a 760 pixels window,
 whatever the zoom. A player on the client, `RemotePlayer`, goes ten times as far.
 
+A model taking over gets figures of its own, and boats, rather than moving those of the
+last one across: a client glides an entity to where it was told, and a jump past 64 blocks
+leaves what it was gliding to in place. An entity then flies back towards the last model,
+and a boat ends up stopped on the empty chunks between two models, where nothing ticks. In
+the same tick as the camera they are simply there, the same share of the land away.
+
+The player sees themselves too, on the ground under their marker: a figure for that
+session alone, with the skin of their account, as large as the others and with an id of
+its own, or the client would take the entity for itself. Seen from nearly straight above,
+a marker would cover it from any height, so the marker goes up the screen as a billboard
+does, to stand on its head. The look never names it: the marker is there for that.
+
 A character can be `afloat`. On a lake, every third walker takes a boat: `lakes_of` finds
 the water with at least two `Landing`s, each a spot of ground a few cells from it, walks
 them to the closest one, and sends them `CROSSINGS` times across before they land and walk
@@ -339,7 +354,8 @@ a lake off. Some start on the water, so that boats show from the first moment.
 
 A boat is an item display of a model of the pack, not a `minecraft:oak_boat`: an entity of
 the game has no scale and is drawn no further than a mannequin. A client without the pack
-gets the flat sprite of the boat. The figure rides it, which sits it down, and its body
+gets the flat sprite of the boat. The model has a mast ahead of its rider and a small sail
+the wind fills away from them, for it to show from nearly straight above. The figure rides it, which sits it down, and its body
 follows the boat with no move of its own. A rider hangs under its vehicle, so the display
 stands higher than it looks, for the feet to stay in the top block of the water: a client
 shows nothing of an entity whose feet are in a section it cannot see.
