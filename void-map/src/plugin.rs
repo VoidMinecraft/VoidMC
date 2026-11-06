@@ -39,6 +39,7 @@ use voidmc_ui::{PackSettled, Text};
 use crate::art::{Card, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face};
 use crate::biome::{self, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
+use crate::motion::Motion;
 use crate::players::PlayersPlugin;
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
@@ -52,7 +53,7 @@ use crate::scene::{
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 use crate::transition::{Flight, LANDING_TICKS, RISE_TICKS, VEIL_FADE, veil_in, veil_out};
-use crate::wheel::{Wheel, stepped};
+use crate::wheel::{CATEGORIES, Wheel, stepped};
 
 /// `WorldGenerator` does not expose its water level. This is the one of
 /// `DefaultWorldGenerator`, and of vanilla.
@@ -783,7 +784,7 @@ impl MapSession {
     }
 
     /// Takes in a rotation the client reports, and says how to correct it, if at all.
-    fn turn(&mut self, yaw: f32, pitch: f32, atlas: &Atlas) -> Option<PlayerRotation> {
+    fn turn(&mut self, yaw: f32, pitch: f32) -> Option<PlayerRotation> {
         self.rig?;
         self.telemetry.report(Instant::now());
         if let Some(open) = self.wheel.as_mut() {
@@ -806,8 +807,7 @@ impl MapSession {
             MapMode::Pan => {
                 let turn = self.mouse.report(yaw, pitch);
                 if turn.delta != [0.0, 0.0] && self.travel.is_none() {
-                    let scene = &atlas.level(Model::Detail)?.scene;
-                    self.pan.apply(turn.delta, |at| on_land(scene, at));
+                    self.pan.apply(turn.delta);
                 }
                 turn.recentre.then_some(PlayerRotation {
                     yaw: 0.0,
@@ -906,6 +906,7 @@ impl MapSession {
     fn place_pan(&mut self, atlas: &Atlas) {
         if let (MapMode::Pan, Some(level)) = (self.mode, atlas.level(Model::Detail)) {
             self.pan = self.pan_start(&level.scene);
+            self.pan.drive(self.looks.motion, self.looks.inertia);
         }
     }
 
@@ -1860,11 +1861,10 @@ fn look_through_camera(
 fn read_mouse(
     event: On<PacketEvent<SetPlayerRotation>>,
     mut sessions: Query<&mut MapSession>,
-    atlas: Res<Atlas>,
     players: Players,
 ) {
     if let Ok(mut session) = sessions.get_mut(event.entity)
-        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch, &atlas)
+        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch)
     {
         players.send(event.entity, correction);
     }
@@ -1875,11 +1875,10 @@ fn read_mouse(
 fn read_mouse_with_position(
     event: On<PacketEvent<SetPlayerPosAndRot>>,
     mut sessions: Query<&mut MapSession>,
-    atlas: Res<Atlas>,
     players: Players,
 ) {
     if let Ok(mut session) = sessions.get_mut(event.entity)
-        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch, &atlas)
+        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch)
     {
         players.send(event.entity, correction);
     }
@@ -2310,14 +2309,14 @@ fn hint() -> Text {
 }
 
 fn wheel_hint() -> Text {
-    Text::new("Souris : gauche / droite change de sujet, haut / bas de choix   |   ")
+    Text::new("Souris : gauche / droite = catégorie, haut / bas = choix   |   Relâcher ")
         .color(TextColor::White)
         .append(Text::keybind("key.sprint"))
-        .append(Text::new(" relâché : garder"))
+        .append(Text::new(" : valider"))
 }
 
 /// The labels of the wheel's sectors, clockwise from the top.
-const WHEEL_LABELS: [&str; 4] = ["Panneau", "Marqueur", "Zones", "Blocs"];
+const WHEEL_LABELS: [&str; CATEGORIES] = ["Panneau", "Marqueur", "Déplacement", "Zones", "Blocs"];
 
 /// What a sector of the wheel offers, and which of it is on.
 fn wheel_choices(category: usize, looks: MapLooks) -> (Vec<(&'static str, LookChoice)>, usize) {
@@ -2335,6 +2334,12 @@ fn wheel_choices(category: usize, looks: MapLooks) -> (Vec<(&'static str, LookCh
         0 => of(&Style::ALL, looks.style, Style::label, LookChoice::Style),
         1 => of(&Me::ALL, looks.me, Me::label, LookChoice::Me),
         2 => of(
+            &Motion::ALL,
+            looks.motion,
+            Motion::label,
+            LookChoice::Motion,
+        ),
+        3 => of(
             &ZoneLook::ALL,
             looks.zone,
             ZoneLook::label,
@@ -2433,7 +2438,9 @@ fn run_wheels(
             commands.trigger(ChooseLook(player, choices[index].1));
         }
         let count = format!("{} / {}", index + 1, choices.len());
-        let face = wheel_face(category, WHEEL_LABELS, &count, choices[index].0);
+        let around = |by: i32| choices[stepped(index, by, choices.len())].0;
+        let list = [around(-1), choices[index].0, around(1)];
+        let face = wheel_face(category, WHEEL_LABELS, &count, list);
         if face != open.face {
             open.face.clone_from(&face);
             if let Ok(mut text) = texts.get_mut(open.display) {
@@ -2542,6 +2549,13 @@ fn read_keys(
         && session.veiled.is_none();
     if sprint && session.wheel.is_none() && usable {
         open_wheel(&mut session, &mut commands);
+        players.send(
+            event.entity,
+            SystemChat {
+                content: wheel_hint().to_nbt(),
+                overlay: true,
+            },
+        );
     } else if !sprint {
         close_wheel(&mut session, event.entity, &ids, &players, &mut commands);
     }
@@ -2575,6 +2589,8 @@ pub struct MapLooks {
     me: Me,
     zone: ZoneLook,
     blocks: Blocks,
+    motion: Motion,
+    inertia: bool,
 }
 
 impl MapLooks {
@@ -2645,6 +2661,9 @@ pub enum LookChoice {
     Me(Option<Me>),
     Zone(Option<ZoneLook>),
     Blocks(Option<Blocks>),
+    Motion(Option<Motion>),
+    /// Turns inertia on or off.
+    Inertia,
     /// An option that does not go with its action.
     Refused,
 }
@@ -2694,6 +2713,15 @@ fn choose_look(
             looks.blocks = blocks.unwrap_or(looks.blocks.next());
             format!("Blocs : {}", looks.blocks.label())
         }
+        LookChoice::Motion(motion) => {
+            looks.motion = motion.unwrap_or(looks.motion.next());
+            format!("Déplacement : {}", looks.motion.label())
+        }
+        LookChoice::Inertia => {
+            looks.inertia = !looks.inertia;
+            let state = if looks.inertia { "oui" } else { "non" };
+            format!("Inertie : {state}")
+        }
         LookChoice::Refused => {
             tell(
                 "Cette option ne va pas avec cette action.",
@@ -2718,6 +2746,7 @@ fn choose_look(
         if before.zone != looks.zone {
             respawn_signs(&atlas, &mut session, &mut commands);
         }
+        session.pan.drive(looks.motion, looks.inertia);
     }
 }
 
@@ -2869,6 +2898,7 @@ enum MapAction {
     Me,
     Zone,
     Blocks,
+    Move,
 }
 
 /// Which option of a look, as a player types it.
@@ -2884,6 +2914,11 @@ enum Pick {
     Eight,
     Flat,
     Real,
+    A,
+    B,
+    C,
+    D,
+    Inertia,
 }
 
 impl Pick {
@@ -2907,7 +2942,7 @@ impl Pick {
             Self::Six => Some(Me::Bubble),
             Self::Seven => Some(Me::HeadRing),
             Self::Eight => Some(Me::HeadHeading),
-            Self::Flat | Self::Real => None,
+            _ => None,
         }
     }
 
@@ -2917,6 +2952,16 @@ impl Pick {
             Self::Two => Some(ZoneLook::Hatching),
             Self::Three => Some(ZoneLook::Palisade),
             Self::Four => Some(ZoneLook::Faded),
+            _ => None,
+        }
+    }
+
+    fn motion(self) -> Option<Motion> {
+        match self {
+            Self::A => Some(Motion::Damped),
+            Self::B => Some(Motion::Slack),
+            Self::C => Some(Motion::Lead),
+            Self::D => Some(Motion::Predicted),
             _ => None,
         }
     }
@@ -2955,6 +3000,7 @@ fn map_command() -> Command {
                 ("me", MapAction::Me),
                 ("zone", MapAction::Zone),
                 ("blocks", MapAction::Blocks),
+                ("move", MapAction::Move),
             ]),
         )
         .arg_optional(
@@ -2970,6 +3016,11 @@ fn map_command() -> Command {
                 ("8", Pick::Eight),
                 ("flat", Pick::Flat),
                 ("real", Pick::Real),
+                ("a", Pick::A),
+                ("b", Pick::B),
+                ("c", Pick::C),
+                ("d", Pick::D),
+                ("inertie", Pick::Inertia),
             ]),
         )
         .handler(run_map)
@@ -3000,6 +3051,8 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Me => Some(choice(pick, Pick::me, LookChoice::Me)),
             MapAction::Zone => Some(choice(pick, Pick::zone, LookChoice::Zone)),
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
+            MapAction::Move if pick == Some(Pick::Inertia) => Some(LookChoice::Inertia),
+            MapAction::Move => Some(choice(pick, Pick::motion, LookChoice::Motion)),
         };
         if let Some(chosen) = chosen {
             world.trigger(ChooseLook(player, chosen));
@@ -3140,15 +3193,20 @@ mod tests {
         let actions = registry.complete("map ", &world).expect("actions");
         assert_eq!(
             actions.matches,
-            ["look", "pan", "stop", "style", "me", "zone", "blocks"]
+            [
+                "look", "pan", "stop", "style", "me", "zone", "blocks", "move"
+            ]
         );
-        for action in ["style", "me", "zone", "blocks"] {
+        for action in ["style", "me", "zone", "blocks", "move"] {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");
             assert_eq!(
                 options.matches,
-                ["1", "2", "3", "4", "5", "6", "7", "8", "flat", "real"]
+                [
+                    "1", "2", "3", "4", "5", "6", "7", "8", "flat", "real", "a", "b", "c", "d",
+                    "inertie"
+                ]
             );
         }
     }

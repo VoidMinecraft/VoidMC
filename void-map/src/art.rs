@@ -80,12 +80,21 @@ const WHEEL_GAP: f64 = 1.5;
 /// How far over its line the dial goes, for its text to fall on rows that exist already:
 /// there is little room left for new ones.
 const WHEEL_TOP: i32 = -30;
-const WHEEL_TOP_ROW: i32 = 0;
-const WHEEL_KIND_ROW: i32 = 69;
-const WHEEL_CHOICE_ROW: i32 = 80;
-const WHEEL_BOTTOM_ROW: i32 = 162;
-/// The middle of the sectors on the sides, from the middle of the wheel.
-const WHEEL_SIDE: i32 = 83;
+const WHEEL_COUNT_ROW: i32 = 27;
+/// The choices sit above the crosshair, which stays in the middle of the wheel.
+const WHEEL_BEFORE_ROW: i32 = 46;
+const WHEEL_CHOICE_ROW: i32 = 57;
+const WHEEL_AFTER_ROW: i32 = 69;
+const WHEEL_DONE_ROW: i32 = 96;
+const WHEEL_DONE: &str = "Relâcher : valider";
+/// Where each sector's label goes: off the middle of the wheel, and on what row.
+const WHEEL_LABELS_AT: [(i32, i32); CATEGORIES] =
+    [(0, 0), (79, 50), (49, 144), (-49, 144), (-79, 50)];
+/// How far off the middle of the wheel the arrows stand, and how large they are.
+const WHEEL_ARROW_UP: f64 = 43.0;
+const WHEEL_ARROW_DOWN: f64 = 10.0;
+const WHEEL_ARROW_SIDE: f64 = 40.0;
+const WHEEL_ARROW_SIZE: f64 = 5.0;
 const WHEEL_ON: [u8; 4] = [226, 176, 72, 235];
 const WHEEL_OFF: [u8; 4] = [22, 26, 36, 215];
 const WHEEL_MIDDLE: [u8; 4] = [10, 12, 18, 235];
@@ -436,11 +445,13 @@ fn text_rows() -> Vec<i32> {
         .chain(&bubble)
         .chain(&[NAME_TAG_TEXT, SIGN_ROW])
         .chain(&[
-            WHEEL_TOP_ROW,
-            WHEEL_KIND_ROW,
+            WHEEL_COUNT_ROW,
+            WHEEL_BEFORE_ROW,
             WHEEL_CHOICE_ROW,
-            WHEEL_BOTTOM_ROW,
+            WHEEL_AFTER_ROW,
+            WHEEL_DONE_ROW,
         ])
+        .chain(WHEEL_LABELS_AT.iter().map(|(_, row)| row))
         .copied()
         .collect();
     rows.sort_unstable();
@@ -729,7 +740,28 @@ fn wheel_glyph(sector: usize) -> char {
     char::from_u32(FIRST_WHEEL + sector as u32).expect("a private use character")
 }
 
-/// The dial, with one of its four sectors on, clockwise from the top.
+/// Which sector a point of the dial falls in, clockwise with the first on top, unless
+/// it falls in a gap between two.
+fn wheel_sector(dx: f64, dy: f64) -> Option<usize> {
+    let span = std::f64::consts::TAU / CATEGORIES as f64;
+    let angle = (dx.atan2(-dy) + span / 2.0).rem_euclid(std::f64::consts::TAU);
+    let sector = (angle / span) as usize;
+    let off_edge = (angle - sector as f64 * span).min((sector + 1) as f64 * span - angle);
+    (off_edge * dx.hypot(dy) > WHEEL_GAP).then_some(sector % CATEGORIES)
+}
+
+/// Whether a point falls in one of the arrows that say which way the mouse goes.
+fn wheel_arrow(dx: f64, dy: f64) -> bool {
+    let chevron = |along: f64, across: f64, at: f64| {
+        let (tip, width) = (along - at, across.abs());
+        (0.0..WHEEL_ARROW_SIZE).contains(&(tip + width)) && width < WHEEL_ARROW_SIZE
+    };
+    chevron(-dy, dx, WHEEL_ARROW_UP)
+        || chevron(dy, dx, WHEEL_ARROW_DOWN)
+        || chevron(dx.abs(), dy, WHEEL_ARROW_SIDE)
+}
+
+/// The dial, with one of its sectors on, clockwise from the top.
 fn wheel_dial(on: usize) -> Image {
     let mut image = Image::new(WHEEL_SIZE, WHEEL_SIZE);
     let centre = f64::from(WHEEL_SIZE - 1) / 2.0;
@@ -738,16 +770,11 @@ fn wheel_dial(on: usize) -> Image {
             let (dx, dy) = (f64::from(x) - centre, f64::from(y) - centre);
             let from = dx.hypot(dy);
             if from < WHEEL_INNER - 2.0 {
-                image.set(x, y, WHEEL_MIDDLE);
+                let arrow = wheel_arrow(dx, dy);
+                image.set(x, y, if arrow { WHEEL_ON } else { WHEEL_MIDDLE });
             } else if (WHEEL_INNER..=WHEEL_OUTER).contains(&from)
-                && (dx.abs() - dy.abs()).abs() > WHEEL_GAP * std::f64::consts::SQRT_2
+                && let Some(sector) = wheel_sector(dx, dy)
             {
-                let sector = match (dx.abs() > dy.abs(), dx > 0.0, dy > 0.0) {
-                    (false, _, false) => 0,
-                    (true, true, _) => 1,
-                    (false, _, true) => 2,
-                    (true, false, _) => 3,
-                };
                 image.set(x, y, if sector == on { WHEEL_ON } else { WHEEL_OFF });
             }
         }
@@ -758,29 +785,33 @@ fn wheel_dial(on: usize) -> Image {
 /// How far under the top of its line the middle of the wheel is.
 pub const WHEEL_MIDDLE_DROP: f32 = WHEEL_SIZE as f32 / 2.0 + WHEEL_TOP as f32;
 
-/// The line that draws the wheel, with `on` the sector that is on.
-pub fn wheel_face(on: usize, labels: [&str; 4], count: &str, choice: &str) -> String {
+/// The line that draws the wheel, with `on` the sector that is on, and in its middle the
+/// `choices` before, on and after, which the mouse goes through up and down.
+pub fn wheel_face(
+    on: usize,
+    labels: [&str; CATEGORIES],
+    count: &str,
+    [before, chosen, after]: [&str; 3],
+) -> String {
     let size = WHEEL_SIZE as i32;
     let mut pen = Pen::default();
     pen.draw(wheel_glyph(on), size + 1);
-    let paint = |sector: usize| {
+    for (sector, (middle, row)) in WHEEL_LABELS_AT.into_iter().enumerate() {
         let colour = if sector == on { "§0" } else { "§7" };
-        format!("{colour}{}", labels[sector])
-    };
-    pen.go_to(0);
-    pen.centred(size, WHEEL_TOP_ROW, &paint(0));
-    pen.go_to(0);
-    pen.centred(size, WHEEL_BOTTOM_ROW, &paint(2));
-    let beside = |pen: &mut Pen, sector: usize, middle: i32| {
-        pen.go_to(middle - text_width(labels[sector]) / 2);
-        pen.write(WHEEL_CHOICE_ROW, &paint(sector));
-    };
-    beside(&mut pen, 1, size / 2 + WHEEL_SIDE);
-    beside(&mut pen, 3, size / 2 - WHEEL_SIDE);
-    pen.go_to(0);
-    pen.centred(size, WHEEL_KIND_ROW, &format!("§7{count}"));
-    pen.go_to(0);
-    pen.centred(size, WHEEL_CHOICE_ROW, &format!("§f{choice}"));
+        pen.go_to(size / 2 + middle - text_width(labels[sector]) / 2);
+        pen.write(row, &format!("{colour}{}", labels[sector]));
+    }
+    let lines = [
+        (WHEEL_COUNT_ROW, format!("§7{count}")),
+        (WHEEL_BEFORE_ROW, format!("§7{before}")),
+        (WHEEL_CHOICE_ROW, format!("§e{chosen}")),
+        (WHEEL_AFTER_ROW, format!("§7{after}")),
+        (WHEEL_DONE_ROW, format!("§f{WHEEL_DONE}")),
+    ];
+    for (row, line) in lines {
+        pen.go_to(0);
+        pen.centred(size, row, &line);
+    }
     pen.go_to(size);
     pen.title
 }

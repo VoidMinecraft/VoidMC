@@ -4,8 +4,9 @@
 //! The core has no packets and no ECS. [`terrain::Terrain`] samples a
 //! [`voidmc::WorldGenerator`] over a [`window::Window`], [`scene::Scene`] scales it
 //! into columns of blocks, and [`markers::MarkerField`] scatters reproducible points
-//! of interest. [`pointer`] turns the mouse into a view and an aim, [`regions`] says
-//! what a player knows of each place, and [`art`] draws the info cards.
+//! of interest. [`pointer`] turns the mouse into a view and an aim, [`motion`] says how
+//! a pan catches up with it, [`regions`] says what a player knows of each place, and
+//! [`art`] draws the info cards.
 //! [`players`] shows who walks the world, as small figures on the model.
 //! [`plugin`] moves players in and out of the map.
 
@@ -14,6 +15,7 @@ pub mod art;
 pub mod biome;
 pub mod buildings;
 pub mod markers;
+pub mod motion;
 pub mod noise;
 pub mod players;
 pub mod plugin;
