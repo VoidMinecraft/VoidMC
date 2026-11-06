@@ -13,7 +13,7 @@ use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, LightData};
 
 use crate::buildings::landmark;
 use crate::markers::MarkerKind;
-use crate::noise::fractal;
+use crate::noise::{fractal, scatter};
 use crate::regions::{Region, RegionState, Regions, ZoneLook, faded};
 use crate::terrain::Terrain;
 use crate::window::Window;
@@ -146,11 +146,20 @@ const SOIL: i32 = b::BROWN_TERRACOTTA;
 const PATH: i32 = b::BROWN_CONCRETE;
 const BRIDGE: i32 = b::SPRUCE_PLANKS;
 const CLOUD_SEED: u32 = 70;
-/// In world blocks.
-const CLOUD_SIZE: f64 = 60.0;
-const CLOUD_DENSITY: f64 = 0.05;
-const CLOUD_Y: i32 = 100;
-const CLOUD_THICKNESS: i32 = 2;
+/// Each cell of a grid this wide may hold one cloud, in world blocks: clouds are the same
+/// on every model.
+const CLOUD_SPACING: f64 = 84.0;
+/// The share of the cells that do.
+const CLOUD_CHANCE: f64 = 0.8;
+const CLOUD_SMALLEST: f64 = 18.0;
+const CLOUD_LARGEST: f64 = 30.0;
+/// The two side puffs of a cloud, as shares of its middle one, which make it long.
+const CLOUD_SIDE_REACH: f64 = 1.0;
+const CLOUD_SIDE_SIZE: f64 = 0.68;
+/// How deep into a cloud each of its layers starts, from the bottom up.
+const CLOUD_LAYERS: [f64; 3] = [0.14, 0.0, 0.38];
+/// Over the sea, as a share of the model's height over the sea.
+const CLOUD_HEIGHT: f64 = 0.62;
 const HATCH_WIDTH: i32 = 3;
 const PALISADE_HEIGHT: i32 = 3;
 const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
@@ -219,6 +228,42 @@ pub struct Scene {
     scale: Scale,
     columns: Vec<Option<Column>>,
     buildings: HashMap<(i32, i32), Vec<(i32, i32)>>,
+    /// The blocks of the clouds over each column, worked out once.
+    clouds: HashMap<(i32, i32), Vec<(i32, i32)>>,
+}
+
+/// What a cloud is made of: its light side and its one shade.
+fn cloud_blocks(state: RegionState) -> (i32, i32) {
+    match state {
+        RegionState::Locked => (b::LIGHT_GRAY_CONCRETE, b::GRAY_CONCRETE),
+        RegionState::Undiscovered | RegionState::Discovered => {
+            (b::WHITE_CONCRETE, b::LIGHT_GRAY_CONCRETE)
+        }
+    }
+}
+
+/// A small cloud, as in a game: three puffs in a row.
+#[derive(Debug, Clone, Copy)]
+struct Cloud {
+    at: [f64; 2],
+    size: f64,
+}
+
+impl Cloud {
+    /// How deep a point is in the cloud, from 0 on its edge to 1 in its very middle.
+    fn depth(self, x: f64, z: f64) -> f64 {
+        let [at_x, at_z] = self.at;
+        let reach = self.size * CLOUD_SIDE_REACH;
+        let puffs = [
+            (at_x, self.size),
+            (at_x - reach, self.size * CLOUD_SIDE_SIZE),
+            (at_x + reach, self.size * CLOUD_SIDE_SIZE),
+        ];
+        puffs
+            .into_iter()
+            .map(|(puff_x, size)| 1.0 - (x - puff_x).hypot(z - at_z) / size)
+            .fold(f64::MIN, f64::max)
+    }
 }
 
 /// World blocks from the origin to the rim, around a place.
@@ -311,11 +356,66 @@ impl Scene {
             ));
         }
         Self::mark_borders(&mut columns, size, scale.build as usize);
+        let clouds = Self::clouds(&columns, scale);
         Self {
             scale,
             columns,
             buildings: HashMap::new(),
+            clouds,
         }
+    }
+
+    /// Small clouds scattered over the closed zones, each a few flat layers. A cloud whose
+    /// middle is over a zone hangs there whole, past its border if need be.
+    fn clouds(columns: &[Option<Column>], scale: Scale) -> HashMap<(i32, i32), Vec<(i32, i32)>> {
+        let size = usize::from(scale.size());
+        let state_at = |x: f64, z: f64| {
+            let cell = |world: f64| (scale.cells(world).floor() as i32 + scale.radius) as usize;
+            let (x, z) = (cell(x), cell(z));
+            (x < size && z < size)
+                .then(|| columns[z * size + x].map(|column| column.state))
+                .flatten()
+                .filter(|state| *state != RegionState::Discovered)
+        };
+        let reach = f64::from(scale.radius) * f64::from(scale.blocks_per_cell);
+        let cells = (reach / CLOUD_SPACING).ceil() as i32;
+        let height = SEA_Y + (f64::from(scale.max_y - SEA_Y) * CLOUD_HEIGHT) as i32;
+        let mut clouds: HashMap<(i32, i32), Vec<(i32, i32)>> = HashMap::new();
+        for cell_z in -cells..=cells {
+            for cell_x in -cells..=cells {
+                let [jitter_x, jitter_z, chance, grow] = scatter(CLOUD_SEED, cell_x, cell_z);
+                let at = [
+                    (f64::from(cell_x) + 0.25 + jitter_x * 0.5) * CLOUD_SPACING,
+                    (f64::from(cell_z) + 0.25 + jitter_z * 0.5) * CLOUD_SPACING,
+                ];
+                let Some(state) = state_at(at[0], at[1]).filter(|_| chance < CLOUD_CHANCE) else {
+                    continue;
+                };
+                let radius = CLOUD_SMALLEST + (CLOUD_LARGEST - CLOUD_SMALLEST) * grow;
+                let cloud = Cloud { at, size: radius };
+                let (light, shade) = cloud_blocks(state);
+                let span = scale.cells(radius * (1.0 + CLOUD_SIDE_REACH)).ceil() as i32 + 1;
+                let (middle_x, middle_z) = (
+                    scale.cells(at[0]).floor() as i32,
+                    scale.cells(at[1]).floor() as i32,
+                );
+                for z in middle_z - span..=middle_z + span {
+                    for x in middle_x - span..=middle_x + span {
+                        let depth = cloud.depth(scale.world(x), scale.world(z));
+                        for (layer, start) in CLOUD_LAYERS.iter().enumerate() {
+                            if depth <= *start {
+                                continue;
+                            }
+                            let block = if layer == 0 { shade } else { light };
+                            let bottom = height + layer as i32 * scale.build;
+                            let column = clouds.entry((x, z)).or_default();
+                            column.extend((0..scale.build).map(|y| (bottom + y, block)));
+                        }
+                    }
+                }
+            }
+        }
+        clouds
     }
 
     fn mark_borders(columns: &mut [Option<Column>], size: usize, reach: usize) {
@@ -456,17 +556,8 @@ impl Scene {
         let locked = column.state == RegionState::Locked;
         match look {
             ZoneLook::Clouds => {
-                let (world_x, world_z) = (self.scale.world(x), self.scale.world(z));
-                let cloud = fractal(CLOUD_SEED, world_x, world_z, CLOUD_SIZE);
-                if cloud > CLOUD_DENSITY {
-                    let block = if locked {
-                        b::GRAY_CONCRETE
-                    } else {
-                        b::WHITE_CONCRETE
-                    };
-                    for y in 0..CLOUD_THICKNESS * build {
-                        set(self.scale.max_y.min(CLOUD_Y) + y, block);
-                    }
+                for (y, block) in self.clouds.get(&(x, z)).into_iter().flatten() {
+                    set(*y, *block);
                 }
             }
             ZoneLook::Hatching => {

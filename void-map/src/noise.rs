@@ -23,6 +23,11 @@ fn value(seed: u32, x: f64, z: f64) -> f64 {
     north * (1.0 - tz) + south * tz
 }
 
+/// Four numbers between 0 and 1 for a cell of a grid, the same every time.
+pub fn scatter(seed: u32, x: i32, z: i32) -> [f64; 4] {
+    std::array::from_fn(|index| (hash(seed + index as u32, x, z) + 1.0) / 2.0)
+}
+
 /// Noise around zero, within ±1, whose features are about `size` wide.
 pub fn fractal(seed: u32, x: f64, z: f64, size: f64) -> f64 {
     let (mut sum, mut amplitude, mut frequency, mut total) = (0.0, 1.0, 1.0 / size, 0.0);
