@@ -386,7 +386,7 @@ struct Waypoint {
 const CLOUDS: ChunkLook = ChunkLook {
     zone: ZoneLook::Clouds,
     blocks: Blocks::Flat,
-    border: Border::Stakes,
+    border: Border::Wall,
 };
 
 /// One model, with its chunks as they get asked for.
@@ -3964,11 +3964,9 @@ impl Pick {
 
     fn border(self) -> Option<Border> {
         match self {
-            Self::One => Some(Border::Stakes),
+            Self::One => Some(Border::Wall),
             Self::Two => Some(Border::Rampart),
-            Self::Three => Some(Border::Hedge),
-            Self::Four => Some(Border::Tape),
-            Self::Five => Some(Border::Glass),
+            Self::Three => Some(Border::Glass),
             _ => None,
         }
     }

@@ -205,6 +205,9 @@ const BORDER_WIDTH: f64 = 9.0;
 const TOWER_SPACING: f64 = 70.0;
 /// How far from its middle a tower goes, in world blocks.
 const TOWER_RADIUS: f64 = 7.0;
+/// How far along a band it keeps to the highest land, in world blocks: it would follow
+/// every terrace otherwise, and the band of a coarse model reads as a row of steps.
+const BAND_LEVELLING: f64 = 15.0;
 const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
 const DEEP_WATER: i32 = b::LIGHT_BLUE_CONCRETE;
 
@@ -261,6 +264,8 @@ struct Column {
     ring: u8,
     /// Part of a tower of a rampart.
     tower: bool,
+    /// The level of the land along the band here, or 0 outside of it.
+    crest: i32,
 }
 
 impl Column {
@@ -530,6 +535,7 @@ impl Scene {
         Self::prune_canopies(&mut columns, size, scale.build);
         Self::mark_borders(&mut columns, size, scale.border_width());
         Self::raise_towers(&mut columns, size, scale);
+        Self::level_bands(&mut columns, size, scale);
         let clouds = Self::clouds(&columns, scale, regions);
         Self {
             scale,
@@ -647,33 +653,81 @@ impl Scene {
     }
 
     /// Picks places along the bands, far enough from each other, in the order of the rows.
+    /// A tower stands on the band, all of it on closed land, so that it stays a square.
     fn raise_towers(columns: &mut [Option<Column>], size: usize, scale: Scale) {
-        let middle = scale.border_width().div_ceil(2);
+        // Past a cell on every model: one column alone would read as a merlon.
+        let radius = scale.cells(TOWER_RADIUS).round().max(1.0) as i32;
+        let spacing = scale.cells(TOWER_SPACING);
+        let side = size as i32;
+        let square = |index: usize| {
+            let (x, z) = ((index % size) as i32, (index / size) as i32);
+            (-radius..=radius)
+                .flat_map(move |dz| (-radius..=radius).map(move |dx| (x + dx, z + dz)))
+                .map(move |(x, z)| {
+                    let on_model = (0..side).contains(&x) && (0..side).contains(&z);
+                    on_model.then(|| (z * side + x) as usize)
+                })
+        };
+        let closed = |column: Option<Column>| {
+            column.filter(|column| column.state != RegionState::Discovered)
+        };
+        let fits = |index: usize| {
+            let mut cells = square(index).map(|at| at.and_then(|at| closed(columns[at])));
+            cells.clone().all(|cell| cell.is_some())
+                && cells.any(|cell| cell.is_some_and(|column| column.ring == 1))
+        };
         let at = |index: usize| ((index % size) as f64, (index / size) as f64);
-        let (spacing, radius) = (scale.cells(TOWER_SPACING), scale.cells(TOWER_RADIUS));
         let mut towers: Vec<usize> = Vec::new();
-        for (index, column) in columns.iter().enumerate() {
+        for index in 0..columns.len() {
             let (x, z) = at(index);
             let free = towers.iter().all(|tower| {
                 let (tower_x, tower_z) = at(*tower);
                 (tower_x - x).hypot(tower_z - z) >= spacing
             });
-            if free && column.is_some_and(|column| column.ring == middle) {
+            if free && fits(index) {
                 towers.push(index);
             }
         }
-        for (index, column) in columns.iter_mut().enumerate() {
-            let Some(column) = column
-                .as_mut()
-                .filter(|c| c.state != RegionState::Discovered)
-            else {
-                continue;
+        for at in towers.into_iter().flat_map(square).flatten() {
+            if let Some(column) = columns[at].as_mut() {
+                column.tower = true;
+            }
+        }
+    }
+
+    /// Gives each column of a band the highest land of the band around it. A crown does
+    /// not count: a wall goes through a wood, not over each tree.
+    fn level_bands(columns: &mut [Option<Column>], size: usize, scale: Scale) {
+        let reach = scale.cells(BAND_LEVELLING).round() as i32;
+        let side = size as i32;
+        let land = |column: Column| {
+            let crown = if column.surface == CANOPY {
+                scale.build
+            } else {
+                0
             };
-            let (x, z) = at(index);
-            column.tower = towers.iter().any(|tower| {
-                let (tower_x, tower_z) = at(*tower);
-                (tower_x - x).hypot(tower_z - z) <= radius
-            });
+            (column.ground - crown).max(SEA_Y)
+        };
+        let source = columns.to_vec();
+        let on_band = |index: i32| {
+            let column = source[index as usize]?;
+            (column.ring > 0 || column.tower).then_some(column)
+        };
+        for index in 0..side * side {
+            if on_band(index).is_none() {
+                continue;
+            }
+            let (x, z) = (index % side, index / side);
+            let crest = (z - reach..=z + reach)
+                .filter(|z| (0..side).contains(z))
+                .flat_map(|z| (x - reach..=x + reach).map(move |x| (x, z)))
+                .filter(|(x, _)| (0..side).contains(x))
+                .filter_map(|(x, z)| on_band(z * side + x))
+                .map(land)
+                .max();
+            if let (Some(column), Some(crest)) = (columns[index as usize].as_mut(), crest) {
+                column.crest = crest;
+            }
         }
     }
 
@@ -725,6 +779,7 @@ impl Scene {
             climate: region.climate,
             ring: 0,
             tower: false,
+            crest: 0,
         })
     }
 
@@ -916,6 +971,7 @@ impl Scene {
                         ring: column.ring,
                         width: self.scale.border_width(),
                         tower,
+                        rise: (column.crest - column.top()).max(0),
                         build,
                         locked,
                     };
@@ -1202,9 +1258,8 @@ mod tests {
             (looks[2], looks[3]),
             (looks[3], real),
             (borders[0], borders[1]),
-            (borders[1], borders[3]),
-            (borders[3], borders[4]),
-            (borders[4], real),
+            (borders[1], borders[2]),
+            (borders[2], real),
         ];
         for (from, to) in pairs {
             for (chunk_x, chunk_z) in [(-reach / 2, 0), (0, reach / 2), (1, 1), (reach / 2, -2)] {
@@ -1261,7 +1316,7 @@ mod tests {
             ..ChunkLook::default()
         });
         assert!(scene.repaint(0, 0, from, to).is_empty());
-        let [from, to] = [Border::Stakes, Border::Rampart].map(|border| ChunkLook {
+        let [from, to] = [Border::Wall, Border::Rampart].map(|border| ChunkLook {
             border,
             ..ChunkLook::default()
         });
@@ -1330,7 +1385,7 @@ mod tests {
             };
             column_in(&scene, x, z, look).into_keys().max()
         };
-        assert!(top(Border::Rampart) > top(Border::Stakes));
+        assert!(top(Border::Rampart) > top(Border::Wall));
     }
 
     #[test]

@@ -190,11 +190,16 @@ alone. The chunks still to come go out in the new look.
   Its shape comes from a fixed seed and where it hangs, so no two are alike, and it stays
   at the same place of the world on every model. It is built with the model, not on
   opening the map.
-- `/map border 1` to `5`: what stands along the border of a closed region under
+- `/map border 1` to `3`: what stands along the border of a closed region under
   `/map zone 3`, on a band three blocks wide on the close model and as wide on screen on
-  the others: rough stakes, a rampart with towers, a hedge, a striped band painted on the
-  land and the sea, or a wall of coloured glass. Two closed regions share one band, on the
-  side of the more closed one.
+  the others: a wall with a merlon every other block, the same wall with square towers, or
+  a wall of coloured glass. Two closed regions share one band, on the side of the more
+  closed one. The camera looks almost straight down, so a design is its top, drawn for the
+  cells a model has: a wall of three cells has a walkway between two parapets, one of a
+  single cell is nothing but its merlons, and a tower is never under three cells wide. A
+  merlon is one cell on every model, and one in two by the parity of its column, which
+  holds whichever way the band turns. What stands on a band keeps to the level of the land
+  around it, or it would go up and down every terrace.
 - `/map weather 1` to `3`: nothing, flakes and drops over the regions that have them, or
   the rain and snow of the client. A region has a `Climate`, which is also the biome of its
   columns. The client draws its own rain and snow only around the camera, whatever is under
