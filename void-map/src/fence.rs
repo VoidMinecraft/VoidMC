@@ -1,48 +1,41 @@
 //! What stands along the border of a closed region, on a band a few blocks wide.
+//!
+//! The camera looks almost straight down, so what tells a design is the top of it, and a
+//! coarser model has fewer cells for that top. Each design is drawn for the width of its
+//! band, in cells, rather than shrunk from the close model.
 
 use voidmc_data::v26_1_2::blocks as b;
 
-use crate::noise::scatter;
-
-const FENCE_SEED: u32 = 200;
-/// Cells of one colour along a band of [`Border::Tape`], in blocks of a landmark.
-const TAPE_STRETCH: i32 = 3;
-/// Cells between two merlons of a rampart, in blocks of a landmark.
-const MERLON_STEP: i32 = 2;
+/// How high a wall stands over the land, in blocks of a landmark.
+const WALL_HEIGHT: i32 = 2;
+/// How high a tower stands over its wall, in blocks of a landmark.
+const TOWER_HEIGHT: i32 = 2;
+/// How high a wall of glass stands over the land, in blocks of a landmark.
+const GLASS_HEIGHT: i32 = 3;
+/// How many blocks at its top make up its colour.
+const GLASS_LAYERS: i32 = 3;
 
 /// What a player sees along the border of a closed region, under [`ZoneLook::Palisade`].
 ///
 /// [`ZoneLook::Palisade`]: crate::regions::ZoneLook::Palisade
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Border {
-    /// Rough logs of uneven heights, taller down the middle.
+    /// A stone wall with a merlon every other block.
     #[default]
-    Stakes,
-    /// A stone wall with merlons on both sides and a tower here and there.
+    Wall,
+    /// The same wall, with a square tower here and there.
     Rampart,
-    /// A low round hedge, with a few flowers on it.
-    Hedge,
-    /// Nothing that stands: a striped band painted on the land and the sea.
-    Tape,
     /// A wall of coloured glass, which lets the land show through.
     Glass,
 }
 
 impl Border {
-    pub const ALL: [Self; 5] = [
-        Self::Stakes,
-        Self::Rampart,
-        Self::Hedge,
-        Self::Tape,
-        Self::Glass,
-    ];
+    pub const ALL: [Self; 3] = [Self::Wall, Self::Rampart, Self::Glass];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Stakes => "Pieux",
+            Self::Wall => "Muraille",
             Self::Rampart => "Rempart",
-            Self::Hedge => "Haie",
-            Self::Tape => "Bande peinte",
             Self::Glass => "Verre",
         }
     }
@@ -52,15 +45,13 @@ impl Border {
         Self::ALL[(index + 1) % Self::ALL.len()]
     }
 
-    /// The blocks over a column of the band, as a height over its top and a block. A
-    /// height of 0 takes the place of the top. `real` asks for the blocks of the world
-    /// rather than flat colours.
+    /// The blocks over a column of the band, as a height over its top and a block. `real`
+    /// asks for the blocks of the world rather than flat colours.
     pub fn blocks(self, at: Stretch, real: bool) -> Vec<(i32, i32)> {
         match self {
-            Self::Stakes => stakes(at, real),
-            Self::Rampart => rampart(at, real),
-            Self::Hedge => hedge(at, real),
-            Self::Tape => tape(at),
+            Self::Wall => wall(at, real),
+            Self::Rampart if at.tower => tower(at, real),
+            Self::Rampart => wall(at, real),
             Self::Glass => glass(at),
         }
     }
@@ -77,19 +68,25 @@ pub struct Stretch {
     pub width: u8,
     /// Whether it stands in a tower of a rampart.
     pub tower: bool,
+    /// How far the land around it stands over this column: what stands on a band keeps
+    /// one level over a stretch of it, rather than the outline of every terrace.
+    pub rise: i32,
     /// Model blocks per block of a landmark.
     pub build: i32,
     pub locked: bool,
 }
 
 impl Stretch {
-    fn is_middle(self) -> bool {
-        self.ring == self.width.div_ceil(2)
+    /// One column in two along a band, on every model and whichever way it runs: a band
+    /// goes from one column to the next by a side, so each step changes this.
+    fn is_every_other(self) -> bool {
+        (self.x + self.z).rem_euclid(2) == 0
     }
 
-    /// A number between 0 and 1, the same every time for this column.
-    fn roll(self) -> f64 {
-        scatter(FENCE_SEED, self.x, self.z)[0]
+    /// Whether a band has a parapet here: on its outer edge, and on the inner one if it has
+    /// room for a walkway between them.
+    fn is_parapet(self) -> bool {
+        self.ring == 1 || (self.width > 2 && self.ring == self.width)
     }
 }
 
@@ -97,86 +94,59 @@ fn pile(from: i32, to: i32, block: i32) -> impl Iterator<Item = (i32, i32)> {
     (from..=to).map(move |y| (y, block))
 }
 
-fn stakes(at: Stretch, real: bool) -> Vec<(i32, i32)> {
-    let (body, tip) = if real {
-        (b::SPRUCE_LOG, b::STRIPPED_SPRUCE_LOG)
-    } else {
-        (b::BROWN_CONCRETE, b::BROWN_TERRACOTTA)
-    };
-    let base = if at.is_middle() { 3 } else { 2 } * at.build;
-    let tall = base + (at.roll() * f64::from(at.build + 1)) as i32;
-    pile(1, tall - 1, body).chain([(tall, tip)]).collect()
-}
-
-fn rampart(at: Stretch, real: bool) -> Vec<(i32, i32)> {
-    let (wall, walk) = if real {
+/// The stone of a wall and the stone of what stands on it.
+fn stones(real: bool) -> (i32, i32) {
+    if real {
         (b::STONE_BRICKS, b::SMOOTH_STONE)
     } else {
         (b::GRAY_CONCRETE, b::LIGHT_GRAY_CONCRETE)
-    };
-    if at.tower {
-        let roof = if at.locked {
-            b::RED_TERRACOTTA
-        } else {
-            b::CYAN_TERRACOTTA
-        };
-        let tall = 5 * at.build;
-        return pile(1, tall - 1, wall).chain([(tall, roof)]).collect();
     }
-    let walkway = 2 * at.build;
-    let step = MERLON_STEP * at.build.max(1);
-    let merlon = (at.x + at.z).rem_euclid(2 * step) < step;
-    if at.is_middle() && at.width > 1 {
-        pile(1, walkway - 1, wall)
-            .chain([(walkway, walk)])
+}
+
+fn wall(at: Stretch, real: bool) -> Vec<(i32, i32)> {
+    let (body, merlon) = stones(real);
+    let walkway = at.rise + WALL_HEIGHT * at.build;
+    let blocks = pile(1, walkway, body);
+    if at.is_parapet() && at.is_every_other() {
+        blocks
+            .chain(pile(walkway + 1, walkway + at.build, merlon))
             .collect()
-    } else if merlon {
-        pile(1, walkway + at.build, wall).collect()
     } else {
-        pile(1, walkway, wall).collect()
+        blocks.collect()
     }
 }
 
-fn hedge(at: Stretch, real: bool) -> Vec<(i32, i32)> {
-    let leaves = if real {
-        b::MOSS_BLOCK
+fn tower(at: Stretch, real: bool) -> Vec<(i32, i32)> {
+    let (body, _) = stones(real);
+    let roof = if at.locked {
+        b::RED_TERRACOTTA
     } else {
-        b::GREEN_CONCRETE
+        b::CYAN_TERRACOTTA
     };
-    let flower = if at.locked {
-        b::RED_CONCRETE
-    } else {
-        b::PINK_CONCRETE
-    };
-    let base = if at.is_middle() { 2 } else { 1 } * at.build;
-    let tall = base + i32::from(at.roll() > 0.6);
-    let top = if at.roll() > 0.93 { flower } else { leaves };
-    pile(1, tall - 1, leaves).chain([(tall, top)]).collect()
-}
-
-fn tape(at: Stretch) -> Vec<(i32, i32)> {
-    let stretch = TAPE_STRETCH * at.build.max(1);
-    let first = (at.x.div_euclid(stretch) + at.z.div_euclid(stretch)).rem_euclid(2) == 0;
-    let block = match (first, at.locked) {
-        (true, true) => b::RED_CONCRETE,
-        (true, false) => b::GRAY_CONCRETE,
-        (false, _) => b::WHITE_CONCRETE,
-    };
-    vec![(0, block)]
+    let tall = at.rise + (WALL_HEIGHT + TOWER_HEIGHT) * at.build;
+    pile(1, tall - 1, body).chain([(tall, roof)]).collect()
 }
 
 fn glass(at: Stretch) -> Vec<(i32, i32)> {
-    let pane = if at.locked {
-        b::RED_STAINED_GLASS
+    let (pane, other) = if at.locked {
+        (b::RED_STAINED_GLASS, b::ORANGE_STAINED_GLASS)
     } else {
-        b::LIGHT_GRAY_STAINED_GLASS
+        (b::LIGHT_GRAY_STAINED_GLASS, b::WHITE_STAINED_GLASS)
     };
-    let tall = i32::from(at.width + 1 - at.ring) * 2 * at.build;
-    pile(1, tall, pane).collect()
+    let tall = at.rise + GLASS_HEIGHT * at.build;
+    // The faces between two panes of the same glass are not drawn, so a pile of it is as
+    // thin as one pane. Its top alternates with another one for the colour to add up, or a
+    // band of one cell would not show from afar.
+    let other_at = |y: i32| y % 2 == 0 && y > tall - GLASS_LAYERS;
+    (1..=tall)
+        .map(|y| (y, if other_at(y) { other } else { pane }))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn stretch(ring: u8) -> Stretch {
@@ -186,9 +156,14 @@ mod tests {
             ring,
             width: 3,
             tower: false,
+            rise: 0,
             build: 2,
             locked: true,
         }
+    }
+
+    fn top(blocks: &[(i32, i32)]) -> i32 {
+        blocks.iter().map(|(y, _)| *y).max().unwrap()
     }
 
     #[test]
@@ -201,10 +176,19 @@ mod tests {
     }
 
     #[test]
+    fn a_wall_is_the_default() {
+        assert_eq!(Border::default(), Border::Wall);
+    }
+
+    #[test]
     fn designs_really_differ() {
+        let tower = Stretch {
+            tower: true,
+            ..stretch(2)
+        };
         let looks: Vec<_> = Border::ALL
             .iter()
-            .map(|border| border.blocks(stretch(2), true))
+            .map(|border| border.blocks(tower, true))
             .collect();
         for (index, look) in looks.iter().enumerate() {
             assert!(!look.is_empty());
@@ -212,28 +196,81 @@ mod tests {
         }
     }
 
+    /// Whatever way a wall runs, the next column along it is a gap if this one is a merlon.
     #[test]
-    fn a_painted_band_stands_on_nothing() {
-        assert_eq!(Border::Tape.blocks(stretch(1), false).len(), 1);
-        assert_eq!(Border::Tape.blocks(stretch(1), false)[0].0, 0);
+    fn a_wall_has_a_merlon_every_other_block_on_every_model() {
+        for (width, build) in [(3, 2), (2, 1), (1, 1)] {
+            let at = |x, z| {
+                let column = Stretch {
+                    x,
+                    z,
+                    width,
+                    build,
+                    ring: 1,
+                    ..stretch(1)
+                };
+                top(&Border::Wall.blocks(column, false))
+            };
+            for (dx, dz) in [(1, 0), (0, 1), (-1, 0), (0, -1)] {
+                assert_eq!(at(4, 8), at(4 + 2 * dx, 8 + 2 * dz));
+                assert_eq!(at(4, 8), at(4 + dx, 8 + dz) + build);
+            }
+        }
     }
 
     #[test]
-    fn stakes_are_tallest_down_the_middle() {
-        let top = |ring| {
-            let blocks = Border::Stakes.blocks(stretch(ring), true);
-            blocks.iter().map(|(y, _)| *y).max().unwrap()
+    fn a_walkway_runs_between_two_parapets_where_there_is_room() {
+        let (x, z) = (4, 8);
+        let at = |ring| Stretch {
+            x,
+            z,
+            ..stretch(ring)
         };
-        assert!(top(2) >= 6 && top(1) < 6 + 3);
+        let tops = [1, 2, 3].map(|ring| top(&Border::Wall.blocks(at(ring), false)));
+        assert!(tops[0] > tops[1] && tops[2] > tops[1], "{tops:?}");
     }
 
     #[test]
-    fn a_tower_rises_over_its_wall() {
-        let wall = Border::Rampart.blocks(stretch(1), true).len();
+    fn what_stands_on_a_band_keeps_one_level_over_the_land() {
+        for border in Border::ALL {
+            let low = Stretch {
+                rise: 3,
+                ..stretch(2)
+            };
+            assert_eq!(
+                top(&border.blocks(low, false)),
+                top(&border.blocks(stretch(2), false)) + 3,
+                "{border:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tower_rises_over_its_wall_and_only_on_a_rampart() {
         let tower = Stretch {
             tower: true,
             ..stretch(1)
         };
-        assert!(Border::Rampart.blocks(tower, true).len() > wall);
+        let wall = top(&Border::Rampart.blocks(stretch(2), true));
+        assert!(top(&Border::Rampart.blocks(tower, true)) > wall);
+        assert_eq!(
+            top(&Border::Wall.blocks(tower, true)),
+            top(&Border::Wall.blocks(stretch(1), true))
+        );
+    }
+
+    /// A band of one cell has to show as well as one of three.
+    #[test]
+    fn glass_mixes_two_panes_on_every_model() {
+        for (width, build) in [(3, 2), (2, 1), (1, 1)] {
+            let at = Stretch {
+                width,
+                build,
+                ..stretch(1)
+            };
+            let blocks = Border::Glass.blocks(at, false);
+            let panes: BTreeSet<_> = blocks.iter().map(|(_, block)| *block).collect();
+            assert_eq!(panes.len(), 2, "{width}");
+        }
     }
 }

@@ -21,6 +21,16 @@ pub enum MarkerKind {
 impl MarkerKind {
     pub const ALL: [Self; 4] = [Self::Village, Self::Ruins, Self::Mine, Self::Lighthouse];
 
+    /// The item that stands for it, with no namespace. It also names its texture.
+    pub fn item(self) -> &'static str {
+        match self {
+            Self::Village => "emerald",
+            Self::Ruins => "bone",
+            Self::Mine => "iron_pickaxe",
+            Self::Lighthouse => "lantern",
+        }
+    }
+
     /// Name shown to players.
     pub fn label(self) -> &'static str {
         match self {

@@ -241,16 +241,11 @@ fn item(name: &str) -> ItemStack {
 }
 
 fn icon(kind: MarkerKind) -> ItemStack {
-    item(match kind {
-        MarkerKind::Village => "minecraft:emerald",
-        MarkerKind::Ruins => "minecraft:bone",
-        MarkerKind::Mine => "minecraft:iron_pickaxe",
-        MarkerKind::Lighthouse => "minecraft:lantern",
-    })
+    item(&format!("minecraft:{}", kind.item()))
 }
 
-/// What a waypoint shows, for a client with the pack or without. The pack draws one of a
-/// closed region in greys, with the mark of its state.
+/// What a waypoint shows, for a client with the pack or without. The pack drains one of a
+/// closed region of its colours, and adds the mark of its state.
 fn waypoint_icon(kind: MarkerKind, state: RegionState, drawn: bool) -> ItemStack {
     let stack = icon(kind);
     match closed_item_model(kind, state).filter(|_| drawn) {
@@ -396,7 +391,7 @@ struct Waypoint {
 const CLOUDS: ChunkLook = ChunkLook {
     zone: ZoneLook::Clouds,
     blocks: Blocks::Flat,
-    border: Border::Stakes,
+    border: Border::Wall,
 };
 
 /// One model, with its chunks as they get asked for.
@@ -3831,7 +3826,8 @@ fn let_it_fall(
                 players.send(player, event);
             }
         }
-        if !on_map || session.looks.weather != Weather::Particles {
+        let weather = session.looks.weather;
+        if !on_map || !weather.has_particles() {
             continue;
         }
         let Some(level) = atlas.level(session.model()) else {
@@ -3843,7 +3839,9 @@ fn let_it_fall(
         let along = height / -way[1].min(-0.1);
         let middle = [x + way[0] * along, z + way[2] * along];
         let reach = height * VIEW_REACH;
-        for mut drops in weather::falling(&level.scene, [x, y, z], middle, reach, session.ticks) {
+        let eye = [x, y, z];
+        for mut drops in weather::falling(weather, &level.scene, eye, middle, reach, session.ticks)
+        {
             let at = session.on_model(drops.x, drops.y, drops.z);
             (drops.x, drops.y, drops.z) = (at.x, at.y, at.z);
             players.send(player, drops);
@@ -4086,20 +4084,21 @@ impl Pick {
 
     fn border(self) -> Option<Border> {
         match self {
-            Self::One => Some(Border::Stakes),
+            Self::One => Some(Border::Wall),
             Self::Two => Some(Border::Rampart),
-            Self::Three => Some(Border::Hedge),
-            Self::Four => Some(Border::Tape),
-            Self::Five => Some(Border::Glass),
+            Self::Three => Some(Border::Glass),
             _ => None,
         }
     }
 
     fn weather(self) -> Option<Weather> {
         match self {
-            Self::One => Some(Weather::Clear),
+            Self::One => Some(Weather::Sky),
             Self::Two => Some(Weather::Particles),
-            Self::Three => Some(Weather::Sky),
+            Self::Three => Some(Weather::Leaves),
+            Self::Four => Some(Weather::Embers),
+            Self::Five => Some(Weather::Frost),
+            Self::Six => Some(Weather::Clear),
             _ => None,
         }
     }

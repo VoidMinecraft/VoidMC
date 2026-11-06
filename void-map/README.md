@@ -224,22 +224,33 @@ alone. The chunks still to come go out in the new look.
   `LookChoice::Me`.
 - `/map zone 1` to `4`: closed regions, under small clouds of blocks, with diagonal
   stripes, behind a fence with a lock, or drained of colour with a large question mark.
-  A cloud is a few round puffs of white blocks on one to four flat layers, as in a game.
-  Its shape comes from a fixed seed and where it hangs, so no two are alike, and it stays
-  at the same place of the world on every model. It is built with the model, not on
-  opening the map.
-- `/map border 1` to `5`: what stands along the border of a closed region under
+  A cloud is a few round puffs of white blocks on one to three flat layers, as in a game.
+  Its shape comes from a fixed seed and where it hangs, so no two are alike. It is drawn in
+  pixels of the world, on the grid of the overview's cells, so that every model draws the
+  same pixels: a cell a pixel there, a cell or two on the middle model and two or three up
+  close. It hangs at the same height in the world, on a model's own scale, as a cloud
+  closer to the eye shows larger. It is built with the model, not on opening the map.
+- `/map border 1` to `3`: what stands along the border of a closed region under
   `/map zone 3`, on a band three blocks wide on the close model and as wide on screen on
-  the others: rough stakes, a rampart with towers, a hedge, a striped band painted on the
-  land and the sea, or a wall of coloured glass. Two closed regions share one band, on the
-  side of the more closed one.
-- `/map weather 1` to `3`: nothing, flakes and drops over the regions that have them, or
-  the rain and snow of the client. A region has a `Climate`, which is also the biome of its
-  columns. The client draws its own rain and snow only around the camera, whatever is under
-  the middle of the screen, so they cover the whole view and change as the camera crosses
-  a border. Particles stay over their region, wherever it is on screen: they fall on the
-  line from the eye to the land, close to the eye, or they would be smaller than a pixel.
-  The land, the sky and the fog keep their colours under either. A choice sends no block.
+  the others: a wall with a merlon every other block, the same wall with square towers, or
+  a wall of coloured glass. Two closed regions share one band, on the side of the more
+  closed one. The camera looks almost straight down, so a design is its top, drawn for the
+  cells a model has: a wall of three cells has a walkway between two parapets, one of a
+  single cell is nothing but its merlons, and a tower is never under three cells wide. A
+  merlon is one cell on every model, and one in two by the parity of its column, which
+  holds whichever way the band turns. What stands on a band keeps to the level of the land
+  around it, or it would go up and down every terrace.
+- `/map weather 1` to `6`: what is in the air, `Weather::ALL` in order. First and by default
+  the rain and snow of the client, then flakes and drops over the regions that have them,
+  leaves in the wind over the woods, embers over the closed regions, glints over the snowy
+  ones, or nothing. A region has a `Climate`, which is also the biome of its columns. The
+  client draws its own rain and snow only around the camera, whatever is under the middle of
+  the screen, so they cover the whole view and change as the camera crosses a border.
+  Particles stay over their land, wherever it is on screen: they hang on the line from the
+  eye to the land, close to the eye, or they would be smaller than a pixel, and a coarser
+  model sends more of them for as many to show. An `Effect` in `weather` says which land,
+  how many, how far from the eye and which particle, and that is all a new one takes. The
+  land, the sky and the fog keep their colours under any. A choice sends no block.
 - `/map move libre` or `sauts`: the view slides under the mouse, or goes from point to
   point, see below. Déplacement in the dialog is the same choice.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
@@ -312,8 +323,11 @@ Regions are data in `regions`: each is discovered, undiscovered or locked, and t
 only takes the colours of a region down a little to show it. `Regions::demo` is a fixed
 example.
 
-A waypoint of a closed region is drawn in greys by the pack, as an item model of its own,
-with a question mark or a red lock over it. A client without the pack gets the usual item,
+A waypoint of a closed region is the item of its place, drained of colour, with a small
+gold lock or a question mark in its corner: the place a player will know once it opens,
+and closed at a glance. An item model can only tint, which only darkens, so the pack brings
+the item shader of the game with one change: it turns grey what is drawn with the tint of
+`DRAINED_TINT`, the one of these models. A client without the pack gets the usual item,
 darker. The sign of a region stands clear of its waypoints.
 
 ## The pointer

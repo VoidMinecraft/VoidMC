@@ -654,68 +654,144 @@ fn draw_icon(image: &mut Image, subject: Subject, left: u32, top: u32) {
     }
 }
 
-/// Pixels of the texture of an icon of a closed place, on a side.
-const CLOSED_ICON_SIZE: u32 = 32;
-const CLOSED_LIGHT: [u8; 4] = [196, 198, 204, 255];
-const CLOSED_DARK: [u8; 4] = [128, 130, 136, 255];
-const CLOSED_EDGE: [u8; 4] = [46, 47, 52, 255];
-const LOCK_COLOUR: [u8; 4] = [214, 62, 54, 255];
+/// Pixels of the texture of the mark of a closed place, on a side: twice an item's, so
+/// that a small mark stays sharp.
+const CLOSED_MARK_SIZE: u32 = 32;
+/// The tint that tells the item shader to drain what it draws. Nothing else draws with it.
+const DRAINED_TINT: u32 = 0xFF_FE_FF;
+/// The item shader of the game, but for a tint of [`DRAINED_TINT`].
+const DRAINED_ITEM_VERTEX: &str = r#"#version 330
 
-/// The two states a place can be closed in, each with the mark it gets.
-const CLOSED_STATES: [(RegionState, &str, [&str; 16], [u8; 4]); 2] = [
-    (RegionState::Undiscovered, "unknown", QUESTION, SIGN_COLOUR),
-    (RegionState::Locked, "locked", LOCK, LOCK_COLOUR),
+#moj_import <minecraft:light.glsl>
+#moj_import <minecraft:fog.glsl>
+#moj_import <minecraft:dynamictransforms.glsl>
+#moj_import <minecraft:projection.glsl>
+#moj_import <minecraft:sample_lightmap.glsl>
+
+in vec3 Position;
+in vec4 Color;
+in vec2 UV0;
+in ivec2 UV1;
+in ivec2 UV2;
+in vec3 Normal;
+
+uniform sampler2D Sampler2;
+
+out float sphericalVertexDistance;
+out float cylindricalVertexDistance;
+out vec4 vertexColor;
+out vec2 texCoord0;
+flat out int drained;
+
+void main() {
+    gl_Position = ProjMat * ModelViewMat * vec4(Position, 1.0);
+
+    sphericalVertexDistance = fog_spherical_distance(Position);
+    cylindricalVertexDistance = fog_cylindrical_distance(Position);
+
+    vertexColor = minecraft_mix_light(Light0_Direction, Light1_Direction, Normal, Color) * sample_lightmap(Sampler2, UV2);
+    ivec3 tint = ivec3(round(Color.rgb * 255.0));
+    drained = tint == ivec3(255, 254, 255) ? 1 : 0;
+
+    texCoord0 = UV0;
+}
+"#;
+const DRAINED_ITEM_FRAGMENT: &str = r#"#version 330
+
+#moj_import <minecraft:fog.glsl>
+#moj_import <minecraft:dynamictransforms.glsl>
+
+uniform sampler2D Sampler0;
+
+in float sphericalVertexDistance;
+in float cylindricalVertexDistance;
+in vec4 vertexColor;
+in vec2 texCoord0;
+flat in int drained;
+
+out vec4 fragColor;
+
+void main() {
+    vec4 color = texture(Sampler0, texCoord0);
+#ifdef ALPHA_CUTOUT
+    if (color.a < ALPHA_CUTOUT) {
+        discard;
+    }
+#endif
+
+    if (drained == 1) {
+        float grey = dot(color.rgb, vec3(0.3, 0.59, 0.11));
+        color.rgb = vec3(0.86, 0.88, 0.94) * (0.25 + 0.75 * grey);
+    }
+    color *= vertexColor * ColorModulator;
+    fragColor = apply_fog(color, sphericalVertexDistance, cylindricalVertexDistance, FogEnvironmentalStart, FogEnvironmentalEnd, FogRenderDistanceStart, FogRenderDistanceEnd, FogColor);
+}
+"#;
+
+/// What a small mark is made of, by the letters of its drawing.
+const MARK_COLOURS: [(u8, [u8; 4]); 7] = [
+    (b'K', [34, 34, 40, 255]),
+    (b'S', [206, 210, 218, 255]),
+    (b'G', [240, 190, 62, 255]),
+    (b'D', [190, 132, 34, 255]),
+    (b'B', [62, 84, 134, 255]),
+    (b'W', [244, 244, 236, 255]),
+    (b'H', [92, 62, 22, 255]),
+];
+const SMALL_LOCK: [&str; 15] = [
+    "    KKKKK    ",
+    "   KSSSSSK   ",
+    "  KSSKKKSSK  ",
+    "  KSK   KSK  ",
+    "  KSK   KSK  ",
+    "  KSK   KSK  ",
+    "KKKKKKKKKKKKK",
+    "KGGGGGGGGGGDK",
+    "KGGGGHHHGGGDK",
+    "KGGGGHHHGGGDK",
+    "KGGGGGHGGGGDK",
+    "KGGGGGHGGGGDK",
+    "KGGGGGGGGGGDK",
+    "KDDDDDDDDDDDK",
+    "KKKKKKKKKKKKK",
+];
+const SMALL_QUESTION: [&str; 15] = [
+    "   KKKKKKK   ",
+    " KKBBBBBBBKK ",
+    " KBBWWWWWBBK ",
+    "KBBWWBBBWWBBK",
+    "KBBWWBBBWWBBK",
+    "KBBBBBBWWWBBK",
+    "KBBBBBWWWBBBK",
+    "KBBBBWWWBBBBK",
+    "KBBBBWWBBBBBK",
+    "KBBBBWWBBBBBK",
+    "KBBBBBBBBBBBK",
+    "KBBBBWWBBBBBK",
+    " KBBBWWBBBBK ",
+    " KKBBBBBBBKK ",
+    "   KKKKKKK   ",
 ];
 
-/// Sets the pixels of a drawing and the edge around them, on what is under it.
-fn stamp(image: &mut Image, pixels: &[(u32, u32, [u8; 4])]) {
-    for (x, y, _) in pixels {
-        for (dx, dy) in [(0, 1), (2, 1), (1, 0), (1, 2)] {
-            let (x, y) = (x + dx, y + dy);
-            if (1..=image.width()).contains(&x) && (1..=image.height()).contains(&y) {
-                image.set(x - 1, y - 1, CLOSED_EDGE);
-            }
-        }
-    }
-    for (x, y, color) in pixels {
-        image.set(*x, *y, *color);
-    }
-}
+/// The two states a place can be closed in, each with the mark it gets.
+const CLOSED_STATES: [(RegionState, &str, [&str; 15]); 2] = [
+    (RegionState::Undiscovered, "unknown", SMALL_QUESTION),
+    (RegionState::Locked, "locked", SMALL_LOCK),
+];
 
-/// The icon of a place that is not open: its drawing in greys, under the mark of its state.
-fn closed_icon(kind: MarkerKind, mark: &[&str; 16], colour: [u8; 4]) -> Image {
-    let mut image = Image::new(CLOSED_ICON_SIZE, CLOSED_ICON_SIZE);
-    let place = Subject::Place(kind).icon();
-    let drawn = place.iter().enumerate().flat_map(|(row, line)| {
-        line.bytes().enumerate().flat_map(move |(column, pixel)| {
-            let color = match pixel {
-                b'#' => Some(CLOSED_DARK),
-                b'o' => Some(CLOSED_LIGHT),
-                _ => None,
-            };
-            let (x, y) = (column as u32 * 2, row as u32 * 2);
-            let square = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)];
-            color
-                .into_iter()
-                .flat_map(move |color| square.map(|(x, y)| (x, y, color)))
-        })
-    });
-    stamp(&mut image, &drawn.collect::<Vec<_>>());
-    let corner = CLOSED_ICON_SIZE - 16;
-    // On a dark disc, so that the mark stays apart from the drawing it sits on.
-    let middle = f64::from(CLOSED_ICON_SIZE) - 8.5;
-    for y in corner - 2..CLOSED_ICON_SIZE {
-        for x in corner - 2..CLOSED_ICON_SIZE {
-            if (f64::from(x) - middle).hypot(f64::from(y) - middle) <= 9.5 {
-                image.set(x, y, CLOSED_EDGE);
+/// The mark of a state in the corner of a texture, over which nothing else is drawn: it goes
+/// over the item as a second layer.
+fn closed_mark(mark: &[&str; 15]) -> Image {
+    let mut image = Image::new(CLOSED_MARK_SIZE, CLOSED_MARK_SIZE);
+    let (right, bottom) = (CLOSED_MARK_SIZE as usize, CLOSED_MARK_SIZE as usize);
+    for (row, line) in mark.iter().enumerate() {
+        for (column, pixel) in line.bytes().enumerate() {
+            if let Some((_, colour)) = MARK_COLOURS.iter().find(|(name, _)| *name == pixel) {
+                let (x, y) = (right - line.len() + column, bottom - mark.len() + row);
+                image.set(x as u32, y as u32, *colour);
             }
         }
     }
-    let sign = mark.iter().enumerate().flat_map(|(row, line)| {
-        let on = line.bytes().enumerate().filter(|(_, pixel)| *pixel == b'#');
-        on.map(move |(column, _)| (corner + column as u32, corner + row as u32, colour))
-    });
-    stamp(&mut image, &sign.collect::<Vec<_>>());
     image
 }
 
@@ -735,21 +811,39 @@ pub fn closed_item_model(kind: MarkerKind, state: RegionState) -> Option<String>
     Some(format!("voidmap:{}", closed_name(kind, name)))
 }
 
+/// A place closed is its own item, drained of colour, with the small mark of its state: it
+/// stays the place a player will know once it opens. A tint can only darken a colour, so the
+/// draining is in the item shader, which goes for this tint alone. Should a client ever
+/// ignore it, the item keeps its colours and the mark still says the place is closed.
 fn install_closed_icons(pack: &mut ResourcePack) {
+    pack.add(
+        "assets/minecraft/shaders/core/item.vsh",
+        DRAINED_ITEM_VERTEX.as_bytes().to_vec(),
+    );
+    pack.add(
+        "assets/minecraft/shaders/core/item.fsh",
+        DRAINED_ITEM_FRAGMENT.as_bytes().to_vec(),
+    );
+    for (_, state, mark) in CLOSED_STATES {
+        let texture = closed_mark(&mark).to_png();
+        pack.add(
+            format!("assets/voidmap/textures/item/mark_{state}.png"),
+            texture,
+        );
+    }
     for kind in MarkerKind::ALL {
-        for (_, state, mark, colour) in CLOSED_STATES {
+        for (_, state, _) in CLOSED_STATES {
             let name = closed_name(kind, state);
-            let texture = closed_icon(kind, &mark, colour).to_png();
-            pack.add(format!("assets/voidmap/textures/item/{name}.png"), texture);
+            let item = kind.item();
             let model = format!(
-                r#"{{"parent":"minecraft:item/generated","textures":{{"layer0":"voidmap:item/{name}"}}}}"#
+                r#"{{"parent":"minecraft:item/generated","textures":{{"layer0":"minecraft:item/{item}","layer1":"voidmap:item/mark_{state}"}}}}"#
             );
             pack.add(
                 format!("assets/voidmap/models/item/{name}.json"),
                 model.into_bytes(),
             );
             let item = format!(
-                r#"{{"model":{{"type":"minecraft:model","model":"voidmap:item/{name}"}}}}"#
+                r#"{{"model":{{"type":"minecraft:model","model":"voidmap:item/{name}","tints":[{{"type":"minecraft:constant","value":{DRAINED_TINT}}}]}}}}"#
             );
             pack.add(
                 format!("assets/voidmap/items/{name}.json"),
@@ -1533,27 +1627,40 @@ mod tests {
                 let name = model.strip_prefix("voidmap:").unwrap();
                 assert!(pack.contains(&format!("assets/voidmap/items/{name}.json")));
                 assert!(pack.contains(&format!("assets/voidmap/models/item/{name}.json")));
-                assert!(pack.contains(&format!("assets/voidmap/textures/item/{name}.png")));
             }
         }
     }
 
-    /// Only the mark of its state may have a colour.
+    /// The item has to stay what shows: the mark keeps to a corner.
     #[test]
-    fn a_closed_icon_is_grey_under_its_mark() {
-        let image = closed_icon(MarkerKind::Mine, &LOCK, LOCK_COLOUR);
-        let mut drawn = 0;
-        for y in 0..CLOSED_ICON_SIZE {
-            for x in 0..CLOSED_ICON_SIZE {
-                let [red, green, blue, alpha] = image.pixel(x, y);
-                let grey = red.abs_diff(green) < 12 && green.abs_diff(blue) < 12;
-                if alpha > 0 {
-                    drawn += 1;
-                    assert!(grey || [red, green, blue, alpha] == LOCK_COLOUR, "{x} {y}");
+    fn a_mark_keeps_to_its_corner() {
+        for (_, _, mark) in CLOSED_STATES {
+            let image = closed_mark(&mark);
+            let half = CLOSED_MARK_SIZE / 2;
+            let mut drawn = 0;
+            for y in 0..CLOSED_MARK_SIZE {
+                for x in 0..CLOSED_MARK_SIZE {
+                    if image.pixel(x, y)[3] > 0 {
+                        drawn += 1;
+                        assert!(x + 3 >= half && y + 3 >= half, "{x} {y}");
+                    }
                 }
             }
+            assert!(drawn > 100, "{drawn}");
         }
-        assert!(drawn > 100);
+    }
+
+    /// The shader and the item have to agree on the tint, and it has to be what the item
+    /// shader of the game is, but for that tint.
+    #[test]
+    fn the_tint_of_a_closed_place_is_the_one_the_shader_drains() {
+        let [red, green, blue] = [16, 8, 0].map(|shift| (DRAINED_TINT >> shift) & 255);
+        let wanted = format!("ivec3({red}, {green}, {blue})");
+        assert!(DRAINED_ITEM_VERTEX.contains(&wanted));
+        let mut pack = ResourcePack::new("test");
+        install(&mut pack);
+        assert!(pack.contains("assets/minecraft/shaders/core/item.vsh"));
+        assert!(pack.contains("assets/minecraft/shaders/core/item.fsh"));
     }
 
     #[test]

@@ -170,30 +170,35 @@ const CLOUD_SEED: u32 = 90;
 const CLOUD: i32 = b::WHITE_CONCRETE;
 /// Each cell of a grid this wide may hold one cloud, in world blocks: clouds are the same
 /// on every model.
-const CLOUD_SPACING: f64 = 84.0;
+const CLOUD_SPACING: f64 = 72.0;
 /// The share of the cells that do.
 const CLOUD_CHANCE: f64 = 0.8;
-/// A pixel of a cloud, in world blocks: its edge stays that of a drawing on the close
-/// model. A coarser one draws it cell by cell.
-const CLOUD_PIXEL: f64 = 6.0;
+/// A pixel of a cloud, in world blocks: a cell of the coarsest model, on the same grid. Each
+/// is at least a cell on all of them, so that none can lose a part of the drawing.
+const CLOUD_PIXEL: f64 = OVERVIEW.blocks_per_cell as f64;
 /// The length of a cloud, along its axis, in world blocks.
-const CLOUD_LENGTH: [f64; 2] = [30.0, 118.0];
+const CLOUD_LENGTH: [f64; 2] = [16.0, 64.0];
 /// The radius of its puffs.
-const CLOUD_PUFF: [f64; 2] = [11.0, 25.0];
+const CLOUD_PUFF: [f64; 2] = [10.0, 17.0];
+/// How far a puff strays from the axis: much more than a pixel and a cloud is no longer one
+/// shape, but a corner.
+const CLOUD_STRAY: f64 = 4.0;
 /// How far a cloud turns from its west-east axis, as a share of a turn.
 const CLOUD_TILT: f64 = 0.09;
 /// How high in a puff each layer of a cloud starts: 0 at its edge, 1 at its middle.
-const CLOUD_LAYERS: [f64; 4] = [0.0, 0.34, 0.58, 0.78];
+const CLOUD_LAYERS: [f64; 3] = [0.0, 0.34, 0.62];
 /// How far south of its place a cloud is drawn, in world blocks. The camera looks north
 /// and down, so that a cloud high up shows further north than what it hangs over.
 const CLOUD_LEAN: f64 = 48.0;
-/// Over the land under it, in blocks of a landmark: more than the tallest one.
-const CLOUD_CLEARANCE: i32 = 8;
-/// The most a cloud hangs over that, in layers: no two hang alike.
-const CLOUD_DRIFT: f64 = 4.0;
-/// The highest a cloud starts, as a share of the model's height over the sea: a camera
-/// zoomed all the way in stays over it.
-const CLOUD_HEIGHT: f64 = 0.62;
+/// How high a cloud hangs, in world blocks over the sea. A cloud closer to the eye shows
+/// larger, so that it keeps its size from a model to the next only at the same share of the
+/// height of the eye.
+const CLOUD_ALTITUDE: [f64; 2] = [78.0, 100.0];
+/// Over the land under it, in blocks of a landmark.
+const CLOUD_CLEARANCE: i32 = 2;
+/// The highest a cloud starts, in blocks over the sea: a camera zoomed all the way in on
+/// the detail model stays over it, and the others are further up.
+const CLOUD_CEILING: i32 = 34;
 /// How far the sign of a region stands from a waypoint, in world blocks.
 const SIGN_CLEARANCE: f64 = 90.0;
 /// How far from its real place a figure is shown on a coarser model, in cells.
@@ -205,6 +210,9 @@ const BORDER_WIDTH: f64 = 9.0;
 const TOWER_SPACING: f64 = 70.0;
 /// How far from its middle a tower goes, in world blocks.
 const TOWER_RADIUS: f64 = 7.0;
+/// How far along a band it keeps to the highest land, in world blocks: it would follow
+/// every terrace otherwise, and the band of a coarse model reads as a row of steps.
+const BAND_LEVELLING: f64 = 15.0;
 const SHALLOW_WATER: i32 = b::CYAN_CONCRETE;
 const DEEP_WATER: i32 = b::LIGHT_BLUE_CONCRETE;
 
@@ -261,6 +269,8 @@ struct Column {
     ring: u8,
     /// Part of a tower of a rampart.
     tower: bool,
+    /// The level of the land along the band here, or 0 outside of it.
+    crest: i32,
 }
 
 impl Column {
@@ -337,8 +347,8 @@ struct Cloud {
     puffs: Vec<[f64; 3]>,
     /// How many layers it has at its middle.
     layers: usize,
-    /// How many layers it hangs over the lowest clouds.
-    drift: i32,
+    /// How high it hangs, in world blocks over the sea.
+    altitude: f64,
 }
 
 impl Cloud {
@@ -346,7 +356,7 @@ impl Cloud {
     fn grown(middle: [f64; 2], cell: (i32, i32)) -> Self {
         let roll = |step: u32| scatter(CLOUD_SEED + 10 * step, cell.0, cell.1);
         let between = |[low, high]: [f64; 2], share: f64| low + (high - low) * share;
-        let [length, tilt, layers, drift] = roll(1);
+        let [length, tilt, layers, altitude] = roll(1);
         // Small clouds are the common ones.
         let length = between(CLOUD_LENGTH, length * length);
         let tilt = (tilt * 2.0 - 1.0) * CLOUD_TILT * std::f64::consts::TAU;
@@ -356,9 +366,9 @@ impl Cloud {
             .map(|index| {
                 let [along, across, size, _] = roll(2 + index);
                 let along = (f64::from(index) + 0.2 + along * 0.6) / f64::from(count) - 0.5;
-                let across = (across * 2.0 - 1.0) * CLOUD_PUFF[0];
+                let across = (across * 2.0 - 1.0) * CLOUD_STRAY;
                 // The ends of a cloud are thinner than its middle.
-                let belly = 1.0 - along.abs() * 1.2;
+                let belly = 1.0 - along.abs() * 0.9;
                 [
                     middle[0] + axis[0] * along * length - axis[1] * across,
                     middle[1] + axis[1] * along * length + axis[0] * across,
@@ -368,8 +378,8 @@ impl Cloud {
             .collect();
         Self {
             puffs,
-            layers: 1 + (layers * (length / CLOUD_LENGTH[1] * 3.0 + 1.0)) as usize,
-            drift: (drift * CLOUD_DRIFT) as i32,
+            layers: 1 + (layers * (length / CLOUD_LENGTH[1] * 2.0 + 1.0)) as usize,
+            altitude: between(CLOUD_ALTITUDE, altitude),
         }
     }
 
@@ -530,6 +540,7 @@ impl Scene {
         Self::prune_canopies(&mut columns, size, scale.build);
         Self::mark_borders(&mut columns, size, scale.border_width());
         Self::raise_towers(&mut columns, size, scale);
+        Self::level_bands(&mut columns, size, scale);
         let clouds = Self::clouds(&columns, scale, regions);
         Self {
             scale,
@@ -540,7 +551,8 @@ impl Scene {
     }
 
     /// The blocks of the clouds on this model. A cloud hangs whole, past the border of
-    /// its region or the rim if need be, a little over the land it covers.
+    /// its region or the rim if need be, over the land it covers. Its drawing goes by pixels
+    /// of the world, so that it is the same one on every model.
     fn clouds(
         columns: &[Option<Column>],
         scale: Scale,
@@ -554,17 +566,11 @@ impl Scene {
                 .flatten()
                 .map(|column| column.ground)
         };
-        let highest = SEA_Y + (f64::from(scale.max_y - SEA_Y) * CLOUD_HEIGHT) as i32;
         let mut blocks: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
         for cloud in cloud_list(regions) {
             let [west, north, east, south] = cloud.bounds();
             let cell = |world: f64| scale.cells(world).floor() as i32;
-            // A whole number of cells to a pixel, or the drawing would catch on the grid.
-            let pixel = scale.cells(CLOUD_PIXEL).round().max(1.0) as i32;
-            let drawn = |cell: i32| {
-                let first = cell.div_euclid(pixel) * pixel;
-                (scale.world(first) + scale.world(first + pixel - 1)) / 2.0
-            };
+            let drawn = |cell: i32| ((scale.world(cell) / CLOUD_PIXEL).floor() + 0.5) * CLOUD_PIXEL;
             let cells: Vec<(i32, i32, usize)> = (cell(north)..=cell(south))
                 .flat_map(|z| (cell(west)..=cell(east)).map(move |x| (x, z)))
                 .map(|(x, z)| (x, z, cloud.layers_at(drawn(x), drawn(z))))
@@ -575,7 +581,9 @@ impl Scene {
                 .filter_map(|(x, z, _)| ground_at(*x, *z))
                 .max()
                 .unwrap_or(SEA_Y);
-            let bottom = (land + (CLOUD_CLEARANCE + cloud.drift) * scale.build).min(highest);
+            let bottom = (SEA_Y + scale.cells(cloud.altitude).round() as i32)
+                .max(land + CLOUD_CLEARANCE * scale.build)
+                .min(SEA_Y + CLOUD_CEILING);
             for (x, z, layers) in cells {
                 let top = bottom + layers as i32 * scale.build;
                 blocks.entry((x, z)).or_default().extend(bottom..top);
@@ -647,33 +655,81 @@ impl Scene {
     }
 
     /// Picks places along the bands, far enough from each other, in the order of the rows.
+    /// A tower stands on the band, all of it on closed land, so that it stays a square.
     fn raise_towers(columns: &mut [Option<Column>], size: usize, scale: Scale) {
-        let middle = scale.border_width().div_ceil(2);
+        // Past a cell on every model: one column alone would read as a merlon.
+        let radius = scale.cells(TOWER_RADIUS).round().max(1.0) as i32;
+        let spacing = scale.cells(TOWER_SPACING);
+        let side = size as i32;
+        let square = |index: usize| {
+            let (x, z) = ((index % size) as i32, (index / size) as i32);
+            (-radius..=radius)
+                .flat_map(move |dz| (-radius..=radius).map(move |dx| (x + dx, z + dz)))
+                .map(move |(x, z)| {
+                    let on_model = (0..side).contains(&x) && (0..side).contains(&z);
+                    on_model.then(|| (z * side + x) as usize)
+                })
+        };
+        let closed = |column: Option<Column>| {
+            column.filter(|column| column.state != RegionState::Discovered)
+        };
+        let fits = |index: usize| {
+            let mut cells = square(index).map(|at| at.and_then(|at| closed(columns[at])));
+            cells.clone().all(|cell| cell.is_some())
+                && cells.any(|cell| cell.is_some_and(|column| column.ring == 1))
+        };
         let at = |index: usize| ((index % size) as f64, (index / size) as f64);
-        let (spacing, radius) = (scale.cells(TOWER_SPACING), scale.cells(TOWER_RADIUS));
         let mut towers: Vec<usize> = Vec::new();
-        for (index, column) in columns.iter().enumerate() {
+        for index in 0..columns.len() {
             let (x, z) = at(index);
             let free = towers.iter().all(|tower| {
                 let (tower_x, tower_z) = at(*tower);
                 (tower_x - x).hypot(tower_z - z) >= spacing
             });
-            if free && column.is_some_and(|column| column.ring == middle) {
+            if free && fits(index) {
                 towers.push(index);
             }
         }
-        for (index, column) in columns.iter_mut().enumerate() {
-            let Some(column) = column
-                .as_mut()
-                .filter(|c| c.state != RegionState::Discovered)
-            else {
-                continue;
+        for at in towers.into_iter().flat_map(square).flatten() {
+            if let Some(column) = columns[at].as_mut() {
+                column.tower = true;
+            }
+        }
+    }
+
+    /// Gives each column of a band the highest land of the band around it. A crown does
+    /// not count: a wall goes through a wood, not over each tree.
+    fn level_bands(columns: &mut [Option<Column>], size: usize, scale: Scale) {
+        let reach = scale.cells(BAND_LEVELLING).round() as i32;
+        let side = size as i32;
+        let land = |column: Column| {
+            let crown = if column.surface == CANOPY {
+                scale.build
+            } else {
+                0
             };
-            let (x, z) = at(index);
-            column.tower = towers.iter().any(|tower| {
-                let (tower_x, tower_z) = at(*tower);
-                (tower_x - x).hypot(tower_z - z) <= radius
-            });
+            (column.ground - crown).max(SEA_Y)
+        };
+        let source = columns.to_vec();
+        let on_band = |index: i32| {
+            let column = source[index as usize]?;
+            (column.ring > 0 || column.tower).then_some(column)
+        };
+        for index in 0..side * side {
+            if on_band(index).is_none() {
+                continue;
+            }
+            let (x, z) = (index % side, index / side);
+            let crest = (z - reach..=z + reach)
+                .filter(|z| (0..side).contains(z))
+                .flat_map(|z| (x - reach..=x + reach).map(move |x| (x, z)))
+                .filter(|(x, _)| (0..side).contains(x))
+                .filter_map(|(x, z)| on_band(z * side + x))
+                .map(land)
+                .max();
+            if let (Some(column), Some(crest)) = (columns[index as usize].as_mut(), crest) {
+                column.crest = crest;
+            }
         }
     }
 
@@ -725,6 +781,7 @@ impl Scene {
             climate: region.climate,
             ring: 0,
             tower: false,
+            crest: 0,
         })
     }
 
@@ -756,6 +813,18 @@ impl Scene {
     /// What falls on a column, or `None` off the model.
     pub fn climate(&self, x: i32, z: i32) -> Option<Climate> {
         self.column(x, z).map(|column| column.climate)
+    }
+
+    /// Whether a column is under trees.
+    pub fn wooded(&self, x: i32, z: i32) -> bool {
+        self.column(x, z)
+            .is_some_and(|column| matches!(column.surface, FOREST | CANOPY))
+    }
+
+    /// Whether a column is in a region that is not open.
+    pub fn closed(&self, x: i32, z: i32) -> bool {
+        self.column(x, z)
+            .is_some_and(|column| column.state != RegionState::Discovered)
     }
 
     /// Whether a block rises out of a column, that a figure would stand in.
@@ -916,6 +985,7 @@ impl Scene {
                         ring: column.ring,
                         width: self.scale.border_width(),
                         tower,
+                        rise: (column.crest - column.top()).max(0),
                         build,
                         locked,
                     };
@@ -1202,9 +1272,8 @@ mod tests {
             (looks[2], looks[3]),
             (looks[3], real),
             (borders[0], borders[1]),
-            (borders[1], borders[3]),
-            (borders[3], borders[4]),
-            (borders[4], real),
+            (borders[1], borders[2]),
+            (borders[2], real),
         ];
         for (from, to) in pairs {
             for (chunk_x, chunk_z) in [(-reach / 2, 0), (0, reach / 2), (1, 1), (reach / 2, -2)] {
@@ -1261,7 +1330,7 @@ mod tests {
             ..ChunkLook::default()
         });
         assert!(scene.repaint(0, 0, from, to).is_empty());
-        let [from, to] = [Border::Stakes, Border::Rampart].map(|border| ChunkLook {
+        let [from, to] = [Border::Wall, Border::Rampart].map(|border| ChunkLook {
             border,
             ..ChunkLook::default()
         });
@@ -1330,7 +1399,7 @@ mod tests {
             };
             column_in(&scene, x, z, look).into_keys().max()
         };
-        assert!(top(Border::Rampart) > top(Border::Stakes));
+        assert!(top(Border::Rampart) > top(Border::Wall));
     }
 
     #[test]
@@ -1496,9 +1565,10 @@ mod tests {
         assert_eq!(cloud_list(&Regions::demo()), cloud_list(&Regions::demo()));
     }
 
-    /// Their outlines, each moved to the same place, as a game would draw them.
+    /// Their outlines, each moved to the same place, as a game would draw them. The smallest
+    /// have few pixels, so some may match.
     #[test]
-    fn no_two_clouds_are_the_same_drawing() {
+    fn clouds_are_mostly_different_drawings() {
         let clouds = cloud_list(&Regions::demo());
         assert!(clouds.len() >= 8, "{}", clouds.len());
         let drawing = |cloud: &Cloud| {
@@ -1511,11 +1581,11 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let drawings: BTreeSet<_> = clouds.iter().map(drawing).collect();
-        assert_eq!(drawings.len(), clouds.len());
+        assert!(drawings.len() * 4 >= clouds.len() * 3, "{}", drawings.len());
     }
 
     #[test]
-    fn clouds_come_in_all_sizes_and_up_to_four_layers() {
+    fn clouds_come_in_all_sizes_and_up_to_three_layers() {
         let clouds = cloud_list(&Regions::demo());
         let width = |cloud: &Cloud| cloud.bounds()[2] - cloud.bounds()[0];
         let widths: Vec<_> = clouds.iter().map(width).collect();
@@ -1526,7 +1596,45 @@ mod tests {
             });
         assert!(most > least * 2.0, "{least} {most}");
         let layers: BTreeSet<_> = clouds.iter().map(|cloud| cloud.layers).collect();
-        assert!(layers.len() >= 3 && layers.iter().all(|n| (1..=4).contains(n)));
+        assert!(layers.len() >= 3 && layers.iter().all(|n| (1..=3).contains(n)));
+    }
+
+    /// The pixels of the clouds of a model, each with how many layers it has.
+    fn cloud_drawing(scale: Scale) -> BTreeMap<(i32, i32), i32> {
+        let scene = closed_scene(scale);
+        let pixel = |cell: i32| (scale.world(cell) / CLOUD_PIXEL).floor() as i32;
+        let drawn = scene.clouds.iter().map(|((x, z), heights)| {
+            let layers = heights.len() as i32 / scale.build;
+            ((pixel(*x), pixel(*z)), layers)
+        });
+        drawn.collect()
+    }
+
+    /// The whole point of the pixels: from one zoom to the next, a cloud is that cloud.
+    #[test]
+    fn a_cloud_has_the_same_drawing_and_size_on_every_model() {
+        let drawing = cloud_drawing(OVERVIEW);
+        assert!(drawing.len() > 100, "{}", drawing.len());
+        assert_eq!(cloud_drawing(MIDDLE), drawing);
+        assert_eq!(cloud_drawing(DETAIL), drawing);
+    }
+
+    /// Within a cell: the edge of a pixel falls inside one on a finer model.
+    #[test]
+    fn a_cloud_covers_the_same_world_on_every_model() {
+        let area = |scale: Scale| {
+            let cell = f64::from(scale.blocks_per_cell);
+            closed_scene(scale).clouds.len() as f64 * cell * cell
+        };
+        let (overview, middle, detail) = (area(OVERVIEW), area(MIDDLE), area(DETAIL));
+        assert!(
+            (middle / overview - 1.0).abs() < 0.08,
+            "{middle} {overview}"
+        );
+        assert!(
+            (detail / overview - 1.0).abs() < 0.08,
+            "{detail} {overview}"
+        );
     }
 
     #[test]
@@ -1548,7 +1656,7 @@ mod tests {
             let scene = closed_scene(scale);
             for blocks in scene.clouds.values() {
                 let layers = blocks.len() as i32 / scale.build;
-                assert!((1..=4).contains(&layers), "{layers}");
+                assert!((1..=3).contains(&layers), "{layers}");
             }
         }
     }
