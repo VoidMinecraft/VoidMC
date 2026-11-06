@@ -11,6 +11,7 @@ use voidmc_protocol::clientbound::{ClientboundPacket, SetTitleText, SetTitlesAni
 
 use voidmc_ui::ResourcePack;
 
+use crate::abduction::{Part, Scene, Track};
 use crate::art;
 use crate::pointer::{ease, look_direction};
 
@@ -134,10 +135,18 @@ pub enum Flow {
     Glide,
     /// Eyes on the sky and up into it, then down from the horizon onto the view.
     Leap,
+    /// Seen from outside: a saucer takes the player away, and brings them back.
+    Abduction,
 }
 
 impl Flow {
-    pub const ALL: [Self; 4] = [Self::Climb, Self::Spiral, Self::Glide, Self::Leap];
+    pub const ALL: [Self; 5] = [
+        Self::Climb,
+        Self::Spiral,
+        Self::Glide,
+        Self::Leap,
+        Self::Abduction,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -145,6 +154,7 @@ impl Flow {
             Self::Spiral => "Spirale",
             Self::Glide => "Vol plané",
             Self::Leap => "Saut dans le ciel",
+            Self::Abduction => "Soucoupe",
         }
     }
 
@@ -155,7 +165,7 @@ impl Flow {
 
     fn extra_ticks(self) -> u32 {
         match self {
-            Self::Climb => 0,
+            Self::Climb | Self::Abduction => 0,
             Self::Spiral => 14,
             Self::Glide => 12,
             Self::Leap => 6,
@@ -193,11 +203,16 @@ impl Flow {
             Self::Leap => {
                 Flight::new(start, up(LEAP_HEIGHT), [yaw, pitch], length).turning_to([yaw, UP])
             }
+            Self::Abduction => Flight::filmed(Scene::new(Part::Intro, start, [yaw, pitch])),
         }
     }
 
     /// Back down to an eye, by the same way.
     pub fn landing(self, eye: Position, look: Rotation) -> Flight {
+        if self == Self::Abduction {
+            let scene = Scene::new(Part::Outro, [eye.x, eye.y, eye.z], [look.yaw, look.pitch]);
+            return Flight::filmed(scene);
+        }
         Flight {
             length: LANDING_TICKS + self.extra_ticks(),
             ..self.rise(eye, look).reversed()
@@ -219,7 +234,9 @@ impl Flow {
         let over = [marker[0], marker[1] + stop, marker[2]];
         let high = eye[1] - marker[1];
         match self {
-            Self::Climb => Flight::new(eye, over, look, length).turning_to([yaw, DOWN]),
+            Self::Climb | Self::Abduction => {
+                Flight::new(eye, over, look, length).turning_to([yaw, DOWN])
+            }
             Self::Spiral => Flight::new(eye, over, look, length)
                 .turning_to([yaw - 360.0, DOWN])
                 .along(Shape::Spiral {
@@ -291,6 +308,8 @@ pub struct Flight {
     shape: Shape,
     /// It runs from `to` to `from`, for a shape to go back on itself.
     backwards: bool,
+    /// The way of a film, which says where it goes and looks at each tick.
+    track: Option<Track>,
     length: u32,
     ticks: u32,
 }
@@ -304,9 +323,34 @@ impl Flight {
             look_to: look,
             shape: Shape::Straight,
             backwards: false,
+            track: None,
             length,
             ticks: 0,
         }
+    }
+
+    /// The camera of a film.
+    pub fn filmed(scene: Scene) -> Self {
+        let track = Track(scene);
+        let length = scene.length();
+        let ([from, to], [look, look_to]) = (
+            [track.at(0.0).0, track.at(f64::from(length)).0],
+            [track.at(0.0).1, track.at(f64::from(length)).1],
+        );
+        Self {
+            track: Some(track),
+            ..Self::new(from, to, look, length).turning_to(look_to)
+        }
+    }
+
+    /// The film this is the camera of.
+    pub fn scene(&self) -> Option<Scene> {
+        self.track.map(|track| track.0)
+    }
+
+    /// The ticks gone by, resting included.
+    pub fn elapsed(&self) -> u32 {
+        self.ticks
     }
 
     /// Ends on this look.
@@ -375,6 +419,9 @@ impl Flight {
     }
 
     fn pose(&self, ticks: u32) -> [f64; 3] {
+        if let Some(track) = self.track {
+            return track.at(f64::from(ticks.min(self.length))).0;
+        }
         let progress = ease(f64::from(ticks.min(self.length)) / f64::from(self.length));
         let share = if self.backwards {
             1.0 - progress
@@ -390,6 +437,9 @@ impl Flight {
     /// The look at some tick. It waits for the view to come over, as the place does, and
     /// then has all of the flight to turn.
     fn look_at(&self, ticks: u32) -> [f32; 2] {
+        if let Some(track) = self.track {
+            return track.at(f64::from(ticks.min(self.length))).1;
+        }
         let turning = ticks.saturating_sub(SWAP_TICKS).min(self.length);
         let length = self.length.saturating_sub(SWAP_TICKS).max(1);
         let progress = ease(f64::from(turning.min(length)) / f64::from(length)) as f32;
@@ -433,7 +483,8 @@ impl Flight {
     /// An eye has its look told tick by tick, from the moment it is seen through until it
     /// has got to the end.
     pub fn eye_turning(&self) -> bool {
-        self.ticks >= SWAP_TICKS && self.ticks <= self.length + 1 && self.look != self.look_to
+        let turns = self.look != self.look_to || self.track.is_some();
+        self.ticks >= SWAP_TICKS && self.ticks <= self.length + 1 && turns
     }
 
     /// Where the camera entity is told to be: the end of the segment under way. It changes
@@ -580,7 +631,7 @@ mod tests {
     #[test]
     fn the_next_flow_goes_round_them_all() {
         let mut flow = Flow::default();
-        for expected in Flow::ALL.iter().cycle().skip(1).take(4) {
+        for expected in Flow::ALL.iter().cycle().skip(1).take(Flow::ALL.len()) {
             flow = flow.next();
             assert_eq!(flow, *expected);
         }

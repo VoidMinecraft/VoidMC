@@ -73,6 +73,7 @@ use crate::transition::{
 use crate::weather::{self, Weather};
 use crate::wheel::{CATEGORIES, Wheel, stepped};
 
+mod abduction;
 mod preview;
 
 pub use preview::{FlowPart, PreviewFlow};
@@ -1293,6 +1294,7 @@ impl Plugin for MapPlugin {
                 fly,
                 tick_passages,
                 preview::tick,
+                abduction::tick,
                 run_wheels,
                 let_it_fall,
             ),
@@ -1315,6 +1317,7 @@ impl Plugin for MapPlugin {
         .add_observer(preview::start)
         .add_observer(player_left)
         .add_plugins((PlayersPlugin, CursorPlugin));
+        abduction::register(app);
         app.world_mut()
             .resource_mut::<CommandRegistry>()
             .register(map_command());
@@ -3958,6 +3961,7 @@ impl Pick {
             Self::Two => Some(Flow::Spiral),
             Self::Three => Some(Flow::Glide),
             Self::Four => Some(Flow::Leap),
+            Self::Five => Some(Flow::Abduction),
             _ => None,
         }
     }
