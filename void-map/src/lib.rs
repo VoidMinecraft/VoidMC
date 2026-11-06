@@ -20,6 +20,7 @@ pub mod regions;
 pub mod scene;
 pub mod telemetry;
 pub mod terrain;
+pub mod transition;
 pub mod window;
 
 #[cfg(test)]

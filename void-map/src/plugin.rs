@@ -28,8 +28,8 @@ use voidmc::{
 use voidmc_codec::Encode;
 use voidmc_protocol::{
     clientbound::{
-        ChunkDataAndLight, GameEvent, GameEventType, PlayerRotation, Respawn, SetCamera,
-        SetCenterChunk, SetChunkCacheRadius, SystemChat, UnloadChunk,
+        ChunkDataAndLight, GameEvent, GameEventType, PlayerRotation, SetCamera, SetCenterChunk,
+        SetChunkCacheRadius, SystemChat, UnloadChunk,
     },
     serverbound::{Interact, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation, SpectateEntity},
     slot::{DataComponent, component_ids},
@@ -37,30 +37,28 @@ use voidmc_protocol::{
 use voidmc_ui::{PackSettled, Text};
 
 use crate::art::{Card, Mark, Style, Subject, sign};
-use crate::dimension::{self, DIMENSION, MapLevel};
+use crate::dimension::{self, MapLevel};
 use crate::markers::{Marker, MarkerField, MarkerKind};
 use crate::pointer::{
-    COARSE_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP, Dive, FreeLook, Mouse, OVERVIEW_Z, Pan,
-    RECENTRED_PITCH, REST_PITCH, REST_YAW, SPECTATOR_EYE_HEIGHT, Zoom, aimed, detail_back,
-    look_direction, overview_y,
+    CLIENT_SNAP_DISTANCE, COARSE_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP, Dive, FreeLook,
+    Mouse, OVERVIEW_Z, Pan, RECENTRED_PITCH, REST_PITCH, REST_YAW, SPECTATOR_EYE_HEIGHT, Zoom,
+    aimed, detail_back, look_direction, overview_y,
 };
 use crate::regions::{RegionState, Regions, ZoneLook};
 use crate::scene::{self, Blocks, ChunkLook, DETAIL, OVERVIEW, Scale, Scene};
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
+use crate::transition::{Flight, LANDING_TICKS, RISE_TICKS, VEIL_FADE, veil_in, veil_out};
 
 /// `WorldGenerator` does not expose its water level. This is the one of
 /// `DefaultWorldGenerator`, and of vanilla.
 pub const SEA_LEVEL: i32 = 62;
 const SPECTATOR: u8 = 3;
-const OVERWORLD_TYPE: i32 = 0;
-const OVERWORLD: &str = "minecraft:overworld";
-const OVERWORLD_SEA_LEVEL: i32 = 63;
 
 /// Each player's model sits this far out, in its own chunks. Entities are only
 /// shown to players with their chunk loaded, so nobody else sees the markers.
 const FIRST_ANCHOR_CHUNK: i32 = 60_000;
-const CHUNKS_BETWEEN_ANCHORS: i32 = 64;
+const CHUNKS_BETWEEN_ANCHORS: i32 = 128;
 const ANCHOR_SLOTS: u32 = 1024;
 
 /// How far the overview's chunks go, which is the model plus the empty ring the
@@ -72,6 +70,34 @@ const DETAIL_SEND_RADIUS: i32 = 9;
 /// corner of a pan to the other, so that it holds on to all it was sent. A chunk seen
 /// again need not go out again, and the render distance does not change with it.
 const MAP_CHUNK_CACHE_RADIUS: i32 = 44;
+/// Where the overview sits, in chunks east of the detail model. Both stay with the client,
+/// so that a zoom past [`COARSE_ABOVE`] only moves the camera from one to the other.
+const OVERVIEW_ORIGIN: i32 = 36;
+/// The client's chunks are kept around this one, half way between the models, which
+/// never moves: nothing has to leave for a pan to go on.
+const CENTRE_OF_MODELS: i32 = OVERVIEW_ORIGIN / 2;
+/// The chunks a pan can ask for, on each side of a model's centre.
+const fn pan_reach(scale: Scale) -> i32 {
+    scale.radius / 16 + 2 + DETAIL_SEND_RADIUS
+}
+const DETAIL_PAN_REACH: i32 = pan_reach(DETAIL);
+const OVERVIEW_PAN_REACH: i32 = pan_reach(OVERVIEW);
+const _: () = assert!(
+    DETAIL_PAN_REACH + CENTRE_OF_MODELS <= MAP_CHUNK_CACHE_RADIUS
+        && OVERVIEW_ORIGIN + OVERVIEW_PAN_REACH - CENTRE_OF_MODELS <= MAP_CHUNK_CACHE_RADIUS,
+    "the client has to keep both models whole"
+);
+const _: () = assert!(
+    DETAIL_PAN_REACH + OVERVIEW_ORIGIN + OVERVIEW_PAN_REACH < CHUNKS_BETWEEN_ANCHORS,
+    "a player's models stay off the next player's"
+);
+const _: () = assert!(
+    (OVERVIEW_ORIGIN - DETAIL_PAN_REACH - OVERVIEW_PAN_REACH + 2 * DETAIL_SEND_RADIUS) * 16
+        > CLIENT_SNAP_DISTANCE as i32,
+    "a camera changing model has to jump, not glide"
+);
+/// What the model the player is not on gets of each tick.
+const NEIGHBOUR_CHUNKS_PER_TICK: usize = 16;
 pub(crate) const CHUNKS_PER_TICK: usize = 64;
 
 /// A shorter glide moves in visible steps. A longer one only overshoots if the view
@@ -185,7 +211,12 @@ impl MapMode {
 
 const TRAVEL_ACTION: &str = "Clic gauche : s'y rendre";
 /// Above the ground of the world, so as not to land in it.
-const ARRIVAL_CLEARANCE: f64 = 1.5;
+const ARRIVAL_CLEARANCE: f64 = 0.25;
+/// What the veil waits for, at the least: the client to settle on what it has got.
+const VEIL_SETTLE_TICKS: u32 = 10;
+const LANDING_SETTLE_TICKS: u32 = 14;
+/// When the world still has not come after this, the player goes on without it.
+const LANDING_PATIENCE_TICKS: u32 = 60;
 
 /// The two models of the map. A pan far from the ground uses the coarse one, whose
 /// blocks are larger, to see further than a render distance can.
@@ -206,6 +237,21 @@ impl Model {
     /// Blocks of this model to a block of the detail model.
     fn ratio(self) -> f64 {
         f64::from(DETAIL.blocks_per_cell) / f64::from(self.scale().blocks_per_cell)
+    }
+
+    /// Where its centre sits, in chunks east of a player's anchor.
+    fn origin(self) -> i32 {
+        match self {
+            Self::Overview => OVERVIEW_ORIGIN,
+            Self::Detail => 0,
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::Overview => Self::Detail,
+            Self::Detail => Self::Overview,
+        }
     }
 }
 
@@ -469,6 +515,27 @@ enum Hover {
     You,
 }
 
+/// A player between the world and the map, seen through a camera of their own.
+#[derive(Component)]
+struct Passage {
+    camera: Entity,
+    kind: PassageKind,
+    /// The ticks gone by.
+    ticks: u32,
+    /// The ticks gone by with no chunk left to come.
+    quiet: u32,
+}
+
+#[derive(Clone, Copy)]
+enum PassageKind {
+    /// Out of the world, and into a map in this mode.
+    Rise(MapMode),
+    /// Waiting under the veil for the world to be back, then down this way.
+    Landing(Flight),
+    /// On the way down, with the veil going.
+    Descent,
+}
+
 /// A player in the map, and how to put them back.
 #[derive(Component)]
 pub struct MapSession {
@@ -499,6 +566,12 @@ pub struct MapSession {
     rezoned: bool,
     /// On the way down to a waypoint.
     travel: Option<Travel>,
+    /// The veil is on, this many ticks since the map took over.
+    veiled: Option<u32>,
+    /// The client has all of the model it is on.
+    ready: bool,
+    /// On the way out, this many ticks before the veil is whole.
+    closing: Option<u32>,
     sneaking: bool,
     /// Jump, left and right as last reported, to act on a press and not on a repeat.
     keys: [bool; 3],
@@ -506,8 +579,6 @@ pub struct MapSession {
     look: Rotation,
     hovered: Option<Hover>,
     selected: Option<usize>,
-    /// The chunk the client was last told to centre on.
-    centre: Option<(i32, i32)>,
     streamed: (usize, usize),
     ticks: u32,
     last_click: u32,
@@ -515,8 +586,9 @@ pub struct MapSession {
 
 impl MapSession {
     fn on_model(&self, x: f64, y: f64, z: f64) -> Position {
+        let origin = self.anchor[0] + self.model().origin();
         Position {
-            x: f64::from(self.anchor[0] * 16) + x,
+            x: f64::from(origin * 16) + x,
             y,
             z: f64::from(self.anchor[1] * 16) + z,
         }
@@ -542,17 +614,21 @@ impl MapSession {
         }
         match self.mode {
             MapMode::Look => [0.0, overview_y(), OVERVIEW_Z],
-            MapMode::Pan => {
-                let ratio = self.model().ratio();
-                let [x, z] = self.pan.view();
-                let height = self.height();
-                [
-                    x * ratio,
-                    f64::from(scene::SEA_Y) + height,
-                    z * ratio + detail_back(height),
-                ]
-            }
+            MapMode::Pan => self.pan_view(self.model()),
         }
+    }
+
+    /// The view of a pan on a model. The same point of the sea stays in the middle of
+    /// the screen at the same size, whichever model it is on.
+    fn pan_view(&self, model: Model) -> [f64; 3] {
+        let ratio = model.ratio();
+        let [x, z] = self.pan.view();
+        let height = self.zoom.height() * ratio;
+        [
+            x * ratio,
+            f64::from(scene::SEA_Y) + height,
+            z * ratio + detail_back(height),
+        ]
     }
 
     /// The eye of the view, on the model.
@@ -626,10 +702,23 @@ impl MapSession {
         }
     }
 
-    /// The chunk under the camera, from the chunk at the model's centre.
-    fn camera_chunk(&self) -> (i32, i32) {
-        let [x, _, z] = self.standing();
-        ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32)
+    /// The chunks a player should have, in the order they should get them.
+    fn wanted(&self) -> Vec<(Model, (i32, i32))> {
+        let chunk = |[x, _, z]: [f64; 3]| ((x / 16.0).floor() as i32, (z / 16.0).floor() as i32);
+        let model = self.model();
+        let here = chunks_around(self.mode, chunk(self.standing()));
+        let mut wanted: Vec<_> = here.into_iter().map(|at| (model, at)).collect();
+        if self.mode == MapMode::Pan {
+            let neighbour = model.other();
+            let there = chunks_around(self.mode, chunk(self.pan_view(neighbour)));
+            wanted.extend(there.into_iter().map(|at| (neighbour, at)));
+        }
+        wanted
+    }
+
+    /// Where a chunk of a model goes on the client.
+    fn placed(&self, model: Model, (x, z): (i32, i32)) -> ChunkPos {
+        ChunkPos::new(self.anchor[0] + model.origin() + x, self.anchor[1] + z)
     }
 
     /// Far markers are large and near ones smaller, so that they keep their size on screen.
@@ -712,8 +801,20 @@ impl Plugin for MapPlugin {
             detail: None,
         })
         .add_systems(Startup, build_atlas)
-        .add_systems(Update, (rig_up, stream_chunks, follow_view, tick_sessions))
+        .add_systems(
+            Update,
+            (
+                rig_up,
+                stream_chunks,
+                follow_view,
+                tick_sessions,
+                fly,
+                tick_passages,
+            ),
+        )
+        .add_observer(rise)
         .add_observer(enter)
+        .add_observer(close)
         .add_observer(switch_mode)
         .add_observer(leave)
         .add_observer(look_through_camera)
@@ -752,6 +853,14 @@ fn build_atlas(mut atlas: ResMut<Atlas>, generator: Res<WorldGen>) {
 /// Asks for a player to enter the map, or to change mode if they are in it.
 #[derive(Event, Debug, Clone, Copy)]
 pub struct OpenMap(pub Entity, pub MapMode);
+
+/// The veil is on: the map takes over.
+#[derive(Event, Debug, Clone, Copy)]
+struct EnterMap(Entity, MapMode);
+
+/// The veil is on: the world takes over.
+#[derive(Event, Debug, Clone, Copy)]
+struct LeaveMap(Entity);
 
 /// Asks for a player to leave the map.
 #[derive(Event, Debug, Clone, Copy)]
@@ -980,29 +1089,131 @@ fn model_spot(level: &Level, position: &Position) -> Option<[f64; 3]> {
 
 type EntrantState<'a> = (
     &'a ClientId,
+    &'a LoadedChunks,
     &'a Position,
     &'a Rotation,
     Option<&'a PlayerAbilities>,
     Option<&'a mut TabEntry>,
     Option<&'a PlayerUuid>,
+    &'a MinecraftEntityId,
     Option<&'a MapLooks>,
     Has<PackLoaded>,
 );
 
-fn enter(
+/// Sets a player off towards the map. It takes over at the top, under the veil.
+fn rise(
     event: On<OpenMap>,
+    players: Query<(&Position, &Rotation), (Without<MapSession>, Without<Passage>)>,
+    atlas: Res<Atlas>,
+    mut commands: Commands,
+) {
+    let (player, mode) = (event.0, event.1);
+    let Ok((position, rotation)) = players.get(player) else {
+        return;
+    };
+    if atlas.overview.is_none() || atlas.detail.is_none() {
+        return;
+    }
+    let flight = Flight::rise(eye_of(position), *rotation);
+    let camera = spawn_camera(&mut commands, flight.at(), flight.looking());
+    commands.entity(camera).insert(flight);
+    commands.entity(player).insert((
+        Passage {
+            camera,
+            kind: PassageKind::Rise(mode),
+            ticks: 0,
+            quiet: 0,
+        },
+        ServerControlledPosition,
+    ));
+}
+
+fn eye_of(position: &Position) -> Position {
+    Position {
+        y: position.y + SPECTATOR_EYE_HEIGHT,
+        ..*position
+    }
+}
+
+/// Moves the cameras of the passages. `Players` reads `Position`, so it stays out of this.
+fn fly(mut flights: Query<(&mut Flight, &mut Position, &mut Rotation)>) {
+    for (mut flight, mut position, mut rotation) in &mut flights {
+        flight.tick();
+        position.set_if_neq(flight.at());
+        rotation.set_if_neq(flight.looking());
+    }
+}
+
+fn send_veil(players: &Players, player: Entity) {
+    for packet in veil_in() {
+        players.send(player, packet);
+    }
+}
+
+fn tick_passages(
+    mut passages: Query<(
+        Entity,
+        &mut Passage,
+        &MinecraftEntityId,
+        Has<PackLoaded>,
+        Has<ChunkStreamBacklog>,
+    )>,
+    players: Players,
+    mut commands: Commands,
+) {
+    for (player, mut passage, id, drawn, backlog) in &mut passages {
+        passage.ticks += 1;
+        let ticks = passage.ticks;
+        match passage.kind {
+            PassageKind::Rise(mode) => {
+                if drawn && ticks == RISE_TICKS - VEIL_FADE {
+                    send_veil(&players, player);
+                }
+                if ticks >= RISE_TICKS {
+                    commands.entity(passage.camera).try_despawn();
+                    commands.entity(player).remove::<Passage>();
+                    commands.trigger(EnterMap(player, mode));
+                }
+            }
+            PassageKind::Landing(flight) => {
+                // The client fades in what it gets: it needs a moment past the last chunk.
+                if backlog {
+                    passage.quiet = 0;
+                } else {
+                    passage.quiet += 1;
+                }
+                if passage.quiet >= LANDING_SETTLE_TICKS || ticks >= LANDING_PATIENCE_TICKS {
+                    tracing::info!(ticks, backlog, "world back under the veil");
+                    if drawn {
+                        players.send(player, veil_out());
+                    }
+                    commands.entity(passage.camera).try_insert(flight);
+                    passage.kind = PassageKind::Descent;
+                    passage.ticks = 0;
+                }
+            }
+            PassageKind::Descent => {
+                if ticks >= LANDING_TICKS {
+                    players.send(player, SetCamera { camera_id: id.0 });
+                    commands.entity(passage.camera).try_despawn();
+                    commands.entity(player).remove::<Passage>();
+                }
+            }
+        }
+    }
+}
+
+fn enter(
+    event: On<EnterMap>,
     mut states: Query<EntrantState, Without<MapSession>>,
     atlas: Res<Atlas>,
-    config: Res<ServerConfigResource>,
     players: Players,
     mut commands: Commands,
 ) {
     let (player, mode) = (event.0, event.1);
-    if atlas.overview.is_none() || atlas.detail.is_none() {
-        return;
-    }
     tracing::info!(?player, ?mode, "entering the map");
-    let Ok((client, position, rotation, abilities, tab, id, looks, drawn)) = states.get_mut(player)
+    let Ok((client, loaded, position, rotation, abilities, tab, uuid, entity_id, looks, drawn)) =
+        states.get_mut(player)
     else {
         return;
     };
@@ -1016,31 +1227,37 @@ fn enter(
 
     players.send(
         player,
+        SetCamera {
+            camera_id: entity_id.0,
+        },
+    );
+    players.send(
+        player,
         SetChunkCacheRadius {
             radius: MAP_CHUNK_CACHE_RADIUS,
         },
     );
     players.send(
         player,
-        Respawn {
-            dimension_type: atlas.info.dimension_type,
-            dimension_name: DIMENSION.into(),
-            hashed_seed: 0,
-            game_mode: SPECTATOR,
-            previous_game_mode: config.game_mode as i8,
-            is_debug: false,
-            is_flat: true,
-            last_death_location: None,
-            portal_cooldown: 0,
-            sea_level: scene::SEA_Y,
-            data_to_keep: Respawn::KEEP_ALL,
+        SetCenterChunk {
+            chunk_x: anchor[0] + CENTRE_OF_MODELS,
+            chunk_z: anchor[1],
         },
     );
+    for chunk in &loaded.0 {
+        players.send(
+            player,
+            UnloadChunk {
+                chunk_x: chunk.x,
+                chunk_z: chunk.z,
+            },
+        );
+    }
     players.send(
         player,
         GameEvent {
-            event: GameEventType::StartWaitingForLevelChunks,
-            value: 0.0,
+            event: GameEventType::ChangeGameMode,
+            value: f32::from(SPECTATOR),
         },
     );
 
@@ -1068,11 +1285,14 @@ fn enter(
         sized_for: Zoom::default().height(),
         free: FreeLook::default(),
         telemetry: Telemetry::default(),
-        head: player_head(id),
+        head: player_head(uuid),
         looks: looks.copied().unwrap_or_default(),
         drawn,
         rezoned: false,
         travel: None,
+        veiled: drawn.then_some(0),
+        ready: false,
+        closing: None,
         sneaking: false,
         keys: [false; 3],
         look: Rotation {
@@ -1081,7 +1301,6 @@ fn enter(
         },
         hovered: None,
         selected: None,
-        centre: None,
         streamed: (0, 0),
         ticks: 0,
         last_click: 0,
@@ -1149,7 +1368,7 @@ fn switch_mode(
     let Ok((mut session, id, loaded)) = sessions.get_mut(player) else {
         return;
     };
-    if session.mode == mode || session.travel.is_some() {
+    if session.mode == mode || session.travel.is_some() || session.closing.is_some() {
         return;
     }
     tracing::info!(?mode, "map mode");
@@ -1175,7 +1394,6 @@ fn switch_mode(
     session.look = session.rest();
     session.hovered = None;
     session.selected = None;
-    session.centre = None;
     spawn_pins(&atlas, &mut session, &mut commands);
     session.place_pan(&atlas);
     let home = session.camera_position();
@@ -1189,20 +1407,6 @@ fn switch_mode(
     ));
 }
 
-/// Whether a chunk stays with the client, whom a pan never makes drop anything.
-fn kept(mode: MapMode, chunk: (i32, i32), camera: (i32, i32)) -> bool {
-    match mode {
-        MapMode::Look => {
-            let range = -OVERVIEW_REACH..OVERVIEW_REACH;
-            range.contains(&chunk.0) && range.contains(&chunk.1)
-        }
-        MapMode::Pan => {
-            let reach = MAP_CHUNK_CACHE_RADIUS;
-            (chunk.0 - camera.0).abs() <= reach && (chunk.1 - camera.1).abs() <= reach
-        }
-    }
-}
-
 fn chunks_around(mode: MapMode, camera: (i32, i32)) -> Vec<(i32, i32)> {
     let (centre, reach) = match mode {
         MapMode::Look => ((0, 0), OVERVIEW_REACH),
@@ -1211,7 +1415,7 @@ fn chunks_around(mode: MapMode, camera: (i32, i32)) -> Vec<(i32, i32)> {
     let mut chunks: Vec<_> = (centre.0 - reach..=centre.0 + reach)
         .flat_map(|x| (centre.1 - reach..=centre.1 + reach).map(move |z| (x, z)))
         .filter(|(x, z)| match mode {
-            MapMode::Look => kept(mode, (*x, *z), camera),
+            MapMode::Look => *x < reach && *z < reach,
             MapMode::Pan => (x - camera.0).pow(2) + (z - camera.1).pow(2) <= reach * reach,
         })
         .collect();
@@ -1219,8 +1423,9 @@ fn chunks_around(mode: MapMode, camera: (i32, i32)) -> Vec<(i32, i32)> {
     chunks
 }
 
-/// Moves a pan from one model to the other, once its height calls for it. Says so.
-fn switch_model(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) -> bool {
+/// Moves a pan from one model to the other, once its height calls for it. The client
+/// already has the chunks and the camera is far enough to jump, so it takes one frame.
+fn switch_model(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) {
     let height = session.zoom.height();
     let coarse = match session.mode {
         MapMode::Look => false,
@@ -1228,7 +1433,7 @@ fn switch_model(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands
         MapMode::Pan => height > COARSE_ABOVE,
     };
     if coarse == session.coarse {
-        return false;
+        return;
     }
     tracing::debug!(coarse, height, "map model");
     session.coarse = coarse;
@@ -1237,7 +1442,6 @@ fn switch_model(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands
     despawn_pins(session, commands);
     spawn_pins(atlas, session, commands);
     session.sized_for = height;
-    true
 }
 
 fn stream_chunks(
@@ -1249,46 +1453,29 @@ fn stream_chunks(
     let info = atlas.info;
     for (player, mut session, loaded) in &mut sessions {
         let started = Instant::now();
-        // The other model's chunks go right over these ones, with no gap in between.
+        switch_model(&atlas, &mut session, &mut commands);
+        // What changed look goes out again right over itself, with no gap in between.
         let rezoned = std::mem::take(&mut session.rezoned);
-        let replaced = switch_model(&atlas, &mut session, &mut commands) || rezoned;
-        let (mode, anchor, model) = (session.mode, session.anchor, session.model());
         let look = session.looks.chunks();
-        let Some(level) = atlas.level_mut(model) else {
-            continue;
-        };
-        let camera = session.camera_chunk();
-        if session.centre != Some(camera) {
-            session.centre = Some(camera);
-            players.send(
-                player,
-                SetCenterChunk {
-                    chunk_x: anchor[0] + camera.0,
-                    chunk_z: anchor[1] + camera.1,
-                },
-            );
-        }
-
-        // What changed look goes, unless it is about to be sent over.
-        let wanted = chunks_around(mode, camera);
+        let model = session.model();
+        let wanted = session.wanted();
+        let placed: HashSet<_> = wanted
+            .iter()
+            .map(|(model, at)| session.placed(*model, *at))
+            .collect();
         let stale: Vec<_> = loaded
             .0
             .iter()
             .copied()
-            .filter(|chunk| {
-                let on_model = (chunk.x - anchor[0], chunk.z - anchor[1]);
-                let gone = replaced && !wanted.contains(&on_model);
-                gone || !kept(mode, on_model, camera)
-            })
+            .filter(|chunk| rezoned && !placed.contains(chunk))
             .collect();
         // `Players` reads this component, so it is replaced rather than changed here.
-        let mut now_loaded = if replaced {
+        let mut now_loaded = if rezoned {
             HashSet::new()
         } else {
             loaded.0.clone()
         };
         for chunk in &stale {
-            now_loaded.remove(chunk);
             players.send(
                 player,
                 UnloadChunk {
@@ -1300,35 +1487,45 @@ fn stream_chunks(
 
         let missing: Vec<_> = wanted
             .into_iter()
-            .filter(|(x, z)| !now_loaded.contains(&ChunkPos::new(anchor[0] + x, anchor[1] + z)))
+            .filter(|(model, at)| !now_loaded.contains(&session.placed(*model, *at)))
             .collect();
+        let here = missing.iter().filter(|(on, _)| *on == model).count();
+        session.ready = here == 0;
+        let budget = if here > 0 {
+            CHUNKS_PER_TICK
+        } else {
+            NEIGHBOUR_CHUNKS_PER_TICK
+        };
         let (mut sent, mut weight_sent) = (0, 0);
-        for at in missing.iter().take(CHUNKS_PER_TICK) {
+        for (on, at) in missing.iter().take(budget) {
+            let Some(level) = atlas.level_mut(*on) else {
+                continue;
+            };
             let (chunk, weight) = level.chunk(*at, look, info);
-            let (x, z) = (anchor[0] + at.0, anchor[1] + at.1);
+            let to = session.placed(*on, *at);
             let mut placed = chunk.clone();
-            (placed.chunk_x, placed.chunk_z) = (x, z);
+            (placed.chunk_x, placed.chunk_z) = (to.x, to.z);
             weight_sent += *weight;
             sent += 1;
             players.send(player, placed);
-            now_loaded.insert(ChunkPos::new(x, z));
+            now_loaded.insert(to);
         }
         if sent > 0 {
             session.streamed.0 += sent;
             session.streamed.1 += weight_sent;
             session.telemetry.sent(sent, weight_sent, started.elapsed());
         }
-        if missing.len() <= CHUNKS_PER_TICK && session.streamed.0 > 0 {
+        if missing.len() <= budget && session.streamed.0 > 0 {
             let (chunks, bytes) = std::mem::take(&mut session.streamed);
             tracing::info!(
-                ?mode,
+                mode = ?session.mode,
                 chunks,
                 bytes,
                 loaded = now_loaded.len(),
                 "map chunks sent"
             );
         }
-        if replaced || !stale.is_empty() || !missing.is_empty() {
+        if rezoned || !stale.is_empty() || !missing.is_empty() {
             commands.entity(player).insert(LoadedChunks(now_loaded));
         }
     }
@@ -1374,13 +1571,16 @@ fn rig_up(
 fn look_through_camera(
     event: On<EntityShownEvent>,
     sessions: Query<&MapSession>,
+    passages: Query<&Passage>,
     ids: Query<&MinecraftEntityId>,
     players: Players,
 ) {
-    let Ok(session) = sessions.get(event.viewer) else {
-        return;
+    let camera = match (sessions.get(event.viewer), passages.get(event.viewer)) {
+        (Ok(session), _) => session.rig.and_then(|rig| rig.camera),
+        (_, Ok(passage)) => Some(passage.camera),
+        _ => None,
     };
-    if session.rig.and_then(|rig| rig.camera) == Some(event.entity)
+    if camera == Some(event.entity)
         && let Ok(id) = ids.get(event.entity)
     {
         players.send(event.viewer, SetCamera { camera_id: id.0 });
@@ -1767,12 +1967,8 @@ fn start_dive(
         MapMode::Look => session.look,
         MapMode::Pan => session.rest(),
     };
+    let at = session.on_model(eye[0], eye[1], eye[2]);
     if let Some(rig) = session.rig.as_mut().filter(|rig| rig.camera.is_none()) {
-        let at = Position {
-            x: f64::from(session.anchor[0] * 16) + eye[0],
-            y: eye[1],
-            z: f64::from(session.anchor[1] * 16) + eye[2],
-        };
         rig.camera = Some(spawn_camera(commands, at, look));
     }
     let [x, y, z] = waypoint.at;
@@ -1864,9 +2060,24 @@ fn tick_sessions(
         if session.rig.is_none() {
             continue;
         }
+        if let Some(held) = session.veiled.as_mut() {
+            *held += 1;
+        }
+        if session.ready && session.veiled.is_some_and(|held| held >= VEIL_SETTLE_TICKS) {
+            tracing::info!(held = ?session.veiled, "map whole under the veil");
+            session.veiled = None;
+            players.send(player, veil_out());
+        }
+        if let Some(left) = session.closing.as_mut() {
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                commands.trigger(LeaveMap(player));
+            }
+        }
         if let Some(travel) = session.travel.as_mut() {
-            if travel.dive.tick() {
-                session.position = travel.to;
+            travel.dive.tick();
+            let arriving = travel.dive.left() == VEIL_FADE;
+            if arriving {
                 commands.trigger(CloseMap(player));
             }
             continue;
@@ -1914,6 +2125,9 @@ fn read_keys(
     session.keys = keys;
     let sneak = event.sneak && !session.sneaking;
     session.sneaking = event.sneak;
+    if session.closing.is_some() {
+        return;
+    }
     if sneak && session.travel.is_some() {
         cancel_dive(&mut session, event.entity, &ids, &players, &mut commands);
     } else if sneak {
@@ -2043,18 +2257,52 @@ fn note_pack(event: On<PackSettled>, mut commands: Commands) {
     }
 }
 
-fn leave(
+/// Starts the way out. Under a veil there is nothing to wait for.
+fn close(
     event: On<CloseMap>,
-    mut sessions: Query<(&mut MapSession, &MinecraftEntityId, Option<&mut TabEntry>)>,
+    mut sessions: Query<&mut MapSession>,
+    players: Players,
+    mut commands: Commands,
+) {
+    let player = event.0;
+    let Ok(mut session) = sessions.get_mut(player) else {
+        return;
+    };
+    if session.closing.is_some() {
+        return;
+    }
+    if session.drawn {
+        send_veil(&players, player);
+        session.closing = Some(VEIL_FADE);
+    } else {
+        commands.trigger(LeaveMap(player));
+    }
+}
+
+fn leave(
+    event: On<LeaveMap>,
+    mut sessions: Query<(
+        &mut MapSession,
+        &MinecraftEntityId,
+        &LoadedChunks,
+        Option<&mut TabEntry>,
+    )>,
     config: Res<ServerConfigResource>,
     players: Players,
     mut commands: Commands,
 ) {
     let player = event.0;
-    let Ok((mut session, id, tab)) = sessions.get_mut(player) else {
+    let Ok((mut session, id, loaded, tab)) = sessions.get_mut(player) else {
         return;
     };
     tracing::info!(?player, "leaving the map");
+    if let Some(travel) = session.travel.take() {
+        session.position = travel.to;
+        session.rotation = Rotation {
+            yaw: travel.dive.looking()[0],
+            pitch: 0.0,
+        };
+    }
     if let Some(mut entry) = tab {
         entry.game_mode = session.tab_game_mode.or(Some(config.game_mode));
     }
@@ -2064,28 +2312,30 @@ fn leave(
             radius: config.view_distance,
         },
     );
+    // The engine never saw the player leave this chunk, so it will not say so itself.
+    let home = ChunkPos::from_block(session.position.x, session.position.z);
     players.send(
         player,
-        Respawn {
-            dimension_type: OVERWORLD_TYPE,
-            dimension_name: OVERWORLD.into(),
-            hashed_seed: 0,
-            game_mode: config.game_mode,
-            previous_game_mode: SPECTATOR as i8,
-            is_debug: false,
-            is_flat: false,
-            last_death_location: None,
-            portal_cooldown: 0,
-            sea_level: OVERWORLD_SEA_LEVEL,
-            data_to_keep: Respawn::KEEP_ALL,
+        SetCenterChunk {
+            chunk_x: home.x,
+            chunk_z: home.z,
         },
     );
+    for chunk in &loaded.0 {
+        players.send(
+            player,
+            UnloadChunk {
+                chunk_x: chunk.x,
+                chunk_z: chunk.z,
+            },
+        );
+    }
     players.send(player, SetCamera { camera_id: id.0 });
     players.send(
         player,
         GameEvent {
-            event: GameEventType::StartWaitingForLevelChunks,
-            value: 0.0,
+            event: GameEventType::ChangeGameMode,
+            value: f32::from(config.game_mode),
         },
     );
     despawn_rig(&mut session, &mut commands);
@@ -2093,6 +2343,8 @@ fn leave(
     commands.entity(session.bar).try_despawn();
     let Position { x, y, z } = session.position;
     let (yaw, pitch) = (session.rotation.yaw, session.rotation.pitch);
+    let flight = Flight::landing(eye_of(&session.position), session.rotation);
+    let camera = spawn_camera(&mut commands, flight.at(), flight.looking());
     let abilities = session.abilities;
     let mut back = commands.entity(player);
     back.remove::<(MapSession, ChunkStreamingPaused, ServerControlledPosition)>();
@@ -2106,18 +2358,28 @@ fn leave(
         EffectiveViewDistance(0),
         ChunkStreamBacklog::default(),
         Teleport::to(x, y, z).facing(yaw, pitch),
+        Passage {
+            camera,
+            kind: PassageKind::Landing(flight),
+            ticks: 0,
+            quiet: 0,
+        },
     ));
 }
 
 fn player_left(
     event: On<PlayerQuitEvent>,
     mut sessions: Query<&mut MapSession>,
+    passages: Query<&Passage>,
     mut commands: Commands,
 ) {
     if let Ok(mut session) = sessions.get_mut(event.entity) {
         despawn_rig(&mut session, &mut commands);
         despawn_pins(&mut session, &mut commands);
         commands.entity(session.bar).try_despawn();
+    }
+    if let Ok(passage) = passages.get(event.entity) {
+        commands.entity(passage.camera).try_despawn();
     }
 }
 
@@ -2294,6 +2556,53 @@ mod tests {
         app
     }
 
+    fn session(mode: MapMode) -> MapSession {
+        MapSession {
+            mode,
+            anchor: [0, 0],
+            position: Position {
+                x: 0.0,
+                y: 64.0,
+                z: 0.0,
+            },
+            rotation: Rotation {
+                yaw: 0.0,
+                pitch: 0.0,
+            },
+            abilities: None,
+            tab_game_mode: None,
+            pins: Pins::default(),
+            bar: Entity::PLACEHOLDER,
+            rig: None,
+            mouse: Mouse::default(),
+            pan: Pan::default(),
+            zoom: Zoom::default(),
+            coarse: false,
+            sized_for: Zoom::default().height(),
+            free: FreeLook::default(),
+            telemetry: Telemetry::default(),
+            head: item("minecraft:player_head"),
+            looks: MapLooks::default(),
+            drawn: false,
+            rezoned: false,
+            travel: None,
+            veiled: None,
+            ready: false,
+            closing: None,
+            sneaking: false,
+            keys: [false; 3],
+            look: Rotation {
+                yaw: REST_YAW,
+                pitch: REST_PITCH,
+            },
+            hovered: None,
+            selected: None,
+            streamed: (0, 0),
+            ticks: 0,
+            last_click: 0,
+        }
+    }
+
     /// Bevy only reports conflicting system params when the schedule first runs.
     #[test]
     fn the_plugin_ticks_with_the_full_engine() {
@@ -2349,52 +2658,11 @@ mod tests {
     fn a_look_reported_with_the_position_counts() {
         let mut app = engine();
         let world = app.world_mut();
-        let entity = world.spawn_empty().id();
-        let session = MapSession {
-            mode: MapMode::Look,
-            anchor: [0, 0],
-            position: Position {
-                x: 0.0,
-                y: 64.0,
-                z: 0.0,
-            },
-            rotation: Rotation {
-                yaw: 0.0,
-                pitch: 0.0,
-            },
-            abilities: None,
-            tab_game_mode: None,
-            pins: Pins::default(),
-            bar: entity,
-            rig: Some(Rig {
-                eye_box: entity,
-                camera: None,
-            }),
-            mouse: Mouse::default(),
-            pan: Pan::default(),
-            zoom: Zoom::default(),
-            coarse: false,
-            sized_for: Zoom::default().height(),
-            free: FreeLook::default(),
-            telemetry: Telemetry::default(),
-            head: item("minecraft:player_head"),
-            looks: MapLooks::default(),
-            drawn: false,
-            rezoned: false,
-            travel: None,
-            sneaking: false,
-            keys: [false; 3],
-            look: Rotation {
-                yaw: REST_YAW,
-                pitch: REST_PITCH,
-            },
-            hovered: None,
-            selected: None,
-            centre: None,
-            streamed: (0, 0),
-            ticks: 0,
-            last_click: 0,
-        };
+        let mut session = session(MapMode::Look);
+        session.rig = Some(Rig {
+            eye_box: Entity::PLACEHOLDER,
+            camera: None,
+        });
         let player = world.spawn(session).id();
         world.trigger(PacketEvent {
             client_id: 0,
@@ -2437,15 +2705,6 @@ mod tests {
         assert!(!chunks.contains(&(20 + DETAIL_SEND_RADIUS + 1, -7)));
     }
 
-    /// Unloading on the way out of the sent circle meant sending it all again on the
-    /// way back, even though the client would have kept it.
-    #[test]
-    fn a_chunk_stays_for_as_long_as_the_client_is_told_to_keep_it() {
-        let corner = MAP_CHUNK_CACHE_RADIUS;
-        assert!(kept(MapMode::Pan, (corner, corner), (0, 0)));
-        assert!(!kept(MapMode::Pan, (corner + 1, 0), (0, 0)));
-    }
-
     #[test]
     fn an_option_that_does_not_fit_its_action_is_refused() {
         let chosen = choice(Some(Pick::Real), Pick::me, LookChoice::Me);
@@ -2456,19 +2715,42 @@ mod tests {
         assert_eq!(chosen, LookChoice::Me(None));
     }
 
-    /// From one edge of what a pan can reach to the other, nothing has to go.
+    /// A zoom past the threshold used to send the camera gliding from one height to the
+    /// other, and the model it landed on had to come over the wire.
     #[test]
-    fn a_pan_across_the_model_drops_nothing() {
-        let edge = DETAIL.radius / 16 + 2;
-        let far = edge + DETAIL_SEND_RADIUS;
-        assert!(kept(MapMode::Pan, (-far, -far), (edge, edge)));
+    fn the_same_point_stays_in_the_middle_on_both_models() {
+        let session = session(MapMode::Pan);
+        let [dx, dy, dz] = session.pan_view(Model::Detail);
+        let [ox, oy, oz] = session.pan_view(Model::Overview);
+        let ratio = Model::Overview.ratio();
+        let sea = f64::from(scene::SEA_Y);
+        assert!((dx * ratio - ox).abs() < 1e-9);
+        assert!(((dy - sea) * ratio - (oy - sea)).abs() < 1e-9);
+        assert!((dz * ratio - oz).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_pan_gets_both_models_its_own_first() {
+        let session = session(MapMode::Pan);
+        let wanted = session.wanted();
+        let model = session.model();
+        let own = wanted.iter().take_while(|(on, _)| *on == model).count();
+        assert!(own > 0 && own < wanted.len());
+        assert!(wanted[own..].iter().all(|(on, _)| *on == model.other()));
+    }
+
+    #[test]
+    fn the_two_models_never_share_a_chunk() {
+        let session = session(MapMode::Pan);
+        let edge = session.placed(Model::Detail, (DETAIL_PAN_REACH, 0));
+        let next = session.placed(Model::Overview, (-OVERVIEW_PAN_REACH, 0));
+        assert!(edge.x < next.x, "{edge:?} {next:?}");
     }
 
     #[test]
     fn a_card_says_what_a_waypoint_is_and_what_can_be_done() {
         let atlas = Atlas {
             info: MapLevel {
-                dimension_type: 0,
                 biome: voidmc::BiomeId::plains(),
                 biome_count: 1,
             },

@@ -9,6 +9,7 @@ use voidmc_ui::{Image, ResourcePack};
 
 use crate::alphabet::LETTERS;
 use crate::markers::MarkerKind;
+use crate::noise::fractal;
 
 /// How wide the detail panel and the bubble's name are.
 const WIDTH: u32 = 150;
@@ -50,6 +51,7 @@ const NAME_TAG: char = '\u{E110}';
 const DETAIL: char = '\u{E111}';
 const FLOURISH: char = '\u{E112}';
 const FIRST_MARK: u32 = 0xE118;
+const FIRST_VEIL: u32 = 0xE120;
 const FIRST_FORWARD: u32 = 0xE200;
 const FIRST_BACK: u32 = 0xE220;
 const SHIFT_BITS: u32 = 10;
@@ -58,6 +60,15 @@ const LETTERS_PER_ROW: u32 = 0x100;
 const FONT: &str = "assets/minecraft/font/default.json";
 const MINECART: &str = "assets/minecraft/textures/entity/minecart/minecart.png";
 const MINECART_SIZE: (u32, u32) = (64, 32);
+
+/// The client's glyph atlas is 256 wide, so that the veil comes in tiles. The title that
+/// shows it draws four times larger: this covers a screen at any gui scale over 1.
+const VEIL_TILE: (u32, u32) = (240, 203);
+const VEIL_COLUMNS: u32 = 3;
+const VEIL_ROWS: u32 = 2;
+const VEIL_SEED: u32 = 0x5EED;
+const VEIL_LIGHT: [f64; 3] = [247.0, 249.0, 252.0];
+const VEIL_SHADE: [f64; 3] = [176.0, 188.0, 208.0];
 
 const FILL: [u8; 4] = [14, 17, 24, 225];
 const EDGE: [u8; 4] = [4, 5, 8, 255];
@@ -651,6 +662,43 @@ pub struct Card {
     pub open: bool,
 }
 
+fn veil_glyph(column: u32, row: u32) -> char {
+    char::from_u32(FIRST_VEIL + row * VEIL_COLUMNS + column).expect("a private use character")
+}
+
+/// The line that fills the screen with cloud, as a title.
+pub fn veil() -> String {
+    let (width, _) = VEIL_TILE;
+    let mut pen = Pen::default();
+    for row in 0..VEIL_ROWS {
+        for column in 0..VEIL_COLUMNS {
+            pen.go_to((column * width) as i32);
+            pen.draw(veil_glyph(column, row), width as i32 + 1);
+        }
+    }
+    pen.go_to((VEIL_COLUMNS * width) as i32);
+    pen.title
+}
+
+/// A part of a soft bank of cloud, with no edge to its tiles.
+fn veil_tile(column: u32, row: u32) -> Image {
+    let (width, height) = VEIL_TILE;
+    let mut image = Image::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let (at_x, at_y) = (f64::from(column * width + x), f64::from(row * height + y));
+            let broad = fractal(VEIL_SEED, at_x, at_y * 1.6, 150.0);
+            let fine = fractal(VEIL_SEED + 9, at_x, at_y * 1.6, 34.0);
+            let light = (0.5 + (broad * 1.5 + fine * 0.5)).clamp(0.0, 1.0);
+            let [r, g, b] = std::array::from_fn(|channel| {
+                (VEIL_SHADE[channel] + (VEIL_LIGHT[channel] - VEIL_SHADE[channel]) * light) as u8
+            });
+            image.set(x, y, [r, g, b, 255]);
+        }
+    }
+    image
+}
+
 /// Writes a title, keeping track of where the pen is from where it started.
 #[derive(Default)]
 struct Pen {
@@ -978,6 +1026,20 @@ pub fn install(pack: &mut ResourcePack) {
     for mark in MARKS {
         let name = format!("mark_{}", mark.index());
         add_glyph(pack, &mut providers, name, &mark.image(), mark.glyph(), 0);
+    }
+    for row in 0..VEIL_ROWS {
+        // One row over the middle of the screen, one under it.
+        let top = LINE_ASCENT - (VEIL_TILE.1 as i32 - 3) + row as i32 * VEIL_TILE.1 as i32;
+        for column in 0..VEIL_COLUMNS {
+            add_glyph(
+                pack,
+                &mut providers,
+                format!("veil_{row}_{column}"),
+                &veil_tile(column, row),
+                veil_glyph(column, row),
+                top,
+            );
+        }
     }
     let rows = text_rows();
     for (level, row) in rows.iter().enumerate() {

@@ -62,7 +62,7 @@ const PAN_RETURN_LEAST: f64 = 0.3;
 const VIEW_SHARE: f64 = 0.45;
 /// A client that finds an entity further than this from where it is told to go jumps
 /// there instead of gliding, then glides back to what it was still doing.
-const CLIENT_SNAP_DISTANCE: f64 = 64.0;
+pub const CLIENT_SNAP_DISTANCE: f64 = 64.0;
 /// The most the view moves in a tick. A camera glides a few ticks behind it, and has to
 /// stay clear of [`CLIENT_SNAP_DISTANCE`] however fast the mouse goes.
 const MAX_VIEW_STEP: f64 = 12.0;
@@ -101,7 +101,7 @@ pub fn detail_back(height: f64) -> f64 {
     height / f64::from(DETAIL_PITCH).to_radians().tan()
 }
 
-fn shortest_turn(from: f32, to: f32) -> f32 {
+pub fn shortest_turn(from: f32, to: f32) -> f32 {
     (to - from + 180.0).rem_euclid(360.0) - 180.0
 }
 
@@ -409,7 +409,7 @@ pub const DIVE_STOP: f64 = 16.0;
 pub const DIVE_PITCH: f32 = 62.0;
 
 /// Starts and ends at rest, with no jolt at either end.
-fn ease(share: f64) -> f64 {
+pub fn ease(share: f64) -> f64 {
     share.powi(3) * (share * (share * 6.0 - 15.0) + 10.0)
 }
 
@@ -435,10 +435,14 @@ impl Dive {
         }
     }
 
-    /// Moves on a tick. Says when it has arrived.
-    pub fn tick(&mut self) -> bool {
+    /// Moves on a tick.
+    pub fn tick(&mut self) {
         self.ticks = (self.ticks + 1).min(DIVE_TICKS);
-        self.ticks == DIVE_TICKS
+    }
+
+    /// The ticks before it arrives.
+    pub fn left(&self) -> u32 {
+        DIVE_TICKS - self.ticks
     }
 
     fn progress(&self) -> f64 {
@@ -519,9 +523,11 @@ mod tests {
     fn a_dive_ends_looking_at_its_target_from_its_distance() {
         let mut dive = dive();
         for _ in 1..DIVE_TICKS {
-            assert!(!dive.tick());
+            dive.tick();
+            assert!(dive.left() > 0);
         }
-        assert!(dive.tick());
+        dive.tick();
+        assert_eq!(dive.left(), 0);
         let [yaw, pitch] = dive.looking();
         let way = look_direction(yaw, pitch);
         let at = dive.at();
