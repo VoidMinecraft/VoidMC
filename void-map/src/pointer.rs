@@ -3,6 +3,7 @@
 //! The overview stands south of the model and well above it. Aiming straight down
 //! is then off the model, so no one needs the angle where a look spins on itself.
 
+use crate::motion::{Follower, Motion};
 use crate::scene::SEA_Y;
 
 /// How steeply the overview looks down. Everything about it follows from this.
@@ -59,12 +60,12 @@ const BLOCKS_PER_DEGREE: f64 = 5.0;
 pub const MAX_PAN_STEP: f64 = 40.0;
 /// How far past the rim a pan can stretch. The further out, the harder it pulls.
 const PAN_MARGIN: i32 = 28;
-/// How much of what is left a pan comes back by in a tick, once the mouse rests.
-const PAN_RETURN_SHARE: f64 = 0.15;
-const PAN_RETURN_LEAST: f64 = 0.3;
-/// How much of the way to the aim the view covers in a tick. It ends on a long tail of
-/// short moves: a client gliding to the last one has nothing left to overshoot with.
+/// How much of the way to its aim a height covers in a tick.
 const VIEW_SHARE: f64 = 0.45;
+/// How much of its speed a view keeps from tick to tick, with inertia on, and where it
+/// lets go.
+const COAST_KEEP: f64 = 0.85;
+const COAST_OVER: f64 = 0.05;
 /// A client that finds an entity further than this from where it is told to go jumps
 /// there instead of gliding, then glides back to what it was still doing.
 pub const CLIENT_SNAP_DISTANCE: f64 = 64.0;
@@ -300,16 +301,6 @@ fn glide_height(from: f64, to: f64) -> f64 {
     }
 }
 
-fn glide(from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
-    let left = [to[0] - from[0], to[1] - from[1]];
-    let distance = left[0].hypot(left[1]);
-    if distance < VIEW_ARRIVED {
-        return to;
-    }
-    let share = VIEW_SHARE.min(MAX_VIEW_STEP / distance);
-    [from[0] + left[0] * share, from[1] + left[1] * share]
-}
-
 /// What one rotation report amounts to.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Turn {
@@ -371,14 +362,49 @@ fn off_model(at: [f64; 2], on_model: &impl Fn([f64; 2]) -> bool) -> (f64, [f64; 
     (f64::from(PAN_MARGIN), [0.0; 2])
 }
 
+/// How much of a step outwards goes through, this far past the rim. It starts and ends
+/// flat, so that neither end shows as a jolt.
+fn rim_give(past: f64) -> f64 {
+    let share = (past / f64::from(PAN_MARGIN)).clamp(0.0, 1.0);
+    1.0 - share * share * (3.0 - 2.0 * share)
+}
+
+/// Where a step from a point ends up. Past the rim of what `on_model` accepts, moving out
+/// gets slower and slower, up to a margin nothing goes past. Moving back stays free.
+fn through_rim(from: [f64; 2], step: [f64; 2], on_model: &impl Fn([f64; 2]) -> bool) -> [f64; 2] {
+    let mut at = from;
+    for (axis, step) in step.into_iter().enumerate() {
+        let moves = step.abs().ceil().max(1.0) as u32;
+        let part = step / f64::from(moves);
+        for _ in 0..moves {
+            let mut next = at;
+            next[axis] += part;
+            let (past, way) = off_model(next, on_model);
+            let outwards = past > 0.0 && (way == [0.0; 2] || part * way[axis] < 0.0);
+            let give = if outwards { rim_give(past) } else { 1.0 };
+            at[axis] += part * give;
+        }
+    }
+    at
+}
+
 /// Where the mouse has moved a panning view, in blocks from its resting place.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Pan {
+    /// How the view follows the aim.
+    motion: Motion,
+    /// Goes on for a moment once the mouse stops.
+    inertia: bool,
+    follower: Follower,
     aim: [f64; 2],
     /// Where the view is on its way to the aim.
     view: [f64; 2],
-    /// Ticks since the mouse last moved.
-    still: u32,
+    /// How far the view went on the last tick.
+    step: [f64; 2],
+    /// How far the mouse went since the last tick.
+    moved: [f64; 2],
+    /// What inertia still has to give, in blocks per tick, once it has started.
+    coast: Option<[f64; 2]>,
 }
 
 impl Pan {
@@ -386,50 +412,80 @@ impl Pan {
         Self {
             aim: offset,
             view: offset,
-            still: 0,
+            ..Self::default()
+        }
+    }
+
+    /// Changes how the view follows, from where it is.
+    pub fn drive(&mut self, motion: Motion, inertia: bool) {
+        if (self.motion, self.inertia) != (motion, inertia) {
+            *self = Self {
+                motion,
+                inertia,
+                ..Self::at(self.view)
+            };
         }
     }
 
     /// The view looks north: turning right is east, looking down is south.
-    /// Past the rim of what `on_model` accepts, moving out gets harder and harder, up to
-    /// a margin that nothing goes past. Moving back stays free.
-    pub fn apply(&mut self, delta: [f32; 2], on_model: impl Fn([f64; 2]) -> bool) {
-        self.still = 0;
+    pub fn apply(&mut self, delta: [f32; 2]) {
         let step = delta.map(|degrees| f64::from(degrees) * BLOCKS_PER_DEGREE);
         let length = step[0].hypot(step[1]);
         let slowed = (MAX_PAN_STEP / length.max(f64::EPSILON)).min(1.0);
-        for (axis, step) in step.into_iter().enumerate() {
-            let step = step * slowed;
-            let moves = step.abs().ceil().max(1.0) as u32;
-            for _ in 0..moves {
-                let mut next = self.aim;
-                next[axis] += step / f64::from(moves);
-                let (before, _) = off_model(self.aim, &on_model);
-                let (after, _) = off_model(next, &on_model);
-                let give = if after > 0.0 && after >= before {
-                    1.0 - after / f64::from(PAN_MARGIN)
-                } else {
-                    1.0
-                };
-                self.aim[axis] += step / f64::from(moves) * give;
-            }
-        }
-        let lead = [self.aim[0] - self.view[0], self.aim[1] - self.view[1]];
+        let aim: [f64; 2] = std::array::from_fn(|axis| self.aim[axis] + step[axis] * slowed);
+        let lead = [aim[0] - self.view[0], aim[1] - self.view[1]];
         let kept = (MAX_AIM_LEAD / lead[0].hypot(lead[1]).max(f64::EPSILON)).min(1.0);
-        self.aim = [self.view[0] + lead[0] * kept, self.view[1] + lead[1] * kept];
+        let aim = [self.view[0] + lead[0] * kept, self.view[1] + lead[1] * kept];
+        self.moved = std::array::from_fn(|axis| self.moved[axis] + aim[axis] - self.aim[axis]);
+        self.aim = aim;
     }
 
-    /// Glides the view to the aim, and brings an aim past the rim back once the mouse rests.
+    /// Moves the view on a tick. What the rim holds back is taken off the aim as well: a
+    /// view at the rim has nothing stored up, so it never springs back, and turning round
+    /// answers at once.
     pub fn tick(&mut self, on_model: impl Fn([f64; 2]) -> bool) {
-        self.still = self.still.saturating_add(1);
-        if self.still >= SETTLE_TICKS {
-            let (distance, way) = off_model(self.aim, &on_model);
-            let back = (distance * PAN_RETURN_SHARE)
-                .max(PAN_RETURN_LEAST)
-                .min(distance);
-            self.aim = [self.aim[0] + way[0] * back, self.aim[1] + way[1] * back];
+        let moved = std::mem::take(&mut self.moved);
+        let moved = self.coasted(moved);
+        let wanted = self
+            .follower
+            .next(self.motion, self.view, self.step, self.aim, moved);
+        let step = [wanted[0] - self.view[0], wanted[1] - self.view[1]];
+        let kept = (MAX_VIEW_STEP / step[0].hypot(step[1]).max(f64::EPSILON)).min(1.0);
+        let step = step.map(|step| step * kept);
+        let at = through_rim(self.view, step, &on_model);
+        for axis in 0..2 {
+            self.step[axis] = at[axis] - self.view[axis];
+            self.aim[axis] -= step[axis] - self.step[axis];
+            self.view[axis] = at[axis];
+            // Stopped past the aim, the view stays: going back would read as a rollback.
+            let past = (self.aim[axis] - at[axis]) * self.step[axis] <= 0.0;
+            if past && self.motion.runs_past() && self.follower.stopped() {
+                self.aim[axis] = at[axis];
+            }
         }
-        self.view = glide(self.view, self.aim);
+    }
+
+    /// What the mouse moved, with what inertia adds to the aim once it stops.
+    fn coasted(&mut self, moved: [f64; 2]) -> [f64; 2] {
+        if moved != [0.0; 2] {
+            self.coast = None;
+            return moved;
+        }
+        if !self.inertia || (self.coast.is_none() && !self.follower.stopped()) {
+            return moved;
+        }
+        let speed = self
+            .coast
+            .unwrap_or(self.step)
+            .map(|speed| speed * COAST_KEEP);
+        let speed = if speed[0].hypot(speed[1]) < COAST_OVER {
+            [0.0; 2]
+        } else {
+            speed
+        };
+        self.coast = Some(speed);
+        self.aim = [self.aim[0] + speed[0], self.aim[1] + speed[1]];
+        speed
     }
 
     /// Where the middle of the screen is headed.
@@ -467,7 +523,7 @@ mod tests {
         for tick in 0..200 {
             let way = if (tick / 4) % 2 == 0 { 40.0 } else { -40.0 };
             let before = pan.view();
-            pan.apply([way, way / 2.0], |_| true);
+            pan.apply([way, way / 2.0]);
             pan.tick(|_| true);
             let after = pan.view();
             let moved = (after[0] - before[0]).hypot(after[1] - before[1]);
@@ -479,13 +535,13 @@ mod tests {
     fn turning_back_answers_within_a_few_ticks() {
         let mut pan = Pan::default();
         for _ in 0..20 {
-            pan.apply([40.0, 0.0], |_| true);
+            pan.apply([40.0, 0.0]);
             pan.tick(|_| true);
         }
         let mut last = pan.view()[0];
         let mut ticks = 0;
         loop {
-            pan.apply([-40.0, 0.0], |_| true);
+            pan.apply([-40.0, 0.0]);
             pan.tick(|_| true);
             ticks += 1;
             if pan.view()[0] < last {
@@ -822,7 +878,7 @@ mod tests {
     #[test]
     fn a_pan_has_a_top_speed() {
         let mut pan = Pan::default();
-        pan.apply([150.0, 0.0], |_| true);
+        pan.apply([150.0, 0.0]);
         assert_eq!(pan.offset(), [MAX_AIM_LEAD, 0.0]);
     }
 
@@ -853,7 +909,7 @@ mod tests {
     fn a_pan_has_no_acceleration() {
         let moved = |degrees: f32| {
             let mut pan = Pan::default();
-            pan.apply([degrees, 0.0], |_| true);
+            pan.apply([degrees, 0.0]);
             pan.offset()[0]
         };
         assert_eq!(moved(2.0), 2.0 * moved(1.0));
@@ -862,7 +918,7 @@ mod tests {
     #[test]
     fn a_pan_follows_the_mouse() {
         let mut pan = Pan::default();
-        pan.apply([2.0, 1.0], |_| true);
+        pan.apply([2.0, 1.0]);
         let gain = BLOCKS_PER_DEGREE;
         assert_eq!(pan.offset(), [2.0 * gain, gain]);
     }
@@ -886,7 +942,7 @@ mod tests {
             let delta = [angle.cos() as f32 * 2.0, angle.sin() as f32 * 2.0];
             let mut pan = Pan::default();
             for _ in 0..1000 {
-                pan.apply(delta, |at| over(&scene, at));
+                pan.apply(delta);
                 pan.tick(|at| over(&scene, at));
             }
             let (past, _) = off_model(pan.offset(), &|at| over(&scene, at));
@@ -895,46 +951,174 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_pan_past_the_rim_gets_harder_as_it_goes() {
+    /// Runs a pan against a rim at `x = 0`, and gives the steps of the view.
+    fn against_the_rim(motion: Motion) -> (Pan, Vec<f64>) {
         let inside = |[x, _]: [f64; 2]| x < 0.0;
-        let mut pan = Pan::default();
-        let mut moves = Vec::new();
-        for _ in 0..12 {
-            let before = pan.offset()[0];
-            pan.apply([0.4, 0.0], inside);
-            moves.push(pan.offset()[0] - before);
+        let mut pan = Pan::at([-40.0, 0.0]);
+        pan.drive(motion, false);
+        let mut steps = Vec::new();
+        for _ in 0..200 {
+            let before = pan.view()[0];
+            pan.apply([1.0, 0.0]);
+            pan.tick(inside);
+            steps.push(pan.view()[0] - before);
         }
-        assert!(moves.windows(2).all(|pair| pair[1] <= pair[0]), "{moves:?}");
-        assert!(moves[0] > 0.0);
+        (pan, steps)
     }
 
+    /// No wall: speed goes down bit by bit, whichever way the view follows.
     #[test]
-    fn a_pan_past_the_rim_only_comes_back_once_the_mouse_rests() {
+    fn a_rim_slows_a_pan_down_without_a_jolt() {
+        for motion in Motion::ALL {
+            let (pan, steps) = against_the_rim(motion);
+            let past = pan.view()[0];
+            assert!(
+                past > 0.0 && past < f64::from(PAN_MARGIN),
+                "{motion:?} {past}"
+            );
+            let top = steps.iter().copied().fold(0.0, f64::max);
+            let drop = steps.windows(2).map(|p| p[0] - p[1]).fold(0.0, f64::max);
+            assert!(drop < top * 0.2, "{motion:?}: {drop} of {top} in {steps:?}");
+            assert!(*steps.last().unwrap() < 0.1, "{motion:?}");
+        }
+    }
+
+    /// The view used to come back from past the rim once the mouse rested.
+    #[test]
+    fn a_pan_past_the_rim_stays_where_it_stopped() {
         let inside = |[x, _]: [f64; 2]| x < 0.0;
-        let mut pan = Pan::default();
-        for _ in 0..10 {
-            pan.apply([1.0, 0.0], inside);
-            pan.tick(inside);
+        for motion in Motion::ALL {
+            let (mut pan, _) = against_the_rim(motion);
+            let mut furthest = pan.view()[0];
+            for _ in 0..100 {
+                pan.tick(inside);
+                let at = pan.view()[0];
+                assert!(at >= furthest - 1e-9, "{motion:?} rolled back");
+                furthest = at;
+            }
         }
-        let stretched = pan.offset()[0];
-        assert!(stretched > 0.0);
-        for _ in 0..SETTLE_TICKS - 2 {
-            pan.tick(inside);
+    }
+
+    /// Nothing is stored up past the rim, so that turning round answers at once.
+    #[test]
+    fn turning_round_at_the_rim_answers_at_once() {
+        let inside = |[x, _]: [f64; 2]| x < 0.0;
+        for motion in Motion::ALL {
+            let (mut pan, _) = against_the_rim(motion);
+            let at = pan.view()[0];
+            for _ in 0..4 {
+                pan.apply([-1.0, 0.0]);
+                pan.tick(inside);
+            }
+            assert!(pan.view()[0] < at - 2.0, "{motion:?} {at} {:?}", pan.view());
         }
-        assert_eq!(pan.offset()[0], stretched);
-        for _ in 0..200 {
-            pan.tick(inside);
-        }
-        assert!(pan.offset()[0] < 0.0);
     }
 
     #[test]
     fn a_pan_slides_along_the_rim_instead_of_sticking_to_it() {
+        let inside = |[x, _]: [f64; 2]| x < 2.0;
         let mut pan = Pan::default();
-        pan.apply([1.0, 3.0], |[x, _]| x < 2.0);
-        let [_, z] = pan.offset();
-        assert!(z > 2.0 * BLOCKS_PER_DEGREE, "{z}");
+        for _ in 0..30 {
+            pan.apply([1.0, 3.0]);
+            pan.tick(inside);
+        }
+        assert!(
+            pan.view()[1] > 20.0 * 3.0 * BLOCKS_PER_DEGREE,
+            "{:?}",
+            pan.view()
+        );
+    }
+
+    fn driven(motion: Motion) -> Pan {
+        let mut pan = Pan::default();
+        pan.drive(motion, false);
+        pan
+    }
+
+    /// Small movements add up: a slack or a filter cannot eat a slow mouse.
+    #[test]
+    fn a_slow_mouse_gets_as_far_in_every_motion() {
+        for motion in Motion::ALL {
+            let mut pan = driven(motion);
+            for _ in 0..2000 {
+                pan.apply([0.02, 0.0]);
+                pan.tick(|_| true);
+            }
+            let expected = 2000.0 * 0.02 * BLOCKS_PER_DEGREE;
+            assert!(
+                pan.view()[0] > expected - 2.0,
+                "{motion:?} {:?}",
+                pan.view()
+            );
+            assert!(
+                pan.view()[0] < expected + 2.0,
+                "{motion:?} {:?}",
+                pan.view()
+            );
+        }
+    }
+
+    /// A move ends without ever turning back, on steps too short for a client to overshoot.
+    #[test]
+    fn a_stop_never_turns_back() {
+        for motion in Motion::ALL {
+            let mut pan = driven(motion);
+            for _ in 0..30 {
+                pan.apply([1.6, 0.0]);
+                pan.tick(|_| true);
+            }
+            let mut steps = Vec::new();
+            for _ in 0..40 {
+                let before = pan.view()[0];
+                pan.tick(|_| true);
+                steps.push(pan.view()[0] - before);
+            }
+            assert!(
+                steps.iter().all(|step| *step >= -1e-9),
+                "{motion:?} {steps:?}"
+            );
+            let top = steps.iter().copied().fold(0.0, f64::max);
+            assert!(top <= 1.6 * BLOCKS_PER_DEGREE + 0.5, "{motion:?} {steps:?}");
+            assert!(*steps.last().unwrap() < 0.05, "{motion:?} {steps:?}");
+        }
+    }
+
+    /// Reports fall unevenly on the ticks: this is what a prediction is for.
+    #[test]
+    fn a_prediction_evens_out_reports_that_fall_unevenly() {
+        let mut pan = driven(Motion::Predicted);
+        let mut steps = Vec::new();
+        for tick in 0..80 {
+            let before = pan.view()[0];
+            if tick % 2 == 0 {
+                pan.apply([1.0, 0.0]);
+                pan.apply([1.0, 0.0]);
+            }
+            pan.tick(|_| true);
+            steps.push(pan.view()[0] - before);
+        }
+        let settled = &steps[40..];
+        let top = settled.iter().copied().fold(0.0, f64::max);
+        let least = settled.iter().copied().fold(f64::MAX, f64::min);
+        assert!(top - least < 0.5, "{settled:?}");
+    }
+
+    #[test]
+    fn inertia_is_an_option_that_goes_on_for_a_moment() {
+        let travel = |inertia| {
+            let mut pan = Pan::default();
+            pan.drive(Motion::Damped, inertia);
+            for _ in 0..20 {
+                pan.apply([1.0, 0.0]);
+                pan.tick(|_| true);
+            }
+            for _ in 0..100 {
+                pan.tick(|_| true);
+            }
+            pan.view()[0]
+        };
+        assert!(travel(true) > travel(false) + 5.0);
+        assert!((travel(false) - 20.0 * BLOCKS_PER_DEGREE).abs() < 0.5);
     }
 
     /// The client adds the motion of a glide to its target. A view that stops dead
@@ -942,7 +1126,7 @@ mod tests {
     #[test]
     fn a_stopping_view_ends_on_steps_too_short_to_overshoot() {
         let mut pan = Pan::default();
-        pan.apply([8.0, 0.0], |_| true);
+        pan.apply([8.0, 0.0]);
         let mut last = 0.0;
         let mut step = f64::MAX;
         for _ in 0..40 {
@@ -951,7 +1135,6 @@ mod tests {
             last = pan.view()[0];
         }
         assert!(step.abs() < 0.05, "{step}");
-        assert_eq!(pan.view(), pan.offset());
     }
 
     #[test]

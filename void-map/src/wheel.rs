@@ -6,7 +6,7 @@ const STEP_DEGREES: f64 = 4.0;
 /// A movement this much stronger on one axis is meant for that axis.
 const CLEAR_LEAD: f64 = 1.5;
 
-pub const CATEGORIES: usize = 4;
+pub const CATEGORIES: usize = 5;
 
 /// Sits on the screen of a player while they hold the key.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

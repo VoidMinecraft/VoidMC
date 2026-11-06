@@ -27,6 +27,7 @@ mod remove_mob_effect;
 mod reset_score;
 mod resource_pack_push;
 mod respawn;
+mod section_blocks_update;
 mod set_camera;
 mod set_container_content;
 mod set_container_slot;
@@ -92,6 +93,7 @@ pub use remove_mob_effect::*;
 pub use reset_score::*;
 pub use resource_pack_push::*;
 pub use respawn::*;
+pub use section_blocks_update::*;
 pub use set_camera::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
@@ -194,6 +196,8 @@ pub enum PlayPacket {
     Respawn(Respawn),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
+    #[codec(packet_id = 0x54)]
+    SectionBlocksUpdate(SectionBlocksUpdate),
     #[codec(packet_id = 0x58)]
     SetBorderCenter(SetBorderCenter),
     #[codec(packet_id = 0x59)]

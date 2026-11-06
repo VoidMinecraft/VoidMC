@@ -34,7 +34,8 @@ use voidmc_codec::Encode;
 use voidmc_protocol::{
     clientbound::{
         ChunkDataAndLight, EntityPositionSync, GameEvent, GameEventType, PlayerRotation,
-        ResolvableProfile, SetCamera, SetCenterChunk, SetChunkCacheRadius, SystemChat, UnloadChunk,
+        ResolvableProfile, SectionBlocksUpdate, SetCamera, SetCenterChunk, SetChunkCacheRadius,
+        SystemChat, UnloadChunk,
     },
     serverbound::{Interact, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation, SpectateEntity},
     slot::{DataComponent, component_ids},
@@ -45,6 +46,7 @@ use crate::art::{Card, Mark, Style, Subject, WHEEL_MIDDLE_DROP, sign, wheel_face
 use crate::biome::{self, MapLevel};
 use crate::cursor::{self, CursorPlugin};
 use crate::markers::{Marker, MarkerField, MarkerKind};
+use crate::motion::Motion;
 use crate::players::PlayersPlugin;
 use crate::pointer::{
     CLIENT_SNAP_DISTANCE, COARSE_ABOVE, COARSEST_ABOVE, DETAIL_BELOW, DETAIL_PITCH, DIVE_STOP,
@@ -53,14 +55,16 @@ use crate::pointer::{
     overview_y,
 };
 use crate::regions::{RegionState, Regions, ZoneLook};
-use crate::scene::{self, Blocks, ChunkLook, DETAIL, MIDDLE, OVERVIEW, Scale, Scene};
+use crate::scene::{
+    self, Blocks, ChunkLook, DETAIL, MIDDLE, OVERVIEW, Scale, Scene, SectionChange,
+};
 use crate::telemetry::Telemetry;
 use crate::terrain::Terrain;
 use crate::transition::{
     CLOSING_TICKS, FLIGHT_GLIDE_TICKS, Flight, OPENING_TICKS, RISE_TICKS, SWAP_TICKS, TURN_TICKS,
     VEIL_FADE, veil_in, veil_out,
 };
-use crate::wheel::{Wheel, stepped};
+use crate::wheel::{CATEGORIES, Wheel, stepped};
 
 /// `WorldGenerator` does not expose its water level. This is the one of
 /// `DefaultWorldGenerator`, and of vanilla.
@@ -113,6 +117,9 @@ const _: () = assert!(
 /// What the model the player is not on gets of each tick.
 const NEIGHBOUR_CHUNKS_PER_TICK: usize = 16;
 pub(crate) const CHUNKS_PER_TICK: usize = 64;
+/// Blocks a change of look turns on the client in a tick, nearest first. The chunks are
+/// left in place: a look only reaches them as blocks, so nothing goes away and comes back.
+const REPAINTED_BLOCKS_PER_TICK: usize = 20_000;
 /// What a tick gives the real world, sent ahead of a player.
 const WORLD_CHUNKS_PER_TICK: usize = 32;
 
@@ -284,6 +291,15 @@ impl Model {
         }
     }
 
+    /// The chunks a pan can ask for, on each side of its centre.
+    fn reach(self) -> i32 {
+        match self {
+            Self::Overview => OVERVIEW_PAN_REACH,
+            Self::Middle => MIDDLE_PAN_REACH,
+            Self::Detail => DETAIL_PAN_REACH,
+        }
+    }
+
     /// The models a zoom can move to from this one.
     fn neighbours(self) -> &'static [Self] {
         match self {
@@ -325,6 +341,8 @@ struct Level {
     signs: Vec<([f64; 3], RegionState)>,
     /// Built and encoded once, each with its weight on the wire.
     chunks: HashMap<((i32, i32), ChunkLook), (ChunkDataAndLight, usize)>,
+    /// Worked out once for all players.
+    repaints: HashMap<((i32, i32), ChunkLook, ChunkLook), Vec<SectionChange>>,
 }
 
 impl Level {
@@ -374,6 +392,7 @@ impl Level {
             waypoints,
             signs,
             chunks: HashMap::new(),
+            repaints: HashMap::new(),
         }
     }
 
@@ -393,6 +412,13 @@ impl Level {
             let weight = bytes.len();
             (packet, weight)
         })
+    }
+
+    fn repaint(&mut self, at: (i32, i32), from: ChunkLook, to: ChunkLook) -> &[SectionChange] {
+        let scene = &self.scene;
+        self.repaints
+            .entry((at, from, to))
+            .or_insert_with(|| scene.repaint(at.0, at.1, from, to))
     }
 
     /// Builds the island's chunks ahead of time: on a tick, it would make that tick
@@ -654,6 +680,7 @@ struct Travel {
 struct ShownCard {
     entity: Entity,
     text: String,
+    style: Style,
     hover: Hover,
     /// The height of the view it was sized for.
     zoom: f64,
@@ -670,6 +697,8 @@ enum Hover {
 struct OpenWheel {
     wheel: Wheel,
     display: Entity,
+    /// How long it has been open.
+    ticks: u32,
     /// What it shows, to tell when that has to change.
     face: String,
 }
@@ -729,8 +758,10 @@ pub struct MapSession {
     looks: MapLooks,
     /// The client has the pack, so it can draw.
     drawn: bool,
-    /// The chunks' look changed: they have to go out again.
-    rezoned: bool,
+    /// The look of the chunks going out.
+    painted: ChunkLook,
+    /// The chunks the client has in another look, with that look.
+    behind: HashMap<ChunkPos, ChunkLook>,
     /// The chunks of the real world the client keeps meanwhile.
     world: HashSet<ChunkPos>,
     /// Where the world should be ready next: the player may well go there.
@@ -867,7 +898,7 @@ impl MapSession {
     fn camera_at(&self) -> Position {
         let [x, y, z] = match &self.travel {
             Some(travel) => self.vehicle_at(travel.flight.target()),
-            None => self.eye(),
+            None => self.vehicle_at(self.eye()),
         };
         self.on_model(x, y, z)
     }
@@ -905,7 +936,7 @@ impl MapSession {
     }
 
     /// Takes in a rotation the client reports, and says how to correct it, if at all.
-    fn turn(&mut self, yaw: f32, pitch: f32, atlas: &Atlas) -> Option<PlayerRotation> {
+    fn turn(&mut self, yaw: f32, pitch: f32) -> Option<PlayerRotation> {
         self.rig?;
         self.telemetry.report(Instant::now());
         if let Some(open) = self.wheel.as_mut() {
@@ -930,8 +961,7 @@ impl MapSession {
             MapMode::Pan => {
                 let turn = self.mouse.report(yaw, pitch);
                 if turn.delta != [0.0, 0.0] && self.travel.is_none() {
-                    let scene = &atlas.level(Model::Detail)?.scene;
-                    self.pan.apply(turn.delta, |at| on_land(scene, at));
+                    self.pan.apply(turn.delta);
                 }
                 turn.recentre.then_some(PlayerRotation {
                     yaw: 0.0,
@@ -974,6 +1004,15 @@ impl MapSession {
             self.site.anchor[0] + model.origin() + x,
             self.site.anchor[1] + z,
         )
+    }
+
+    /// Which chunk of which model this is on the client.
+    fn unplaced(&self, chunk: ChunkPos) -> Option<(Model, (i32, i32))> {
+        [Model::Detail, Model::Middle, Model::Overview]
+            .into_iter()
+            .map(|model| (model, chunk.x - self.site.anchor[0] - model.origin()))
+            .find(|(model, x)| x.abs() <= model.reach())
+            .map(|(model, x)| (model, (x, chunk.z - self.site.anchor[1])))
     }
 
     /// Far markers are large and near ones smaller, so that they keep their size on screen.
@@ -1036,6 +1075,7 @@ impl MapSession {
     fn place_pan(&mut self, atlas: &Atlas) {
         if let (MapMode::Pan, Some(level)) = (self.mode, atlas.level(Model::Detail)) {
             self.pan = self.pan_start(&level.scene);
+            self.pan.drive(self.looks.motion, self.looks.inertia);
         }
     }
 
@@ -1336,6 +1376,32 @@ fn spawn_pins(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) 
     };
 }
 
+/// Draws the player's marker again, and nothing else of the map.
+fn respawn_you(session: &mut MapSession, commands: &mut Commands) {
+    let Some(you) = session.pins.you.take() else {
+        return;
+    };
+    for (entity, _) in you.parts {
+        commands.entity(entity).try_despawn();
+    }
+    let build = f64::from(session.model().scale().build);
+    session.pins.you = Some(You {
+        parts: spawn_you(session, you.at, build, commands),
+        at: you.at,
+    });
+}
+
+/// Draws the signs of the closed regions again, and nothing else of the map.
+fn respawn_signs(atlas: &Atlas, session: &mut MapSession, commands: &mut Commands) {
+    for entity in std::mem::take(&mut session.pins.signs) {
+        commands.entity(entity).try_despawn();
+    }
+    if let Some(level) = atlas.level(session.model()) {
+        let build = f64::from(session.model().scale().build);
+        session.pins.signs = spawn_signs(level, session, build, commands);
+    }
+}
+
 /// The entities of the player's marker, as they chose it.
 fn spawn_you(
     session: &MapSession,
@@ -1543,7 +1609,8 @@ fn rise(
         head: player_head(uuid),
         looks: looks.copied().unwrap_or_default(),
         drawn,
-        rezoned: false,
+        painted: looks.copied().unwrap_or_default().chunks(),
+        behind: HashMap::new(),
         world: world.clone(),
         heading: None,
         camera: None,
@@ -1993,36 +2060,12 @@ fn stream_chunks(
     for (player, mut session, loaded, dimension) in &mut sessions {
         let started = Instant::now();
         switch_model(&atlas, &mut session, &mut commands);
-        // What changed look goes out again right over itself, with no gap in between.
-        let rezoned = std::mem::take(&mut session.rezoned);
         let look = session.looks.chunks();
         let model = session.model();
         let wanted = session.wanted();
-        let placed: HashSet<_> = wanted
-            .iter()
-            .map(|(model, at)| session.placed(*model, *at))
-            .collect();
-        let stale: Vec<_> = loaded
-            .0
-            .iter()
-            .copied()
-            .filter(|chunk| rezoned && !placed.contains(chunk) && !session.world.contains(chunk))
-            .collect();
         // `Players` reads this component, so it is replaced rather than changed here.
-        let mut now_loaded = if rezoned {
-            session.world.clone()
-        } else {
-            loaded.0.clone()
-        };
-        for chunk in &stale {
-            players.send(
-                player,
-                UnloadChunk {
-                    chunk_x: chunk.x,
-                    chunk_z: chunk.z,
-                },
-            );
-        }
+        let mut now_loaded = loaded.0.clone();
+        repaint(&mut atlas, &mut session, &loaded.0, player, &players);
 
         let missing: Vec<_> = wanted
             .into_iter()
@@ -2077,8 +2120,64 @@ fn stream_chunks(
             (player, &players),
             &mut commands,
         );
-        if rezoned || !stale.is_empty() || !missing.is_empty() || ahead {
+        if !missing.is_empty() || ahead {
             commands.entity(player).insert(LoadedChunks(now_loaded));
+        }
+    }
+}
+
+/// Brings the chunks the client holds to the player's look, as blocks: the ones that
+/// differ, around the view first. Nothing leaves the client, and stepping through looks
+/// faster than this goes only sends what ends up different.
+fn repaint(
+    atlas: &mut Atlas,
+    session: &mut MapSession,
+    loaded: &HashSet<ChunkPos>,
+    player: Entity,
+    players: &Players,
+) {
+    let look = session.looks.chunks();
+    if session.painted != look {
+        let was = std::mem::replace(&mut session.painted, look);
+        for chunk in loaded.difference(&session.world) {
+            session.behind.entry(*chunk).or_insert(was);
+        }
+        session.behind.retain(|_, from| *from != look);
+    }
+    session.behind.retain(|chunk, _| loaded.contains(chunk));
+    if session.behind.is_empty() {
+        return;
+    }
+    let [x, _, z] = session.standing();
+    let (centre, own) = (((x / 16.0) as i32, (z / 16.0) as i32), session.model());
+    let mut order: Vec<_> = session
+        .behind
+        .iter()
+        .filter_map(|(chunk, from)| {
+            let (model, at) = session.unplaced(*chunk)?;
+            let away = (at.0 - centre.0).pow(2) + (at.1 - centre.1).pow(2);
+            Some(((model != own, away), model, at, *chunk, *from))
+        })
+        .collect();
+    order.sort_by_key(|(rank, ..)| *rank);
+    let mut budget = REPAINTED_BLOCKS_PER_TICK;
+    for (_, model, at, chunk, from) in order {
+        let Some(level) = atlas.level_mut(model) else {
+            continue;
+        };
+        for change in level.repaint(at, from, look) {
+            budget = budget.saturating_sub(change.blocks.len());
+            players.send(
+                player,
+                SectionBlocksUpdate {
+                    section: SectionBlocksUpdate::section(chunk.x, change.section, chunk.z),
+                    blocks: change.blocks.clone(),
+                },
+            );
+        }
+        session.behind.remove(&chunk);
+        if budget == 0 {
+            break;
         }
     }
 }
@@ -2209,11 +2308,10 @@ fn look_through_camera(
 fn read_mouse(
     event: On<PacketEvent<SetPlayerRotation>>,
     mut sessions: Query<&mut MapSession>,
-    atlas: Res<Atlas>,
     players: Players,
 ) {
     if let Ok(mut session) = sessions.get_mut(event.entity)
-        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch, &atlas)
+        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch)
     {
         players.send(event.entity, correction);
     }
@@ -2224,11 +2322,10 @@ fn read_mouse(
 fn read_mouse_with_position(
     event: On<PacketEvent<SetPlayerPosAndRot>>,
     mut sessions: Query<&mut MapSession>,
-    atlas: Res<Atlas>,
     players: Players,
 ) {
     if let Ok(mut session) = sessions.get_mut(event.entity)
-        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch, &atlas)
+        && let Some(correction) = session.turn(event.packet.yaw, event.packet.pitch)
     {
         players.send(event.entity, correction);
     }
@@ -2245,7 +2342,10 @@ fn hold_still(
         return;
     };
     let home = session.home_position();
-    let moved = (event.packet.x - home.x).hypot(event.packet.z - home.z);
+    // Getting off what the wheel rides on drops a client a little.
+    let moved = (event.packet.x - home.x)
+        .hypot(event.packet.z - home.z)
+        .hypot(event.packet.y - home.y);
     let held = session.mode == MapMode::Look && session.rig.is_some() && session.travel.is_none();
     if held && moved > 0.01 {
         let mut player = commands.entity(event.entity);
@@ -2381,7 +2481,7 @@ fn show_card(atlas: &Atlas, level: &Level, session: &mut MapSession, commands: &
     let same = match (&session.pins.card, &wanted) {
         (Some(shown), Some((hover, _, text))) => {
             let sized = (zoom / shown.zoom - 1.0).abs() < CARD_ZOOM_STEP;
-            shown.hover == *hover && sized && shown.text == *text
+            shown.hover == *hover && sized && shown.text == *text && shown.style == style
         }
         (None, None) => true,
         _ => false,
@@ -2413,6 +2513,7 @@ fn show_card(atlas: &Atlas, level: &Level, session: &mut MapSession, commands: &
     session.pins.card = Some(ShownCard {
         entity: spawn_card(commands, at, display, scale, lift),
         text,
+        style,
         hover,
         zoom,
     });
@@ -2459,9 +2560,12 @@ fn follow_view(
             rotation.set_if_neq(session.camera_rotation());
         }
 
-        let hovered = (session.travel.is_none() && !session.is_frozen())
-            .then(|| hover_of(level, &session))
-            .flatten();
+        // The wheel holds on to what the look was on: its card shows the styles.
+        let hovered = match (session.travel.is_some(), session.is_frozen()) {
+            (true, _) => None,
+            (false, true) => session.hovered,
+            (false, false) => hover_of(level, &session),
+        };
         if hovered != session.hovered {
             let previous = std::mem::replace(&mut session.hovered, hovered);
             tracing::info!(?hovered, "map hover");
@@ -2719,14 +2823,14 @@ fn hint() -> Text {
 }
 
 fn wheel_hint() -> Text {
-    Text::new("Souris : gauche / droite change de sujet, haut / bas de choix   |   ")
+    Text::new("Souris : gauche / droite = catégorie, haut / bas = choix   |   Relâcher ")
         .color(TextColor::White)
         .append(Text::keybind("key.sprint"))
-        .append(Text::new(" relâché : garder"))
+        .append(Text::new(" : valider"))
 }
 
 /// The labels of the wheel's sectors, clockwise from the top.
-const WHEEL_LABELS: [&str; 4] = ["Panneau", "Marqueur", "Zones", "Blocs"];
+const WHEEL_LABELS: [&str; CATEGORIES] = ["Panneau", "Marqueur", "Déplacement", "Zones", "Blocs"];
 
 /// What a sector of the wheel offers, and which of it is on.
 fn wheel_choices(category: usize, looks: MapLooks) -> (Vec<(&'static str, LookChoice)>, usize) {
@@ -2744,6 +2848,12 @@ fn wheel_choices(category: usize, looks: MapLooks) -> (Vec<(&'static str, LookCh
         0 => of(&Style::ALL, looks.style, Style::label, LookChoice::Style),
         1 => of(&Me::ALL, looks.me, Me::label, LookChoice::Me),
         2 => of(
+            &Motion::ALL,
+            looks.motion,
+            Motion::label,
+            LookChoice::Motion,
+        ),
+        3 => of(
             &ZoneLook::ALL,
             looks.zone,
             ZoneLook::label,
@@ -2758,13 +2868,22 @@ fn wheel_choices(category: usize, looks: MapLooks) -> (Vec<(&'static str, LookCh
     }
 }
 
-fn open_wheel(session: &mut MapSession, commands: &mut Commands) {
+fn open_wheel(session: &mut MapSession, player: Entity, commands: &mut Commands) {
     let look = session.look;
-    let [x, y, z] = session.eye();
-    let at = session.on_model(x, y, z);
+    let eye = session.eye();
+    let at = session.on_model(eye[0], eye[1], eye[2]);
     // A look turns on the client: the view holds still through an entity instead.
+    let vehicle = session.on_model(eye[0], eye[1] - RIDER_EYE_HEIGHT, eye[2]);
     if let Some(rig) = session.rig.as_mut().filter(|rig| rig.camera.is_none()) {
-        rig.camera = Some(spawn_camera(commands, at, look, CAMERA_GLIDE_TICKS));
+        let camera = spawn_eye_camera(commands, vehicle, look);
+        // A client whose camera is another entity only reports its mouse when it rides.
+        // The player sits right where they stood, so that nothing moves when they get off.
+        commands
+            .entity(camera.vehicle)
+            .insert(Passengers::new([camera.eye, player]));
+        commands.entity(rig.eye_box).try_insert(Hidden);
+        rig.camera = Some(camera.vehicle);
+        rig.eye = Some(camera.eye);
     }
     session.mouse = Mouse::default();
     let way = look_direction(look.yaw, look.pitch);
@@ -2779,6 +2898,7 @@ fn open_wheel(session: &mut MapSession, commands: &mut Commands) {
     session.wheel = Some(OpenWheel {
         wheel: Wheel::default(),
         display,
+        ticks: 0,
         face: String::new(),
     });
 }
@@ -2804,22 +2924,25 @@ fn close_wheel(
         },
     );
     if session.mode == MapMode::Look {
-        if let Some(camera) = session.rig.as_mut().and_then(|rig| rig.camera.take()) {
-            commands.entity(camera).try_despawn();
-        }
-        if let Ok(id) = ids.get(player) {
-            players.send(player, SetCamera { camera_id: id.0 });
+        if let Some(rig) = session.rig.as_mut() {
+            commands.entity(rig.eye_box).try_remove::<Hidden>();
+            for entity in rig.camera.take().into_iter().chain(rig.eye.take()) {
+                commands.entity(entity).try_despawn();
+            }
         }
         // The client went on turning behind the entity.
         players.send(
             player,
             PlayerRotation {
-                yaw: session.look.yaw,
+                yaw: yaw_as_shown(session.look.yaw),
                 relative_yaw: false,
                 pitch: session.look.pitch,
                 relative_pitch: false,
             },
         );
+        if let Ok(id) = ids.get(player) {
+            players.send(player, SetCamera { camera_id: id.0 });
+        }
     }
 }
 
@@ -2827,13 +2950,32 @@ fn close_wheel(
 fn run_wheels(
     mut sessions: Query<(Entity, &mut MapSession)>,
     mut texts: Query<&mut TextDisplay>,
+    ids: Query<&MinecraftEntityId>,
+    players: Players,
     mut commands: Commands,
 ) {
     for (player, mut session) in &mut sessions {
         let looks = session.looks;
+        let (eye, look) = (session.eye(), session.look);
+        let at = session.on_model(eye[0], eye[1], eye[2]);
+        let seeing = session.rig.and_then(|rig| rig.eye);
         let Some(open) = session.wheel.as_mut() else {
             continue;
         };
+        open.ticks += 1;
+        if let Some(seeing) = seeing.and_then(|eye| ids.get(eye).ok()) {
+            if open.ticks == TURN_TICKS {
+                players.send(player, settled(seeing, at, [look.yaw, look.pitch]));
+            }
+            if open.ticks == SWAP_TICKS {
+                players.send(
+                    player,
+                    SetCamera {
+                        camera_id: seeing.0,
+                    },
+                );
+            }
+        }
         let category = open.wheel.category;
         let (choices, index) = wheel_choices(category, looks);
         let steps = open.wheel.take_steps();
@@ -2842,7 +2984,9 @@ fn run_wheels(
             commands.trigger(ChooseLook(player, choices[index].1));
         }
         let count = format!("{} / {}", index + 1, choices.len());
-        let face = wheel_face(category, WHEEL_LABELS, &count, choices[index].0);
+        let around = |by: i32| choices[stepped(index, by, choices.len())].0;
+        let list = [around(-1), choices[index].0, around(1)];
+        let face = wheel_face(category, WHEEL_LABELS, &count, list);
         if face != open.face {
             open.face.clone_from(&face);
             if let Ok(mut text) = texts.get_mut(open.display) {
@@ -2995,7 +3139,14 @@ fn read_keys(
         && session.travel.is_none()
         && session.veiled.is_none();
     if sprint && session.wheel.is_none() && usable {
-        open_wheel(&mut session, &mut commands);
+        open_wheel(&mut session, event.entity, &mut commands);
+        players.send(
+            event.entity,
+            SystemChat {
+                content: wheel_hint().to_nbt(),
+                overlay: true,
+            },
+        );
     } else if !sprint {
         close_wheel(&mut session, event.entity, &ids, &players, &mut commands);
     }
@@ -3033,6 +3184,8 @@ pub struct MapLooks {
     me: Me,
     zone: ZoneLook,
     blocks: Blocks,
+    motion: Motion,
+    inertia: bool,
 }
 
 impl MapLooks {
@@ -3103,6 +3256,9 @@ pub enum LookChoice {
     Me(Option<Me>),
     Zone(Option<ZoneLook>),
     Blocks(Option<Blocks>),
+    Motion(Option<Motion>),
+    /// Turns inertia on or off.
+    Inertia,
     /// An option that does not go with its action.
     Refused,
 }
@@ -3152,6 +3308,15 @@ fn choose_look(
             looks.blocks = blocks.unwrap_or(looks.blocks.next());
             format!("Blocs : {}", looks.blocks.label())
         }
+        LookChoice::Motion(motion) => {
+            looks.motion = motion.unwrap_or(looks.motion.next());
+            format!("Déplacement : {}", looks.motion.label())
+        }
+        LookChoice::Inertia => {
+            looks.inertia = !looks.inertia;
+            let state = if looks.inertia { "oui" } else { "non" };
+            format!("Inertie : {state}")
+        }
         LookChoice::Refused => {
             tell(
                 "Cette option ne va pas avec cette action.",
@@ -3169,10 +3334,14 @@ fn choose_look(
         tell(&said, session.as_mut());
     }
     if let Some(mut session) = session {
-        session.rezoned |= session.looks.chunks() != looks.chunks();
-        session.looks = looks;
-        despawn_pins(&mut session, &mut commands);
-        spawn_pins(&atlas, &mut session, &mut commands);
+        let before = std::mem::replace(&mut session.looks, looks);
+        if before.me != looks.me {
+            respawn_you(&mut session, &mut commands);
+        }
+        if before.zone != looks.zone {
+            respawn_signs(&atlas, &mut session, &mut commands);
+        }
+        session.pan.drive(looks.motion, looks.inertia);
     }
 }
 
@@ -3336,6 +3505,7 @@ enum MapAction {
     Me,
     Zone,
     Blocks,
+    Move,
 }
 
 /// Which option of a look, as a player types it.
@@ -3351,6 +3521,11 @@ enum Pick {
     Eight,
     Flat,
     Real,
+    A,
+    B,
+    C,
+    D,
+    Inertia,
 }
 
 impl Pick {
@@ -3374,7 +3549,7 @@ impl Pick {
             Self::Six => Some(Me::Bubble),
             Self::Seven => Some(Me::HeadRing),
             Self::Eight => Some(Me::HeadHeading),
-            Self::Flat | Self::Real => None,
+            _ => None,
         }
     }
 
@@ -3384,6 +3559,16 @@ impl Pick {
             Self::Two => Some(ZoneLook::Hatching),
             Self::Three => Some(ZoneLook::Palisade),
             Self::Four => Some(ZoneLook::Faded),
+            _ => None,
+        }
+    }
+
+    fn motion(self) -> Option<Motion> {
+        match self {
+            Self::A => Some(Motion::Damped),
+            Self::B => Some(Motion::Slack),
+            Self::C => Some(Motion::Lead),
+            Self::D => Some(Motion::Predicted),
             _ => None,
         }
     }
@@ -3422,6 +3607,7 @@ fn map_command() -> Command {
                 ("me", MapAction::Me),
                 ("zone", MapAction::Zone),
                 ("blocks", MapAction::Blocks),
+                ("move", MapAction::Move),
             ]),
         )
         .arg_optional(
@@ -3437,6 +3623,11 @@ fn map_command() -> Command {
                 ("8", Pick::Eight),
                 ("flat", Pick::Flat),
                 ("real", Pick::Real),
+                ("a", Pick::A),
+                ("b", Pick::B),
+                ("c", Pick::C),
+                ("d", Pick::D),
+                ("inertie", Pick::Inertia),
             ]),
         )
         .handler(run_map)
@@ -3467,6 +3658,8 @@ fn run_map(ctx: &mut CommandContext) {
             MapAction::Me => Some(choice(pick, Pick::me, LookChoice::Me)),
             MapAction::Zone => Some(choice(pick, Pick::zone, LookChoice::Zone)),
             MapAction::Blocks => Some(choice(pick, Pick::blocks, LookChoice::Blocks)),
+            MapAction::Move if pick == Some(Pick::Inertia) => Some(LookChoice::Inertia),
+            MapAction::Move => Some(choice(pick, Pick::motion, LookChoice::Motion)),
         };
         if let Some(chosen) = chosen {
             world.trigger(ChooseLook(player, chosen));
@@ -3540,7 +3733,8 @@ mod tests {
             head: item("minecraft:player_head"),
             looks: MapLooks::default(),
             drawn: false,
-            rezoned: false,
+            painted: ChunkLook::default(),
+            behind: HashMap::new(),
             world: HashSet::new(),
             heading: None,
             camera: None,
@@ -3650,15 +3844,20 @@ mod tests {
         let actions = registry.complete("map ", &world).expect("actions");
         assert_eq!(
             actions.matches,
-            ["look", "pan", "stop", "style", "me", "zone", "blocks"]
+            [
+                "look", "pan", "stop", "style", "me", "zone", "blocks", "move"
+            ]
         );
-        for action in ["style", "me", "zone", "blocks"] {
+        for action in ["style", "me", "zone", "blocks", "move"] {
             let options = registry
                 .complete(&format!("map {action} "), &world)
                 .expect("options");
             assert_eq!(
                 options.matches,
-                ["1", "2", "3", "4", "5", "6", "7", "8", "flat", "real"]
+                [
+                    "1", "2", "3", "4", "5", "6", "7", "8", "flat", "real", "a", "b", "c", "d",
+                    "inertie"
+                ]
             );
         }
     }
@@ -3710,6 +3909,7 @@ mod tests {
             wheel: Wheel::default(),
             display: Entity::PLACEHOLDER,
             face: String::new(),
+            ticks: 0,
         });
         assert_eq!(session.wanted_cursor(), Wanted::Nothing);
         let mut flight = Flight::new([0.0; 3], [0.0; 3], [0.0; 2], VEIL_FADE + 1);

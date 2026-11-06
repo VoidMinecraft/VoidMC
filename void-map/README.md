@@ -59,10 +59,11 @@ never flickers. A click acts on that marker and nothing else.
 - `/map pan`: exploration, on a model about three times larger than the overview, which
   streams around the camera. The player rides an invisible entity, and `SetCamera` shows
   the game from it, with a look that never changes. A rider reports its rotation every
-  tick whatever the camera is, and those differences slide the camera. The rim is
-  elastic: past it the view resists over `PAN_MARGIN` blocks, and comes back once the
-  mouse rests. The view eases to a stop, which lets the camera glide over three ticks
-  without overshooting. Past 45° of pitch the player is turned back with an absolute
+  tick whatever the camera is, and those differences slide the camera, in one of the
+  ways of `motion`. The rim is soft: past it a view slows down over `PAN_MARGIN` blocks
+  and stops where it stops, with nothing stored up, so it never springs back and turning
+  round answers at once. A view eases to a stop, which lets the camera glide over three
+  ticks without overshooting. Past 45° of pitch the player is turned back with an absolute
   `PlayerRotation`: the client answers with exactly that pitch, which tells the
   recentring from mouse movement however fast the mouse goes.
 
@@ -92,9 +93,19 @@ moves on to the next choice. Choices last for the connection and apply at once. 
 name shows for a moment over the hotbar, not in the chat.
 
 Holding sprint in the map opens the same choices on a wheel, drawn in the pack: the mouse
-across turns between Panneau, Marqueur, Zones and Blocs, up and down steps through the
-choices, which apply as they go. The camera holds still, and letting go keeps the choice.
-A look turns on the client, so the wheel swaps its eye for an entity.
+across turns between Panneau, Marqueur, Déplacement, Zones and Blocs, up and down steps
+through the choices, which apply as they go. Its middle shows the choice between the ones
+above and under it, with arrows for the mouse, and letting go keeps it. The camera holds
+still, and a marker under the look stays hovered, for its panel to show the styles.
+A look turns on the client, so the wheel swaps its eye for the same mannequin as a flight,
+which keeps the height of an eye. The player rides under it, right where they stand: a
+client whose camera is another entity only reports its mouse while riding.
+
+A choice only touches what it changes. A panel is one entity, a marker a few. A look of
+the chunks reaches what the client holds as block changes, around the view first, by
+`REPAINTED_BLOCKS_PER_TICK`: no chunk leaves, none is sent again, and going through
+choices faster than that only sends what ends up different. A zone leaves the open land
+alone. The chunks still to come go out in the new look.
 
 - `/map style 1` to `4`: a full sheet, text alone, a round bubble with the name under it,
   or a large title over a flourish. `/map pan 2` opens exploration with that style.
@@ -110,6 +121,10 @@ A look turns on the client, so the wheel swaps its eye for an entity.
   opening the map.
 - `/map blocks flat` or `real`: the flat colours of a printed map, or the blocks of the
   world with their textures. Their tint comes from the `voidmc:map` biome.
+- `/map move a` to `d`: how a pan follows the mouse, to compare them. `a` is a critically
+  damped spring, `b` a dead zone, `c` looks ahead by the speed of the mouse, `d` predicts
+  between two reports. `/map move inertie` makes any of them go on for a moment once the
+  mouse stops. Twice the mouse is twice the distance in all of them.
 
 ## Travelling
 
@@ -187,9 +202,9 @@ figure glows, with a text display over it.
 ## Layout
 
 The core has no packets and no ECS: `window`, `terrain`, `noise`, `regions`, `scene`,
-`buildings`, `markers`, `pointer`, `transition`, `wheel` and `art`. `biome` declares the
-level, `plugin` runs the sessions, `players` shows the characters, `cursor` draws the
-pointer, and `telemetry` measures the characters.
+`buildings`, `markers`, `pointer`, `motion`, `transition`, `wheel` and `art`. `biome`
+declares the level, `plugin` runs the sessions, `players` shows the characters, `cursor`
+draws the pointer, and `telemetry` measures the characters.
 
 ## Logs
 
