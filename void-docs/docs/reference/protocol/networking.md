@@ -78,6 +78,30 @@ Client                              Server
   |<-- PingResponse (timestamp) ------|
 ```
 
+## Frame Lengths
+
+Every frame starts with its length as a VarInt. `voidmc_net::socket::frame_length` reads that
+prefix from a buffer, with the rules `ClientReader::receive` applies on the socket:
+
+```rust
+use voidmc_net::socket::{FrameError, FrameLength, frame_length};
+
+assert_eq!(frame_length(&[0x80], 1024), Ok(None));
+assert_eq!(
+    frame_length(&[0xAC, 0x02, 0x00], 1024),
+    Ok(Some(FrameLength { prefix: 2, body: 300 }))
+);
+assert_eq!(frame_length(&[0], 1024), Err(FrameError::EmptyFrame));
+```
+
+- `Ok(None)`: the prefix is not complete yet, wait for more bytes.
+- `Ok(Some(FrameLength { prefix, body }))`: the prefix takes `prefix` bytes, the body the next `body` bytes.
+- `Err`: a prefix longer than five bytes or past 32 bits (`InvalidLengthVarInt`), an empty
+  (`EmptyFrame`) or negative (`NegativeLength`) body, or a body above `limit` (`FrameTooLarge`).
+  Each is refused before any of the body is read.
+
+The development proxy (`voidmc-keeper`) cuts its streams with it.
+
 ## Packet Handling Pipeline
 
 On every tick during `PreUpdate`:
