@@ -191,14 +191,21 @@ pub mod fake {
         }
     }
 
-    /// Under `/tmp` and not `temp_dir`: a socket has 103 bytes, whatever `TMPDIR` holds.
-    pub fn short_home() -> PathBuf {
+    fn short_home_of(pid: u32, run: u32) -> PathBuf {
+        Path::new("/tmp").join(format!("voidc-fake-{pid}-{run}"))
+    }
+
+    /// The one way a test gets a socket, under a home of its own for this thread. In `/tmp` and
+    /// not `temp_dir`, and with two numbers for all that varies: a socket has 103 bytes, whatever
+    /// `TMPDIR` holds, and neither a test nor another process shares it.
+    pub fn test_socket(name: &str) -> (PathBuf, PathBuf) {
         static RUN: AtomicU32 = AtomicU32::new(0);
-        Path::new("/tmp").join(format!(
-            "voidc-fake-{}-{}",
-            std::process::id(),
-            RUN.fetch_add(1, Ordering::Relaxed)
-        ))
+        let home = short_home_of(std::process::id(), RUN.fetch_add(1, Ordering::Relaxed));
+        let _ = fs::remove_dir_all(&home);
+        registry::set_test_home(Some(home.clone()));
+        let socket = registry::socket(name).unwrap();
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        (home, socket)
     }
 
     impl FakeClient {
@@ -216,11 +223,7 @@ pub mod fake {
         }
 
         pub fn scripted(level: Level, script: Script) -> Self {
-            let home = short_home();
-            let _ = fs::remove_dir_all(&home);
-            registry::set_test_home(Some(home.clone()));
-            let socket = registry::socket(NAME).unwrap();
-            fs::create_dir_all(socket.parent().unwrap()).unwrap();
+            let (home, socket) = test_socket(NAME);
             let listener = UnixListener::bind(&socket).unwrap();
             let process = Held::waiting(&format!("fake-client -Dvoid.client={NAME} x"));
             registry::save(&Client {
@@ -275,6 +278,22 @@ pub mod fake {
         }
     }
 
+    #[test]
+    fn a_test_socket_fits_whatever_the_numbers_and_is_never_shared() {
+        let longest = short_home_of(u32::MAX, u32::MAX);
+        registry::set_test_home(Some(longest));
+        assert!(registry::socket(NAME).is_ok());
+        let (first, _) = test_socket(NAME);
+        let (second, _) = test_socket(NAME);
+        registry::set_test_home(None);
+        assert_ne!(first, second);
+        assert!(first.starts_with("/tmp"));
+        let mine = format!("voidc-fake-{}-", std::process::id());
+        assert!(first.to_string_lossy().contains(&mine));
+        fs::remove_dir_all(first).unwrap();
+        fs::remove_dir_all(second).unwrap();
+    }
+
     impl Drop for FakeClient {
         fn drop(&mut self) {
             self.process.lock().unwrap().stop();
@@ -317,10 +336,8 @@ mod tests {
     #[test]
     fn a_connection_the_client_hung_up_says_so() {
         use std::os::unix::net::UnixListener;
-        let home = fake::short_home();
-        fs::create_dir_all(home.join("run")).unwrap();
-        registry::set_test_home(Some(home.clone()));
-        let listener = UnixListener::bind(registry::socket("gone").unwrap()).unwrap();
+        let (home, socket) = fake::test_socket("gone");
+        let listener = UnixListener::bind(socket).unwrap();
         let mut probe = Probe::connect("gone").unwrap();
         let (hung_up, _) = listener.accept().unwrap();
         let held_by_a_child = hung_up.try_clone().unwrap();
