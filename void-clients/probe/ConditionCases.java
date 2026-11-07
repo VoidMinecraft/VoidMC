@@ -5,7 +5,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Runs conditions.tsv against Condition.java; cargo test runs it. */
 final class ConditionCases {
   public static void main(String[] args) throws Exception {
     Map<String, Map<String, Object>> levels = new HashMap<>();

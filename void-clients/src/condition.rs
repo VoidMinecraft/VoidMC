@@ -19,7 +19,6 @@ const TEXT_FIELDS: [&str; 11] = [
     "shown",
 ];
 
-/// What the probe takes for a number, `-?\d+(\.\d+)?`: `1e3`, `inf` and `5.` stay words.
 pub fn is_number(text: &str) -> bool {
     let digits = text.strip_prefix('-').unwrap_or(text);
     let (whole, fraction) = digits.split_once('.').unwrap_or((digits, "0"));
@@ -36,8 +35,6 @@ pub struct Condition {
 }
 
 impl Condition {
-    /// `field op value`, with `>=`, `<=`, `==`, `!=` and `~` for "contains". The first operator
-    /// splits it, as in the probe: `chat~a>=b` is a `~`.
     pub fn parse(text: &str) -> Result<Self, String> {
         let bad = || format!("bad condition {text}");
         let (at, op) = OPERATORS
@@ -91,7 +88,6 @@ impl Condition {
         })
     }
 
-    /// An order on a field that is text at this level is a mistake, refused before any client.
     pub fn validate(&self, level: Level) -> Result<(), String> {
         let text = TEXT_FIELDS.contains(&self.field.as_str())
             || (self.field == "camera" && level != Level::Bot);
@@ -125,8 +121,6 @@ pub fn wait(rest: &str) -> Result<(Condition, u64), String> {
     Ok((Condition::parse(rest)?, DEFAULT_WAIT_MS))
 }
 
-/// The condition of an `assert` or a `wait_until`, with the limit of the wait. An `assert` has
-/// no limit, so all that follows its operator is its value. `None` for any other verb.
 pub fn of(verb: &str, rest: &str) -> Option<Result<(Condition, u64), String>> {
     match verb {
         "assert" => Some(Condition::parse(rest).map(|condition| (condition, DEFAULT_WAIT_MS))),
@@ -135,7 +129,6 @@ pub fn of(verb: &str, rest: &str) -> Option<Result<(Condition, u64), String>> {
     }
 }
 
-/// Refuses a verb whose condition a scenario would refuse, before it reaches a client.
 pub fn check(verb: &str, level: Level) -> Result<(), String> {
     let (name, rest) = verb.trim().split_once(' ').unwrap_or((verb.trim(), ""));
     match of(name, rest) {

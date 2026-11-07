@@ -60,7 +60,6 @@ pub fn read(stream: &mut impl Read, threshold: Option<usize>) -> io::Result<Vec<
     Ok(body)
 }
 
-/// The one way to frame a packet, compressed from the threshold on.
 pub fn encode(body: &[u8], threshold: Option<usize>) -> io::Result<Vec<u8>> {
     if body.len() > MAX_PACKET {
         return Err(invalid(format!("a packet of {} bytes", body.len())));

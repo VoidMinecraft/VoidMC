@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -185,7 +185,6 @@ fn refused(reason: String) -> std::io::Error {
     std::io::Error::other(format!("the server sent the bot away: {reason}"))
 }
 
-/// The plain text of a chat component, whether the server sends a string or a compound.
 fn component(rest: &mut &[u8]) -> std::io::Result<String> {
     if rest.first() == Some(&0x08) {
         let length = rest
@@ -201,25 +200,108 @@ fn component(rest: &mut &[u8]) -> std::io::Result<String> {
     }
     let nbt = Nbt::decode(rest).map_err(invalid)?;
     let mut text = String::new();
-    plain(&nbt.compound, &mut text);
+    plain(&nbt.compound, language(), &mut text);
     Ok(text)
 }
 
-fn plain(compound: &Compound, text: &mut String) {
-    for (key, tag) in &compound.tags {
-        match (key.to_string().as_str(), tag) {
-            ("text" | "translate", Tag::String(value)) => text.push_str(&value.to_string()),
-            ("extra" | "with", Tag::List(List::Compound(parts))) => {
-                parts.iter().for_each(|part| plain(part, text));
-            }
-            ("extra" | "with", Tag::List(List::String(parts))) => {
-                parts
-                    .iter()
-                    .for_each(|part| text.push_str(&part.to_string()));
-            }
-            _ => {}
-        }
+type Language = HashMap<String, String>;
+
+fn language() -> &'static Language {
+    static ENGLISH: OnceLock<Language> = OnceLock::new();
+    ENGLISH.get_or_init(|| {
+        std::process::Command::new("unzip")
+            .arg("-p")
+            .arg(crate::launch::game_jar())
+            .arg("assets/minecraft/lang/en_us.json")
+            .output()
+            .ok()
+            .and_then(|out| serde_json::from_slice(&out.stdout).ok())
+            .unwrap_or_default()
+    })
+}
+
+fn tag<'a>(compound: &'a Compound, name: &str) -> Option<&'a Tag> {
+    compound
+        .tags
+        .iter()
+        .find(|(key, _)| key.to_string() == name)
+        .map(|(_, tag)| tag)
+}
+
+fn parts(list: Option<&Tag>, language: &Language) -> Vec<String> {
+    match list {
+        Some(Tag::List(List::Compound(parts))) => parts
+            .iter()
+            .map(|part| {
+                let mut text = String::new();
+                plain(part, language, &mut text);
+                text
+            })
+            .collect(),
+        Some(Tag::List(List::String(parts))) => parts.iter().map(|p| p.to_string()).collect(),
+        _ => Vec::new(),
     }
+}
+
+fn plain(compound: &Compound, language: &Language, text: &mut String) {
+    match (tag(compound, "text"), tag(compound, "translate")) {
+        (Some(Tag::String(value)), _) => text.push_str(&value.to_string()),
+        (_, Some(Tag::String(key))) => {
+            let key = key.to_string();
+            let fallback = match tag(compound, "fallback") {
+                Some(Tag::String(fallback)) => fallback.to_string(),
+                _ => key.clone(),
+            };
+            let pattern = language.get(&key).unwrap_or(&fallback);
+            text.push_str(&format_translation(
+                pattern,
+                &parts(tag(compound, "with"), language),
+            ));
+        }
+        _ => {}
+    }
+    for part in parts(tag(compound, "extra"), language) {
+        text.push_str(&part);
+    }
+}
+
+fn format_translation(pattern: &str, arguments: &[String]) -> String {
+    let mut out = String::new();
+    let mut next = 0;
+    let mut rest = pattern;
+    while let Some(at) = rest.find('%') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        if let Some(after) = rest.strip_prefix('%') {
+            out.push('%');
+            rest = after;
+            continue;
+        }
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let position = rest[..digits]
+            .parse::<usize>()
+            .ok()
+            .filter(|_| rest[digits..].starts_with("$s"));
+        let (index, skip) = match (position, rest.starts_with('s')) {
+            (Some(n), _) => (n.checked_sub(1), digits + 2),
+            (None, true) => (Some(next), 1),
+            _ => {
+                out.push('%');
+                continue;
+            }
+        };
+        if position.is_none() {
+            next += 1;
+        }
+        out.push_str(
+            index
+                .and_then(|i| arguments.get(i))
+                .map_or("", String::as_str),
+        );
+        rest = &rest[skip..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn cookie(writer: &Writer, state: &str, answer: &str, mut rest: &[u8]) -> std::io::Result<()> {
@@ -651,7 +733,6 @@ fn serve(
     Ok(())
 }
 
-/// Leaves once no verb came for `idle`, like the game clients do.
 fn stop_when_idle(socket: std::path::PathBuf, last_verb: LastVerb, idle: Duration) {
     loop {
         thread::sleep(IDLE_CHECK);
@@ -809,6 +890,45 @@ mod tests {
         assert_eq!(fields["chat"], "Bienvenue sur la carte");
         assert_eq!(fields["action_bar"], "Tour 2");
         assert_eq!(fields["chat_count"], 1);
+    }
+
+    #[test]
+    fn a_translated_chat_reads_as_the_game_would_show_it() {
+        let language: Language = [
+            (
+                "multiplayer.player.joined".to_string(),
+                "%s joined the game".to_string(),
+            ),
+            ("two".to_string(), "%2$s then %1$s, 100%%".to_string()),
+        ]
+        .into();
+        let joined = Compound {
+            tags: vec![
+                (
+                    "translate".into(),
+                    Tag::String("multiplayer.player.joined".into()),
+                ),
+                ("with".into(), Tag::List(List::Compound(vec![text("Bot")]))),
+                ("extra".into(), Tag::List(List::String(vec!["!".into()]))),
+            ],
+        };
+        let mut shown = String::new();
+        plain(&joined, &language, &mut shown);
+        assert_eq!(shown, "Bot joined the game!");
+        assert_eq!(
+            format_translation("%2$s then %1$s, 100%%", &["a".into(), "b".into()]),
+            "b then a, 100%"
+        );
+        let unknown = Compound {
+            tags: vec![
+                ("translate".into(), Tag::String("nope".into())),
+                ("fallback".into(), Tag::String("Repli %s".into())),
+                ("with".into(), Tag::List(List::String(vec!["x".into()]))),
+            ],
+        };
+        let mut shown = String::new();
+        plain(&unknown, &language, &mut shown);
+        assert_eq!(shown, "Repli x");
     }
 
     #[test]

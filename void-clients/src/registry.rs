@@ -102,7 +102,6 @@ pub fn client_dir(name: &str) -> PathBuf {
 
 const SOCKET_PATH_LIMIT: usize = 103;
 
-/// The socket of a client, refused when macOS could not bind it.
 pub fn socket(name: &str) -> Result<PathBuf, String> {
     let path = home().join("run").join(format!("{name}.sock"));
     let length = path.as_os_str().len();
@@ -115,7 +114,6 @@ pub fn socket(name: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Writes a whole file or nothing: a reader never sees half of it.
 fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(&temporary, bytes)?;
@@ -188,8 +186,6 @@ pub fn alive(client: &Client) -> bool {
         || command.contains(&format!("bot-run {} ", client.name))
 }
 
-/// One `voidc` at a time between a check and what it guards. The kernel holds it for the
-/// holder's process: a living holder keeps it however slow, a dead one loses it at once.
 pub struct Lock {
     _held: fs::File,
 }
@@ -215,7 +211,6 @@ impl Lock {
     }
 }
 
-/// No file is no lease; a file that does not parse is an error, never an empty table.
 fn leases() -> Result<BTreeMap<String, u16>, String> {
     leases_at(&home().join("ports.json"))
 }

@@ -38,7 +38,6 @@ pub fn check(registry: &Registry, client: &Client, others: &[Client]) -> Result<
     Ok(())
 }
 
-/// The slow part runs first; the check, the start and the record then happen under one lock.
 pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     check(registry, &client, &running())?;
     if client.level != Level::Play {

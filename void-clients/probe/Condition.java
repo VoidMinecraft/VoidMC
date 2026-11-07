@@ -2,7 +2,6 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** The rules of a condition, the same as condition.rs: conditions.tsv holds both to them. */
 final class Condition {
   static final long DEFAULT_WAIT_MS = 20_000;
   private static final Pattern NUMBER = Pattern.compile("-?\\d+(\\.\\d+)?");

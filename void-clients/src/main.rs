@@ -105,7 +105,15 @@ fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> 
         }
         wait_in_game(&name)
     };
-    started().map_err(|error| match lifecycle::down(&name) {
+    stop_on_failure(&name, started(), lifecycle::down)
+}
+
+fn stop_on_failure(
+    name: &str,
+    result: Result<(), String>,
+    stop: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    result.map_err(|error| match stop(name) {
         Ok(()) => format!("{error}\n{name} is stopped, so it does not stay behind"),
         Err(stop) => format!("{error}\n{name} could not be stopped: {stop}"),
     })
@@ -207,5 +215,28 @@ fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_failed_up_stops_its_client_and_a_good_one_leaves_it() {
+        let stopped = Cell::new(0);
+        let stop = |_: &str| {
+            stopped.set(stopped.get() + 1);
+            Ok(())
+        };
+        assert!(stop_on_failure("x", Ok(()), stop).is_ok());
+        assert_eq!(stopped.get(), 0);
+        let error = stop_on_failure("x", Err("not in game".into()), stop).unwrap_err();
+        assert_eq!(stopped.get(), 1);
+        assert!(error.contains("not in game") && error.contains("x is stopped"));
+        let error =
+            stop_on_failure("x", Err("not in game".into()), |_| Err("busy".into())).unwrap_err();
+        assert!(error.contains("could not be stopped: busy"));
     }
 }

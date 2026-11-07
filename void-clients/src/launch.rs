@@ -20,6 +20,10 @@ fn minecraft() -> PathBuf {
         .join("Library/Application Support/minecraft")
 }
 
+pub fn game_jar() -> PathBuf {
+    minecraft().join(format!("versions/{VERSION}/{VERSION}.jar"))
+}
+
 pub fn java_home() -> PathBuf {
     minecraft().join(
         "runtime/java-runtime-epsilon/mac-os-arm64/java-runtime-epsilon/jre.bundle/Contents/Home",
@@ -198,7 +202,6 @@ fn idle_minutes(registry: &Registry) -> u32 {
         .unwrap_or(registry.idle_minutes)
 }
 
-/// Prepares the game: version, build and files, everything slow before the start itself.
 pub fn game(registry: &Registry, client: &Client) -> Result<Command, String> {
     let version = version_json()?;
     let mut classes = class_path(&version);
@@ -315,7 +318,6 @@ pub fn bot(registry: &Registry, client: &Client) -> Result<Command, String> {
     Ok(command)
 }
 
-/// Starts a prepared client, detached from the caller, and returns its pid.
 pub fn spawn(mut command: Command, dir: &Path) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     let log = log_file(dir)?;

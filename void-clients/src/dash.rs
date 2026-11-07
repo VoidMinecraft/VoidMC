@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -22,8 +22,28 @@ struct Head {
     origin: Option<String>,
 }
 
+struct Deadline {
+    stream: TcpStream,
+    until: Instant,
+}
+
+impl Read for Deadline {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(buf)
+    }
+}
+
 fn head(stream: &TcpStream) -> std::io::Result<Head> {
-    let mut lines = BufReader::new(stream.try_clone()?.take(HEAD_LIMIT)).lines();
+    let whole = Deadline {
+        stream: stream.try_clone()?,
+        until: Instant::now() + READ_LIMIT,
+    };
+    let mut lines = BufReader::new(whole.take(HEAD_LIMIT)).lines();
     let first = lines.next().transpose()?.unwrap_or_default();
     let mut words = first.split_whitespace();
     let mut head = Head {
@@ -138,7 +158,6 @@ fn action(registry: &Registry, name: &str, verb: &str) -> Result<(), String> {
 }
 
 fn request(registry: &Registry, mut stream: TcpStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(READ_LIMIT))?;
     let head = head(&stream)?;
     if !trusted(&head, registry.dashboard_port) {
         return respond(&mut stream, "403 Forbidden", "text/plain", b"");
@@ -228,5 +247,25 @@ mod tests {
             25685
         ));
         assert!(!trusted(&head("GET", None, None), 25685));
+    }
+
+    #[test]
+    fn a_request_sent_drop_by_drop_is_cut_at_the_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let dripping = thread::spawn(move || {
+            for _ in 0..20 {
+                if client.write_all(b"G").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(400));
+            }
+        });
+        let started = Instant::now();
+        assert!(super::head(&server).is_err());
+        assert!(started.elapsed() < READ_LIMIT + Duration::from_secs(1));
+        drop(server);
+        dripping.join().unwrap();
     }
 }
