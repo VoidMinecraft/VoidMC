@@ -15,6 +15,7 @@ const PAGE: &str = include_str!("dash.html");
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
 const HEAD_LIMIT: u64 = 16 * 1024;
 const READ_LIMIT: Duration = Duration::from_secs(5);
+const QUIT_LIMIT: Duration = Duration::from_secs(5);
 
 struct Head {
     method: String,
@@ -40,9 +41,13 @@ impl Read for Deadline {
 }
 
 fn head(stream: &TcpStream) -> std::io::Result<Head> {
+    head_within(stream, READ_LIMIT)
+}
+
+fn head_within(stream: &TcpStream, limit: Duration) -> std::io::Result<Head> {
     let whole = Deadline {
         stream: stream.try_clone()?,
-        until: Instant::now() + READ_LIMIT,
+        until: Instant::now() + limit,
     };
     let mut lines = BufReader::new(whole.take(HEAD_LIMIT)).lines();
     let first = lines.next().transpose()?.unwrap_or_default();
@@ -125,6 +130,10 @@ pub fn ensure(registry: &Registry) -> Result<String, String> {
 }
 
 fn ensure_on(port: u16) -> Result<String, String> {
+    ensure_within(port, QUIT_LIMIT)
+}
+
+fn ensure_within(port: u16, quit_limit: Duration) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{port}");
     match served(port) {
         Served::Ours => return Ok(url),
@@ -142,7 +151,7 @@ fn ensure_on(port: u16) -> Result<String, String> {
         }
         Served::Other => {
             let _ = call(port, "POST", "/api/quit");
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + quit_limit;
             let mut now = served(port);
             while !matches!(now, Served::Nothing | Served::Ours) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(100));
@@ -367,16 +376,16 @@ mod tests {
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
         let dripping = thread::spawn(move || {
-            for _ in 0..20 {
+            for _ in 0..200 {
                 if client.write_all(b"G").is_err() {
                     break;
                 }
-                thread::sleep(Duration::from_millis(400));
+                thread::sleep(Duration::from_millis(20));
             }
         });
         let started = Instant::now();
-        assert!(super::head(&server).is_err());
-        assert!(started.elapsed() < READ_LIMIT + Duration::from_secs(1));
+        assert!(head_within(&server, Duration::from_millis(200)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(4));
         drop(server);
         dripping.join().unwrap();
     }
@@ -446,7 +455,7 @@ mod tests {
             "/api/home" => Some(home_name()),
             _ => Some(OTHER.into()),
         });
-        let error = ensure_on(port).unwrap_err();
+        let error = ensure_within(port, Duration::from_millis(200)).unwrap_err();
         assert!(error.contains("did not quit"), "{error}");
     }
 
