@@ -18,6 +18,33 @@ final class Condition {
       "spectator",
       "shown",
       "version");
+  private static final int[][] HIDDEN = {
+      {0x0000, 0x0008},
+      {0x000A, 0x001F},
+      {0x007F, 0x00A0},
+      {0x00AD, 0x00AD},
+      {0x0600, 0x0605},
+      {0x061C, 0x061C},
+      {0x06DD, 0x06DD},
+      {0x070F, 0x070F},
+      {0x0890, 0x0891},
+      {0x08E2, 0x08E2},
+      {0x1680, 0x1680},
+      {0x180E, 0x180E},
+      {0x2000, 0x200F},
+      {0x2028, 0x202F},
+      {0x205F, 0x2064},
+      {0x2066, 0x206F},
+      {0x3000, 0x3000},
+      {0xFEFF, 0xFEFF},
+      {0xFFF9, 0xFFFB},
+      {0x110BD, 0x110BD},
+      {0x110CD, 0x110CD},
+      {0x13430, 0x1343F},
+      {0x1BCA0, 0x1BCA3},
+      {0x1D173, 0x1D17A},
+      {0xE0001, 0xE0001},
+      {0xE0020, 0xE007F}};
   private static final Pattern NUMBER = Pattern.compile("-?[0-9]+(\\.[0-9]+)?");
   private static final Pattern LIMIT = Pattern.compile("[0-9]{1,9}");
   private static final Pattern DIGITS = Pattern.compile("[0-9]+");
@@ -58,7 +85,8 @@ final class Condition {
   }
 
   static boolean hidden(int c) {
-    return c != ' ' && c != '\t' && (Character.isISOControl(c) || Character.isSpaceChar(c) || Character.getType(c) == Character.FORMAT);
+    for (int[] range : HIDDEN) if (range[0] <= c && c <= range[1]) return true;
+    return false;
   }
 
   static String[] split(String line) {
