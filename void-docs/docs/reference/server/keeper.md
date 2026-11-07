@@ -26,10 +26,11 @@ While the server is away the client stays in play, its world on screen, with
 tries to connect every 100 ms. A clean stop and a crash look the same: the engine closes
 its connections without a disconnect packet, and the proxy counts the server as lost.
 
-As soon as a new server accepts the connection, the client is told
-`start_configuration`. The proxy logs in on its behalf, holds what the server says until
-the client acknowledges, then relays it: the client goes through a real configuration,
-with a short loading screen. The client resets by itself what the old server left on
+The proxy logs in to a new server on the client's behalf. Only once that server answers
+`login_finished` is the client told `start_configuration`: a frozen server still accepts
+connections, and until it logs the client in the client keeps its world. The proxy holds
+what the server says until the client acknowledges, then relays it: the client goes
+through a real configuration, with a short loading screen. The client resets by itself what the old server left on
 it: entities, boss bars, titles, scoreboard, tab list, camera, dialog, sounds, chunks.
 The proxy clears its own message from the action bar right after the new `login`.
 

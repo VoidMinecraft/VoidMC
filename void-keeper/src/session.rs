@@ -263,9 +263,6 @@ impl Session {
             self.stage = Stage::Relaying;
             return;
         }
-        if self.phase == Phase::Play {
-            self.start_configuration();
-        }
         self.stage = Stage::LoggingIn;
     }
 
@@ -659,7 +656,12 @@ impl Session {
         }
     }
 
+    /// A client in play is only taken out of its world once the new server has logged it in: a
+    /// frozen server accepts connections too, and never gets that far.
     fn logged_in(&mut self) {
+        if self.phase == Phase::Play {
+            self.start_configuration();
+        }
         self.send_to_backend(frame(login_sb::LOGIN_ACKNOWLEDGED, |_| {}));
         if let Some(information) = &self.client_information {
             let information = information.clone();
@@ -1116,14 +1118,36 @@ mod tests {
     }
 
     #[test]
+    fn a_frozen_server_that_accepts_the_connection_leaves_the_client_in_its_world() {
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.tick(settings().retry_every);
+        rig.connected();
+        rig.clear();
+        for _ in 0..4 {
+            rig.tick(Duration::from_secs(1));
+        }
+        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 0);
+        assert_eq!(rig.sent_to_client(play_cb::KEEP_ALIVE), 4);
+        assert_eq!(rig.sent_to_client(play_cb::SET_ACTION_BAR_TEXT), 4);
+        rig.tick(Duration::from_secs(1));
+        assert!(rig.rest.contains(&Action::DropBackend));
+        rig.clear();
+        rig.tick(settings().retry_every);
+        assert!(rig.rest.contains(&Action::Connect));
+        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 0);
+    }
+
+    #[test]
     fn a_new_server_takes_the_client_through_a_configuration() {
         let mut rig = Rig::in_play();
         rig.lose_backend();
         rig.tick(settings().retry_every);
         rig.clear();
         rig.connected();
-        assert_eq!(rig.client, vec![empty(play_cb::START_CONFIGURATION)]);
+        assert!(rig.client.is_empty());
         rig.receive_from_backend(login_finished());
+        assert_eq!(rig.client, vec![empty(play_cb::START_CONFIGURATION)]);
         assert!(rig.backend.contains(&empty(login_sb::LOGIN_ACKNOWLEDGED)));
         assert!(rig.backend.contains(&information()));
         rig.clear();
@@ -1353,6 +1377,7 @@ mod tests {
         rig.lose_backend();
         rig.tick(settings().retry_every);
         rig.connected();
+        rig.receive_from_backend(login_finished());
         rig.clear();
         rig.tick(Duration::from_secs(11));
         rig.tick(Duration::ZERO);
@@ -1505,6 +1530,7 @@ mod tests {
         assert_eq!(rig.sent_to_backend(config_sb::FINISH_CONFIGURATION), 0);
         rig.tick(Duration::ZERO);
         rig.connected();
+        rig.receive_from_backend(login_finished());
         assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
     }
 
@@ -1726,8 +1752,8 @@ mod tests {
         rig.clear();
         rig.tick(settings().retry_every);
         rig.connected();
-        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
         rig.receive_from_backend(login_finished());
+        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
         rig.receive_from_backend(known_packs_question());
         rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
         assert!(!rig.rest.contains(&Action::DropBackend));
