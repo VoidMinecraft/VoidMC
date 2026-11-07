@@ -495,7 +495,6 @@ impl Session {
         self.script = Script::default();
         match std::mem::replace(&mut self.stage, Stage::Relaying) {
             Stage::Reconfiguring { held } => {
-                self.deadline = None;
                 for frame in held {
                     self.relay_from_backend(frame);
                 }
@@ -1901,6 +1900,97 @@ mod tests {
             VarI32(3).encode(body);
         }));
         assert_eq!(rig.sent_to_backend(login_sb::CUSTOM_QUERY_ANSWER), 1);
+    }
+
+    #[test]
+    fn a_server_lost_after_ending_the_configuration_is_replayed_to_its_end() {
+        let mut rig = Rig::in_configuration();
+        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.clear();
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_backend(registry(1));
+        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
+        assert_eq!(rig.sent_to_client(config_cb::FINISH_CONFIGURATION), 0);
+        assert_eq!(rig.sent_to_client(config_cb::DISCONNECT), 0);
+    }
+
+    #[test]
+    fn keep_alives_of_a_configuration_stay_out_of_what_a_replay_follows() {
+        let mut rig = Rig::in_configuration();
+        rig.receive_from_backend(frame(config_cb::KEEP_ALIVE, |body| 9i64.encode(body)));
+        rig.receive_from_backend(frame(config_cb::PING, |body| 4i32.encode(body)));
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.clear();
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_backend(registry(1));
+        rig.receive_from_backend(registry(2));
+        assert_eq!(rig.client, vec![registry(2)]);
+    }
+
+    #[test]
+    fn a_crash_after_the_server_asked_for_a_configuration_still_hands_its_frames_over() {
+        let mut rig = Rig::in_play();
+        rig.receive_from_backend(empty(play_cb::START_CONFIGURATION));
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.clear();
+        rig.receive_from_backend(known_packs_question());
+        assert!(rig.client.is_empty());
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        assert_eq!(rig.client, vec![known_packs_question()]);
+    }
+
+    #[test]
+    fn a_configuration_the_server_asked_for_is_what_a_replay_follows() {
+        let mut rig = Rig::in_play();
+        rig.receive_from_backend(empty(play_cb::START_CONFIGURATION));
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_client(known_packs_reply());
+        rig.receive_from_backend(registry(2));
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.clear();
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_backend(registry(2));
+        assert!(rig.client.is_empty());
+        assert_eq!(rig.backend, vec![known_packs_reply()]);
+    }
+
+    #[test]
+    fn a_second_crash_long_after_a_return_gets_the_whole_return_timeout() {
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.come_back();
+        rig.tick(Duration::from_secs(30));
+        rig.lose_backend();
+        rig.clear();
+        rig.tick(Duration::from_secs(9));
+        assert_eq!(rig.sent_to_client(play_cb::DISCONNECT), 0);
+        rig.tick(Duration::from_secs(2));
+        assert_eq!(rig.sent_to_client(play_cb::DISCONNECT), 1);
+    }
+
+    #[test]
+    fn a_login_cookie_is_answered_with_nothing() {
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.tick(settings().retry_every);
+        rig.connected();
+        rig.clear();
+        rig.receive_from_backend(frame(login_cb::COOKIE_REQUEST, |body| {
+            "minecraft:token".to_string().encode(body);
+        }));
+        assert_eq!(
+            rig.backend,
+            vec![frame(login_sb::COOKIE_RESPONSE, |body| {
+                "minecraft:token".to_string().encode(body);
+                false.encode(body);
+            })]
+        );
     }
 
     #[test]
