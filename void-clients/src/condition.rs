@@ -28,6 +28,16 @@ fn trimmed(text: &str) -> &str {
     text.trim_matches(blank)
 }
 
+fn hidden(c: char) -> bool {
+    !blank(c) && (c.is_control() || c.is_whitespace())
+}
+
+pub fn split(line: &str) -> (&str, &str) {
+    let line = trimmed(line);
+    let (name, rest) = line.split_once(blank).unwrap_or((line, ""));
+    (name, trimmed(rest))
+}
+
 fn value_of(raw: &str, text: &str) -> Result<String, String> {
     if let Some(inner) = raw.strip_prefix('"') {
         let inner = inner
@@ -71,6 +81,11 @@ pub struct Condition {
 impl Condition {
     pub fn parse(text: &str) -> Result<Self, String> {
         let bad = || format!("bad condition {text}");
+        if text.contains(hidden) {
+            return Err(format!(
+                "{text:?}: a condition holds visible characters, spaces and tabs, nothing else"
+            ));
+        }
         let (at, op) = OPERATORS
             .iter()
             .filter_map(|op| text.find(op).map(|at| (at, *op)))
@@ -162,8 +177,7 @@ pub fn of(verb: &str, rest: &str) -> Option<Result<(Condition, u64), String>> {
 }
 
 pub fn check(verb: &str, level: Level) -> Result<(), String> {
-    let verb = trimmed(verb);
-    let (name, rest) = verb.split_once(blank).unwrap_or((verb, ""));
+    let (name, rest) = split(verb);
     match of(name, rest) {
         Some(parsed) => parsed?.0.validate(level),
         None => Ok(()),
@@ -290,7 +304,37 @@ mod tests {
         }
     }
 
+    fn unescape(cell: &str, line: &str) -> String {
+        let mut out = String::new();
+        let mut chars = cell.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    let code = u32::from_str_radix(&hex, 16)
+                        .ok()
+                        .filter(|_| hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+                        .and_then(char::from_u32)
+                        .unwrap_or_else(|| panic!("an escape is \\t, \\\\ or \\uXXXX: {line}"));
+                    out.push(code);
+                }
+                _ => panic!("an escape is \\t, \\\\ or \\uXXXX: {line}"),
+            }
+        }
+        out
+    }
+
     fn outcome(kind: &str, text: &str, level: Level, fields: &Value) -> String {
+        if kind == "split" {
+            let (name, rest) = split(text);
+            return format!("{name}|{rest}");
+        }
         let verb = if kind == "assert" {
             "assert"
         } else {
@@ -319,7 +363,8 @@ mod tests {
             .lines()
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
         {
-            let cells: Vec<&str> = line.split('\t').collect();
+            let owned: Vec<String> = line.split('\t').map(|cell| unescape(cell, line)).collect();
+            let cells: Vec<&str> = owned.iter().map(String::as_str).collect();
             if cells[0] == "fields" {
                 assert!(
                     cells.len() >= 4 && cells.len().is_multiple_of(2),
@@ -330,13 +375,13 @@ mod tests {
                     .chunks(2)
                     .map(|pair| (pair[0].to_string(), case_value(pair[1], line)))
                     .collect();
-                levels.insert(cells[1], Value::Object(fields));
+                levels.insert(cells[1].to_string(), Value::Object(fields));
                 continue;
             }
             assert_eq!(cells.len(), 4, "a case has exactly four cells: {line}");
             assert!(
-                matches!(cells[0], "assert" | "wait"),
-                "a case is an assert or a wait: {line}"
+                matches!(cells[0], "assert" | "wait" | "split"),
+                "a case is an assert, a wait or a split: {line}"
             );
             let fields = levels
                 .get(cells[1])

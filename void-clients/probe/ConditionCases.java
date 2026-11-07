@@ -14,6 +14,7 @@ final class ConditionCases {
     for (String line : Files.readAllLines(Path.of(args[0]), StandardCharsets.UTF_8)) {
       if (line.isEmpty() || line.startsWith("#")) continue;
       String[] cells = line.split("\t", -1);
+      for (int at = 0; at < cells.length; at++) cells[at] = unescape(cells[at], line);
       if (cells[0].equals("fields")) {
         if (cells.length < 4 || cells.length % 2 != 0) fail("a fields line holds a level and pairs: " + line);
         Map<String, Object> fields = new HashMap<>();
@@ -22,7 +23,7 @@ final class ConditionCases {
         continue;
       }
       if (cells.length != 4) fail("a case has exactly four cells: " + line);
-      if (!cells[0].equals("assert") && !cells[0].equals("wait")) fail("a case is an assert or a wait: " + line);
+      if (!List.of("assert", "wait", "split").contains(cells[0])) fail("a case is an assert, a wait or a split: " + line);
       if (!levels.containsKey(cells[1])) fail("no fields for the level of: " + line);
       cases++;
       String got = outcome(cells[0], cells[1], cells[2], levels.get(cells[1]));
@@ -38,6 +39,28 @@ final class ConditionCases {
     System.exit(2);
   }
 
+  private static String unescape(String cell, String line) {
+    StringBuilder out = new StringBuilder();
+    for (int at = 0; at < cell.length(); at++) {
+      char c = cell.charAt(at);
+      if (c != '\\') {
+        out.append(c);
+        continue;
+      }
+      char next = at + 1 < cell.length() ? cell.charAt(at + 1) : ' ';
+      if (next == 't' || next == '\\') {
+        out.append(next == 't' ? '\t' : '\\');
+        at++;
+      } else if (next == 'u' && at + 6 <= cell.length() && cell.substring(at + 2, at + 6).matches("[0-9A-Fa-f]{4}")) {
+        out.append((char) Integer.parseInt(cell.substring(at + 2, at + 6), 16));
+        at += 5;
+      } else {
+        fail("an escape is \\t, \\\\ or \\uXXXX: " + line);
+      }
+    }
+    return out.toString();
+  }
+
   private static Object value(String cell, String line) {
     if (cell.length() >= 2 && cell.startsWith("\"") && cell.endsWith("\"")) return cell.substring(1, cell.length() - 1);
     if (cell.equals("true") || cell.equals("false")) return Boolean.parseBoolean(cell);
@@ -48,6 +71,10 @@ final class ConditionCases {
   }
 
   private static String outcome(String kind, String level, String text, Map<String, Object> fields) {
+    if (kind.equals("split")) {
+      String[] parts = Condition.split(text);
+      return parts[0] + "|" + parts[1];
+    }
     try {
       if (kind.equals("assert")) {
         Condition.Parsed parsed = Condition.parse(text);

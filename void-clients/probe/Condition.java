@@ -45,7 +45,23 @@ final class Condition {
   }
 
   private static boolean hasBlank(String text) {
-    return text.indexOf(' ') >= 0 || text.indexOf('\t') >= 0;
+    return firstBlank(text) >= 0;
+  }
+
+  private static int firstBlank(String text) {
+    for (int at = 0; at < text.length(); at++) if (blank(text.charAt(at))) return at;
+    return -1;
+  }
+
+  private static boolean hidden(int c) {
+    return c != ' ' && c != '\t' && (Character.isISOControl(c) || Character.isSpaceChar(c));
+  }
+
+  static String[] split(String line) {
+    String text = trimmed(line);
+    int cut = firstBlank(text);
+    if (cut < 0) return new String[] {text, ""};
+    return new String[] {text.substring(0, cut), trimmed(text.substring(cut + 1))};
   }
 
   private static String valueOf(String raw, String text) {
@@ -64,6 +80,9 @@ final class Condition {
   }
 
   static Parsed parse(String text) {
+    if (text.codePoints().anyMatch(Condition::hidden)) {
+      throw new IllegalArgumentException(text + ": a condition holds visible characters, spaces and tabs, nothing else");
+    }
     Matcher parts = PARTS.matcher(trimmed(text));
     if (!parts.matches()) throw new IllegalArgumentException("bad condition " + text);
     String expected = valueOf(trimmed(parts.group(3)), text);
@@ -83,8 +102,7 @@ final class Condition {
 
   static Wait waitOf(String rest) {
     String text = trimmed(rest);
-    int space = text.indexOf(' '), tab = text.indexOf('\t');
-    int cut = space < 0 ? tab : tab < 0 ? space : Math.min(space, tab);
+    int cut = firstBlank(text);
     if (cut > 0 && DIGITS.matcher(text.substring(0, cut)).matches()) {
       String first = text.substring(0, cut);
       if (!LIMIT.matcher(first).matches()) throw new IllegalArgumentException("bad limit " + first + ": 1 to 9 digits of milliseconds");

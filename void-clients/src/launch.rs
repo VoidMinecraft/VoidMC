@@ -319,19 +319,18 @@ pub fn bot(registry: &Registry, client: &Client) -> Result<Command, String> {
     Ok(command)
 }
 
-pub fn spawn(mut command: Command, dir: &Path) -> Result<u32, String> {
+pub fn spawn(mut command: Command, dir: &Path) -> Result<std::process::Child, String> {
     use std::os::unix::process::CommandExt;
     let log = log_file(dir)?;
     let error = log.try_clone().map_err(|e| e.to_string())?;
-    let child = command
+    command
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(error)
         .process_group(0)
         .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(child.id())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

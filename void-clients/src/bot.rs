@@ -647,7 +647,7 @@ fn stay_connected(name: String, port: u16, writer: Writer, world: Shared) {
 }
 
 fn answer(line: &str, writer: &Writer, world: &Shared) -> Result<Value, String> {
-    let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
+    let (verb, rest) = condition::split(line);
     match verb {
         "state" => Ok(world.lock().unwrap().fields()),
         "act" => {
@@ -718,10 +718,10 @@ fn serve(
     let mut out = stream.try_clone()?;
     for line in BufReader::new(stream).lines() {
         let line = line?;
-        if !matches!(line.split_whitespace().next(), Some("state" | "thumb")) {
+        if !matches!(condition::split(&line).0, "state" | "thumb") {
             *last_verb.lock().unwrap() = Instant::now();
         }
-        let reply = match answer(line.trim(), &writer, &world) {
+        let mut reply = match answer(&line, &writer, &world) {
             Ok(Value::Object(mut fields)) => {
                 fields.insert("ok".into(), json!(true));
                 Value::Object(fields)
@@ -729,6 +729,7 @@ fn serve(
             Ok(other) => json!({ "ok": true, "value": other }),
             Err(error) => json!({ "ok": false, "error": error }),
         };
+        reply["version"] = json!(crate::version::current());
         writeln!(out, "{reply}")?;
     }
     Ok(())

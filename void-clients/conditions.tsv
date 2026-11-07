@@ -1,7 +1,10 @@
 # One table for the conditions of the bot (condition.rs) and of the probe (Condition.java).
 # fields	<level>	name	value ...: a text is quoted, a number or true/false is not.
 # <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>
+# split	<level>	<verb line>	<name>|<rest>: how the bot, the probe and voidc cut a verb.
+# A cell may hold \t, \\ and \uXXXX.
 fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5	action_bar	"Tour 1"
+fields	logic	chunks	1000	state	"connected"	camera	"player"	chat	"a\tb"
 fields	bot	chunks	1000	state	"connected"	chat	"a>=b"	camera	3	x	1.5	action_bar	"Tour 1"
 assert	render	chunks>=800	true
 assert	render	chunks<=800	false
@@ -68,8 +71,35 @@ assert	render	chat~"a	error
 assert	render	chat~a"b	error
 assert	render	chunks>=+5	error
 assert	render	  chunks>=1  	true
-assert	render	chunks>=1	error
-assert	render	chunks >=1	error
-assert	render	state==connected 	false
+assert	render	chunks>=1\u0001	error
+assert	render	chunks\u00a0>=1	error
+assert	render	state==connected\u00a0	error
 assert	render	version>=1	error
 assert	bot	version>=1	error
+assert	logic	camera>=1	error
+assert	logic	camera==player	true
+assert	logic	chunks>=1000	true
+assert	logic	chat~"a\tb"	true
+assert	logic	chat~a\tb	error
+assert	render	state!=connecting\t5000	error
+wait	render	state!=connecting\t5000	error
+wait	render	5000\tchunks>=1	5000 true
+wait	render	5000\t\t chunks\t>=\t1\t	5000 true
+assert	render	\tchunks\t>=\t1\t	true
+assert	render	state!=connecting\u000b5000	error
+wait	render	state!=connecting\u000b5000	error
+wait	render	state!=connecting\u00a05000	error
+wait	render	5000\u000bchunks>=1	error
+assert	render	chat~"a\u3000b"	error
+assert	render	chat~a\u2028	error
+assert	render	chat~a\u0085	error
+assert	render	chat~a\u007f	error
+assert	render	chat~a\u200b	false
+split	bot	wait_until 5000 chunks>=1	wait_until|5000 chunks>=1
+split	bot	wait_until\t40000\tchunks>=1	wait_until|40000\tchunks>=1
+split	bot	 \t state \t	state|
+split	bot	state	state|
+split	bot		|
+split	bot	act  say  a  b 	act|say  a  b
+split	bot	wait_until\u000b5000 chunks>=1	wait_until\u000b5000|chunks>=1
+split	bot	assert\u00a0chunks>=1	assert\u00a0chunks>=1|

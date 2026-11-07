@@ -1,5 +1,5 @@
 use std::fs;
-use std::process::Command;
+use std::process::{Child, Command};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -53,14 +53,28 @@ pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     {
         return Err(format!("port {} is leased to {owner}", client.port));
     }
-    client.pid = launch::spawn(command, &registry::client_dir(&client.name))?;
+    let mut child = launch::spawn(command, &registry::client_dir(&client.name))?;
+    client.pid = child.id();
     registry::save(&client).map_err(|error| {
-        let _ = Command::new("kill").arg(client.pid.to_string()).status();
+        stop(&mut child, STOP_PATIENCE);
         format!(
             "{} could not be recorded, so it is stopped: {error}",
             client.name
         )
     })
+}
+
+fn stop(child: &mut Child, patience: Duration) {
+    let _ = Command::new("kill").arg(child.id().to_string()).status();
+    let deadline = Instant::now() + patience;
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn gone(client: &Client) -> bool {
@@ -107,6 +121,33 @@ pub fn forget(name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_child_that_ignores_the_signal_is_killed_and_reaped() {
+        let mut polite = Command::new("sleep").arg("60").spawn().unwrap();
+        stop(&mut polite, Duration::from_secs(5));
+        assert!(polite.try_wait().unwrap().is_some());
+        let mut stubborn = Command::new("sh")
+            .args(["-c", "trap '' TERM; echo ready; read line"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(stubborn.stdout.take().unwrap()),
+            &mut ready,
+        )
+        .unwrap();
+        let started = Instant::now();
+        stop(&mut stubborn, Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let status = stubborn.try_wait().unwrap().expect("reaped");
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(9)
+        );
+    }
 
     fn client(name: &str, level: Level) -> Client {
         Client {

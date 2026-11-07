@@ -43,8 +43,10 @@ All levels: `state`, `act <command>`, `wait_until [ms] <condition>`, `assert <co
 "contains". `state` lists the fields. A field starts with a letter and a value is one word: a value
 with spaces goes between quotes, and the limit of a wait comes first.
 `wait_until 5000 'action_bar~"Tour 2"'` waits 5 s for "Tour 2"; `wait_until state!=connecting 5000`
-is an error, never a wait. `conditions.tsv` holds the cases, checked against the bot and the
-probe by `cargo test`, which needs `javac`. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
+is an error, never a wait. Only spaces and tabs separate words: another space or a control
+character in a condition is an error. `conditions.tsv` holds the cases, with `\t` and `\uXXXX`
+escapes: `cargo test`, which needs `javac`, runs them through the Rust and Java code that splits a
+verb and reads a condition, the code the bot and the probe use. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
 
 Bots add `packets`.
 
@@ -68,13 +70,15 @@ and answers one JSON line.
 - A client or a bot with no verb for `idle_minutes` stops, unless its window is shown. `state` and
   `thumb` do not count as verbs. `VOIDC_IDLE_MINUTES` changes that for one launch.
 - A `voidc up` that fails stops the client it started, even when its record cannot be written.
-- `voidc up` replaces a mosaic of another version, and warns about one from before versions.
+- `voidc up` replaces a mosaic of another version, fails if it does not quit, and warns about one
+  from before versions.
 - A condition that cannot be compared, like `chunks>=abc`, is an error, never true.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.
 - `voidc cmd` refuses a client started by another version of the probe or the bot, and says to
   restart it. The version is a hash of their sources outside tests (the probe, the bot,
-  conditions, framing, launch), not of the protocol crates. A client still loading is not checked.
+  conditions, framing, launch), not of the protocol crates. A client tells it in every answer, even
+  while it loads.
 - The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.
 
 Limits and levels live in `clients.toml`, built into the binary. Runtime state lives in

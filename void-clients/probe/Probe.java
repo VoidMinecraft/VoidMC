@@ -46,6 +46,7 @@ import org.lwjgl.system.macosx.ObjCRuntime;
 public class Probe {
   private static final String LEVEL = System.getProperty("void.level", "render");
   private static final String SERVER = System.getProperty("void.server");
+  private static final String VERSION = System.getProperty("void.version", "");
   private static final long IDLE_MS = Long.getLong("void.idle.minutes", 30) * 60_000;
   private static volatile long lastVerb = System.currentTimeMillis();
   private static volatile boolean shown;
@@ -124,7 +125,7 @@ public class Probe {
         BufferedReader in = new BufferedReader(new InputStreamReader(Channels.newInputStream(channel), StandardCharsets.UTF_8));
         PrintWriter out = new PrintWriter(Channels.newOutputStream(channel), true, StandardCharsets.UTF_8)) {
       String line;
-      while ((line = in.readLine()) != null) out.println(answer(line.trim()));
+      while ((line = in.readLine()) != null) out.println(answer(line));
     }
   }
 
@@ -146,12 +147,16 @@ public class Probe {
   }
 
   private static String answer(String line) {
-    String[] words = line.split("\\s+");
-    String usage = USAGE.get(words[0]);
+    String[] parts = Condition.split(line);
+    String name = parts[0], rest = parts[1];
+    List<String> all = new ArrayList<>(List.of(name));
+    if (!rest.isEmpty()) all.addAll(List.of(rest.split("[ \t]+")));
+    String[] words = all.toArray(String[]::new);
+    String usage = USAGE.get(name);
     if (usage != null && words.length - 1 < required(usage)) return failure("usage: " + usage);
     try {
-      if (!words[0].equals("state") && !words[0].equals("thumb")) lastVerb = System.currentTimeMillis();
-      return ok(verb(words[0], words, line));
+      if (!name.equals("state") && !name.equals("thumb")) lastVerb = System.currentTimeMillis();
+      return ok(verb(name, words, rest));
     } catch (Throwable thrown) {
       Throwable error = thrown instanceof java.util.concurrent.ExecutionException ? thrown.getCause() : thrown;
       boolean malformed = error instanceof NumberFormatException || error instanceof ArrayIndexOutOfBoundsException;
@@ -185,9 +190,8 @@ public class Probe {
     return player;
   }
 
-  private static Map<String, Object> verb(String verb, String[] w, String line) throws Exception {
+  private static Map<String, Object> verb(String verb, String[] w, String rest) throws Exception {
     Minecraft mc = ready();
-    String rest = line.contains(" ") ? line.substring(line.indexOf(' ') + 1) : "";
     Map<String, Object> reply = new LinkedHashMap<>();
     switch (verb) {
       case "state" -> reply.putAll(onGame(Probe::fields));
@@ -250,7 +254,7 @@ public class Probe {
     fields.put("screen", screen);
     fields.put("fps", mc.getFps());
     fields.put("level", LEVEL);
-    fields.put("version", System.getProperty("void.version", ""));
+    fields.put("version", VERSION);
     fields.put("reconnects", reconnects);
     fields.put("shown", shown);
     LocalPlayer player = mc.player;
@@ -437,6 +441,7 @@ public class Probe {
   }
 
   private static String ok(Map<String, Object> reply) {
+    reply.putIfAbsent("version", VERSION);
     StringBuilder json = new StringBuilder("{\"ok\":true");
     for (Map.Entry<String, Object> entry : reply.entrySet()) {
       json.append(',').append(quote(entry.getKey())).append(':').append(value(entry.getValue()));
@@ -445,7 +450,7 @@ public class Probe {
   }
 
   private static String failure(String message) {
-    return "{\"ok\":false,\"error\":" + quote(message) + "}";
+    return "{\"ok\":false,\"error\":" + quote(message) + ",\"version\":" + quote(VERSION) + "}";
   }
 
   private static String value(Object value) {

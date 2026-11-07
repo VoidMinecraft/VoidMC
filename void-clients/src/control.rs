@@ -28,8 +28,8 @@ pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> 
 
 /// How long a verb may take: a `wait_until` carries its own limit.
 pub fn timeout_of(verb: &str) -> Duration {
-    let limit = match verb.trim().split_once(' ') {
-        Some(("wait_until", rest)) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
+    let limit = match condition::split(verb) {
+        ("wait_until", rest) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
         _ => return Duration::from_secs(30),
     };
     Duration::from_millis(limit + 5_000)
@@ -49,6 +49,10 @@ mod tests {
         assert_eq!(
             timeout_of("wait_until chunks >= 100"),
             Duration::from_secs(25)
+        );
+        assert_eq!(
+            timeout_of("wait_until\t40000\tchunks>=1"),
+            Duration::from_secs(45)
         );
         assert_eq!(timeout_of("state"), Duration::from_secs(30));
     }

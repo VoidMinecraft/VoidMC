@@ -80,7 +80,6 @@ fn trusted(head: &Head, port: u16) -> bool {
     host_ok && origin_ok
 }
 
-/// Starts the page if nobody serves it yet, and says where it is.
 fn call(port: u16, method: &str, path: &str) -> Option<(u16, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream.set_read_timeout(Some(ASK_TIMEOUT)).ok()?;
@@ -115,6 +114,7 @@ fn served(port: u16) -> Served {
     }
 }
 
+/// Starts the page if nobody serves it yet, and says where it is.
 pub fn ensure(registry: &Registry) -> Result<String, String> {
     let port = registry.dashboard_port;
     let url = format!("http://127.0.0.1:{port}");
@@ -128,9 +128,14 @@ pub fn ensure(registry: &Registry) -> Result<String, String> {
         }
         Served::Other => {
             let _ = call(port, "POST", "/api/quit");
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while served(port) != Served::Nothing && std::time::Instant::now() < deadline {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while served(port) != Served::Nothing && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(100));
+            }
+            if served(port) != Served::Nothing {
+                return Err(format!(
+                    "the mosaic on {port} comes from another voidc and did not quit: stop it, then run this again"
+                ));
             }
         }
         Served::Nothing => {}
@@ -351,5 +356,23 @@ mod tests {
             }
         });
         assert_eq!(served(old_port), Served::Older);
+    }
+
+    #[test]
+    fn a_mosaic_of_another_version_that_stays_is_an_error_not_a_success() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = super::head(&stream);
+                let _ = respond(&mut stream, "200 OK", "text/plain", b"0000000000000000");
+            }
+        });
+        let registry = Registry {
+            dashboard_port: port,
+            ..crate::registry::Registry::load()
+        };
+        let error = ensure(&registry).unwrap_err();
+        assert!(error.contains("did not quit"), "{error}");
     }
 }
