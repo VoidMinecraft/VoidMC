@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::control::{self, Chore};
 use crate::registry::{self, Client, Level, Registry, home_name};
-use crate::{control, lifecycle, version};
+use crate::{lifecycle, version};
 
 const PAGE: &str = include_str!("dash.html");
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -190,7 +191,7 @@ fn status(client: &Client) -> Value {
         tile["state"] = json!("connected");
         return tile;
     }
-    let reply = control::ask(&client.name, "state", ASK_TIMEOUT).ok();
+    let reply = control::chore(&client.name, Chore::State, ASK_TIMEOUT).ok();
     if let Some(Value::Object(fields)) = reply.and_then(|line| serde_json::from_str(&line).ok()) {
         for (key, value) in fields {
             if key != "level" {
@@ -211,7 +212,7 @@ fn respond(stream: &mut TcpStream, code: &str, kind: &str, body: &[u8]) -> std::
 }
 
 fn thumb(name: &str) -> Option<Vec<u8>> {
-    let line = control::ask(name, "thumb", ASK_TIMEOUT).ok()?;
+    let line = control::chore(name, Chore::Thumb, ASK_TIMEOUT).ok()?;
     let reply: Value = serde_json::from_str(&line).ok()?;
     fs::read(reply["path"].as_str()?).ok()
 }
@@ -223,8 +224,8 @@ fn action(registry: &Registry, name: &str, verb: &str) -> Result<(), String> {
             let client = registry::load(name).ok_or("unknown client")?;
             lifecycle::start(registry, client)
         }
-        "take" => control::ask(name, "show focus", ASK_TIMEOUT).map(|_| ()),
-        "give" => control::ask(name, "hide", ASK_TIMEOUT).map(|_| ()),
+        "take" => control::chore(name, Chore::ShowFocus, ASK_TIMEOUT).map(|_| ()),
+        "give" => control::chore(name, Chore::Hide, ASK_TIMEOUT).map(|_| ()),
         other => Err(format!("unknown action {other}")),
     }
 }

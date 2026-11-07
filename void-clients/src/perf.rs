@@ -508,6 +508,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn perf_refuses_a_probe_of_another_version() {
+        let stale = control::stale::Stale::start(Level::Render);
+        let args = [control::stale::NAME, "gpu"].map(String::from);
+        stale.assert_refused(command(&args));
+    }
+
+    #[test]
     fn the_tree_of_profiling_txt_gives_full_paths() {
         let text = "--- BEGIN ---\n\
             [00] root(3189/1) - 100.00%/100.00%\n\

@@ -4,8 +4,9 @@ use std::process::{Child, Command};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use crate::control::{self, Chore};
+use crate::launch;
 use crate::registry::{self, Client, Level, Registry};
-use crate::{control, launch};
 
 const STOP_PATIENCE: Duration = Duration::from_secs(10);
 
@@ -128,7 +129,7 @@ pub fn down(name: &str) -> Result<(), String> {
         return Ok(());
     }
     if client.level != Level::Play {
-        let _ = control::ask(name, "quit", Duration::from_secs(2));
+        let _ = control::chore(name, Chore::Quit, Duration::from_secs(2));
     }
     if gone(&client) {
         return Ok(());

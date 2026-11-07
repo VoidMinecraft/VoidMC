@@ -290,8 +290,9 @@ report lands in `~/.voidc/clients/<name>/perf/`.
 - A condition that cannot be compared, like `chunks>=abc`, is an error, never true.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.
-- `voidc cmd` refuses a client started by another version of the probe or the bot, and says to
-  restart it. The version is a hash of their sources outside tests (the probe, the bot,
+- `voidc cmd`, `run`, `step` and `perf` refuse a client started by another version of the probe or
+  the bot, and say to restart it: every verb passes through one check. `list`, `down` and the
+  mosaic still see, stop, show and hide such a client. The version is a hash of their sources outside tests (the probe, the bot,
   conditions, framing, launch), not of the protocol crates. A client tells it in every answer, from
   the moment its socket opens, even while it loads.
 - The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.

@@ -95,7 +95,22 @@ fn default_home() -> PathBuf {
 
 /// The folder of the runtime state, shared by every worktree.
 pub fn home() -> PathBuf {
+    #[cfg(test)]
+    if let Some(home) = TEST_HOME.with(|home| home.borrow().clone()) {
+        return home;
+    }
     std::env::var_os("VOIDC_HOME").map_or_else(default_home, PathBuf::from)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A home for the calling test thread alone, so a test never writes to the real one.
+#[cfg(test)]
+pub fn set_test_home(home: Option<PathBuf>) {
+    TEST_HOME.with(|cell| *cell.borrow_mut() = home);
 }
 
 fn canonical(path: &Path) -> PathBuf {

@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::control::{self, Chore};
+use crate::lifecycle;
 use crate::registry::{self, Client, Level, Registry};
-use crate::{control, lifecycle};
 
 const TICK_MS: f64 = 50.0;
 const TICKS_PER_SECOND: u64 = 20;
@@ -335,7 +336,7 @@ impl Joining for Joiner<'_> {
     }
 
     fn in_game(&self) -> bool {
-        control::ask(&self.client.name, "state", Duration::from_millis(500))
+        control::chore(&self.client.name, Chore::State, Duration::from_millis(500))
             .ok()
             .and_then(|line| serde_json::from_str::<Value>(&line).ok())
             .is_some_and(|state| {
@@ -487,14 +488,18 @@ fn size_of(out: &Path) -> u64 {
         .sum()
 }
 
-fn passage(server: &mut Socket, client: &Client, plan: &Plan) -> Result<(), String> {
+fn passage(server: &mut impl Link, client: &Client, plan: &Plan) -> Result<(), String> {
     let joiner = Joiner {
         client,
         min_chunks: plan.min_chunks,
     };
     let pace = Duration::from_millis(1000 / TICKS_PER_SECOND);
     join(server, &joiner, plan.lock_at, pace)?;
-    let socket = Socket::open("client", &registry::socket(&client.name)?)?;
+    let socket = Socket::over(
+        "client",
+        control::Probe::open(&client.name)?.into_stream(),
+        ANSWER_LIMIT,
+    )?;
     let mut lock = Lockstep {
         server,
         client: socket,
@@ -917,5 +922,18 @@ mod tests {
             .acts;
         assert_eq!(acts, ["tp 80 90 0", "tell @r hi"]);
         assert!(plan(&[]).unwrap().acts.is_empty());
+    }
+
+    #[test]
+    fn step_refuses_a_probe_of_another_version() {
+        let stale = control::stale::Stale::start(Level::Render);
+        let client = registry::load(control::stale::NAME).unwrap();
+        let out = registry::home().join("out");
+        let plan = plan(&["--lock-at", "10", "--min-chunks", "1"])
+            .map(|plan| Plan { out, ..plan })
+            .unwrap();
+        let mut ticks = vec![Ok(json!({"tick": 0}))];
+        ticks.extend((1..=10).map(|tick| Ok(json!({"tick": tick}))));
+        stale.assert_refused(passage(&mut script(ticks), &client, &plan));
     }
 }

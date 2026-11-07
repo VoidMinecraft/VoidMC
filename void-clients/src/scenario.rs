@@ -2167,6 +2167,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn run_refuses_a_probe_of_another_version() {
+        let stale = crate::control::stale::Stale::start(Level::Render);
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act map\n").unwrap();
+        let mut host =
+            Live(|_: &str, _, _: Option<String>| Err("no client starts here".to_string()));
+        stale.assert_refused(command(
+            &words(&dir, &["--on", crate::control::stale::NAME]),
+            &mut host,
+        ));
+    }
+
     fn words(dir: &Path, more: &[&str]) -> Vec<String> {
         let mut args = vec![
             dir.join("s.scn").display().to_string(),

@@ -18,6 +18,7 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use control::Chore;
 use registry::{Client, Level, Registry};
 use serde_json::Value;
 
@@ -74,7 +75,7 @@ fn wait_in_game(name: &str) -> Result<(), String> {
                 log.display()
             ));
         }
-        if let Ok(line) = control::ask(name, "state", Duration::from_secs(5)) {
+        if let Ok(line) = control::chore(name, Chore::State, Duration::from_secs(5)) {
             let reply: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
             if reply["state"] == "connected" {
                 println!(
@@ -152,7 +153,7 @@ fn list() {
         } else if client.level == Level::Play {
             "playing".to_string()
         } else {
-            control::ask(&client.name, "state", Duration::from_secs(3))
+            control::chore(&client.name, Chore::State, Duration::from_secs(3))
                 .ok()
                 .and_then(|line| serde_json::from_str::<Value>(&line).ok())
                 .and_then(|reply| reply["state"].as_str().map(str::to_string))
@@ -175,9 +176,6 @@ fn cmd(args: &[String]) -> Result<(), String> {
     }
     let verb = args[1..].join(" ");
     condition::check(&verb, client.level)?;
-    let state = control::ask(name, "state", Duration::from_secs(5))?;
-    let state: Value = serde_json::from_str(&state).map_err(|e| e.to_string())?;
-    version::check(name, &state)?;
     let reply = control::ask(name, &verb, control::timeout_of(&verb))?;
     println!("{reply}");
     let parsed: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
@@ -286,5 +284,12 @@ mod tests {
         let error =
             stop_on_failure("x", Err("not in game".into()), |_| Err("busy".into())).unwrap_err();
         assert!(error.contains("could not be stopped: busy"));
+    }
+
+    #[test]
+    fn cmd_refuses_a_probe_of_another_version() {
+        let stale = control::stale::Stale::start(Level::Render);
+        let args = [control::stale::NAME, "act", "map"].map(String::from);
+        stale.assert_refused(cmd(&args));
     }
 }
