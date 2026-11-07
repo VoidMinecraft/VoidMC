@@ -97,12 +97,15 @@ fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> 
         jfr: args.iter().any(|arg| arg == "--jfr"),
     };
     lifecycle::start(registry, client)?;
-    println!("mosaic: {}", dash::ensure(registry)?);
-    if level == Level::Play {
-        println!("{name}: started");
-        return Ok(());
-    }
-    wait_in_game(&name).map_err(|error| match lifecycle::down(&name) {
+    let started = || {
+        println!("mosaic: {}", dash::ensure(registry)?);
+        if level == Level::Play {
+            println!("{name}: started");
+            return Ok(());
+        }
+        wait_in_game(&name)
+    };
+    started().map_err(|error| match lifecycle::down(&name) {
         Ok(()) => format!("{error}\n{name} is stopped, so it does not stay behind"),
         Err(stop) => format!("{error}\n{name} could not be stopped: {stop}"),
     })
