@@ -9,8 +9,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::condition::{self, Condition, DEFAULT_WAIT_MS};
+use crate::control::{self, Chore};
 use crate::registry::{self, Level};
-use crate::{check, compare, control, lifecycle};
+use crate::{check, compare, lifecycle};
 
 const ALL: &[Level] = &[Level::Bot, Level::Logic, Level::Render];
 const GAME: &[Level] = &[Level::Logic, Level::Render];
@@ -366,6 +367,8 @@ pub struct Run<'a> {
 /// The one thing a scenario talks to, so its runs can be tested without a game.
 pub trait Driver {
     fn ask(&mut self, verb: &str) -> Result<Value, String>;
+    /// `clock real` at the end of a run, which nothing may stop on its way to the client.
+    fn give_back_clock(&mut self) -> Result<Value, String>;
     fn recording(&self, name: &str) -> PathBuf;
 
     fn read(&self, path: &Path) -> Result<String, String> {
@@ -399,6 +402,13 @@ impl Driver for Socket {
         let reply = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         self.probe = Some(probe);
         Ok(reply)
+    }
+
+    /// On a connection of its own: no check can stop it, and no late answer can reach it.
+    fn give_back_clock(&mut self) -> Result<Value, String> {
+        let timeout = control::timeout_of("clock real");
+        let line = control::chore(&self.name, Chore::ClockReal, timeout)?;
+        serde_json::from_str(&line).map_err(|e| e.to_string())
     }
 
     fn recording(&self, name: &str) -> PathBuf {
@@ -832,7 +842,7 @@ impl<'a> Run<'a> {
 /// A frozen clock outlives the run on a client that stays up: the next run would play frozen.
 fn give_back_clock(client: &str, driver: &mut impl Driver) -> Option<LineResult> {
     let error = driver
-        .ask("clock real")
+        .give_back_clock()
         .map(|reply| reply_error(&reply))
         .unwrap_or_else(Some)?;
     let result = LineResult::new(
@@ -1051,6 +1061,7 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::control::fake::{FakeClient, NAME, Reply};
@@ -1126,6 +1137,10 @@ mod tests {
                 self.state["clock"] = json!(mode);
             }
             Ok(reply)
+        }
+
+        fn give_back_clock(&mut self) -> Result<Value, String> {
+            self.ask("clock real")
         }
 
         fn recording(&self, name: &str) -> PathBuf {
@@ -2337,6 +2352,90 @@ mod tests {
         fs::write(dir.join("s.scn"), "act map\n").unwrap();
         live_run(&dir, &[]).unwrap();
         assert_eq!(fake.heard(), ["state", "state", "act map", "clock real"]);
+    }
+
+    /// A wait that loses its connection, a slow `clock real`, and `reply` from the `from`th `state`.
+    fn from_the_state(
+        from: usize,
+        reply: impl Fn() -> Reply + Send + Sync + 'static,
+    ) -> FakeClient {
+        let states = AtomicUsize::new(0);
+        answering(Level::Render, move |verb| match verb {
+            "state" if states.fetch_add(1, Ordering::Relaxed) + 1 >= from => Some(reply()),
+            "wait_until 1 chunks>=1" => Some(Reply::current(
+                Duration::from_secs(7),
+                json!({"ok": false, "error": "the late answer"}),
+            )),
+            "clock real" => Some(Reply::current(
+                Duration::from_secs(13),
+                json!({"ok": true, "clock": "real"}),
+            )),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_clock_goes_back_past_a_connection_down_and_a_silent_state() {
+        let fake = from_the_state(3, || {
+            Reply::current(Duration::from_secs(14), state_of_a_game())
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\n").unwrap();
+        assert_eq!(live_run(&dir, &[]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(!report.contains("was not given back"), "{report}");
+        assert!(!report.contains("the late answer"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            ["state", "state", "wait_until 1 chunks>=1", "clock real"]
+        );
+    }
+
+    #[test]
+    fn the_clock_goes_back_to_a_probe_of_another_version_after_a_reopening() {
+        let fake = from_the_state(3, || Reply {
+            after: Duration::ZERO,
+            line: r#"{"ok":true,"clock":"real","version":"0000000000000000"}"#.to_string(),
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\nact map\n").unwrap();
+        assert_eq!(live_run(&dir, &["--keep-going"]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(
+            report.contains("runs probe version 0000000000000000"),
+            "{report}"
+        );
+        assert!(!report.contains("was not given back"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            [
+                "state",
+                "state",
+                "wait_until 1 chunks>=1",
+                "state",
+                "clock real"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_probe_that_knows_no_clock_on_its_own_connection_is_told_to_the_report() {
+        let fake = answering(Level::Render, |verb| match verb {
+            "act a" => Some(garbled()),
+            "clock real" => Some(Reply {
+                after: Duration::ZERO,
+                line: r#"{"ok":false,"error":"unknown verb clock"}"#.to_string(),
+            }),
+            _ => None,
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act a\n").unwrap();
+        assert_eq!(live_run(&dir, &[]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(report.contains("was not given back"), "{report}");
+        assert!(report.contains("unknown verb clock"), "{report}");
+        assert!(report.contains("restart the client"), "{report}");
+        assert_eq!(fake.heard(), ["state", "state", "act a", "clock real"]);
     }
 
     #[test]

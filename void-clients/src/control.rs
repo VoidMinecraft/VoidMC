@@ -10,7 +10,8 @@ use crate::{perf, registry, version};
 /// Above the 10 s the probe gives the game thread: a stuck game answers with a failure, in time.
 const STATE_LIMIT: Duration = Duration::from_secs(12);
 
-/// What every probe answers alike, whatever its version: a stale client stays visible and stoppable.
+/// What goes to a probe of any version, unchecked: a stale client stays visible and stoppable, and
+/// gets its clock back if it knows the verb.
 #[derive(Clone, Copy)]
 pub enum Chore {
     State,
@@ -18,6 +19,7 @@ pub enum Chore {
     ShowFocus,
     Hide,
     Quit,
+    ClockReal,
 }
 
 impl Chore {
@@ -28,6 +30,7 @@ impl Chore {
             Self::ShowFocus => "show focus",
             Self::Hide => "hide",
             Self::Quit => "quit",
+            Self::ClockReal => "clock real",
         }
     }
 }
