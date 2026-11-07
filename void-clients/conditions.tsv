@@ -2,9 +2,10 @@
 # fields	<level>	name	value ...: a text is quoted, a number or true/false is not.
 # <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>
 # split	<level>	<verb line>	<name>|<rest>: how the bot, the probe and voidc cut a verb.
+# The logic level has no camera yet, so only the camera rule can refuse camera>=1 there.
 # A cell may hold \t, \\ and \uXXXX.
 fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5	action_bar	"Tour 1"
-fields	logic	chunks	1000	state	"connected"	camera	"player"	chat	"a\tb"
+fields	logic	chunks	1000	state	"connected"	chat	"a\tb"
 fields	bot	chunks	1000	state	"connected"	chat	"a>=b"	camera	3	x	1.5	action_bar	"Tour 1"
 assert	render	chunks>=800	true
 assert	render	chunks<=800	false
@@ -77,7 +78,7 @@ assert	render	state==connected\u00a0	error
 assert	render	version>=1	error
 assert	bot	version>=1	error
 assert	logic	camera>=1	error
-assert	logic	camera==player	true
+assert	logic	camera==player	false
 assert	logic	chunks>=1000	true
 assert	logic	chat~"a\tb"	true
 assert	logic	chat~a\tb	error
