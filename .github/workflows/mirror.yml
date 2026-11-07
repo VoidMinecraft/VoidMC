@@ -6,6 +6,9 @@ on:
     tags: ['**']
   delete:
 
+permissions:
+  contents: read
+
 concurrency:
   group: mirror
   cancel-in-progress: false
@@ -15,15 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup SSH
+        env:
+          MIRROR_SSH_KEY: ${{ secrets.MIRROR_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.MIRROR_SSH_KEY }}" > ~/.ssh/id_ed25519
+          echo "$MIRROR_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan github.com >> ~/.ssh/known_hosts
 
       - name: Mirror clone source
         run: |
-          git clone --mirror https://github.com/${{ github.repository }}.git repo.git
+          git clone --mirror "https://github.com/$GITHUB_REPOSITORY.git" repo.git
 
       - name: Push mirror to eip
         working-directory: repo.git

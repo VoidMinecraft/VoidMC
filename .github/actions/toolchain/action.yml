@@ -6,7 +6,7 @@ inputs:
     required: false
     default: .
   components:
-    description: Components to add, comma separated.
+    description: Components to add, comma separated, or empty for none.
     required: false
     default: clippy,rustfmt
 runs:
@@ -18,16 +18,23 @@ runs:
       env:
         COMPONENTS: ${{ inputs.components }}
       run: |
-        if [ ! -f rust-toolchain.toml ]; then
-          echo "::error file=$PWD::no rust-toolchain.toml in $PWD"
+        file="$PWD/rust-toolchain.toml"
+        if [ ! -f "$file" ]; then
+          echo "::error::no rust-toolchain.toml in $PWD"
           exit 1
         fi
-        channel=$(sed -n -E "s/^[[:space:]]*channel[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/p" rust-toolchain.toml)
-        if [ -z "$channel" ]; then
-          echo "::error file=$PWD/rust-toolchain.toml::no channel = \"...\" line in $PWD/rust-toolchain.toml"
+        channels=$(sed -n -E "s/^[[:space:]]*channel[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/p" "$file")
+        count=$(printf '%s' "$channels" | grep -c . || true)
+        if [ "$count" -ne 1 ]; then
+          echo "::error file=$file::$file needs exactly one channel = \"...\" line, it has $count"
           exit 1
         fi
-        rustup toolchain install "$channel" --profile minimal --component "$COMPONENTS"
+        channel=$channels
+        install=(rustup toolchain install "$channel" --profile minimal)
+        if [ -n "${COMPONENTS//[[:space:],]/}" ]; then
+          install+=(--component "$COMPONENTS")
+        fi
+        "${install[@]}"
         echo "PINNED_CHANNEL=$channel" >> "$GITHUB_ENV"
     - name: Check that cargo uses it
       shell: bash
@@ -47,10 +54,14 @@ runs:
           echo "::error::rustc is $used, the pinned $PINNED_CHANNEL is $pinned"
           exit 1
         fi
+        escaped=${PINNED_CHANNEL//./\\.}
         case "$PINNED_CHANNEL" in
-          nightly*) pattern='^rustc [0-9]+\.[0-9]+\.[0-9]+-nightly \([0-9a-f]+ [0-9]{4}-[0-9]{2}-[0-9]{2}\)$' ;;
+          stable) pattern='^rustc [0-9]+\.[0-9]+\.[0-9]+ \(' ;;
           beta*) pattern='^rustc [0-9]+\.[0-9]+\.[0-9]+-beta' ;;
-          *) pattern="^rustc ${PINNED_CHANNEL//./\\.} " ;;
+          nightly*) pattern='^rustc [0-9]+\.[0-9]+\.[0-9]+-nightly \([0-9a-f]+ [0-9]{4}-[0-9]{2}-[0-9]{2}\)$' ;;
+          [0-9]*.[0-9]*.[0-9]*) pattern="^rustc $escaped " ;;
+          [0-9]*.[0-9]*) pattern="^rustc $escaped\.[0-9]+ " ;;
+          *) echo "::error::unknown channel $PINNED_CHANNEL"; exit 1 ;;
         esac
         if ! [[ "$used" =~ $pattern ]]; then
           echo "::error::$used does not match the channel $PINNED_CHANNEL"

@@ -2,15 +2,15 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event.action == 'edited' && !github.event.changes.base && github.run_id || 'tests' }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -18,19 +18,8 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  scope:
-    name: scope
-    if: >-
-      github.event_name == 'push'
-      || (github.event.action == 'edited' && github.event.changes.base)
-      || (github.event.action != 'edited' && github.event.pull_request.head.repo.full_name != github.repository)
-    runs-on: ubuntu-latest
-    steps:
-      - run: "true"
-
   fmt:
     name: rustfmt
-    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +28,6 @@ jobs:
 
   clippy:
     name: clippy
-    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,7 +37,6 @@ jobs:
 
   test:
     name: test
-    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,9 +44,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features
 
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [fmt, clippy, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every required job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'length > 0 and all(.[]; .result == "success")' > /dev/null
+
   clippy-beta:
     name: clippy on beta (report only)
-    needs: scope
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
@@ -86,7 +85,6 @@ jobs:
 
   coverage:
     name: coverage
-    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
