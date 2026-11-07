@@ -384,7 +384,7 @@ mod tests {
                 std::time::Instant::now()
             })
         };
-        std::thread::sleep(std::time::Duration::from_secs(6));
+        std::thread::sleep(std::time::Duration::from_millis(300));
         let released = std::time::Instant::now();
         drop(held);
         assert!(waiter.join().unwrap() >= released);

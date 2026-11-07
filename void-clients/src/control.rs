@@ -10,7 +10,8 @@ use crate::{perf, registry, version};
 /// Above the 10 s the probe gives the game thread: a stuck game answers with a failure, in time.
 const STATE_LIMIT: Duration = Duration::from_secs(12);
 
-/// What every probe answers alike, whatever its version: a stale client stays visible and stoppable.
+/// What goes to a probe of any version, unchecked: a stale client stays visible and stoppable, and
+/// gets its clock back if it knows the verb.
 #[derive(Clone, Copy)]
 pub enum Chore {
     State,
@@ -18,6 +19,7 @@ pub enum Chore {
     ShowFocus,
     Hide,
     Quit,
+    ClockReal,
 }
 
 impl Chore {
@@ -28,6 +30,7 @@ impl Chore {
             Self::ShowFocus => "show focus",
             Self::Hide => "hide",
             Self::Quit => "quit",
+            Self::ClockReal => "clock real",
         }
     }
 }
@@ -68,9 +71,9 @@ impl Probe {
     }
 
     /// The only way to drive a client: a probe of another version than this voidc is refused.
-    pub fn open(name: &str) -> Result<Self, String> {
+    pub fn open(name: &str, limits: Limits) -> Result<Self, String> {
         let mut probe = Self::connect(name)?;
-        let state = probe.ask("state", STATE_LIMIT)?;
+        let state = probe.ask("state", limits.open)?;
         let state: Value = serde_json::from_str(&state).map_err(|e| e.to_string())?;
         version::check(name, &state)?;
         Ok(probe)
@@ -103,7 +106,7 @@ impl Probe {
 /// Sends one verb to a client whose probe is of this version, and returns its JSON line.
 pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> {
     one_verb(verb)?;
-    Probe::open(name)?.ask(verb, timeout)
+    Probe::open(name, Limits::REAL)?.ask(verb, timeout)
 }
 
 /// A chore needs no check of the version.
@@ -111,17 +114,45 @@ pub fn chore(name: &str, chore: Chore, timeout: Duration) -> Result<String, Stri
     Probe::connect(name)?.ask(chore.verb(), timeout)
 }
 
-/// How long a verb may take: a `wait_until` carries its own limit.
-pub fn timeout_of(verb: &str) -> Duration {
-    let words: Vec<&str> = verb.split_whitespace().collect();
-    if words.first() == Some(&"perf") {
-        return perf::timeout_of(&words);
-    }
-    let limit = match condition::split(verb) {
-        ("wait_until", rest) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
-        _ => return Duration::from_secs(30),
+/// How long a client gets. A test takes a smaller set, so that it does not wait for the real one.
+#[derive(Clone, Copy)]
+pub struct Limits {
+    pub open: Duration,
+    verb: Duration,
+    past_a_wait: Duration,
+}
+
+impl Limits {
+    pub const REAL: Self = Self {
+        open: STATE_LIMIT,
+        verb: Duration::from_secs(30),
+        past_a_wait: Duration::from_secs(5),
     };
-    Duration::from_millis(limit + 5_000)
+
+    /// The real ones divided by 20.
+    #[cfg(test)]
+    pub const TEST: Self = Self {
+        open: Duration::from_millis(600),
+        verb: Duration::from_millis(1500),
+        past_a_wait: Duration::from_millis(250),
+    };
+
+    /// How long a verb may take: a `wait_until` carries its own limit.
+    pub fn of(self, verb: &str) -> Duration {
+        let words: Vec<&str> = verb.split_whitespace().collect();
+        if words.first() == Some(&"perf") {
+            return perf::timeout_of(&words);
+        }
+        let limit = match condition::split(verb) {
+            ("wait_until", rest) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
+            _ => return self.verb,
+        };
+        Duration::from_millis(limit) + self.past_a_wait
+    }
+}
+
+pub fn timeout_of(verb: &str) -> Duration {
+    Limits::REAL.of(verb)
 }
 
 #[cfg(test)]
@@ -129,7 +160,6 @@ pub mod fake {
     use std::fs;
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -137,6 +167,7 @@ pub mod fake {
     use serde_json::json;
 
     use super::*;
+    use crate::held::Held;
     use crate::registry::{Client, Level};
 
     pub const NAME: &str = "fake";
@@ -162,12 +193,12 @@ pub mod fake {
     pub struct FakeClient {
         home: PathBuf,
         heard: Arc<Mutex<Vec<String>>>,
-        process: Arc<Mutex<Child>>,
+        process: Arc<Mutex<Held>>,
     }
 
     struct Serving {
         heard: Arc<Mutex<Vec<String>>>,
-        process: Arc<Mutex<Child>>,
+        process: Arc<Mutex<Held>>,
         script: Arc<Script>,
     }
 
@@ -183,21 +214,26 @@ pub mod fake {
                 return;
             }
             if verb == "quit" {
-                let mut process = serving.process.lock().unwrap();
-                let _ = process.kill();
-                let _ = process.wait();
+                serving.process.lock().unwrap().stop();
             }
         }
     }
 
-    /// Under `/tmp` and not `temp_dir`: a socket has 103 bytes, whatever `TMPDIR` holds.
-    pub fn short_home() -> PathBuf {
+    fn short_home_of(pid: u32, run: u32) -> PathBuf {
+        Path::new("/tmp").join(format!("voidc-fake-{pid}-{run}"))
+    }
+
+    /// The one way a test gets a socket, under a home of its own for this thread. In `/tmp` and
+    /// not `temp_dir`, and with two numbers for all that varies: a socket has 103 bytes, whatever
+    /// `TMPDIR` holds, and neither a test nor another process shares it.
+    pub fn test_socket(name: &str) -> (PathBuf, PathBuf) {
         static RUN: AtomicU32 = AtomicU32::new(0);
-        Path::new("/tmp").join(format!(
-            "voidc-fake-{}-{}",
-            std::process::id(),
-            RUN.fetch_add(1, Ordering::Relaxed)
-        ))
+        let home = short_home_of(std::process::id(), RUN.fetch_add(1, Ordering::Relaxed));
+        let _ = fs::remove_dir_all(&home);
+        registry::set_test_home(Some(home.clone()));
+        let socket = registry::socket(name).unwrap();
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        (home, socket)
     }
 
     impl FakeClient {
@@ -215,19 +251,9 @@ pub mod fake {
         }
 
         pub fn scripted(level: Level, script: Script) -> Self {
-            let home = short_home();
-            let _ = fs::remove_dir_all(&home);
-            registry::set_test_home(Some(home.clone()));
-            let socket = registry::socket(NAME).unwrap();
-            fs::create_dir_all(socket.parent().unwrap()).unwrap();
+            let (home, socket) = test_socket(NAME);
             let listener = UnixListener::bind(&socket).unwrap();
-            let process = Command::new("sh")
-                .args(["-c", "sleep 60; :", &format!("-Dvoid.client={NAME}"), "x"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
+            let process = Held::waiting(&format!("fake-client -Dvoid.client={NAME} x"));
             registry::save(&Client {
                 name: NAME.to_string(),
                 feature: "Fake".to_string(),
@@ -280,11 +306,25 @@ pub mod fake {
         }
     }
 
+    #[test]
+    fn a_test_socket_fits_whatever_the_numbers_and_is_never_shared() {
+        let longest = short_home_of(u32::MAX, u32::MAX);
+        registry::set_test_home(Some(longest));
+        assert!(registry::socket(NAME).is_ok());
+        let (first, _) = test_socket(NAME);
+        let (second, _) = test_socket(NAME);
+        registry::set_test_home(None);
+        assert_ne!(first, second);
+        assert!(first.starts_with("/tmp"));
+        let mine = format!("voidc-fake-{}-", std::process::id());
+        assert!(first.to_string_lossy().contains(&mine));
+        fs::remove_dir_all(first).unwrap();
+        fs::remove_dir_all(second).unwrap();
+    }
+
     impl Drop for FakeClient {
         fn drop(&mut self) {
-            let mut process = self.process.lock().unwrap();
-            let _ = process.kill();
-            let _ = process.wait();
+            self.process.lock().unwrap().stop();
             registry::set_test_home(None);
             let _ = fs::remove_dir_all(&self.home);
         }
@@ -318,25 +358,47 @@ mod tests {
     #[test]
     fn a_state_outlives_what_the_probe_gives_the_game_thread() {
         assert!(include_str!("../probe/Probe.java").contains("onGame(task, 10_000)"));
-        assert!(STATE_LIMIT > Duration::from_secs(10));
+        assert!(Limits::REAL.open > Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_clock_given_back_has_thirty_seconds_for_real() {
+        assert_eq!(Limits::REAL.of("clock real"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_limits_of_the_tests_are_the_real_ones_divided_by_twenty() {
+        assert_eq!(Limits::TEST.open * 20, Limits::REAL.open);
+        assert_eq!(Limits::TEST.of("state") * 20, Limits::REAL.of("state"));
+        assert_eq!(Limits::TEST.past_a_wait * 20, Limits::REAL.past_a_wait);
     }
 
     #[test]
     fn a_connection_the_client_hung_up_says_so() {
         use std::os::unix::net::UnixListener;
-        let home = fake::short_home();
-        fs::create_dir_all(home.join("run")).unwrap();
-        registry::set_test_home(Some(home.clone()));
-        let listener = UnixListener::bind(registry::socket("gone").unwrap()).unwrap();
+        let (home, socket) = fake::test_socket("gone");
+        let listener = UnixListener::bind(socket).unwrap();
         let mut probe = Probe::connect("gone").unwrap();
-        drop(listener.accept().unwrap());
+        let (hung_up, _) = listener.accept().unwrap();
+        let held_by_a_child = hung_up.try_clone().unwrap();
+        hung_up.shutdown(std::net::Shutdown::Both).unwrap();
         let error = probe.ask("act map", Duration::from_secs(1)).unwrap_err();
+        drop(held_by_a_child);
         registry::set_test_home(None);
         fs::remove_dir_all(home).unwrap();
         assert!(
             error.contains("client gone closed the connection"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_fake_client_leaves_nothing_behind() {
+        let fake = fake::FakeClient::stale(registry::Level::Render);
+        let client = registry::load(fake::NAME).unwrap();
+        assert!(registry::alive(&client));
+        drop(fake);
+        assert!(!registry::alive(&client));
     }
 
     #[test]

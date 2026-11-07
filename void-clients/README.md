@@ -315,13 +315,18 @@ report lands in `~/.voidc/clients/<name>/perf/`.
 - `voidc cmd`, `run`, `step` and `perf` refuse a client started by another version of the probe or
   the bot, and say to restart it: every verb of `voidc` passes through one check. The socket itself
   checks nothing, so a verb written straight to it reaches any client. `list`, `down` and the
-  mosaic still see, stop, show and hide such a client. The version is a hash of their sources outside tests (the probe, the bot,
+  mosaic still see, stop, show and hide such a client, and the end of a run still gives it its
+  clock back. The version is a hash of their sources outside tests (the probe, the bot,
   conditions, framing, launch), not of the protocol crates. A client tells it in every answer, from
   the moment its socket opens, even while it loads.
 - A `voidc run` or `perf` opens one connection and checks the version once. A verb that fails takes
   that connection down and the next verb opens and checks another, so a late answer never passes
-  for the next verb. A game stuck for more than 10 s still answers `state`, with a failure; one
-  silent for 12 s is said not to answer.
+  for the next verb. A game stuck for more than 10 s still answers `state`, with a failure. Opening
+  gives `state` 12 s, and a client silent that long is said not to answer. Once open, every verb has
+  30 s, `state` included, a `wait_until` its limit and 5 s, and `perf` what its measure needs.
+- The `clock real` at the end of a run takes a connection of its own, with no check and 30 s, so
+  that a connection down or a probe of another version cannot leave the clock virtual. A probe that
+  does not know it fails the run, in the report.
 - The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.
 - `voidc up` and `voidc step` warn when the disk has less than `min_free_gib` free, and still
   start.

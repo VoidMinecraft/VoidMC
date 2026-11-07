@@ -9,8 +9,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::condition::{self, Condition, DEFAULT_WAIT_MS};
+use crate::control::{self, Chore, Limits};
 use crate::registry::{self, Level};
-use crate::{check, compare, control, lifecycle};
+use crate::{check, compare, lifecycle};
 
 const ALL: &[Level] = &[Level::Bot, Level::Logic, Level::Render];
 const GAME: &[Level] = &[Level::Logic, Level::Render];
@@ -366,6 +367,8 @@ pub struct Run<'a> {
 /// The one thing a scenario talks to, so its runs can be tested without a game.
 pub trait Driver {
     fn ask(&mut self, verb: &str) -> Result<Value, String>;
+    /// `clock real` at the end of a run, which nothing may stop on its way to the client.
+    fn give_back_clock(&mut self) -> Result<Value, String>;
     fn recording(&self, name: &str) -> PathBuf;
 
     fn read(&self, path: &Path) -> Result<String, String> {
@@ -378,13 +381,15 @@ pub trait Driver {
 pub struct Socket {
     name: String,
     probe: Option<control::Probe>,
+    limits: Limits,
 }
 
 impl Socket {
-    pub fn open(name: &str) -> Result<Self, String> {
+    pub fn open(name: &str, limits: Limits) -> Result<Self, String> {
         Ok(Self {
             name: name.to_string(),
-            probe: Some(control::Probe::open(name)?),
+            probe: Some(control::Probe::open(name, limits)?),
+            limits,
         })
     }
 }
@@ -393,10 +398,18 @@ impl Driver for Socket {
     fn ask(&mut self, verb: &str) -> Result<Value, String> {
         let mut probe = match self.probe.take() {
             Some(probe) => probe,
-            None => control::Probe::open(&self.name)?,
+            None => control::Probe::open(&self.name, self.limits)?,
         };
-        let line = probe.ask(verb, control::timeout_of(verb))?;
+        let line = probe.ask(verb, self.limits.of(verb))?;
+        let reply = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         self.probe = Some(probe);
+        Ok(reply)
+    }
+
+    /// On a connection of its own: no check can stop it, and no late answer can reach it.
+    fn give_back_clock(&mut self) -> Result<Value, String> {
+        let timeout = self.limits.of("clock real");
+        let line = control::chore(&self.name, Chore::ClockReal, timeout)?;
         serde_json::from_str(&line).map_err(|e| e.to_string())
     }
 
@@ -831,7 +844,7 @@ impl<'a> Run<'a> {
 /// A frozen clock outlives the run on a client that stays up: the next run would play frozen.
 fn give_back_clock(client: &str, driver: &mut impl Driver) -> Option<LineResult> {
     let error = driver
-        .ask("clock real")
+        .give_back_clock()
         .map(|reply| reply_error(&reply))
         .unwrap_or_else(Some)?;
     let result = LineResult::new(
@@ -915,7 +928,7 @@ pub trait Host {
     fn driver(&self, name: &str) -> Result<Self::Driver, String>;
 }
 
-pub struct Live<F>(pub F);
+pub struct Live<F>(pub F, pub Limits);
 
 impl<F> Host for Live<F>
 where
@@ -936,7 +949,7 @@ where
     }
 
     fn driver(&self, name: &str) -> Result<Socket, String> {
-        Socket::open(name)
+        Socket::open(name, self.1)
     }
 }
 
@@ -992,6 +1005,14 @@ fn target(args: &[String], scenario: &Scenario, host: &impl Host) -> Result<Targ
     })
 }
 
+/// An error of the run keeps the error of the stop that follows it: both have something to say.
+fn with_stop(error: String, stopped: Result<(), String>) -> String {
+    match stopped {
+        Ok(()) => error,
+        Err(stuck) => format!("{error}\n{stuck}"),
+    }
+}
+
 /// `voidc run <file> ...`: a failed line, or a refused scenario, exits with 1.
 pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     let path = PathBuf::from(args.first().ok_or(
@@ -1010,10 +1031,7 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     if let Some(feature) = &chosen.feature
         && let Err(error) = host.up(feature, chosen.level, flag(args, "--port"))
     {
-        return match host.down(&chosen.name) {
-            Ok(()) => Err(error),
-            Err(stuck) => Err(format!("{error}\n{stuck}")),
-        };
+        return Err(with_stop(error, host.down(&chosen.name)));
     }
     let out = flag(args, "--out").map_or_else(|| default_out(&chosen.name, &path), PathBuf::from);
     let run = Run::new(
@@ -1025,18 +1043,17 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     );
     let played = host
         .driver(&chosen.name)
-        .and_then(|mut driver| run.play(&scenario, &mut driver));
-    let written = match &played {
-        Ok(report) => report.write(&out),
-        Err(_) => Ok(()),
-    };
+        .and_then(|mut driver| run.play(&scenario, &mut driver))
+        .and_then(|report| report.write(&out).map(|()| report));
     let stopped = if chosen.feature.is_some() && !args.iter().any(|arg| arg == "--keep-up") {
         host.down(&chosen.name)
     } else {
         Ok(())
     };
-    let report = played?;
-    written?;
+    let report = match played {
+        Ok(report) => report,
+        Err(error) => return Err(with_stop(error, stopped)),
+    };
     println!("{}", report.verdict());
     println!("report: {}", out.join("report.txt").display());
     stopped?;
@@ -1050,6 +1067,7 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::control::fake::{FakeClient, NAME, Reply};
@@ -1125,6 +1143,10 @@ mod tests {
                 self.state["clock"] = json!(mode);
             }
             Ok(reply)
+        }
+
+        fn give_back_clock(&mut self) -> Result<Value, String> {
+            self.ask("clock real")
         }
 
         fn recording(&self, name: &str) -> PathBuf {
@@ -2200,8 +2222,10 @@ mod tests {
     }
 
     fn live_run(dir: &Path, more: &[&str]) -> Result<(), String> {
-        let mut host =
-            Live(|_: &str, _, _: Option<String>| Err("no client starts here".to_string()));
+        let mut host = Live(
+            |_: &str, _, _: Option<String>| Err("no client starts here".to_string()),
+            Limits::TEST,
+        );
         let mut args = vec!["--on", NAME];
         args.extend(more);
         command(&words(dir, &args), &mut host)
@@ -2227,7 +2251,10 @@ mod tests {
     #[test]
     fn a_game_slower_than_the_old_limit_lets_a_line_fail_for_its_own_reason() {
         let fake = answering(Level::Render, |verb| match verb {
-            "state" => Some(Reply::current(Duration::from_secs(7), state_of_a_game())),
+            "state" => Some(Reply::current(
+                Limits::TEST.open * 7 / 12,
+                state_of_a_game(),
+            )),
             "wait_until 60000 chunks>=1" => Some(Reply::current(
                 Duration::ZERO,
                 json!({"ok": false, "error": "java.lang.AssertionError: timed out on chunks>=1"}),
@@ -2259,13 +2286,13 @@ mod tests {
     #[test]
     fn a_game_past_the_limit_of_state_is_said_not_to_answer() {
         let _fake = answering(Level::Render, |verb| {
-            (verb == "state").then(|| Reply::current(Duration::from_secs(14), state_of_a_game()))
+            (verb == "state").then(|| Reply::current(NEVER_IN_TIME, state_of_a_game()))
         });
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "act map\n").unwrap();
         let error = live_run(&dir, &[]).unwrap_err();
         assert!(
-            error.contains("client fake does not answer: no reply to state within 12s"),
+            error.contains("client fake does not answer: no reply to state within 600ms"),
             "{error}"
         );
     }
@@ -2273,12 +2300,8 @@ mod tests {
     #[test]
     fn a_late_answer_never_passes_for_the_answer_to_the_next_verb() {
         let fake = answering(Level::Render, |verb| {
-            verb.starts_with("wait_until").then(|| {
-                Reply::current(
-                    Duration::from_secs(6),
-                    json!({"ok": false, "error": "the late answer"}),
-                )
-            })
+            verb.starts_with("wait_until")
+                .then(|| Reply::current(LATE, json!({"ok": false, "error": "the late answer"})))
         });
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\nact map\n").unwrap();
@@ -2303,17 +2326,139 @@ mod tests {
         );
     }
 
+    /// Past the limit of a `wait_until 1`, and early enough to reach a connection left open.
+    const LATE: Duration = Duration::from_millis(500);
+    /// Past every limit of a test, which never waits for it.
+    const NEVER_IN_TIME: Duration = Duration::from_secs(10);
+    /// Past the limit of an opening, within the limit of a verb.
+    const SLOW: Duration = Duration::from_secs(1);
+
+    fn garbled() -> Reply {
+        Reply {
+            after: Duration::ZERO,
+            line: "not json".to_string(),
+        }
+    }
+
     #[test]
-    fn the_clock_of_the_end_of_a_run_keeps_its_thirty_seconds() {
-        assert_eq!(control::timeout_of("clock real"), Duration::from_secs(30));
+    fn an_answer_that_is_not_json_takes_the_connection_down() {
+        let fake = answering(Level::Render, |verb| (verb == "act a").then(garbled));
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act a\nact b\n").unwrap();
+        assert_eq!(live_run(&dir, &["--keep-going"]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(report.contains("FAIL   1"), "{report}");
+        assert!(report.contains("ok     2"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            ["state", "state", "act a", "state", "act b", "clock real"]
+        );
+    }
+
+    #[test]
+    fn the_clock_of_the_end_of_a_run_gets_the_limit_of_a_verb_and_not_of_an_opening() {
         let fake = answering(Level::Render, |verb| {
-            (verb == "clock real")
-                .then(|| Reply::current(Duration::from_secs(13), state_of_a_game()))
+            (verb == "clock real").then(|| Reply::current(SLOW, state_of_a_game()))
         });
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "act map\n").unwrap();
         live_run(&dir, &[]).unwrap();
         assert_eq!(fake.heard(), ["state", "state", "act map", "clock real"]);
+    }
+
+    #[test]
+    fn the_clock_of_the_end_of_a_run_stops_at_its_limit() {
+        let _fake = answering(Level::Render, |verb| {
+            (verb == "clock real").then(|| Reply::current(NEVER_IN_TIME, state_of_a_game()))
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act map\n").unwrap();
+        assert_eq!(live_run(&dir, &[]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(report.contains("was not given back"), "{report}");
+        assert!(
+            report.contains("no reply to clock real within 1.5s"),
+            "{report}"
+        );
+    }
+
+    /// A wait that loses its connection, a slow `clock real`, and `reply` from the `from`th `state`.
+    fn from_the_state(
+        from: usize,
+        reply: impl Fn() -> Reply + Send + Sync + 'static,
+    ) -> FakeClient {
+        let states = AtomicUsize::new(0);
+        answering(Level::Render, move |verb| match verb {
+            "state" if states.fetch_add(1, Ordering::Relaxed) + 1 >= from => Some(reply()),
+            "wait_until 1 chunks>=1" => Some(Reply::current(
+                LATE,
+                json!({"ok": false, "error": "the late answer"}),
+            )),
+            "clock real" => Some(Reply::current(SLOW, json!({"ok": true, "clock": "real"}))),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_clock_goes_back_past_a_connection_down_and_a_silent_state() {
+        let fake = from_the_state(3, || Reply::current(NEVER_IN_TIME, state_of_a_game()));
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\n").unwrap();
+        assert_eq!(live_run(&dir, &[]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(!report.contains("was not given back"), "{report}");
+        assert!(!report.contains("the late answer"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            ["state", "state", "wait_until 1 chunks>=1", "clock real"]
+        );
+    }
+
+    #[test]
+    fn the_clock_goes_back_to_a_probe_of_another_version_after_a_reopening() {
+        let fake = from_the_state(3, || Reply {
+            after: Duration::ZERO,
+            line: r#"{"ok":true,"clock":"real","version":"0000000000000000"}"#.to_string(),
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\nact map\n").unwrap();
+        assert_eq!(live_run(&dir, &["--keep-going"]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(
+            report.contains("runs probe version 0000000000000000"),
+            "{report}"
+        );
+        assert!(!report.contains("was not given back"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            [
+                "state",
+                "state",
+                "wait_until 1 chunks>=1",
+                "state",
+                "clock real"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_probe_that_knows_no_clock_on_its_own_connection_is_told_to_the_report() {
+        let fake = answering(Level::Render, |verb| match verb {
+            "act a" => Some(garbled()),
+            "clock real" => Some(Reply {
+                after: Duration::ZERO,
+                line: r#"{"ok":false,"error":"unknown verb clock"}"#.to_string(),
+            }),
+            _ => None,
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act a\n").unwrap();
+        assert_eq!(live_run(&dir, &[]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(report.contains("was not given back"), "{report}");
+        assert!(report.contains("unknown verb clock"), "{report}");
+        assert!(report.contains("restart the client"), "{report}");
+        assert_eq!(fake.heard(), ["state", "state", "act a", "clock real"]);
     }
 
     #[test]
@@ -2388,6 +2533,41 @@ mod tests {
         let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
         assert!(error.contains("did not stop"));
         assert!(dir.join("out/report.txt").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_driver_that_fails_keeps_the_failed_stop_that_follows() {
+        let dir = staged("no-driver-no-stop", "act map\n");
+        let mut stage = Stage::new(&dir);
+        stage.driver = Err("client carte does not answer".into());
+        stage.down = Err("carte did not stop".into());
+        let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
+        assert!(error.contains("does not answer"), "{error}");
+        assert!(error.contains("did not stop"), "{error}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_preflight_that_refuses_keeps_the_failed_stop_that_follows() {
+        let dir = staged("no-preflight-no-stop", "wait_until chunkz>=1\n");
+        let mut stage = Stage::new(&dir);
+        stage.down = Err("carte did not stop".into());
+        let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
+        assert!(error.contains("no field chunkz"), "{error}");
+        assert!(error.contains("did not stop"), "{error}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_report_that_cannot_be_written_keeps_the_failed_stop_that_follows() {
+        let dir = staged("no-report-no-stop", "act map\n");
+        fs::create_dir_all(dir.join("out/report.txt")).unwrap();
+        let mut stage = Stage::new(&dir);
+        stage.down = Err("carte did not stop".into());
+        let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
+        assert!(error.contains("Is a directory"), "{error}");
+        assert!(error.contains("did not stop"), "{error}");
         fs::remove_dir_all(dir).unwrap();
     }
 
