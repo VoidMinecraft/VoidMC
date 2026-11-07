@@ -2,9 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -20,9 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - uses: ./.github/actions/toolchain
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -30,9 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -41,16 +36,61 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features
+
+  stacked:
+    name: stacked on its base
+    if: github.event_name == 'pull_request' && github.base_ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: The pull request contains the head of its base
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+          if ! git merge-base --is-ancestor "origin/$BASE" HEAD; then
+            echo "::error::origin/$BASE has commits this branch lacks: rebase it on $BASE"
+            exit 1
+          fi
+
+  clippy-beta:
+    name: clippy on beta (report only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      RUSTUP_TOOLCHAIN: beta
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install beta --profile minimal --component clippy
+      - name: Clippy on beta
+        run: |
+          rustc --version
+          status=0
+          cargo clippy --workspace --all-targets --all-features --message-format=short > clippy-beta.txt 2>&1 || status=$?
+          {
+            echo "## Clippy on $(rustc --version)"
+            echo
+            echo "$(grep -c ': warning' clippy-beta.txt || true) warning(s), $(grep -c ': error' clippy-beta.txt || true) error(s)."
+            echo
+            echo '```text'
+            grep -E ': (warning|error)' clippy-beta.txt | sed -E 's/^[^ ]+: //' | sort | uniq -c | sort -rn | head -50 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
   coverage:
     name: coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/toolchain
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2

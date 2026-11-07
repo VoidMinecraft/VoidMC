@@ -1,0 +1,29 @@
+name: Pinned toolchain
+description: Installs the toolchain of rust-toolchain.toml and fails if cargo would use another one.
+inputs:
+  components:
+    description: Components to add, comma separated.
+    required: false
+    default: clippy,rustfmt
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned toolchain
+      shell: bash
+      env:
+        COMPONENTS: ${{ inputs.components }}
+      run: |
+        channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+        test -n "$channel"
+        rustup toolchain install "$channel" --profile minimal --component "$COMPONENTS"
+        echo "PINNED_CHANNEL=$channel" >> "$GITHUB_ENV"
+    - name: Check that cargo uses it
+      shell: bash
+      run: |
+        rustup show active-toolchain
+        rustc --version
+        cargo --version
+        case "$(rustc --version)" in
+          "rustc $PINNED_CHANNEL "*) ;;
+          *) echo "::error::rustc is not the pinned $PINNED_CHANNEL"; exit 1 ;;
+        esac
