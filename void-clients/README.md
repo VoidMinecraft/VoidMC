@@ -142,9 +142,10 @@ run with an error and exit code 1. `--stop-server` stops the server after a fail
 server refuses a socket that another server answers on. `--hold T:S` pauses S seconds after tick T.
 
 The camera repeated exactly in every run measured, at both levels. An assertion on `frames.jsonl`
-can start with no tolerance, but it holds on one condition: `voidmc-map` still has deadlines in real
-time for sending chunks, so a loaded machine can shift a chunk by a tick, and with it what depends
-on that chunk.
+can start with no tolerance, but it holds on one condition: every deadline of the server goes
+through `Pace`, which never lets one pass on a stepped server. A server with deadlines of its own in
+real time, to send chunks for instance, lets a loaded machine shift a chunk by a tick, and with it
+what depends on that chunk.
 
 Pictures do not repeat exactly, mostly because animated textures start at a different phase. With
 frozen textures the median difference drops from 428 to 17 pixels. Compare pictures by zone.
