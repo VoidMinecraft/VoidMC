@@ -47,7 +47,7 @@ final class ConditionCases {
         levels.put(cells[1], fields);
         continue;
       }
-      if (cells.length != 4 && !(cells.length == 5 && cells[3].equals("error"))) fail("a case has four cells, and an error a fifth for a piece of its message: " + line);
+      if (cells.length != 4 && !(cells.length == 5 && cells[3].equals("error") && !cells[4].isEmpty())) fail("a case has four cells, and an error a fifth, not empty, for a piece of its message: " + line);
       if (!List.of("assert", "wait", "split").contains(cells[0])) fail("a case is an assert, a wait or a split: " + line);
       if (!levels.containsKey(cells[1])) fail("no fields for the level of: " + line);
       cases++;

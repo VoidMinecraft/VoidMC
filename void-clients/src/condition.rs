@@ -384,6 +384,7 @@ mod tests {
 
     fn told(result: Result<String, String>, fragment: Option<&str>) -> String {
         match (result, fragment) {
+            (_, Some("")) => "a fifth cell with nothing in it".into(),
             (Ok(result), _) => result,
             (Err(message), Some(fragment)) if !message.contains(fragment) => {
                 format!("an error without {fragment:?}: {message}")
@@ -420,7 +421,7 @@ mod tests {
             }
             assert!(
                 cells.len() == 4 || (cells.len() == 5 && cells[3] == "error"),
-                "a case has four cells, and an error a fifth for a piece of its message: {line}"
+                "a case has four cells, and an error a fifth, not empty, for a piece of its message: {line}"
             );
             assert!(
                 matches!(cells[0], "assert" | "wait" | "split"),
@@ -537,6 +538,25 @@ mod tests {
             .collect();
         assert!(probe.contains(&0x200B));
         assert_eq!(rust, probe);
+    }
+
+    #[test]
+    fn a_fifth_cell_left_empty_is_refused_on_both_sides() {
+        assert_ne!(told(Err("any message".into()), Some("")), "error");
+        let out = std::env::temp_dir().join(format!("voidc-fifth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let mut run = probe_runner(&out);
+        let table = out.join("table.tsv");
+        std::fs::write(
+            &table,
+            "fields\trender\tchunks\t1\nassert\trender\tchunks>=abc\terror\t\n",
+        )
+        .unwrap();
+        let run = run.arg(&table).output().expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert_eq!(run.status.code(), Some(2));
+        let said = String::from_utf8_lossy(&run.stdout);
+        assert!(said.contains("not empty"), "{said}");
     }
 
     #[test]
