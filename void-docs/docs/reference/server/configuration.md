@@ -20,6 +20,7 @@ let config = ServerConfigBuilder::new()
     .motd("My Void Server")
     .hardcore(false)
     .frame_limits(FrameLimits::default())
+    .compression_threshold(Some(256))
     .world_generator(MyGenerator::new())
     .configure_registries(|registries| {
         // Modify registry data before server starts
@@ -49,6 +50,7 @@ let config = ServerConfigBuilder::new()
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
+| `compression_threshold` | `Option<u32>` | `Some(256)` | Packets of at least this many bytes are zlib-compressed after login; `None` disables compression (vanilla's negative threshold) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
 
@@ -59,6 +61,28 @@ limits used while decoding strings, collections, remaining-byte fields, and NBT.
 The production defaults allow 2 MiB inbound frames and 8 MiB outbound frames.
 Applications can replace the complete policy through
 `ServerConfigBuilder::frame_limits`.
+
+With compression enabled, a compressed inbound frame is rejected when its
+declared uncompressed length is below the threshold, above
+`min(max_inbound_frame_bytes, 8 MiB)`, or does not match the inflated payload.
+Inflation never writes past the declared length. `max_outbound_frame_bytes`
+applies to the packet before compression, and once a connection is compressed
+it is capped at 8 MiB, the largest uncompressed size the vanilla client
+accepts.
+
+## Compression
+
+`compression_threshold` mirrors vanilla's `network-compression-threshold`.
+The network thread sends Set Compression right before Login Success, then
+frames every later packet in both directions as
+`VarInt packet_length | VarInt data_length | payload`: packets smaller than the
+threshold travel with `data_length = 0` and an uncompressed payload, larger ones
+are zlib-compressed. Status and ping connections are never compressed.
+Compression runs on the Tokio network thread, never on the game thread.
+
+`Some(0)` compresses every packet. On a LAN where bandwidth is plentiful,
+`None` saves the compression CPU; over residential uplinks keep it enabled: a
+view-distance-12 join is ~37 MB uncompressed and ~0.42 MB compressed.
 
 Decoded packets must consume their complete declared frame. Packet definitions
 that intentionally accept an opaque tail must mark that field with

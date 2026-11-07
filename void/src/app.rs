@@ -55,6 +55,7 @@ impl VoidServer {
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
         let address = self.config.address.clone();
         let frame_limits = self.config.frame_limits;
+        let compression_threshold = self.config.compression_threshold;
 
         let world_gen = WorldGen(self.config.world_generator);
 
@@ -75,7 +76,8 @@ impl VoidServer {
             rt.block_on(async move {
                 let mut server = Server::new_with_limits(&address, frame_limits)
                     .await
-                    .expect("Failed to start server");
+                    .expect("Failed to start server")
+                    .with_compression_threshold(compression_threshold);
                 server
                     .run_with_status(
                         incoming_tx,
