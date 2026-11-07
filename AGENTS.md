@@ -61,3 +61,4 @@ This file gives AI coding agents the minimum project context needed to make safe
 
 - `logs/` is generated output; do not commit log files.
 - Run format, clippy, and tests before finalizing changes.
+
