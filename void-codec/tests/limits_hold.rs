@@ -1,5 +1,5 @@
 use ussr_nbt::owned::Nbt;
-use voidmc_codec::{DecodeError, DecodeLimits, Decoder, Encode, LimitKind, NbtDepth, VarI32};
+use voidmc_codec::{DecodeError, DecodeLimits, Encode, LimitKind, NbtDepth, VarI32};
 
 fn nested_compounds(levels: usize) -> Vec<u8> {
     let mut bytes = vec![0x0A];
@@ -31,9 +31,7 @@ fn nbt_depth(bytes: &[u8], limit: usize) -> Result<(), DecodeError> {
         max_nbt_depth: NbtDepth::new(u16::try_from(limit).unwrap()).unwrap(),
         ..DecodeLimits::default()
     };
-    Decoder::new(bytes, limits)
-        .decode_exact::<Nbt>()
-        .map(|_| ())
+    limits.decode_exact::<Nbt>(bytes).map(|_| ())
 }
 
 #[test]
@@ -172,7 +170,7 @@ fn a_vec_announced_past_the_allocation_budget_is_refused_before_reading() {
     let mut bytes = Vec::new();
     VarI32(1000).encode(&mut bytes);
     assert_eq!(
-        kind(Decoder::new(&bytes, limits).decode::<Vec<u64>>()),
+        kind(limits.with_decoder(&bytes, |d| d.decode::<Vec<u64>>())),
         Some(LimitKind::AllocationBytes)
     );
 }
@@ -187,7 +185,7 @@ fn a_string_announced_past_the_allocation_budget_is_refused_before_reading() {
     VarI32(17).encode(&mut bytes);
     bytes.extend_from_slice(&[b'a'; 17]);
     assert_eq!(
-        kind(Decoder::new(&bytes, limits).decode::<String>()),
+        kind(limits.with_decoder(&bytes, |d| d.decode::<String>())),
         Some(LimitKind::AllocationBytes)
     );
 }

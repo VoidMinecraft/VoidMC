@@ -2,7 +2,7 @@ use std::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ussr_nbt::owned::{Compound, List, Nbt, Tag};
-use voidmc_codec::{Decode, DecodeLimits, Decoder, Encode, VarI32, VarI64};
+use voidmc_codec::{Decode, DecodeLimits, Encode, VarI32, VarI64};
 
 #[derive(Clone, Debug, PartialEq, Decode, Encode)]
 struct MovePlayerPosRot {
@@ -68,7 +68,7 @@ fn encoded<T: Encode>(value: &T) -> Vec<u8> {
 }
 
 fn decode<T: Decode>(bytes: &[u8]) -> T {
-    match Decoder::new(bytes, DecodeLimits::default()).decode::<T>() {
+    match DecodeLimits::default().decode_exact::<T>(bytes) {
         Ok(value) => value,
         Err(error) => panic!("bench input does not decode: {error}"),
     }

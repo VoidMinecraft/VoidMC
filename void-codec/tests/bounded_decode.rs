@@ -17,9 +17,8 @@ fn huge_collection_count_is_rejected_before_reservation() {
         max_collection_elements: 16,
         ..DecodeLimits::default()
     };
-    let mut decoder = Decoder::new(&bytes, limits);
     assert_eq!(
-        decoder.decode::<Vec<u8>>(),
+        limits.with_decoder(&bytes, |d| d.decode::<Vec<u8>>()),
         Err(DecodeError::LimitExceeded {
             kind: LimitKind::CollectionElements,
             requested: i32::MAX as usize,
@@ -36,9 +35,8 @@ fn zero_width_elements_are_bounded_by_work_budget() {
         max_total_elements: 4,
         ..DecodeLimits::default()
     };
-    let mut decoder = Decoder::new(&bytes, limits);
     assert!(matches!(
-        decoder.decode::<Vec<ZeroWidth>>(),
+        limits.with_decoder(&bytes, |d| d.decode::<Vec<ZeroWidth>>()),
         Err(DecodeError::LimitExceeded {
             kind: LimitKind::TotalElements,
             requested: 10,
@@ -54,9 +52,8 @@ fn string_limit_is_checked_before_copying() {
         max_string_bytes: 4,
         ..DecodeLimits::default()
     };
-    let mut decoder = Decoder::new(&bytes, limits);
     assert_eq!(
-        decoder.decode::<String>(),
+        limits.with_decoder(&bytes, |d| d.decode::<String>()),
         Err(DecodeError::LimitExceeded {
             kind: LimitKind::StringBytes,
             requested: 5,
@@ -143,10 +140,7 @@ proptest! {
             max_decode_depth: 16,
         };
 
-        let mut collection_decoder = Decoder::new(&bytes, limits);
-        let _ = collection_decoder.decode::<Vec<Vec<u8>>>();
-
-        let mut nbt_decoder = Decoder::new(&bytes, limits);
-        let _ = nbt_decoder.decode::<Nbt>();
+        let _ = limits.with_decoder(&bytes, |d| d.decode::<Vec<Vec<u8>>>());
+        let _ = limits.with_decoder(&bytes, |d| d.decode::<Nbt>());
     }
 }

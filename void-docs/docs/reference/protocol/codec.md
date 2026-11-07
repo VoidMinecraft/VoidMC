@@ -24,6 +24,14 @@ pub trait Decode: Sized {
 - `Decode::decode` reads bytes from the front of a slice with production-safe
   default limits. Network packets additionally use exact decoding and reject
   trailing bytes.
+- `DecodeLimits::decode_exact::<T>(bytes)` decodes with chosen limits and rejects
+  trailing bytes; network packets go through it.
+- `DecodeLimits::with_decoder(bytes, |decoder| ...)` runs a closure on a decoder,
+  for reads in several steps.
+
+A `Decoder` has no public constructor: it only exists inside `decode_with` or
+such a closure, so a `Decode` cannot replace the decoder it is given, and the
+closure can return owned values but not the decoder or slices of it.
 
 `DecodeLimits` configures string bytes, collection and total element counts,
 allocation bytes, remaining-byte fields, NBT bytes/depth, and general decode

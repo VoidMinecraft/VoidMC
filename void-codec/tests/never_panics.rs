@@ -3,7 +3,7 @@ use ussr_nbt::owned::Nbt;
 use uuid::Uuid;
 use voidmc_codec::{
     decode_fixed_length_vec, decode_fixed_length_vec_u8, decode_remaining_vec_u8, Decode,
-    DecodeLimits, Decoder, Encode, NbtDepth, VarI32, VarI64,
+    DecodeLimits, Encode, NbtDepth, VarI32, VarI64,
 };
 
 fn tight() -> DecodeLimits {
@@ -21,8 +21,8 @@ fn tight() -> DecodeLimits {
 
 fn every_primitive(bytes: &[u8], limits: DecodeLimits) {
     fn one<T: Decode>(bytes: &[u8], limits: DecodeLimits) {
-        let _ = Decoder::new(bytes, limits).decode::<T>();
-        let _ = Decoder::new(bytes, limits).decode_exact::<T>();
+        let _ = limits.with_decoder(bytes, |d| d.decode::<T>());
+        let _ = limits.decode_exact::<T>(bytes);
     }
     one::<bool>(bytes, limits);
     one::<u8>(bytes, limits);
@@ -45,9 +45,9 @@ fn every_primitive(bytes: &[u8], limits: DecodeLimits) {
     one::<Vec<Vec<String>>>(bytes, limits);
     one::<Vec<Option<Uuid>>>(bytes, limits);
     one::<Nbt>(bytes, limits);
-    let _ = decode_fixed_length_vec::<VarI64>(7, &mut Decoder::new(bytes, limits));
-    let _ = decode_fixed_length_vec_u8(33, &mut Decoder::new(bytes, limits));
-    let _ = decode_remaining_vec_u8(&mut Decoder::new(bytes, limits));
+    let _ = limits.with_decoder(bytes, |d| decode_fixed_length_vec::<VarI64>(7, d));
+    let _ = limits.with_decoder(bytes, |d| decode_fixed_length_vec_u8(33, d));
+    let _ = limits.with_decoder(bytes, decode_remaining_vec_u8);
 }
 
 fn with_length(length: i32, rest: &[u8]) -> Vec<u8> {
@@ -94,8 +94,8 @@ proptest! {
         rest in prop::collection::vec(any::<u8>(), 0..64),
     ) {
         let bytes = nbt_lying(tag, name, count, &rest);
-        let _ = Decoder::new(&bytes, tight()).decode::<Nbt>();
-        let _ = Decoder::new(&bytes, DecodeLimits::default()).decode::<Nbt>();
+        let _ = tight().with_decoder(&bytes, |d| d.decode::<Nbt>());
+        let _ = DecodeLimits::default().with_decoder(&bytes, |d| d.decode::<Nbt>());
     }
 
     #[test]
@@ -124,22 +124,24 @@ fn valid_values_decode_as_before() {
     VarI32(-1).encode(&mut bytes);
     VarI64(i64::MIN).encode(&mut bytes);
     uuid.encode(&mut bytes);
-    let mut decoder = Decoder::new(&bytes, DecodeLimits::default());
-    assert_eq!(decoder.decode::<bool>(), Ok(true));
-    assert_eq!(decoder.decode::<u8>(), Ok(200));
-    assert_eq!(decoder.decode::<i8>(), Ok(-3));
-    assert_eq!(decoder.decode::<VarI32>(), Ok(VarI32(-1)));
-    assert_eq!(decoder.decode::<VarI64>(), Ok(VarI64(i64::MIN)));
-    assert_eq!(decoder.decode::<Uuid>(), Ok(uuid));
-    assert_eq!(decoder.remaining_len(), 0);
+    DecodeLimits::default().with_decoder(&bytes, |decoder| {
+        assert_eq!(decoder.decode::<bool>(), Ok(true));
+        assert_eq!(decoder.decode::<u8>(), Ok(200));
+        assert_eq!(decoder.decode::<i8>(), Ok(-3));
+        assert_eq!(decoder.decode::<VarI32>(), Ok(VarI32(-1)));
+        assert_eq!(decoder.decode::<VarI64>(), Ok(VarI64(i64::MIN)));
+        assert_eq!(decoder.decode::<Uuid>(), Ok(uuid));
+        assert_eq!(decoder.remaining_len(), 0);
+    });
 }
 
 #[test]
 fn the_new_takes_stop_at_the_end() {
-    let mut decoder = Decoder::new(&[7, 8, 9], DecodeLimits::default());
-    assert_eq!(decoder.take_u8(), Ok(7));
-    assert_eq!(decoder.take_array::<2>(), Ok([8, 9]));
-    assert!(decoder.take_u8().is_err());
-    assert!(decoder.take_array::<1>().is_err());
-    assert_eq!(decoder.take_array::<0>(), Ok([]));
+    DecodeLimits::default().with_decoder(&[7, 8, 9], |decoder| {
+        assert_eq!(decoder.take_u8(), Ok(7));
+        assert_eq!(decoder.take_array::<2>(), Ok([8, 9]));
+        assert!(decoder.take_u8().is_err());
+        assert!(decoder.take_array::<1>().is_err());
+        assert_eq!(decoder.take_array::<0>(), Ok([]));
+    });
 }
