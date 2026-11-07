@@ -191,7 +191,7 @@ pub mod fake {
     }
 
     /// Under `/tmp` and not `temp_dir`: a socket has 103 bytes, whatever `TMPDIR` holds.
-    fn short_home() -> PathBuf {
+    pub fn short_home() -> PathBuf {
         static RUN: AtomicU32 = AtomicU32::new(0);
         Path::new("/tmp").join(format!(
             "voidc-fake-{}-{}",
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn a_connection_the_client_hung_up_says_so() {
         use std::os::unix::net::UnixListener;
-        let home = std::env::temp_dir().join(format!("vh{}", std::process::id()));
+        let home = fake::short_home();
         fs::create_dir_all(home.join("run")).unwrap();
         registry::set_test_home(Some(home.clone()));
         let listener = UnixListener::bind(registry::socket("gone").unwrap()).unwrap();
