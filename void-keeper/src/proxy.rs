@@ -170,15 +170,15 @@ impl std::fmt::Display for PeerError {
     }
 }
 
-struct Peer {
-    stream: TcpStream,
+struct Peer<S = TcpStream> {
+    stream: S,
     framing: Framing,
     inbound: BytesMut,
     outbound: Vec<u8>,
 }
 
-impl Peer {
-    fn new(stream: TcpStream) -> Self {
+impl<S> Peer<S> {
+    fn new(stream: S) -> Self {
         Self {
             stream,
             framing: Framing::default(),
@@ -191,6 +191,12 @@ impl Peer {
         self.framing.decode(&mut self.inbound)
     }
 
+    fn queue(&mut self, frame: &[u8]) {
+        self.framing.encode(frame, &mut self.outbound);
+    }
+}
+
+impl Peer {
     /// `None` when the peer closed. Safe to cancel: bytes only ever land in `inbound`.
     async fn next(&mut self) -> Result<Option<Bytes>, PeerError> {
         loop {
@@ -207,10 +213,6 @@ impl Peer {
                 return Ok(None);
             }
         }
-    }
-
-    fn queue(&mut self, frame: &[u8]) {
-        self.framing.encode(frame, &mut self.outbound);
     }
 
     async fn flush(&mut self) -> io::Result<()> {
@@ -245,18 +247,78 @@ async fn connect(address: SocketAddr) -> Option<TcpStream> {
     Some(stream)
 }
 
-struct Keeper {
+/// What the keeper does with the bytes it reads, sockets aside: frames in, the session,
+/// frames queued out. The proxy and the relay bench both go through it.
+pub struct Relay<S> {
     id: u64,
-    backend_address: SocketAddr,
     session: Session,
-    client: Peer,
-    backend: Option<Peer>,
+    client: Peer<S>,
+    backend: Option<Peer<S>>,
     events: Events,
     wants_backend: bool,
     closing: bool,
 }
 
-impl Keeper {
+impl<S> Relay<S> {
+    /// A session whose client is `client`, given its first tick.
+    pub fn new(id: u64, session: Session, client: S, events: Events) -> Self {
+        Self::with_client(id, session, Peer::new(client), events)
+    }
+
+    fn with_client(id: u64, session: Session, client: Peer<S>, events: Events) -> Self {
+        let mut relay = Self {
+            id,
+            session,
+            client,
+            backend: None,
+            events,
+            wants_backend: false,
+            closing: false,
+        };
+        relay.session.on_tick(Instant::now());
+        relay.absorb();
+        relay
+    }
+
+    pub fn backend_connected(&mut self, stream: S) {
+        self.backend = Some(Peer::new(stream));
+        self.session.on_backend_connected(Instant::now());
+        self.absorb();
+    }
+
+    /// Takes in `bytes` read from the backend, and every frame they complete.
+    pub fn received_from_backend(&mut self, bytes: &[u8]) {
+        let Some(backend) = &mut self.backend else {
+            return;
+        };
+        backend.inbound.extend_from_slice(bytes);
+        match backend.buffered() {
+            Ok(Some(first)) => self.receive_from_backend(first),
+            Ok(None) => {}
+            Err(error) => self.lose_backend(&error),
+        }
+    }
+
+    /// Takes in `bytes` read from the client, and every frame they complete.
+    pub fn received_from_client(&mut self, bytes: &[u8]) -> Result<(), WireError> {
+        self.client.inbound.extend_from_slice(bytes);
+        match self.client.buffered()? {
+            Some(first) => self.receive_from_client(first),
+            None => Ok(()),
+        }
+    }
+
+    /// Forgets what is queued for both sides, as if it was written. The bytes it forgot.
+    pub fn discard_queued(&mut self) -> usize {
+        let mut queued = self.client.outbound.len();
+        self.client.outbound.clear();
+        if let Some(backend) = &mut self.backend {
+            queued += backend.outbound.len();
+            backend.outbound.clear();
+        }
+        queued
+    }
+
     fn emit(&self, event: Event) {
         match event {
             Event::Joined { name } => self
@@ -332,36 +394,48 @@ impl Keeper {
         Ok(())
     }
 
+    fn tick(&mut self) {
+        self.session.on_tick(Instant::now());
+        self.absorb();
+    }
+}
+
+struct Keeper {
+    relay: Relay<TcpStream>,
+    backend_address: SocketAddr,
+}
+
+impl Keeper {
     /// Writes what is queued and opens a backend if one is wanted. `false` once the client
     /// is gone, or was sent away.
     async fn settle(&mut self) -> bool {
-        if self.client.flush().await.is_err() {
+        let relay = &mut self.relay;
+        if relay.client.flush().await.is_err() {
             return false;
         }
-        if self.closing {
+        if relay.closing {
             return false;
         }
-        if let Some(backend) = &mut self.backend
+        if let Some(backend) = &mut relay.backend
             && let Err(error) = backend.flush().await
         {
-            self.lose_backend(&error);
-            return self.client.flush().await.is_ok();
+            relay.lose_backend(&error);
+            return relay.client.flush().await.is_ok();
         }
-        if std::mem::take(&mut self.wants_backend) {
+        if std::mem::take(&mut relay.wants_backend) {
             match connect(self.backend_address).await {
-                Some(stream) => {
-                    self.backend = Some(Peer::new(stream));
-                    self.session.on_backend_connected(Instant::now());
+                Some(stream) => relay.backend_connected(stream),
+                None => {
+                    relay.session.on_connect_failed(Instant::now());
+                    relay.absorb();
                 }
-                None => self.session.on_connect_failed(Instant::now()),
             }
-            self.absorb();
-            if let Some(backend) = &mut self.backend
+            if let Some(backend) = &mut relay.backend
                 && let Err(error) = backend.flush().await
             {
-                self.lose_backend(&error);
+                relay.lose_backend(&error);
             }
-            return self.client.flush().await.is_ok();
+            return relay.client.flush().await.is_ok();
         }
         true
     }
@@ -373,34 +447,34 @@ impl Keeper {
             if !self.settle().await {
                 break;
             }
+            let relay = &mut self.relay;
             tokio::select! {
-                read = self.client.next() => match read {
+                read = relay.client.next() => match read {
                     Ok(Some(frame)) => {
-                        if let Err(error) = self.receive_from_client(frame) {
-                            tracing::warn!(session = self.id, %error, "client sent garbage");
+                        if let Err(error) = relay.receive_from_client(frame) {
+                            tracing::warn!(session = relay.id, %error, "client sent garbage");
                             break;
                         }
                     }
                     Ok(None) => break,
                     Err(error) => {
-                        tracing::info!(session = self.id, %error, "client gone");
+                        tracing::info!(session = relay.id, %error, "client gone");
                         break;
                     }
                 },
-                read = next_of(&mut self.backend) => match read {
-                    Ok(Some(frame)) => self.receive_from_backend(frame),
-                    Ok(None) => self.lose_backend(&"closed"),
-                    Err(error) => self.lose_backend(&error),
+                read = next_of(&mut relay.backend) => match read {
+                    Ok(Some(frame)) => relay.receive_from_backend(frame),
+                    Ok(None) => relay.lose_backend(&"closed"),
+                    Err(error) => relay.lose_backend(&error),
                 },
-                _ = tick.tick() => {
-                    self.session.on_tick(Instant::now());
-                    self.absorb();
-                }
+                _ = tick.tick() => relay.tick(),
             }
         }
-        let _ = self.client.stream.shutdown().await;
-        self.events
-            .emit("client_left", json!({ "session": self.id }));
+        let mut relay = self.relay;
+        let _ = relay.client.stream.shutdown().await;
+        relay
+            .events
+            .emit("client_left", json!({ "session": relay.id }));
     }
 }
 
@@ -486,18 +560,10 @@ async fn serve(
         }
         _ => {
             let session = Session::new(settings, Instant::now(), handshake);
-            let mut keeper = Keeper {
-                id,
+            let keeper = Keeper {
+                relay: Relay::with_client(id, session, client, events),
                 backend_address,
-                session,
-                client,
-                backend: None,
-                events,
-                wants_backend: false,
-                closing: false,
             };
-            keeper.session.on_tick(Instant::now());
-            keeper.absorb();
             keeper.run().await;
         }
     }
