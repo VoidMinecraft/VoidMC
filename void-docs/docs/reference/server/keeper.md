@@ -57,8 +57,11 @@ Once it acknowledges, it waits the whole `--return-timeout`, not the 20 seconds 
 ## Resource packs
 
 A pack the client already holds is not pushed again: the proxy answers the server what
-the client answered the first time, and the client never reloads its resources. Packs
-the new server did not offer again go once `--settle` runs out.
+the client answered the first time, and the client never reloads its resources. A client
+that declined a pack declines every push after it, so the proxy declines in its name too.
+A pack that failed to download, had an invalid URL, failed to load or was discarded is
+not held: its next push reaches the client, which tries it again. Packs the new server
+did not offer again go once `--settle` runs out.
 
 ## Events
 

@@ -1806,6 +1806,41 @@ mod tests {
         );
     }
 
+    fn a_pack_the_client_failed_reaches_it_again_after_a_return(failure: i32) {
+        let pack = Uuid::from_u128(5);
+        let mut rig = Rig::in_play();
+        rig.receive_from_backend(push(pack, "abc"));
+        rig.receive_from_client(pack_answer(pack, 3));
+        rig.receive_from_client(pack_answer(pack, failure));
+        rig.lose_backend();
+        rig.come_back();
+        rig.clear();
+
+        rig.receive_from_backend(push(pack, "abc"));
+        assert_eq!(rig.client, vec![push(pack, "abc")]);
+        assert!(rig.backend.is_empty());
+    }
+
+    #[test]
+    fn a_pack_the_client_failed_to_download_reaches_it_again() {
+        a_pack_the_client_failed_reaches_it_again_after_a_return(2);
+    }
+
+    #[test]
+    fn a_pack_with_an_invalid_url_reaches_the_client_again() {
+        a_pack_the_client_failed_reaches_it_again_after_a_return(5);
+    }
+
+    #[test]
+    fn a_pack_the_client_failed_to_reload_reaches_it_again() {
+        a_pack_the_client_failed_reaches_it_again_after_a_return(6);
+    }
+
+    #[test]
+    fn a_pack_the_client_discarded_reaches_it_again() {
+        a_pack_the_client_failed_reaches_it_again_after_a_return(7);
+    }
+
     #[test]
     fn a_pack_the_client_holds_is_answered_in_its_name_before_it_acknowledges() {
         let pack = Uuid::from_u128(5);

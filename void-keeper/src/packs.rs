@@ -17,9 +17,20 @@ pub struct PackBook {
     packs: HashMap<Uuid, Pack>,
 }
 
-/// Every status ends the exchange, except `Accepted` (3) and `Downloaded` (4).
-fn is_terminal(status: i32) -> bool {
-    !matches!(status, 3 | 4)
+enum Answer {
+    Pending,
+    Held,
+    Lost,
+}
+
+/// A client keeps a pack it loaded, and answers `Declined` again to every push once it declined
+/// one. Any other end leaves it without the pack: a push of the same one must reach it again.
+fn answer(status: i32) -> Answer {
+    match status {
+        3 | 4 => Answer::Pending,
+        0 | 1 => Answer::Held,
+        _ => Answer::Lost,
+    }
 }
 
 impl PackBook {
@@ -47,9 +58,18 @@ impl PackBook {
     }
 
     pub fn answered(&mut self, id: Uuid, status: i32) {
-        if let Some(pack) = self.packs.get_mut(&id) {
-            pack.statuses.push(status);
-            pack.settled |= is_terminal(status);
+        let Some(pack) = self.packs.get_mut(&id) else {
+            return;
+        };
+        match answer(status) {
+            Answer::Pending => pack.statuses.push(status),
+            Answer::Held => {
+                pack.statuses.push(status);
+                pack.settled = true;
+            }
+            Answer::Lost => {
+                self.packs.remove(&id);
+            }
         }
     }
 
@@ -136,6 +156,26 @@ mod tests {
         book.offer(id(), "");
         book.answered(id(), LOADED);
         assert_eq!(book.offer(id(), ""), None);
+    }
+
+    #[test]
+    fn a_pack_the_client_failed_to_load_goes_to_the_client_again() {
+        for failure in [2, 5, 6, 7] {
+            let mut book = PackBook::default();
+            book.offer(id(), "abc");
+            book.answered(id(), ACCEPTED);
+            book.answered(id(), failure);
+            assert!(!book.awaits_client(), "status {failure}");
+            assert_eq!(book.offer(id(), "abc"), None, "status {failure}");
+        }
+    }
+
+    #[test]
+    fn a_declined_pack_is_declined_again_in_the_name_of_the_client() {
+        let mut book = PackBook::default();
+        book.offer(id(), "abc");
+        book.answered(id(), 1);
+        assert_eq!(book.offer(id(), "abc"), Some(vec![1]));
     }
 
     #[test]
