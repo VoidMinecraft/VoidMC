@@ -317,9 +317,9 @@ pub(crate) fn send_system_chat(world: &World, player: Entity, message: &str, col
         .send();
 }
 
-/// Invalid colours fall back to white; prefer [`crate::messages::text_component`].
+/// Invalid colours fall back to white; prefer [`crate::messages::WireText::component`].
 pub fn text_to_nbt(text: &str, color: &str) -> ussr_nbt::owned::Nbt {
-    crate::messages::text_component(text, TextColor::parse_or_white(color))
+    crate::messages::WireText::truncated(text).component(TextColor::parse_or_white(color))
 }
 
 // ---------------------------------------------------------------------------

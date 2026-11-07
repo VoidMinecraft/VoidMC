@@ -15,7 +15,7 @@ use voidmc_protocol::clientbound::{
 
 use crate::components::{KeepAliveState, PlayerReady, PlayerUuid};
 use crate::config::ServerConfigResource;
-use crate::messages::{TextColor, text_component};
+use crate::messages::{TextColor, WireText};
 use crate::players::{Audience, Players};
 use crate::schedule::VoidSystems;
 
@@ -93,16 +93,16 @@ impl TabList {
 
     fn packet(&self) -> SetTabListHeaderFooter {
         SetTabListHeaderFooter {
-            header: text_component(&self.header, self.header_color),
-            footer: text_component(&self.footer, self.footer_color),
+            header: WireText::truncated(&self.header).component(self.header_color),
+            footer: WireText::truncated(&self.footer).component(self.footer_color),
         }
     }
 }
 
 fn reset_packet() -> SetTabListHeaderFooter {
     SetTabListHeaderFooter {
-        header: text_component("", TextColor::White),
-        footer: text_component("", TextColor::White),
+        header: WireText::truncated("").component(TextColor::White),
+        footer: WireText::truncated("").component(TextColor::White),
     }
 }
 
@@ -257,7 +257,7 @@ impl EntrySnapshot {
             display_name: self
                 .display_name
                 .as_deref()
-                .map(|name| text_component(name, self.color)),
+                .map(|name| WireText::truncated(name).component(self.color)),
             list_order: self.list_order,
             show_hat: self.show_hat,
         }

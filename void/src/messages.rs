@@ -272,7 +272,7 @@ impl<'a> MessageRequest<'a> {
 
     pub fn packet(&self) -> SystemChat {
         SystemChat {
-            content: text_component(&self.text, self.color),
+            content: WireText::truncated(self.text.as_str()).component(self.color),
             overlay: self.overlay,
         }
     }
@@ -286,16 +286,86 @@ impl<'a> MessageRequest<'a> {
     }
 }
 
-pub fn text_component(text: &str, color: TextColor) -> Nbt {
-    component(text, Some(color))
+/// A text the client decodes: at most [`WireText::MAX_BYTES`] in modified UTF-8, the NBT string
+/// limit. Longer, the client drops the connection. Only [`WireText::new`] and
+/// [`WireText::truncated`] make one:
+///
+/// ```compile_fail
+/// let text = voidmc::WireText(String::from("built around the check"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct WireText(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextTooLong {
+    pub bytes: usize,
 }
 
-pub fn plain_text_component(text: &str) -> Nbt {
-    component(text, None)
+impl fmt::Display for TextTooLong {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "text takes {} modified UTF-8 bytes, the client decodes at most {}",
+            self.bytes,
+            WireText::MAX_BYTES
+        )
+    }
+}
+
+impl std::error::Error for TextTooLong {}
+
+impl WireText {
+    pub const MAX_BYTES: usize = MAX_TEXT_BYTES;
+
+    pub fn new(text: impl Into<String>) -> Result<Self, TextTooLong> {
+        let text = text.into();
+        match fitting_end(&text) {
+            None => Ok(Self(text)),
+            Some(_) => Err(TextTooLong {
+                bytes: text.chars().map(modified_utf8_width).sum(),
+            }),
+        }
+    }
+
+    /// Keeps what fits, cut on a character boundary, and logs what it cut.
+    pub fn truncated(text: impl Into<String>) -> Self {
+        let mut text = text.into();
+        if let Some(end) = fitting_end(&text) {
+            warn!(
+                bytes = text.len(),
+                kept = end,
+                "text exceeds the NBT string limit, truncating"
+            );
+            text.truncate(end);
+        }
+        Self(text)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    pub fn component(&self, color: TextColor) -> Nbt {
+        component(&self.0, Some(color))
+    }
+
+    pub fn plain(&self) -> Nbt {
+        component(&self.0, None)
+    }
+}
+
+impl fmt::Display for WireText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 fn component(text: &str, color: Option<TextColor>) -> Nbt {
-    let mut compound = vec![("text".into(), Tag::String(truncate_text(text).into()))];
+    let mut compound = vec![("text".into(), Tag::String(text.into()))];
     if let Some(color) = color {
         compound.push(("color".into(), Tag::String(color.to_string().into())));
     }
@@ -313,25 +383,15 @@ fn modified_utf8_width(c: char) -> usize {
     }
 }
 
-pub(crate) fn truncate_text(text: &str) -> &str {
+fn fitting_end(text: &str) -> Option<usize> {
     let mut encoded = 0;
-    let mut end = text.len();
     for (index, c) in text.char_indices() {
         encoded += modified_utf8_width(c);
         if encoded > MAX_TEXT_BYTES {
-            end = index;
-            break;
+            return Some(index);
         }
     }
-    if end == text.len() {
-        return text;
-    }
-    warn!(
-        bytes = text.len(),
-        kept = end,
-        "text exceeds the NBT string limit, truncating"
-    );
-    &text[..end]
+    None
 }
 
 #[cfg(test)]
@@ -468,6 +528,43 @@ mod tests {
             Some((_, Tag::String(value))) => value.to_string(),
             other => panic!("expected string {key}, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_text_the_client_cannot_decode_is_refused() {
+        for (text, bytes) in [
+            ("é".repeat(40000), 80000),
+            (
+                "😀".repeat(MAX_TEXT_BYTES / 6 + 1),
+                (MAX_TEXT_BYTES / 6 + 1) * 6,
+            ),
+            (
+                "\0".repeat(MAX_TEXT_BYTES / 2 + 1),
+                (MAX_TEXT_BYTES / 2 + 1) * 2,
+            ),
+        ] {
+            assert_eq!(WireText::new(text.as_str()), Err(TextTooLong { bytes }));
+            let cut = WireText::truncated(text.as_str());
+            assert!(text.starts_with(cut.as_str()));
+            assert!(cut.as_str().chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
+        }
+        let fits = "a".repeat(MAX_TEXT_BYTES);
+        assert_eq!(WireText::new(fits.as_str()).unwrap().as_str(), fits);
+        assert_eq!(WireText::truncated(fits.as_str()).into_string(), fits);
+    }
+
+    #[test]
+    fn a_refused_text_never_reaches_the_wire() {
+        let text = "😀".repeat(11000);
+        let error = WireText::new(text.as_str()).unwrap_err();
+        assert!(error.to_string().contains("66000"), "{error}");
+        let packet = SystemChat {
+            content: WireText::truncated(text.as_str()).component(TextColor::White),
+            overlay: false,
+        };
+        let (len, decoded) = wire_text_round_trips(&packet);
+        assert!(len <= WireText::MAX_BYTES);
+        assert!(text.starts_with(&decoded));
     }
 
     #[test]
@@ -629,7 +726,7 @@ mod tests {
 
     fn system_chat_packet(text: &str, color: TextColor) -> SystemChat {
         SystemChat {
-            content: text_component(text, color),
+            content: WireText::truncated(text).component(color),
             overlay: false,
         }
     }
@@ -700,7 +797,7 @@ mod tests {
 
     #[test]
     fn plain_component_has_no_color_and_is_truncated() {
-        let nbt = plain_text_component("hi");
+        let nbt = WireText::truncated("hi").plain();
         assert_eq!(nbt.compound.tags.len(), 1);
         let mut bytes = Vec::new();
         nbt.encode(&mut bytes);
@@ -717,7 +814,7 @@ mod tests {
         );
 
         let text = "😀".repeat(11000);
-        assert_guarded(&plain_text_component(&text), &text);
+        assert_guarded(&WireText::truncated(text.as_str()).plain(), &text);
     }
 
     #[test]
@@ -742,7 +839,7 @@ mod tests {
 
         let mut overlay = Vec::new();
         SystemChat {
-            content: text_component("", TextColor::rgb(0xff8800)),
+            content: WireText::default().component(TextColor::rgb(0xff8800)),
             overlay: true,
         }
         .encode(&mut overlay);

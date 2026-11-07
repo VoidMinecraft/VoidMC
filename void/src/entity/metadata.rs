@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use bevy_app::{App, PostUpdate};
 use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
-use ussr_nbt::owned::Nbt;
 use voidmc_protocol::clientbound::entity_metadata::{
     display_index, end_crystal_index, entity_flag, entity_index, item_entity_index,
     text_display_flag,
@@ -81,10 +80,6 @@ impl EntityMetadata {
     }
 }
 
-pub fn text_component(text: &str) -> Nbt {
-    crate::messages::plain_text_component(text)
-}
-
 pub trait MetadataSource: Component {
     fn write(&self, meta: &mut EntityMetadata);
 
@@ -115,7 +110,9 @@ impl MetadataSource for CustomName {
     fn write(&self, meta: &mut EntityMetadata) {
         meta.set(
             entity_index::CUSTOM_NAME,
-            Value::OptionalComponent(Some(text_component(&self.text))),
+            Value::OptionalComponent(Some(
+                crate::messages::WireText::truncated(self.text.as_str()).plain(),
+            )),
         );
         meta.set(
             entity_index::CUSTOM_NAME_VISIBLE,
@@ -479,7 +476,7 @@ impl MetadataSource for TextDisplay {
     fn write(&self, meta: &mut EntityMetadata) {
         meta.set(
             display_index::TEXT,
-            Value::Component(text_component(&self.text)),
+            Value::Component(crate::messages::WireText::truncated(self.text.as_str()).plain()),
         );
         meta.set(display_index::TEXT_LINE_WIDTH, Value::Int(self.line_width));
         meta.set(
@@ -692,7 +689,10 @@ mod tests {
     #[test]
     fn oversized_custom_name_round_trips_below_the_nbt_limit() {
         let text = "😀".repeat(11000);
-        crate::messages::assert_guarded(&text_component(&text), &text);
+        crate::messages::assert_guarded(
+            &crate::messages::WireText::truncated(text.as_str()).plain(),
+            &text,
+        );
     }
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {
