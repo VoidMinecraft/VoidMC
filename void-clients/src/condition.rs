@@ -5,7 +5,7 @@ use crate::registry::Level;
 pub const DEFAULT_WAIT_MS: u64 = 20_000;
 const OPERATORS: [&str; 5] = ["<=", ">=", "==", "!=", "~"];
 const ORDERS: [&str; 2] = [">=", "<="];
-const TEXT_FIELDS: [&str; 11] = [
+const TEXT_FIELDS: [&str; 12] = [
     "action_bar",
     "clock",
     "state",
@@ -17,6 +17,7 @@ const TEXT_FIELDS: [&str; 11] = [
     "passenger",
     "spectator",
     "shown",
+    "version",
 ];
 
 pub fn is_number(text: &str) -> bool {

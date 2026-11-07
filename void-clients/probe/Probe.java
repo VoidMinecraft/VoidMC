@@ -248,6 +248,7 @@ public class Probe {
     fields.put("screen", screen);
     fields.put("fps", mc.getFps());
     fields.put("level", LEVEL);
+    fields.put("version", System.getProperty("void.version", ""));
     fields.put("reconnects", reconnects);
     fields.put("shown", shown);
     LocalPlayer player = mc.player;

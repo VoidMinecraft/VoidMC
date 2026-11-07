@@ -6,6 +6,7 @@ mod frame;
 mod launch;
 mod lifecycle;
 mod registry;
+mod version;
 
 use std::process::ExitCode;
 use std::thread::sleep;
@@ -150,6 +151,15 @@ fn cmd(args: &[String]) -> Result<(), String> {
         return Err(format!("{name} is played by Léo and takes no command"));
     }
     condition::check(&verb, client.level)?;
+    let state = control::ask(name, "state", Duration::from_secs(5))?;
+    let state: Value = serde_json::from_str(&state).map_err(|e| e.to_string())?;
+    if state["ok"] != true {
+        return Err(format!(
+            "{name} cannot tell its state yet: {}",
+            state["error"]
+        ));
+    }
+    version::check(name, &state)?;
     let reply = control::ask(name, &verb, control::timeout_of(&verb))?;
     println!("{reply}");
     let parsed: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;

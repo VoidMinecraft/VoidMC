@@ -231,6 +231,7 @@ pub fn game(registry: &Registry, client: &Client) -> Result<Command, String> {
         .arg("--enable-native-access=ALL-UNNAMED")
         .arg(format!("-Dvoid.client={}", client.name))
         .arg(format!("-Dvoid.level={}", client.level.name()))
+        .arg(format!("-Dvoid.version={}", crate::version::current()))
         .arg(format!(
             "-Dvoid.title={}",
             registry::title(client.level, &client.feature)

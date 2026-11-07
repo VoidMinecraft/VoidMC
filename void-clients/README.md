@@ -69,6 +69,8 @@ and answers one JSON line.
 - A condition that cannot be compared, like `chunks>=abc`, is an error, never true.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.
+- `voidc cmd` refuses a client started by another version of the probe or the bot, and says to
+  restart it. The version comes from their sources, so a change cannot be forgotten.
 
 Limits and levels live in `clients.toml`, built into the binary. Runtime state lives in
 `~/.voidc`, `VOIDC_HOME` moves it.

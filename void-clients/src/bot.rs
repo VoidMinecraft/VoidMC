@@ -121,6 +121,7 @@ impl World {
         json!({
             "state": state,
             "level": "bot",
+            "version": crate::version::current(),
             "x": self.position[0],
             "y": self.position[1],
             "z": self.position[2],
