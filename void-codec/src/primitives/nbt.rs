@@ -19,6 +19,19 @@ pub const fn modified_utf8_width(c: char) -> usize {
     }
 }
 
+/// The length in bytes of the longest prefix of `text`, cut on a character, that fits in an NBT
+/// string.
+pub fn fitting_len(text: &str) -> usize {
+    let mut width = 0;
+    for (index, c) in text.char_indices() {
+        width += modified_utf8_width(c);
+        if width > MAX_STRING_BYTES {
+            return index;
+        }
+    }
+    text.len()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NbtStringTooLong {
     pub bytes: usize,
@@ -103,16 +116,7 @@ fn fit_string(text: &mut MString) {
         );
         return;
     };
-    let mut width = 0;
-    let mut end = decoded.len();
-    for (index, c) in decoded.char_indices() {
-        width += modified_utf8_width(c);
-        if width > MAX_STRING_BYTES {
-            end = index;
-            break;
-        }
-    }
-    *text = MString::from(&decoded[..end]);
+    *text = MString::from(&decoded[..fitting_len(&decoded)]);
 }
 
 /// Custom reader that prepends the NBT protocol header for the root compound tag
@@ -186,13 +190,11 @@ impl Encode for Nbt {
 }
 
 fn write_network(nbt: &Nbt, buf: &mut Vec<u8>) {
-    let mut temp_buf = Vec::new();
-    match nbt.write_with_opts(&mut temp_buf, WriteOpts { name: false }) {
-        Ok(()) => buf.extend_from_slice(&temp_buf),
-        Err(failure) => {
-            error!(%failure, "NBT could not be written: an empty compound goes instead");
-            buf.extend_from_slice(&[0x0A, 0x00]);
-        }
+    let start = buf.len();
+    if let Err(failure) = nbt.write_with_opts(buf, WriteOpts { name: false }) {
+        error!(%failure, "NBT could not be written: an empty compound goes instead");
+        buf.truncate(start);
+        buf.extend_from_slice(&[0x0A, 0x00]);
     }
 }
 
@@ -482,6 +484,52 @@ mod tests {
             panic!("a list of strings");
         };
         assert_eq!(cells[0].len(), MAX_STRING_BYTES / 6 * 6);
+    }
+
+    #[test]
+    fn a_long_string_only_in_a_list_of_lists_is_found_and_cut() {
+        let nbt = Nbt {
+            name: "".into(),
+            compound: Compound {
+                tags: vec![(
+                    "rows".into(),
+                    Tag::List(List::List(vec![List::String(vec![format!(
+                        "a{}",
+                        "\u{1F600}".repeat(11_000)
+                    )
+                    .into()])])),
+                )],
+            },
+        };
+        assert_eq!(check(&nbt), Err(NbtStringTooLong { bytes: 66_001 }));
+        let mut bytes = Vec::new();
+        nbt.encode(&mut bytes);
+        let decoded = Nbt::decode(&mut bytes.as_slice()).expect("the client reads it");
+        let Tag::List(List::List(rows)) = &decoded.compound.tags[0].1 else {
+            panic!("a list of lists");
+        };
+        let List::String(cells) = &rows[0] else {
+            panic!("a list of strings");
+        };
+        assert_eq!(cells[0].len(), 1 + (MAX_STRING_BYTES - 1) / 6 * 6);
+    }
+
+    #[test]
+    fn writing_appends_to_what_the_buffer_already_holds() {
+        let mut bytes = vec![0xFF, 0x01];
+        text("hi").encode(&mut bytes);
+        let mut alone = Vec::new();
+        text("hi").encode(&mut alone);
+        assert_eq!(bytes[..2], [0xFF, 0x01]);
+        assert_eq!(bytes[2..], alone[..]);
+    }
+
+    #[test]
+    fn fitting_len_stops_before_the_first_character_that_overflows() {
+        assert_eq!(fitting_len("abc"), 3);
+        let emoji = format!("a{}", "\u{1F600}".repeat(11_000));
+        assert_eq!(fitting_len(&emoji), 1 + (MAX_STRING_BYTES - 1) / 6 * 4);
+        assert_eq!(fitting_len(&"\0".repeat(40_000)), MAX_STRING_BYTES / 2);
     }
 
     #[test]
