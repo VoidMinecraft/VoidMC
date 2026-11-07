@@ -288,8 +288,8 @@ mod tests {
 
     #[test]
     fn cmd_refuses_a_probe_of_another_version() {
-        let stale = control::stale::Stale::start(Level::Render);
-        let args = [control::stale::NAME, "act", "map"].map(String::from);
-        stale.assert_refused(cmd(&args));
+        let fake = control::fake::FakeClient::stale(Level::Render);
+        let args = [control::fake::NAME, "act", "map"].map(String::from);
+        fake.assert_refused(cmd(&args));
     }
 }

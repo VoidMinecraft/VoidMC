@@ -509,9 +509,9 @@ mod tests {
 
     #[test]
     fn perf_refuses_a_probe_of_another_version() {
-        let stale = control::stale::Stale::start(Level::Render);
-        let args = [control::stale::NAME, "gpu"].map(String::from);
-        stale.assert_refused(command(&args));
+        let fake = control::fake::FakeClient::stale(Level::Render);
+        let args = [control::fake::NAME, "gpu"].map(String::from);
+        fake.assert_refused(command(&args));
     }
 
     #[test]

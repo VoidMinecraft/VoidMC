@@ -113,11 +113,11 @@ pub fn timeout_of(verb: &str) -> Duration {
 }
 
 #[cfg(test)]
-pub mod stale {
+pub mod fake {
     use std::fs;
     use std::os::unix::net::UnixListener;
-    use std::path::PathBuf;
-    use std::process::{Child, Command};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -125,56 +125,89 @@ pub mod stale {
     use super::*;
     use crate::registry::{Client, Level};
 
-    pub const NAME: &str = "stale";
+    pub const NAME: &str = "fake";
 
-    /// A running client whose probe answers every verb, from another version than this voidc.
-    pub struct Stale {
-        home: PathBuf,
-        heard: Arc<Mutex<Vec<String>>>,
-        process: Child,
+    /// What the probe sends back to a verb, and how long it takes to.
+    pub struct Reply {
+        pub after: Duration,
+        pub line: String,
     }
 
-    fn serve(stream: UnixStream, heard: &Mutex<Vec<String>>) {
+    type Script = Box<dyn Fn(&str) -> Reply + Send + Sync>;
+
+    /// A running client whose probe answers from a script, with a real socket and a real pid.
+    pub struct FakeClient {
+        home: PathBuf,
+        heard: Arc<Mutex<Vec<String>>>,
+        process: Arc<Mutex<Child>>,
+    }
+
+    struct Serving {
+        heard: Arc<Mutex<Vec<String>>>,
+        process: Arc<Mutex<Child>>,
+        script: Arc<Script>,
+    }
+
+    fn serve(stream: UnixStream, serving: &Serving) {
         let Ok(mut out) = stream.try_clone() else {
             return;
         };
-        for line in BufReader::new(stream).lines().map_while(Result::ok) {
-            heard.lock().unwrap().push(line);
-            let reply = r#"{"ok":true,"state":"connected","chunks":1000,"clock":"real","version":"0000000000000000"}"#;
-            if writeln!(out, "{reply}").is_err() {
+        for verb in BufReader::new(stream).lines().map_while(Result::ok) {
+            serving.heard.lock().unwrap().push(verb.clone());
+            let reply = (serving.script)(&verb);
+            thread::sleep(reply.after);
+            if writeln!(out, "{}", reply.line).is_err() {
                 return;
+            }
+            if verb == "quit" {
+                let mut process = serving.process.lock().unwrap();
+                let _ = process.kill();
+                let _ = process.wait();
             }
         }
     }
 
-    impl Stale {
-        pub fn start(level: Level) -> Self {
-            static RUN: AtomicU32 = AtomicU32::new(0);
-            let home = std::env::temp_dir().join(format!(
-                "vs{}-{}",
-                std::process::id(),
-                RUN.fetch_add(1, Ordering::Relaxed)
-            ));
+    /// Under `/tmp` and not `temp_dir`: a socket has 103 bytes, whatever `TMPDIR` holds.
+    fn short_home() -> PathBuf {
+        static RUN: AtomicU32 = AtomicU32::new(0);
+        Path::new("/tmp").join(format!(
+            "voidc-fake-{}-{}",
+            std::process::id(),
+            RUN.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    impl FakeClient {
+        /// A client whose probe answers every verb, from another version than this voidc.
+        pub fn stale(level: Level) -> Self {
+            Self::scripted(
+                level,
+                Box::new(|_| {
+                    Reply {
+                    after: Duration::ZERO,
+                    line: r#"{"ok":true,"state":"connected","chunks":1000,"clock":"real","version":"0000000000000000"}"#.to_string(),
+                }
+                }),
+            )
+        }
+
+        pub fn scripted(level: Level, script: Script) -> Self {
+            let home = short_home();
             let _ = fs::remove_dir_all(&home);
             registry::set_test_home(Some(home.clone()));
             let socket = registry::socket(NAME).unwrap();
             fs::create_dir_all(socket.parent().unwrap()).unwrap();
             let listener = UnixListener::bind(&socket).unwrap();
-            let heard = Arc::new(Mutex::new(Vec::new()));
-            let shared = heard.clone();
-            thread::spawn(move || {
-                for stream in listener.incoming().flatten() {
-                    let heard = shared.clone();
-                    thread::spawn(move || serve(stream, &heard));
-                }
-            });
             let process = Command::new("sh")
                 .args(["-c", "sleep 60; :", &format!("-Dvoid.client={NAME}"), "x"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .unwrap();
             registry::save(&Client {
                 name: NAME.to_string(),
-                feature: "Stale".to_string(),
+                feature: "Fake".to_string(),
                 port: 1,
                 level,
                 pid: process.id(),
@@ -183,6 +216,20 @@ pub mod stale {
                 jfr: false,
             })
             .unwrap();
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            let process = Arc::new(Mutex::new(process));
+            let (shared_heard, shared_process) = (heard.clone(), process.clone());
+            let script = Arc::new(script);
+            thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let serving = Serving {
+                        heard: shared_heard.clone(),
+                        process: shared_process.clone(),
+                        script: script.clone(),
+                    };
+                    thread::spawn(move || serve(stream, &serving));
+                }
+            });
             Self {
                 home,
                 heard,
@@ -210,10 +257,11 @@ pub mod stale {
         }
     }
 
-    impl Drop for Stale {
+    impl Drop for FakeClient {
         fn drop(&mut self) {
-            let _ = self.process.kill();
-            let _ = self.process.wait();
+            let mut process = self.process.lock().unwrap();
+            let _ = process.kill();
+            let _ = process.wait();
             registry::set_test_home(None);
             let _ = fs::remove_dir_all(&self.home);
         }
@@ -240,6 +288,17 @@ mod tests {
             Duration::from_secs(45)
         );
         assert_eq!(timeout_of("state"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_long_tmpdir_leaves_the_fake_client_standing() {
+        let run = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::cmd_refuses_a_probe_of_another_version"])
+            .env("TMPDIR", std::env::temp_dir().join("t".repeat(120)))
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&run.stdout);
+        assert!(run.status.success() && out.contains("1 passed"), "{out}");
     }
 
     #[test]

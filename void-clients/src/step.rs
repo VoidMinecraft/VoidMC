@@ -926,14 +926,14 @@ mod tests {
 
     #[test]
     fn step_refuses_a_probe_of_another_version() {
-        let stale = control::stale::Stale::start(Level::Render);
-        let client = registry::load(control::stale::NAME).unwrap();
+        let fake = control::fake::FakeClient::stale(Level::Render);
+        let client = registry::load(control::fake::NAME).unwrap();
         let out = registry::home().join("out");
         let plan = plan(&["--lock-at", "10", "--min-chunks", "1"])
             .map(|plan| Plan { out, ..plan })
             .unwrap();
         let mut ticks = vec![Ok(json!({"tick": 0}))];
         ticks.extend((1..=10).map(|tick| Ok(json!({"tick": tick}))));
-        stale.assert_refused(passage(&mut script(ticks), &client, &plan));
+        fake.assert_refused(passage(&mut script(ticks), &client, &plan));
     }
 }

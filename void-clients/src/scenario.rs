@@ -2169,13 +2169,13 @@ mod tests {
 
     #[test]
     fn run_refuses_a_probe_of_another_version() {
-        let stale = crate::control::stale::Stale::start(Level::Render);
+        let fake = crate::control::fake::FakeClient::stale(Level::Render);
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "act map\n").unwrap();
         let mut host =
             Live(|_: &str, _, _: Option<String>| Err("no client starts here".to_string()));
-        stale.assert_refused(command(
-            &words(&dir, &["--on", crate::control::stale::NAME]),
+        fake.assert_refused(command(
+            &words(&dir, &["--on", crate::control::fake::NAME]),
             &mut host,
         ));
     }
