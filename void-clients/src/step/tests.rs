@@ -449,6 +449,23 @@ fn every_act_is_kept_in_order() {
 }
 
 #[test]
+fn a_refused_state_still_tells_whether_the_client_is_in_game() {
+    let _fake = control::fake::FakeClient::scripted(
+        Level::Render,
+        Box::new(|_| control::fake::Reply {
+            after: Duration::ZERO,
+            line: r#"{"ok":false,"error":"busy","state":"connected","chunks":1000}"#.to_string(),
+        }),
+    );
+    let client = registry::load(control::fake::NAME).unwrap();
+    let joiner = Joiner {
+        client: &client,
+        min_chunks: 200,
+    };
+    assert!(joiner.in_game());
+}
+
+#[test]
 fn step_refuses_a_probe_of_another_version() {
     let fake = control::fake::FakeClient::stale(Level::Render);
     let client = registry::load(control::fake::NAME).unwrap();

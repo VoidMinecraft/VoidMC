@@ -278,13 +278,15 @@ mod tests {
         let (_connected_tx, connected) = flume::unbounded();
         let mut app = App::new();
         app.insert_resource(ClientSenders::new(connected));
+        let counters = Arc::<Counters>::default();
         app.add_plugins(StepPlugin::new(
             PathBuf::from("unused"),
             Duration::from_millis(50),
-            Arc::default(),
+            counters.clone(),
         ));
         app.finish();
-        assert!(app.world().resource::<ClientSenders>().sent().is_some());
+        let counted = app.world().resource::<ClientSenders>().sent().unwrap();
+        assert!(std::ptr::eq(counted, &*counters.sent));
     }
 
     #[test]
