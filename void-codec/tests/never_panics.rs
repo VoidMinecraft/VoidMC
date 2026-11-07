@@ -3,7 +3,7 @@ use ussr_nbt::owned::Nbt;
 use uuid::Uuid;
 use voidmc_codec::{
     decode_fixed_length_vec, decode_fixed_length_vec_u8, decode_remaining_vec_u8, Decode,
-    DecodeLimits, Decoder, Encode, VarI32, VarI64,
+    DecodeLimits, Decoder, Encode, NbtDepth, VarI32, VarI64,
 };
 
 fn tight() -> DecodeLimits {
@@ -14,7 +14,7 @@ fn tight() -> DecodeLimits {
         max_allocation_bytes: 4096,
         max_remaining_bytes: 512,
         max_nbt_bytes: 512,
-        max_nbt_depth: 8,
+        max_nbt_depth: NbtDepth::new(8).unwrap(),
         max_decode_depth: 16,
     }
 }

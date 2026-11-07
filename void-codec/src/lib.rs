@@ -42,7 +42,7 @@ pub struct DecodeLimits {
     pub max_allocation_bytes: usize,
     pub max_remaining_bytes: usize,
     pub max_nbt_bytes: usize,
-    pub max_nbt_depth: usize,
+    pub max_nbt_depth: NbtDepth,
     pub max_decode_depth: usize,
 }
 
@@ -55,9 +55,39 @@ impl Default for DecodeLimits {
             max_allocation_bytes: 4 * 1024 * 1024,
             max_remaining_bytes: 2 * 1024 * 1024,
             max_nbt_bytes: 2 * 1024 * 1024,
-            max_nbt_depth: 64,
+            max_nbt_depth: NbtDepth::DEFAULT,
             max_decode_depth: 128,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NbtDepth(u16);
+
+impl NbtDepth {
+    pub const MAX: Self = Self(512);
+    pub const DEFAULT: Self = Self(64);
+
+    pub const fn new(levels: u16) -> Option<Self> {
+        if levels <= Self::MAX.0 {
+            Some(Self(levels))
+        } else {
+            None
+        }
+    }
+
+    pub const fn levels(self) -> usize {
+        self.0 as usize
+    }
+
+    pub(crate) fn ussr_limit(self) -> u16 {
+        self.0.saturating_mul(2).saturating_add(2)
+    }
+}
+
+impl Default for NbtDepth {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 

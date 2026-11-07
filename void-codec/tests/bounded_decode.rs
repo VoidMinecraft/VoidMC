@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use ussr_nbt::owned::Nbt;
-use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, LimitKind, VarI32};
+use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, LimitKind, NbtDepth, VarI32};
 
 struct ZeroWidth;
 
@@ -139,7 +139,7 @@ proptest! {
             max_allocation_bytes: 512,
             max_remaining_bytes: 256,
             max_nbt_bytes: 256,
-            max_nbt_depth: 8,
+            max_nbt_depth: NbtDepth::new(8).unwrap(),
             max_decode_depth: 16,
         };
 

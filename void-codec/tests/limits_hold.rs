@@ -1,5 +1,5 @@
 use ussr_nbt::owned::Nbt;
-use voidmc_codec::{DecodeError, DecodeLimits, Decoder, Encode, LimitKind, VarI32};
+use voidmc_codec::{DecodeError, DecodeLimits, Decoder, Encode, LimitKind, NbtDepth, VarI32};
 
 fn nested_compounds(levels: usize) -> Vec<u8> {
     let mut bytes = vec![0x0A];
@@ -28,7 +28,7 @@ fn nested_lists(levels: usize) -> Vec<u8> {
 
 fn nbt_depth(bytes: &[u8], limit: usize) -> Result<(), DecodeError> {
     let limits = DecodeLimits {
-        max_nbt_depth: limit,
+        max_nbt_depth: NbtDepth::new(u16::try_from(limit).unwrap()).unwrap(),
         ..DecodeLimits::default()
     };
     Decoder::new(bytes, limits)
@@ -118,11 +118,49 @@ fn mixed_nesting_counts_one_level_per_compound_or_list() {
 
 #[test]
 fn the_default_nbt_depth_accepts_sixty_four_levels() {
-    let limit = DecodeLimits::default().max_nbt_depth;
+    let limit = DecodeLimits::default().max_nbt_depth.levels();
     assert_eq!(limit, 64);
     assert_eq!(nbt_depth(&nested_compounds(limit), limit), Ok(()));
     assert_eq!(nbt_depth(&nested_lists(limit), limit), Ok(()));
     assert!(nbt_depth(&nested_compounds(limit + 1), limit).is_err());
+}
+
+#[test]
+fn no_nbt_depth_above_512_can_be_built() {
+    assert_eq!(NbtDepth::MAX.levels(), 512);
+    assert_eq!(NbtDepth::new(512), Some(NbtDepth::MAX));
+    assert_eq!(NbtDepth::new(513), None);
+    assert_eq!(NbtDepth::new(u16::MAX), None);
+}
+
+#[test]
+fn nbt_at_the_maximum_depth_fits_a_two_mebibyte_stack() {
+    let handle = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let limit = NbtDepth::MAX.levels();
+            let mixed: Vec<u8> = (0..limit)
+                .map(|i| if i % 2 == 0 { 0x09 } else { 0x0A })
+                .collect();
+            let compounds = vec![0x0A; limit];
+            for kinds in [mixed, compounds] {
+                assert_eq!(nbt_depth(&nested(&kinds), limit), Ok(()));
+                let mut deeper = kinds.clone();
+                deeper.push(0x0A);
+                assert_eq!(
+                    nbt_depth(&nested(&deeper), limit),
+                    Err(DecodeError::LimitExceeded {
+                        kind: LimitKind::NbtDepth,
+                        requested: 513,
+                        limit: 512,
+                    })
+                );
+            }
+            assert_eq!(nbt_depth(&nested_lists(limit), limit), Ok(()));
+            assert!(nbt_depth(&nested_lists(limit + 1), limit).is_err());
+        })
+        .unwrap();
+    handle.join().unwrap();
 }
 
 #[test]

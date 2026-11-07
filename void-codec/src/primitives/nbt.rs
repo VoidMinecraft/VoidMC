@@ -84,12 +84,7 @@ impl Decode for Nbt {
         // Wrap the buffer with the NBT reader that prepends the header
         let mut reader = NbtReader::new(nbt_bytes);
 
-        let ussr_depth = decoder
-            .limits()
-            .max_nbt_depth
-            .saturating_mul(2)
-            .saturating_add(2);
-        let opts = ReadOpts::new().with_depth_limit(u16::try_from(ussr_depth).unwrap_or(u16::MAX));
+        let opts = ReadOpts::new().with_depth_limit(decoder.limits().max_nbt_depth.ussr_limit());
         match Nbt::read_with_opts(&mut reader, opts) {
             Ok(nbt) => Ok(nbt),
             Err(_) => Err(DecodeError::InvalidLength),
@@ -238,11 +233,12 @@ fn deeper(depth: usize) -> Result<usize, DecodeError> {
 }
 
 fn check_nbt_depth(decoder: &Decoder<'_>, depth: usize) -> Result<(), DecodeError> {
-    if depth > decoder.limits().max_nbt_depth {
+    let limit = decoder.limits().max_nbt_depth.levels();
+    if depth > limit {
         return Err(DecodeError::LimitExceeded {
             kind: LimitKind::NbtDepth,
             requested: depth,
-            limit: decoder.limits().max_nbt_depth,
+            limit,
         });
     }
     Ok(())
