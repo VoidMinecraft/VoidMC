@@ -294,9 +294,10 @@ report lands in `~/.voidc/clients/<name>/perf/`.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.
 - `voidc cmd`, `run`, `step` and `perf` refuse a client started by another version of the probe or
-  XX The socket itself
+  the bot, and say to restart it: every verb of `voidc` passes through one check. The socket itself
   checks nothing, so a verb written straight to it reaches any client. `list`, `down` and the
-  mosaic still see, stop, show and hide such a client. The version is a hash of their sources outside tests (the probe, the bot,
+  mosaic still see, stop, show and hide such a client, and the end of a run still gives it its
+  clock back. The version is a hash of their sources outside tests (the probe, the bot,
   conditions, framing, launch), not of the protocol crates. A client tells it in every answer, from
   the moment its socket opens, even while it loads.
 - A `voidc run` or `perf` opens one connection and checks the version once. A verb that fails takes
