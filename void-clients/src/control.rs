@@ -71,9 +71,9 @@ impl Probe {
     }
 
     /// The only way to drive a client: a probe of another version than this voidc is refused.
-    pub fn open(name: &str) -> Result<Self, String> {
+    pub fn open(name: &str, limits: Limits) -> Result<Self, String> {
         let mut probe = Self::connect(name)?;
-        let state = probe.ask("state", STATE_LIMIT)?;
+        let state = probe.ask("state", limits.open)?;
         let state: Value = serde_json::from_str(&state).map_err(|e| e.to_string())?;
         version::check(name, &state)?;
         Ok(probe)
@@ -106,7 +106,7 @@ impl Probe {
 /// Sends one verb to a client whose probe is of this version, and returns its JSON line.
 pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> {
     one_verb(verb)?;
-    Probe::open(name)?.ask(verb, timeout)
+    Probe::open(name, Limits::REAL)?.ask(verb, timeout)
 }
 
 /// A chore needs no check of the version.
@@ -114,17 +114,45 @@ pub fn chore(name: &str, chore: Chore, timeout: Duration) -> Result<String, Stri
     Probe::connect(name)?.ask(chore.verb(), timeout)
 }
 
-/// How long a verb may take: a `wait_until` carries its own limit.
-pub fn timeout_of(verb: &str) -> Duration {
-    let words: Vec<&str> = verb.split_whitespace().collect();
-    if words.first() == Some(&"perf") {
-        return perf::timeout_of(&words);
-    }
-    let limit = match condition::split(verb) {
-        ("wait_until", rest) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
-        _ => return Duration::from_secs(30),
+/// How long a client gets. A test takes a smaller set, so that it does not wait for the real one.
+#[derive(Clone, Copy)]
+pub struct Limits {
+    pub open: Duration,
+    verb: Duration,
+    past_a_wait: Duration,
+}
+
+impl Limits {
+    pub const REAL: Self = Self {
+        open: STATE_LIMIT,
+        verb: Duration::from_secs(30),
+        past_a_wait: Duration::from_secs(5),
     };
-    Duration::from_millis(limit + 5_000)
+
+    /// The real ones divided by 20.
+    #[cfg(test)]
+    pub const TEST: Self = Self {
+        open: Duration::from_millis(600),
+        verb: Duration::from_millis(1500),
+        past_a_wait: Duration::from_millis(250),
+    };
+
+    /// How long a verb may take: a `wait_until` carries its own limit.
+    pub fn of(self, verb: &str) -> Duration {
+        let words: Vec<&str> = verb.split_whitespace().collect();
+        if words.first() == Some(&"perf") {
+            return perf::timeout_of(&words);
+        }
+        let limit = match condition::split(verb) {
+            ("wait_until", rest) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
+            _ => return self.verb,
+        };
+        Duration::from_millis(limit) + self.past_a_wait
+    }
+}
+
+pub fn timeout_of(verb: &str) -> Duration {
+    Limits::REAL.of(verb)
 }
 
 #[cfg(test)]
@@ -330,7 +358,19 @@ mod tests {
     #[test]
     fn a_state_outlives_what_the_probe_gives_the_game_thread() {
         assert!(include_str!("../probe/Probe.java").contains("onGame(task, 10_000)"));
-        assert!(STATE_LIMIT > Duration::from_secs(10));
+        assert!(Limits::REAL.open > Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_clock_given_back_has_thirty_seconds_for_real() {
+        assert_eq!(Limits::REAL.of("clock real"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn the_limits_of_the_tests_are_the_real_ones_divided_by_twenty() {
+        assert_eq!(Limits::TEST.open * 20, Limits::REAL.open);
+        assert_eq!(Limits::TEST.of("state") * 20, Limits::REAL.of("state"));
+        assert_eq!(Limits::TEST.past_a_wait * 20, Limits::REAL.past_a_wait);
     }
 
     #[test]

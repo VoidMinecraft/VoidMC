@@ -221,13 +221,16 @@ fn run() -> Result<(), String> {
         }
         "run" => scenario::command(
             rest,
-            &mut scenario::Live(|feature: &str, level, port: Option<String>| {
-                let mut args = vec![feature.to_string()];
-                if let Some(port) = port {
-                    args.extend(["--port".to_string(), port]);
-                }
-                up(&registry, &args, level)
-            }),
+            &mut scenario::Live(
+                |feature: &str, level, port: Option<String>| {
+                    let mut args = vec![feature.to_string()];
+                    if let Some(port) = port {
+                        args.extend(["--port".to_string(), port]);
+                    }
+                    up(&registry, &args, level)
+                },
+                control::Limits::REAL,
+            ),
         ),
         "compare" => compare::command(rest),
         "check" => check::command(rest),

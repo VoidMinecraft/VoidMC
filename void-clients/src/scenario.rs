@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::condition::{self, Condition, DEFAULT_WAIT_MS};
-use crate::control::{self, Chore};
+use crate::control::{self, Chore, Limits};
 use crate::registry::{self, Level};
 use crate::{check, compare, lifecycle};
 
@@ -381,13 +381,15 @@ pub trait Driver {
 pub struct Socket {
     name: String,
     probe: Option<control::Probe>,
+    limits: Limits,
 }
 
 impl Socket {
-    pub fn open(name: &str) -> Result<Self, String> {
+    pub fn open(name: &str, limits: Limits) -> Result<Self, String> {
         Ok(Self {
             name: name.to_string(),
-            probe: Some(control::Probe::open(name)?),
+            probe: Some(control::Probe::open(name, limits)?),
+            limits,
         })
     }
 }
@@ -396,9 +398,9 @@ impl Driver for Socket {
     fn ask(&mut self, verb: &str) -> Result<Value, String> {
         let mut probe = match self.probe.take() {
             Some(probe) => probe,
-            None => control::Probe::open(&self.name)?,
+            None => control::Probe::open(&self.name, self.limits)?,
         };
-        let line = probe.ask(verb, control::timeout_of(verb))?;
+        let line = probe.ask(verb, self.limits.of(verb))?;
         let reply = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         self.probe = Some(probe);
         Ok(reply)
@@ -406,7 +408,7 @@ impl Driver for Socket {
 
     /// On a connection of its own: no check can stop it, and no late answer can reach it.
     fn give_back_clock(&mut self) -> Result<Value, String> {
-        let timeout = control::timeout_of("clock real");
+        let timeout = self.limits.of("clock real");
         let line = control::chore(&self.name, Chore::ClockReal, timeout)?;
         serde_json::from_str(&line).map_err(|e| e.to_string())
     }
@@ -926,7 +928,7 @@ pub trait Host {
     fn driver(&self, name: &str) -> Result<Self::Driver, String>;
 }
 
-pub struct Live<F>(pub F);
+pub struct Live<F>(pub F, pub Limits);
 
 impl<F> Host for Live<F>
 where
@@ -947,7 +949,7 @@ where
     }
 
     fn driver(&self, name: &str) -> Result<Socket, String> {
-        Socket::open(name)
+        Socket::open(name, self.1)
     }
 }
 
@@ -2220,8 +2222,10 @@ mod tests {
     }
 
     fn live_run(dir: &Path, more: &[&str]) -> Result<(), String> {
-        let mut host =
-            Live(|_: &str, _, _: Option<String>| Err("no client starts here".to_string()));
+        let mut host = Live(
+            |_: &str, _, _: Option<String>| Err("no client starts here".to_string()),
+            Limits::TEST,
+        );
         let mut args = vec!["--on", NAME];
         args.extend(more);
         command(&words(dir, &args), &mut host)
@@ -2247,7 +2251,10 @@ mod tests {
     #[test]
     fn a_game_slower_than_the_old_limit_lets_a_line_fail_for_its_own_reason() {
         let fake = answering(Level::Render, |verb| match verb {
-            "state" => Some(Reply::current(Duration::from_secs(7), state_of_a_game())),
+            "state" => Some(Reply::current(
+                Limits::TEST.open * 7 / 12,
+                state_of_a_game(),
+            )),
             "wait_until 60000 chunks>=1" => Some(Reply::current(
                 Duration::ZERO,
                 json!({"ok": false, "error": "java.lang.AssertionError: timed out on chunks>=1"}),
@@ -2279,13 +2286,13 @@ mod tests {
     #[test]
     fn a_game_past_the_limit_of_state_is_said_not_to_answer() {
         let _fake = answering(Level::Render, |verb| {
-            (verb == "state").then(|| Reply::current(Duration::from_secs(14), state_of_a_game()))
+            (verb == "state").then(|| Reply::current(NEVER_IN_TIME, state_of_a_game()))
         });
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "act map\n").unwrap();
         let error = live_run(&dir, &[]).unwrap_err();
         assert!(
-            error.contains("client fake does not answer: no reply to state within 12s"),
+            error.contains("client fake does not answer: no reply to state within 600ms"),
             "{error}"
         );
     }
@@ -2293,12 +2300,8 @@ mod tests {
     #[test]
     fn a_late_answer_never_passes_for_the_answer_to_the_next_verb() {
         let fake = answering(Level::Render, |verb| {
-            verb.starts_with("wait_until").then(|| {
-                Reply::current(
-                    Duration::from_secs(6),
-                    json!({"ok": false, "error": "the late answer"}),
-                )
-            })
+            verb.starts_with("wait_until")
+                .then(|| Reply::current(LATE, json!({"ok": false, "error": "the late answer"})))
         });
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\nact map\n").unwrap();
@@ -2323,6 +2326,13 @@ mod tests {
         );
     }
 
+    /// Past the limit of a `wait_until 1`, and early enough to reach a connection left open.
+    const LATE: Duration = Duration::from_millis(500);
+    /// Past every limit of a test, which never waits for it.
+    const NEVER_IN_TIME: Duration = Duration::from_secs(10);
+    /// Past the limit of an opening, within the limit of a verb.
+    const SLOW: Duration = Duration::from_secs(1);
+
     fn garbled() -> Reply {
         Reply {
             after: Duration::ZERO,
@@ -2346,16 +2356,30 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_of_the_end_of_a_run_keeps_its_thirty_seconds() {
-        assert_eq!(control::timeout_of("clock real"), Duration::from_secs(30));
+    fn the_clock_of_the_end_of_a_run_gets_the_limit_of_a_verb_and_not_of_an_opening() {
         let fake = answering(Level::Render, |verb| {
-            (verb == "clock real")
-                .then(|| Reply::current(Duration::from_secs(13), state_of_a_game()))
+            (verb == "clock real").then(|| Reply::current(SLOW, state_of_a_game()))
         });
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "act map\n").unwrap();
         live_run(&dir, &[]).unwrap();
         assert_eq!(fake.heard(), ["state", "state", "act map", "clock real"]);
+    }
+
+    #[test]
+    fn the_clock_of_the_end_of_a_run_stops_at_its_limit() {
+        let _fake = answering(Level::Render, |verb| {
+            (verb == "clock real").then(|| Reply::current(NEVER_IN_TIME, state_of_a_game()))
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act map\n").unwrap();
+        assert_eq!(live_run(&dir, &[]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(report.contains("was not given back"), "{report}");
+        assert!(
+            report.contains("no reply to clock real within 1.5s"),
+            "{report}"
+        );
     }
 
     /// A wait that loses its connection, a slow `clock real`, and `reply` from the `from`th `state`.
@@ -2367,22 +2391,17 @@ mod tests {
         answering(Level::Render, move |verb| match verb {
             "state" if states.fetch_add(1, Ordering::Relaxed) + 1 >= from => Some(reply()),
             "wait_until 1 chunks>=1" => Some(Reply::current(
-                Duration::from_secs(7),
+                LATE,
                 json!({"ok": false, "error": "the late answer"}),
             )),
-            "clock real" => Some(Reply::current(
-                Duration::from_secs(13),
-                json!({"ok": true, "clock": "real"}),
-            )),
+            "clock real" => Some(Reply::current(SLOW, json!({"ok": true, "clock": "real"}))),
             _ => None,
         })
     }
 
     #[test]
     fn the_clock_goes_back_past_a_connection_down_and_a_silent_state() {
-        let fake = from_the_state(3, || {
-            Reply::current(Duration::from_secs(14), state_of_a_game())
-        });
+        let fake = from_the_state(3, || Reply::current(NEVER_IN_TIME, state_of_a_game()));
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\n").unwrap();
         assert_eq!(live_run(&dir, &[]), Err(String::new()));

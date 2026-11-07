@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::compare::{self, Picture, Rules};
+use crate::control::Limits;
 use crate::lifecycle;
 use crate::registry::{self, Level};
 use crate::scenario::{Driver, Socket, reply_error};
@@ -483,7 +484,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         json.insert("jfr", value);
         Ok(())
     };
-    let mut socket = Socket::open(name)?;
+    let mut socket = Socket::open(name, Limits::REAL)?;
     match measure {
         Measure::Gpu => gpu(&mut socket, &mut report, &mut json)?,
         Measure::Metrics => metrics(&mut socket, &mut report, &mut json)?,

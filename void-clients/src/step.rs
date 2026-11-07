@@ -497,7 +497,7 @@ fn passage(server: &mut impl Link, client: &Client, plan: &Plan) -> Result<(), S
     join(server, &joiner, plan.lock_at, pace)?;
     let socket = Socket::over(
         "client",
-        control::Probe::open(&client.name)?.into_stream(),
+        control::Probe::open(&client.name, control::Limits::REAL)?.into_stream(),
         ANSWER_LIMIT,
     )?;
     let mut lock = Lockstep {
