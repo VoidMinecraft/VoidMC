@@ -4,9 +4,13 @@ on:
   push:
     branches: ["**"]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event.action == 'edited' && !github.event.changes.base && github.run_id || 'tests' }}
   cancel-in-progress: true
 
 env:
@@ -14,8 +18,19 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  scope:
+    name: scope
+    if: >-
+      github.event_name == 'push'
+      || (github.event.action == 'edited' && github.event.changes.base)
+      || (github.event.action != 'edited' && github.event.pull_request.head.repo.full_name != github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+
   fmt:
     name: rustfmt
+    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +39,7 @@ jobs:
 
   clippy:
     name: clippy
+    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +49,7 @@ jobs:
 
   test:
     name: test
+    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +59,7 @@ jobs:
 
   clippy-beta:
     name: clippy on beta (report only)
+    needs: scope
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
@@ -68,6 +86,7 @@ jobs:
 
   coverage:
     name: coverage
+    needs: scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

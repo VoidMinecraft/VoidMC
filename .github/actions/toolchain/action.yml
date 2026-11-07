@@ -1,6 +1,10 @@
 name: Pinned toolchain
-description: Installs the toolchain of rust-toolchain.toml and fails if cargo would use another one.
+description: Installs the toolchain of a rust-toolchain.toml and fails if cargo would use another one.
 inputs:
+  dir:
+    description: Folder whose rust-toolchain.toml is installed and checked.
+    required: false
+    default: .
   components:
     description: Components to add, comma separated.
     required: false
@@ -10,20 +14,45 @@ runs:
   steps:
     - name: Install the pinned toolchain
       shell: bash
+      working-directory: ${{ inputs.dir }}
       env:
         COMPONENTS: ${{ inputs.components }}
       run: |
-        channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
-        test -n "$channel"
+        if [ ! -f rust-toolchain.toml ]; then
+          echo "::error file=$PWD::no rust-toolchain.toml in $PWD"
+          exit 1
+        fi
+        channel=$(sed -n -E "s/^[[:space:]]*channel[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/p" rust-toolchain.toml)
+        if [ -z "$channel" ]; then
+          echo "::error file=$PWD/rust-toolchain.toml::no channel = \"...\" line in $PWD/rust-toolchain.toml"
+          exit 1
+        fi
         rustup toolchain install "$channel" --profile minimal --component "$COMPONENTS"
         echo "PINNED_CHANNEL=$channel" >> "$GITHUB_ENV"
     - name: Check that cargo uses it
       shell: bash
+      working-directory: ${{ inputs.dir }}
       run: |
-        rustup show active-toolchain
-        rustc --version
+        active=$(rustup show active-toolchain)
+        used=$(rustc --version)
+        pinned=$(rustup run "$PINNED_CHANNEL" rustc --version)
+        echo "$active"
+        echo "$used"
         cargo --version
-        case "$(rustc --version)" in
-          "rustc $PINNED_CHANNEL "*) ;;
-          *) echo "::error::rustc is not the pinned $PINNED_CHANNEL"; exit 1 ;;
+        case "$active" in
+          "$PINNED_CHANNEL-"*) ;;
+          *) echo "::error::active toolchain is not the pinned $PINNED_CHANNEL: $active"; exit 1 ;;
         esac
+        if [ "$used" != "$pinned" ]; then
+          echo "::error::rustc is $used, the pinned $PINNED_CHANNEL is $pinned"
+          exit 1
+        fi
+        case "$PINNED_CHANNEL" in
+          nightly*) pattern='^rustc [0-9]+\.[0-9]+\.[0-9]+-nightly \([0-9a-f]+ [0-9]{4}-[0-9]{2}-[0-9]{2}\)$' ;;
+          beta*) pattern='^rustc [0-9]+\.[0-9]+\.[0-9]+-beta' ;;
+          *) pattern="^rustc ${PINNED_CHANNEL//./\\.} " ;;
+        esac
+        if ! [[ "$used" =~ $pattern ]]; then
+          echo "::error::$used does not match the channel $PINNED_CHANNEL"
+          exit 1
+        fi

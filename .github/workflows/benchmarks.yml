@@ -41,11 +41,13 @@ jobs:
         run: cargo bench --workspace --all-features
 
       - name: Publish benchmark summary
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           {
             echo "## Criterion benchmarks"
             echo
-            echo "Executed on \`${{ github.ref_name }}\` at commit \`${{ github.sha }}\`."
+            echo "Executed on \`$REF_NAME\` at commit \`$GITHUB_SHA\`."
             echo
             echo "The complete HTML reports are attached as the \`criterion-reports\` artifact."
             echo "Results are informative: shared GitHub runners are not stable enough for performance thresholds."
