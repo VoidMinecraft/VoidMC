@@ -221,7 +221,7 @@ the usual red message and usage line:
 |---|---|---|
 | `Name` (case-insensitive) | that player | `[that player]` |
 | `@s` | the executor | `[executor]` |
-| `@p` | nearest ready player to the executor (including itself) | `[nearest]` |
+| `@p` | nearest ready player in the executor's dimension (including itself) | `[nearest]` |
 | `@r` | a random ready player | `[random]` |
 | `@a` | rejected (several players) | every ready player |
 
