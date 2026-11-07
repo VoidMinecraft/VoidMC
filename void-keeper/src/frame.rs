@@ -12,20 +12,20 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use ussr_nbt::owned::{Nbt, Tag};
 use voidmc_codec::{Decode, Encode, VarI32};
-use voidmc_net::socket::{FrameLength, frame_length};
+use voidmc_net::socket::{FrameError, FrameLength, frame_length};
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// What a client reads on a link without compression: the length of a frame takes three bytes.
 pub const MAX_PLAIN_FRAME_BYTES: usize = (1 << 21) - 1;
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum FrameError {
-    Length(voidmc_net::socket::FrameError),
+pub enum FrameCodecError {
+    Length(FrameError),
     InflatedTooLarge(usize),
     BadCompression,
 }
 
-impl fmt::Display for FrameError {
+impl fmt::Display for FrameCodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Length(error) => error.fmt(f),
@@ -37,7 +37,7 @@ impl fmt::Display for FrameError {
     }
 }
 
-impl std::error::Error for FrameError {}
+impl std::error::Error for FrameCodecError {}
 
 /// How one side of the proxy frames its packets.
 #[derive(Debug, Default, Clone, Copy)]
@@ -52,9 +52,9 @@ impl FrameCodec {
     }
 
     /// The next whole frame of `buffer`, or `None` until more bytes arrive.
-    pub fn decode(&self, buffer: &mut BytesMut) -> Result<Option<Bytes>, FrameError> {
+    pub fn decode(&self, buffer: &mut BytesMut) -> Result<Option<Bytes>, FrameCodecError> {
         let Some(FrameLength { prefix, body }) =
-            frame_length(buffer, MAX_FRAME_BYTES).map_err(FrameError::Length)?
+            frame_length(buffer, MAX_FRAME_BYTES).map_err(FrameCodecError::Length)?
         else {
             return Ok(None);
         };
@@ -91,58 +91,58 @@ impl FrameCodec {
     }
 }
 
-fn inflate(frame: Bytes) -> Result<Bytes, FrameError> {
+fn inflate(frame: Bytes) -> Result<Bytes, FrameCodecError> {
     let mut rest: &[u8] = &frame;
     let data_length = VarI32::decode(&mut rest)
-        .map_err(|_| FrameError::BadCompression)?
+        .map_err(|_| FrameCodecError::BadCompression)?
         .0;
     let consumed = frame.len() - rest.len();
     if data_length == 0 {
         return Ok(frame.slice(consumed..));
     }
-    let expected = usize::try_from(data_length).map_err(|_| FrameError::BadCompression)?;
+    let expected = usize::try_from(data_length).map_err(|_| FrameCodecError::BadCompression)?;
     if expected > MAX_FRAME_BYTES {
-        return Err(FrameError::InflatedTooLarge(expected));
+        return Err(FrameCodecError::InflatedTooLarge(expected));
     }
     let mut inflated = Vec::with_capacity(expected);
     ZlibDecoder::new(rest)
         .take(expected as u64 + 1)
         .read_to_end(&mut inflated)
-        .map_err(|_| FrameError::BadCompression)?;
+        .map_err(|_| FrameCodecError::BadCompression)?;
     if inflated.len() != expected {
-        return Err(FrameError::BadCompression);
+        return Err(FrameCodecError::BadCompression);
     }
     Ok(inflated.into())
 }
 
-/// A frame whose packet id was read once.
+/// The packet id of a frame, and what follows it.
+pub fn id_and_body(frame: &[u8]) -> Option<(i32, &[u8])> {
+    let mut body = frame;
+    let id = VarI32::decode(&mut body).ok()?.0;
+    Some((id, body))
+}
+
+/// A frame whose body is written by hand, for the packets `voidmc-protocol` has no type for.
+pub fn build(id: i32, write: impl FnOnce(&mut Vec<u8>)) -> Bytes {
+    let mut buffer = Vec::new();
+    VarI32(id).encode(&mut buffer);
+    write(&mut buffer);
+    buffer.into()
+}
+
+/// A packet read from a frame once: its id, then its body.
 #[derive(Debug, Clone)]
-pub struct Frame {
+pub(crate) struct Packet {
     bytes: Bytes,
     id: i32,
     body_at: usize,
 }
 
-impl Frame {
+impl Packet {
     pub(crate) fn read(bytes: Bytes) -> Option<Self> {
-        let (id, body) = Self::id_and_body(&bytes)?;
+        let (id, body) = id_and_body(&bytes)?;
         let body_at = bytes.len() - body.len();
         Some(Self { bytes, id, body_at })
-    }
-
-    /// The packet id of a frame, and what follows it.
-    pub fn id_and_body(frame: &[u8]) -> Option<(i32, &[u8])> {
-        let mut body = frame;
-        let id = VarI32::decode(&mut body).ok()?.0;
-        Some((id, body))
-    }
-
-    /// A frame whose body is written by hand, for the packets `voidmc-protocol` has no type for.
-    pub fn encode(id: i32, write: impl FnOnce(&mut Vec<u8>)) -> Bytes {
-        let mut buffer = Vec::new();
-        VarI32(id).encode(&mut buffer);
-        write(&mut buffer);
-        buffer.into()
     }
 
     pub(crate) fn id(&self) -> i32 {
@@ -172,8 +172,6 @@ pub fn text(content: &str) -> Nbt {
 
 #[cfg(test)]
 mod tests {
-    use voidmc_net::socket::FrameError as NetFrameError;
-
     use super::*;
 
     fn wrapped(codec: FrameCodec, payload: &[u8]) -> BytesMut {
@@ -227,12 +225,12 @@ mod tests {
         let mut buffer = BytesMut::from(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01][..]);
         assert_eq!(
             codec.decode(&mut buffer),
-            Err(FrameError::Length(NetFrameError::InvalidLengthVarInt))
+            Err(FrameCodecError::Length(FrameError::InvalidLengthVarInt))
         );
         let mut buffer = BytesMut::from(&[0][..]);
         assert_eq!(
             codec.decode(&mut buffer),
-            Err(FrameError::Length(NetFrameError::EmptyFrame))
+            Err(FrameCodecError::Length(FrameError::EmptyFrame))
         );
     }
 
@@ -241,7 +239,7 @@ mod tests {
         let mut buffer = BytesMut::from(&[0x81, 0x80, 0x80, 0x80, 0x10, 7][..]);
         assert_eq!(
             FrameCodec::default().decode(&mut buffer),
-            Err(FrameError::Length(NetFrameError::InvalidLengthVarInt))
+            Err(FrameCodecError::Length(FrameError::InvalidLengthVarInt))
         );
     }
 
@@ -252,7 +250,7 @@ mod tests {
         let mut buffer = BytesMut::from(&out[..]);
         assert!(matches!(
             FrameCodec::default().decode(&mut buffer),
-            Err(FrameError::Length(NetFrameError::FrameTooLarge {
+            Err(FrameCodecError::Length(FrameError::FrameTooLarge {
                 limit: MAX_FRAME_BYTES,
                 ..
             }))
@@ -272,6 +270,9 @@ mod tests {
         VarI32(body.len() as i32).encode(&mut out);
         out.extend_from_slice(&body);
         let mut buffer = BytesMut::from(&out[..]);
-        assert_eq!(codec.decode(&mut buffer), Err(FrameError::BadCompression));
+        assert_eq!(
+            codec.decode(&mut buffer),
+            Err(FrameCodecError::BadCompression)
+        );
     }
 }

@@ -39,12 +39,12 @@ fn nothing_from_the_client_reaches_a_server_that_is_not_there() {
 #[test]
 fn the_answer_to_our_keep_alive_never_reaches_the_new_server() {
     let mut rig = Rig::in_play();
-    let answer = Frame::encode(play_sb::KEEP_ALIVE, |body| {
+    let answer = frame::build(play_sb::KEEP_ALIVE, |body| {
         (OWN_KEEP_ALIVE | 3).encode(body);
     });
     rig.receive_from_client(answer);
     assert!(rig.backend.is_empty());
-    let theirs = Frame::encode(play_sb::KEEP_ALIVE, |body| {
+    let theirs = frame::build(play_sb::KEEP_ALIVE, |body| {
         1_700_000_000_000i64.encode(body)
     });
     rig.receive_from_client(theirs.clone());
@@ -98,7 +98,7 @@ fn a_server_still_starting_is_tried_again() {
     rig.tick(settings().retry_every);
     rig.connected();
     rig.clear();
-    rig.receive_from_backend(Frame::encode(login_cb::LOGIN_DISCONNECT, |body| {
+    rig.receive_from_backend(frame::build(login_cb::LOGIN_DISCONNECT, |body| {
         "starting".to_string().encode(body);
     }));
     assert!(rig.rest.contains(&Action::DropBackend));
@@ -194,13 +194,13 @@ fn a_disconnect_inside_a_bundle_closes_the_bundle_first() {
     let mut rig = Rig::in_play();
     rig.receive_from_backend(empty(play_cb::BUNDLE_DELIMITER));
     rig.clear();
-    rig.receive_from_backend(Frame::encode(play_cb::SYSTEM_CHAT, |body| {
+    rig.receive_from_backend(frame::build(play_cb::SYSTEM_CHAT, |body| {
         body.resize(MAX_PLAIN_FRAME_BYTES + 1, 0);
     }));
     let ids: Vec<i32> = rig
         .client
         .iter()
-        .map(|f| Frame::id_and_body(f).unwrap().0)
+        .map(|f| frame::id_and_body(f).unwrap().0)
         .collect();
     assert_eq!(ids, vec![play_cb::BUNDLE_DELIMITER, play_cb::DISCONNECT]);
 }
@@ -208,7 +208,7 @@ fn a_disconnect_inside_a_bundle_closes_the_bundle_first() {
 #[test]
 fn a_kick_from_a_live_server_ends_the_session_without_a_loss() {
     let mut rig = Rig::in_play();
-    let kick = Frame::encode(play_cb::DISCONNECT, |body| {
+    let kick = frame::build(play_cb::DISCONNECT, |body| {
         text("Kicked").encode(body);
     });
     rig.receive_from_backend(kick.clone());
@@ -222,7 +222,7 @@ fn a_kick_from_a_live_server_ends_the_session_without_a_loss() {
 #[test]
 fn a_packet_a_client_could_not_read_ends_the_session_with_its_size() {
     let mut rig = Rig::in_play();
-    let large = Frame::encode(play_cb::SYSTEM_CHAT, |body| {
+    let large = frame::build(play_cb::SYSTEM_CHAT, |body| {
         body.resize(MAX_PLAIN_FRAME_BYTES + 1, 0);
     });
     rig.receive_from_backend(large);
@@ -236,7 +236,7 @@ fn a_packet_a_client_could_not_read_ends_the_session_with_its_size() {
 #[test]
 fn the_largest_packet_a_client_reads_still_reaches_it() {
     let mut rig = Rig::in_play();
-    let largest = Frame::encode(play_cb::SYSTEM_CHAT, |body| {
+    let largest = frame::build(play_cb::SYSTEM_CHAT, |body| {
         body.resize(MAX_PLAIN_FRAME_BYTES, 0);
     });
     rig.receive_from_backend(largest);
@@ -264,7 +264,7 @@ fn a_server_heard_every_second_is_never_counted_as_lost() {
     let mut rig = Rig::in_play();
     for _ in 0..30 {
         rig.tick(Duration::from_secs(1));
-        rig.receive_from_backend(Frame::encode(play_cb::KEEP_ALIVE, |body| 1i64.encode(body)));
+        rig.receive_from_backend(frame::build(play_cb::KEEP_ALIVE, |body| 1i64.encode(body)));
     }
     assert!(!rig.rest.contains(&Action::DropBackend));
     assert!(rig.events().is_empty());
@@ -294,7 +294,7 @@ fn compression_stays_on_the_backend_side() {
     let mut rig = Rig::fresh();
     rig.tick(Duration::ZERO);
     rig.connected();
-    rig.receive_from_backend(Frame::encode(login_cb::LOGIN_COMPRESSION, |body| {
+    rig.receive_from_backend(frame::build(login_cb::LOGIN_COMPRESSION, |body| {
         VarI32(256).encode(body);
     }));
     assert!(rig.rest.contains(&Action::Compress(256)));
@@ -308,7 +308,7 @@ fn compression_is_followed_on_a_return_too() {
     rig.tick(settings().retry_every);
     rig.connected();
     rig.clear();
-    rig.receive_from_backend(Frame::encode(login_cb::LOGIN_COMPRESSION, |body| {
+    rig.receive_from_backend(frame::build(login_cb::LOGIN_COMPRESSION, |body| {
         VarI32(64).encode(body);
     }));
     assert!(rig.rest.contains(&Action::Compress(64)));

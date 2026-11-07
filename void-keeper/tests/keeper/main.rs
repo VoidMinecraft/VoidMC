@@ -26,7 +26,7 @@ use voidmc_data::v26_1_2::packets::configuration::{
 use voidmc_data::v26_1_2::packets::login::{clientbound as login_cb, serverbound as login_sb};
 use voidmc_data::v26_1_2::packets::play::{clientbound as play_cb, serverbound as play_sb};
 use voidmc_data::v26_1_2::packets::status::{clientbound as status_cb, serverbound as status_sb};
-use voidmc_keeper::frame::{Frame, FrameCodec};
+use voidmc_keeper::frame::{self, FrameCodec};
 use voidmc_keeper::proxy::{Events, run};
 use voidmc_keeper::session::Settings;
 use voidmc_protocol::PROTOCOL_VERSION;
@@ -53,11 +53,11 @@ fn settings() -> Settings {
 }
 
 fn id_of(frame: &[u8]) -> i32 {
-    Frame::id_and_body(frame).expect("every frame has an id").0
+    frame::id_and_body(frame).expect("every frame has an id").0
 }
 
 fn empty(id: i32) -> Bytes {
-    Frame::encode(id, |_| {})
+    frame::build(id, |_| {})
 }
 
 fn login_packet(entity_id: i32) -> Bytes {
@@ -89,18 +89,18 @@ fn login_packet(entity_id: i32) -> Bytes {
 }
 
 fn registry(tag: u8) -> Bytes {
-    Frame::encode(config_cb::REGISTRY_DATA, |body| {
+    frame::build(config_cb::REGISTRY_DATA, |body| {
         body.push(tag);
         body.extend_from_slice(&[7; 4000]);
     })
 }
 
 fn add_entity(id: i32) -> Bytes {
-    Frame::encode(play_cb::ADD_ENTITY, |body| VarI32(id).encode(body))
+    frame::build(play_cb::ADD_ENTITY, |body| VarI32(id).encode(body))
 }
 
 fn chat(content: u8) -> Bytes {
-    Frame::encode(play_cb::SYSTEM_CHAT, |body| body.push(content))
+    frame::build(play_cb::SYSTEM_CHAT, |body| body.push(content))
 }
 
 struct Peer {
@@ -271,7 +271,7 @@ async fn serve_fake(
         probes.fetch_add(1, Ordering::SeqCst);
         while let Some(frame_in) = peer.next().await {
             if id_of(&frame_in) == status_sb::STATUS_REQUEST {
-                peer.send(&Frame::encode(status_cb::STATUS_RESPONSE, |body| {
+                peer.send(&frame::build(status_cb::STATUS_RESPONSE, |body| {
                     "{}".to_string().encode(body);
                 }))
                 .await;
@@ -284,7 +284,7 @@ async fn serve_fake(
     };
     logins.fetch_add(1, Ordering::SeqCst);
     if let Some(threshold) = plan.compression {
-        peer.send(&Frame::encode(login_cb::LOGIN_COMPRESSION, |body| {
+        peer.send(&frame::build(login_cb::LOGIN_COMPRESSION, |body| {
             VarI32(threshold).encode(body);
         }))
         .await;
@@ -296,7 +296,7 @@ async fn serve_fake(
             break;
         }
     }
-    peer.send(&Frame::encode(config_cb::SELECT_KNOWN_PACKS, |body| {
+    peer.send(&frame::build(config_cb::SELECT_KNOWN_PACKS, |body| {
         body.push(0)
     }))
     .await;
@@ -343,7 +343,7 @@ impl FakeClient {
     async fn connect(proxy: SocketAddr, next_state: i32, protocol: i32) -> Self {
         let stream = TcpStream::connect(proxy).await.unwrap();
         let mut peer = Peer::new(stream);
-        peer.send(&Frame::encode(0, |body| {
+        peer.send(&frame::build(0, |body| {
             VarI32(protocol).encode(body);
             "localhost".to_string().encode(body);
             25565u16.encode(body);
@@ -358,7 +358,7 @@ impl FakeClient {
         let mut client = Self::connect(proxy, 2, PROTOCOL_VERSION).await;
         client
             .peer
-            .send(&Frame::encode(login_sb::HELLO, |body| {
+            .send(&frame::build(login_sb::HELLO, |body| {
                 name.to_string().encode(body);
                 Uuid::from_u128(name.len() as u128).encode(body);
             }))
@@ -367,7 +367,7 @@ impl FakeClient {
         client.peer.send(&empty(login_sb::LOGIN_ACKNOWLEDGED)).await;
         client
             .peer
-            .send(&Frame::encode(config_sb::CLIENT_INFORMATION, |body| {
+            .send(&frame::build(config_sb::CLIENT_INFORMATION, |body| {
                 body.push(1)
             }))
             .await;
@@ -390,7 +390,7 @@ impl FakeClient {
                 }
                 config_cb::SELECT_KNOWN_PACKS => {
                     self.peer
-                        .send(&Frame::encode(config_sb::SELECT_KNOWN_PACKS, |body| {
+                        .send(&frame::build(config_sb::SELECT_KNOWN_PACKS, |body| {
                             body.push(0)
                         }))
                         .await;
@@ -490,13 +490,13 @@ impl Rig {
     }
 }
 
-/// The next connection that logs in, past the status probes of the proxy.
 fn login_finished() -> Bytes {
-    Frame::encode(login_cb::LOGIN_FINISHED, |body| {
-        uuid::Uuid::from_u128(77).encode(body);
+    frame::build(login_cb::LOGIN_FINISHED, |body| {
+        Uuid::from_u128(77).encode(body);
     })
 }
 
+/// The next connection that logs in, past the status probes of the proxy.
 async fn accept_login(listener: &TcpListener) -> Peer {
     loop {
         let (stream, _) = listener.accept().await.unwrap();
@@ -514,7 +514,7 @@ async fn log_in_by_hand(peer: &mut Peer) {
     peer.send(&login_finished()).await;
     peer.next().await;
     peer.next().await;
-    peer.send(&Frame::encode(config_cb::SELECT_KNOWN_PACKS, |body| {
+    peer.send(&frame::build(config_cb::SELECT_KNOWN_PACKS, |body| {
         body.push(0)
     }))
     .await;

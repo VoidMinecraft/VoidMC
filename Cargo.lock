@@ -2082,6 +2082,7 @@ dependencies = [
  "bytes",
  "criterion",
  "flate2",
+ "libc",
  "serde_json",
  "tokio",
  "tracing",

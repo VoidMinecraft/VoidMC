@@ -182,7 +182,7 @@ fn a_new_pack_reaches_the_client_and_the_old_one_goes_when_things_settle() {
     rig.tick(Duration::from_secs(2));
     assert_eq!(
         rig.client.last(),
-        Some(&Frame::encode(play_cb::RESOURCE_PACK_POP, |body| Some(old).encode(body)))
+        Some(&frame::build(play_cb::RESOURCE_PACK_POP, |body| Some(old).encode(body)))
     );
 }
 
@@ -207,7 +207,7 @@ fn a_pack_taken_back_during_a_reconfiguration_is_no_longer_held() {
     rig.lose_backend();
     rig.log_back_in();
     rig.receive_from_backend(known_packs_question());
-    rig.receive_from_backend(Frame::encode(config_cb::RESOURCE_PACK_POP, |body| {
+    rig.receive_from_backend(frame::build(config_cb::RESOURCE_PACK_POP, |body| {
         Some(pack).encode(body);
     }));
     rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));

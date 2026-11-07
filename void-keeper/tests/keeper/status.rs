@@ -20,7 +20,7 @@ async fn a_status_request_is_answered_while_the_server_is_away() {
     assert!(String::from_utf8_lossy(&status).contains("away"));
     client
         .peer
-        .send(&Frame::encode(status_sb::PING_REQUEST, |body| {
+        .send(&frame::build(status_sb::PING_REQUEST, |body| {
             3i64.encode(body)
         }))
         .await;

@@ -22,8 +22,8 @@ async fn a_client_survives_a_crash_through_a_configuration() {
     assert!(resumed["outage_ms"].as_u64().is_some());
     assert_eq!(
         client.next().await,
-        Frame::encode(play_cb::SET_ACTION_BAR_TEXT, |body| {
-            voidmc_keeper::frame::text("").encode(body);
+        frame::build(play_cb::SET_ACTION_BAR_TEXT, |body| {
+            frame::text("").encode(body);
         })
     );
 
@@ -122,7 +122,7 @@ async fn a_compressing_server_stays_invisible_to_the_client() {
     client.expect(play_cb::ADD_ENTITY).await;
     server.expect(play_sb::PLAYER_LOADED).await;
 
-    let large = Frame::encode(play_cb::SYSTEM_CHAT, |body| {
+    let large = frame::build(play_cb::SYSTEM_CHAT, |body| {
         body.extend_from_slice(&[9; 5000])
     });
     server.send(large.clone());
@@ -147,7 +147,7 @@ async fn a_change_of_compression_between_two_runs_is_followed() {
     let server = FakeServer::start(address, plan).await;
     client.come_back().await;
     rig.expect_event("resumed").await;
-    let large = Frame::encode(play_cb::SYSTEM_CHAT, |body| {
+    let large = frame::build(play_cb::SYSTEM_CHAT, |body| {
         body.extend_from_slice(&[9; 5000])
     });
     server.send(large.clone());
