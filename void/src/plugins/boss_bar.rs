@@ -169,7 +169,7 @@ pub struct BossBarState {
 impl Default for BossBarState {
     fn default() -> Self {
         Self {
-            id: crate::uuids::random_uuid(),
+            id: crate::uuids::next(),
             sent: None,
             viewers: HashSet::new(),
         }

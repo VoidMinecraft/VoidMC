@@ -30,8 +30,6 @@ tracing-subscriber = { version = "0.3.22", default-features = false, features = 
 [features]
 # Writes one JSON line per packet to the file named by `VOID_TRACE`.
 packet-trace = ["bevy_ecs/debug", "bevy_ecs/trace", "dep:serde", "dep:serde_json", "dep:tracing-subscriber"]
-# Draws entity and boss bar UUIDs from `VOID_UUID_SEED` when it is set.
-seeded-uuids = []
 
 [dev-dependencies]
 criterion = "0.7"

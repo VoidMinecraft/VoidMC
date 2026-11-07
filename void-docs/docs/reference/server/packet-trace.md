@@ -28,7 +28,6 @@ then have no `system`. The server warns when the layer is missing, but not in th
 | Variable | Effect |
 |---|---|
 | `VOID_TRACE=<file>` | Writes the trace there. Unset, the feature does nothing but keep `bevy_ecs` spans. |
-| `VOID_TRACE_B64=1` | Adds the bytes of each packet in a `b64` field. `0` or empty leaves it off. |
 
 ## The format
 
@@ -47,7 +46,6 @@ then have no `system`. The server warns when the layer is missing, but not in th
 | `hash` | FNV-1a 64 of those bytes. It exceeds what `jq` keeps exactly. |
 | `system` | The innermost system running at that moment. Absent when there is none. |
 | `dropped` | Why an outgoing packet was lost: `full`, `kicked` or `closed`. Absent when it was queued. |
-| `b64` | Those bytes, with `VOID_TRACE_B64`. |
 
 The file is flushed at the end of every tick, and when a thread panics. If a write fails, on a
 full disk for instance, the trace stops there and logs one error: the last line may be cut, and
@@ -78,7 +76,4 @@ A stepped server draws the UUIDs of entities and boss bars from a fixed seed and
 systems one at a time, so two stepped runs that receive the same packets at the same ticks send
 the same UUIDs, with no feature.
 
-On a normal server, the `seeded-uuids` feature with `VOID_UUID_SEED=<u64>` makes those UUIDs a
-function of the seed and of how many were drawn before. Without the variable, or without the
-feature, they are random. Two normal runs get the same UUIDs only if they draw them in the same
-order, which real time and real chance do not promise.
+On a normal server they are random.

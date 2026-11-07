@@ -31,8 +31,6 @@ pub struct Line {
     pub system: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dropped: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub b64: Option<String>,
 }
 
 const VALUE_FLAGS: [&str; 8] = [
@@ -495,7 +493,6 @@ mod tests {
             hash,
             system: system.map(str::to_string),
             dropped: None,
-            b64: None,
         }
     }
 
@@ -528,7 +525,7 @@ mod tests {
     #[test]
     fn reads_the_format_written_by_the_server() {
         let text = r#"{"tick":661,"dir":"out","client":1,"packet":"Play/UpdateEntityPosition","bytes":9,"hash":18446744073709551615,"system":"a::b"}
-{"tick":662,"dir":"in","client":1,"player":"sonde","packet":"Play/?","bytes":2,"hash":1,"b64":"AAA="}
+{"tick":662,"dir":"in","client":1,"player":"sonde","packet":"Play/?","bytes":2,"hash":1}
 "#;
         let lines = parse(text).unwrap();
         assert_eq!(lines[0].hash, u64::MAX);

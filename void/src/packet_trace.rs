@@ -7,7 +7,7 @@
 //! ```
 //!
 //! `bytes` counts the packet id and the payload: no frame length, and before any compression.
-//! `hash` is the FNV-1a of those bytes. `VOID_TRACE_B64=1` adds them in a `b64` field.
+//! `hash` is the FNV-1a of those bytes.
 //! `system` is absent when no system was running. It only appears at all with [`trace_layer`]
 //! in the subscriber of the binary.
 //!
@@ -20,7 +20,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -40,11 +39,9 @@ use voidmc_protocol::clientbound::ClientboundPacket;
 use crate::pace::{self, Pace};
 
 const PATH_VARIABLE: &str = "VOID_TRACE";
-const B64_VARIABLE: &str = "VOID_TRACE_B64";
 const PANIC_LOCK_ATTEMPTS: u32 = 1000;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x100_0000_01b3;
-const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 static TRACER: OnceLock<Tracer> = OnceLock::new();
 static LAYER_BUILT: AtomicBool = AtomicBool::new(false);
@@ -75,8 +72,6 @@ struct Line<'a> {
     system: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dropped: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    b64: Option<&'a str>,
 }
 
 /// A line waiting to learn what became of its packet.
@@ -88,7 +83,6 @@ pub(crate) struct Pending {
     bytes: usize,
     hash: u64,
     system: Option<Arc<str>>,
-    b64: Option<String>,
 }
 
 struct Sink {
@@ -113,7 +107,6 @@ impl Sink {
             hash: pending.hash,
             system: pending.system.as_deref(),
             dropped,
-            b64: pending.b64.as_deref(),
         };
         let mut text = std::mem::take(&mut self.line);
         text.clear();
@@ -147,12 +140,11 @@ impl Sink {
 
 struct Tracer {
     sink: Mutex<Sink>,
-    with_bytes: bool,
     tick: AtomicU64,
 }
 
 impl Tracer {
-    fn new(writer: impl Write + Send + 'static, with_bytes: bool) -> Self {
+    fn new(writer: impl Write + Send + 'static) -> Self {
         Self {
             sink: Mutex::new(Sink {
                 writer: Box::new(writer),
@@ -160,7 +152,6 @@ impl Tracer {
                 line: Vec::new(),
                 stopped: false,
             }),
-            with_bytes,
             tick: AtomicU64::new(0),
         }
     }
@@ -174,7 +165,6 @@ impl Tracer {
             bytes: body.len(),
             hash: fnv1a(body),
             system: current_system(),
-            b64: self.with_bytes.then(|| base64(body)),
         }
     }
 
@@ -228,31 +218,12 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     })
 }
 
-fn base64(bytes: &[u8]) -> String {
-    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let group = chunk
-            .iter()
-            .fold(0u32, |group, byte| (group << 8) | u32::from(*byte))
-            << (8 * (3 - chunk.len()));
-        for digit in 0..4 {
-            if digit <= chunk.len() {
-                let index = (group >> (18 - 6 * digit)) & 63;
-                text.push(char::from(B64_ALPHABET[index as usize]));
-            } else {
-                text.push('=');
-            }
-        }
-    }
-    text
-}
-
 fn current_system() -> Option<Arc<str>> {
     SYSTEMS.with_borrow(|systems| systems.last().cloned())
 }
 
-/// Encodes the packet a second time, the network thread encoding its own copy: `hash` and
-/// `b64` need the bytes here, where the system is known. Only a running trace pays for it.
+/// Encodes the packet a second time, the network thread encoding its own copy: `hash` needs
+/// the bytes here, where the system is known. Only a running trace pays for it.
 pub(crate) fn packet_out(client_id: u32, packet: &ClientboundPacket) -> Option<Pending> {
     TRACER.get().map(|tracer| tracer.out(client_id, packet))
 }
@@ -288,11 +259,7 @@ impl Plugin for PacketTracePlugin {
             Ok(file) => file,
             Err(error) => panic!("{PATH_VARIABLE}: cannot create {path:?}: {error}"),
         };
-        let with_bytes = wants_bytes(std::env::var_os(B64_VARIABLE).as_deref());
-        if TRACER
-            .set(Tracer::new(BufWriter::new(file), with_bytes))
-            .is_err()
-        {
+        if TRACER.set(Tracer::new(BufWriter::new(file))).is_err() {
             tracing::warn!("A packet trace is already open, keeping that one");
         }
         if !LAYER_BUILT.load(Ordering::Relaxed) {
@@ -305,10 +272,6 @@ impl Plugin for PacketTracePlugin {
         app.add_systems(First, note_tick.after(pace::advance))
             .add_systems(Last, flush_trace);
     }
-}
-
-fn wants_bytes(variable: Option<&OsStr>) -> bool {
-    variable.is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// The tracer lives in a static, so nothing else would write what a dead tick left in the buffer.
@@ -440,7 +403,7 @@ mod tests {
     #[test]
     fn a_line_holds_the_fixed_format() {
         let out = Shared::default();
-        let tracer = Tracer::new(out.clone(), false);
+        let tracer = Tracer::new(out.clone());
         let packet = ClientboundPacket::from(KeepAlive { keep_alive_id: 1 });
         tracer.write(&tracer.out(3, &packet), None);
         let line = &out.lines()[0];
@@ -452,22 +415,15 @@ mod tests {
         assert_eq!(line["bytes"], body.len());
         assert_eq!(line["hash"], json!(fnv1a(&body)));
         assert!(line["tick"].is_u64());
-        for absent in ["system", "b64", "player", "dropped"] {
+        for absent in ["system", "player", "dropped"] {
             assert!(line.get(absent).is_none(), "{absent}");
         }
     }
 
     #[test]
-    fn bytes_ride_along_only_on_request() {
-        let out = Shared::default();
-        Tracer::new(out.clone(), true).incoming(1, "Play", None, b"foob");
-        assert_eq!(out.lines()[0]["b64"], "Zm9vYg==");
-    }
-
-    #[test]
     fn an_incoming_packet_is_named_by_its_state_or_marked_undecoded() {
         let out = Shared::default();
-        let tracer = Tracer::new(out.clone(), false);
+        let tracer = Tracer::new(out.clone());
         tracer.incoming(1, "Login", Some("LoginStart"), &[1, 2, 3]);
         tracer.incoming(1, "Play", None, &[9]);
         let lines = out.lines();
@@ -475,14 +431,6 @@ mod tests {
         assert_eq!(lines[0]["packet"], "Login/LoginStart");
         assert_eq!(lines[0]["bytes"], 3);
         assert_eq!(lines[1]["packet"], "Play/?");
-    }
-
-    #[test]
-    fn the_b64_variable_at_zero_or_empty_means_off() {
-        assert!(!wants_bytes(None));
-        assert!(!wants_bytes(Some(OsStr::new("0"))));
-        assert!(!wants_bytes(Some(OsStr::new(""))));
-        assert!(wants_bytes(Some(OsStr::new("1"))));
     }
 
     /// Takes `room` bytes, then fails, counting every attempt after that.
@@ -524,7 +472,7 @@ mod tests {
             room: 10,
             attempts_after: attempts.clone(),
         };
-        let tracer = Tracer::new(disk, false);
+        let tracer = Tracer::new(disk);
         let errors = Arc::new(Mutex::new(0));
         let counter = CountErrors(errors.clone());
         let subscriber = tracing_subscriber::registry().with(counter);
@@ -545,7 +493,7 @@ mod tests {
     #[test]
     fn a_panic_flush_gets_through_a_poisoned_lock() {
         let out = Shared::default();
-        let tracer = Arc::new(Tracer::new(BufWriter::new(out.clone()), false));
+        let tracer = Arc::new(Tracer::new(BufWriter::new(out.clone())));
         tracer.incoming(1, "Play", None, &[1]);
         let holder = tracer.clone();
         let _ = std::thread::spawn(move || {
@@ -560,23 +508,9 @@ mod tests {
 
     #[test]
     fn a_panic_flush_does_not_wait_for_a_lock_this_thread_holds() {
-        let tracer = Tracer::new(Vec::new(), false);
+        let tracer = Tracer::new(Vec::new());
         let _sink = tracer.sink.lock().unwrap();
         tracer.flush_in_panic();
-    }
-
-    #[test]
-    fn base64_follows_the_rfc_vectors() {
-        let vectors: [(&[u8], &str); 5] = [
-            (b"", ""),
-            (b"f", "Zg=="),
-            (b"fo", "Zm8="),
-            (b"foo", "Zm9v"),
-            (b"foobar", "Zm9vYmFy"),
-        ];
-        for (bytes, text) in vectors {
-            assert_eq!(base64(bytes), text);
-        }
     }
 
     #[test]
@@ -588,7 +522,7 @@ mod tests {
     #[test]
     fn a_named_client_stays_named_and_others_do_not_inherit_it() {
         let out = Shared::default();
-        let tracer = Tracer::new(out.clone(), false);
+        let tracer = Tracer::new(out.clone());
         tracer.name_player(4, "sonde");
         tracer.incoming(4, "Play", None, &[]);
         tracer.incoming(5, "Play", None, &[]);
