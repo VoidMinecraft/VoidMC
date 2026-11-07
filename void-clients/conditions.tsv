@@ -95,7 +95,16 @@ assert	render	chat~"a\u3000b"	error
 assert	render	chat~a\u2028	error
 assert	render	chat~a\u0085	error
 assert	render	chat~a\u007f	error
-assert	render	chat~a\u200b	false
+assert	render	chat~a\u200b	error
+wait	render	state!=connecting\u200b5000	error
+assert	render	state!=connecting\ufeff	error
+assert	render	chat~a\u0090	error
+assert	render	chat~a\u00ad	error
+split	bot	\u000bstate	\u000bstate|
+split	bot	state\u000b	state\u000b|
+split	bot	\u0001state	\u0001state|
+split	bot	state\u00a0	state\u00a0|
+split	bot	act \u00a0hi\u00a0	act|\u00a0hi\u00a0
 split	bot	wait_until 5000 chunks>=1	wait_until|5000 chunks>=1
 split	bot	wait_until\t40000\tchunks>=1	wait_until|40000\tchunks>=1
 split	bot	 \t state \t	state|

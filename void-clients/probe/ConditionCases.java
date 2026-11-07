@@ -8,6 +8,12 @@ import java.util.Map;
 
 final class ConditionCases {
   public static void main(String[] args) throws Exception {
+    if (args[0].equals("--hidden")) {
+      for (int c = 0; c <= Character.MAX_CODE_POINT; c++) {
+        if ((c < 0xD800 || c > 0xDFFF) && Condition.hidden(c)) System.out.println(Integer.toHexString(c));
+      }
+      return;
+    }
     Map<String, Map<String, Object>> levels = new HashMap<>();
     List<String> wrong = new ArrayList<>();
     int cases = 0;

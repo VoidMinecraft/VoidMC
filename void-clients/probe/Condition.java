@@ -53,8 +53,8 @@ final class Condition {
     return -1;
   }
 
-  private static boolean hidden(int c) {
-    return c != ' ' && c != '\t' && (Character.isISOControl(c) || Character.isSpaceChar(c));
+  static boolean hidden(int c) {
+    return c != ' ' && c != '\t' && (Character.isISOControl(c) || Character.isSpaceChar(c) || Character.getType(c) == Character.FORMAT);
   }
 
   static String[] split(String line) {

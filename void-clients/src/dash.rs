@@ -129,10 +129,15 @@ pub fn ensure(registry: &Registry) -> Result<String, String> {
         Served::Other => {
             let _ = call(port, "POST", "/api/quit");
             let deadline = Instant::now() + Duration::from_secs(5);
-            while served(port) != Served::Nothing && Instant::now() < deadline {
+            let mut now = served(port);
+            while !matches!(now, Served::Nothing | Served::Ours) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(100));
+                now = served(port);
             }
-            if served(port) != Served::Nothing {
+            if now == Served::Ours {
+                return Ok(url);
+            }
+            if now != Served::Nothing {
                 return Err(format!(
                     "the mosaic on {port} comes from another voidc and did not quit: stop it, then run this again"
                 ));
@@ -374,5 +379,34 @@ mod tests {
         };
         let error = ensure(&registry).unwrap_err();
         assert!(error.contains("did not quit"), "{error}");
+    }
+
+    #[test]
+    fn a_mosaic_of_our_version_that_takes_the_port_meanwhile_is_kept() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let mut replaced = false;
+            for mut stream in listener.incoming().flatten() {
+                let Ok(head) = super::head(&stream) else {
+                    continue;
+                };
+                replaced |= head.target == "/api/quit";
+                let body = if replaced {
+                    version::current()
+                } else {
+                    "0000000000000000".into()
+                };
+                let _ = respond(&mut stream, "200 OK", "text/plain", body.as_bytes());
+            }
+        });
+        let registry = Registry {
+            dashboard_port: port,
+            ..crate::registry::Registry::load()
+        };
+        assert_eq!(
+            ensure(&registry).unwrap(),
+            format!("http://127.0.0.1:{port}")
+        );
     }
 }

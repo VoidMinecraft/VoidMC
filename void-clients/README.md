@@ -44,8 +44,8 @@ All levels: `state`, `act <command>`, `wait_until [ms] <condition>`, `assert <co
 with spaces goes between quotes, and the limit of a wait comes first.
 `wait_until 5000 'action_bar~"Tour 2"'` waits 5 s for "Tour 2"; `wait_until state!=connecting 5000`
 is an error, never a wait. Only spaces and tabs separate words: another space or a control
-character in a condition is an error. `conditions.tsv` holds the cases, with `\t` and `\uXXXX`
-escapes: `cargo test`, which needs `javac`, runs them through the Rust and Java code that splits a
+character, or an invisible format character like U+200B, in a condition is an error.
+`conditions.tsv` holds the cases, with `\t`, `\\` and `\uXXXX` escapes: `cargo test`, which needs `javac`, runs them through the Rust and Java code that splits a
 verb and reads a condition, the code the bot and the probe use. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
 
 Bots add `packets`.
@@ -77,8 +77,8 @@ and answers one JSON line.
 - A `VOIDC_HOME` too long for a socket is refused at once.
 - `voidc cmd` refuses a client started by another version of the probe or the bot, and says to
   restart it. The version is a hash of their sources outside tests (the probe, the bot,
-  conditions, framing, launch), not of the protocol crates. A client tells it in every answer, even
-  while it loads.
+  conditions, framing, launch), not of the protocol crates. A client tells it in every answer, from
+  the moment its socket opens, even while it loads.
 - The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.
 
 Limits and levels live in `clients.toml`, built into the binary. Runtime state lives in

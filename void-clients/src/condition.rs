@@ -28,8 +28,35 @@ fn trimmed(text: &str) -> &str {
     text.trim_matches(blank)
 }
 
+const FORMAT: [(u32, u32); 21] = [
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+];
+
 fn hidden(c: char) -> bool {
-    !blank(c) && (c.is_control() || c.is_whitespace())
+    let format = FORMAT
+        .iter()
+        .any(|(from, to)| (*from..=*to).contains(&u32::from(c)));
+    !blank(c) && (c.is_control() || c.is_whitespace() || format)
 }
 
 pub fn split(line: &str) -> (&str, &str) {
@@ -430,15 +457,12 @@ mod tests {
             .expect("no javac: install a JDK, or the Minecraft runtime that voidc uses, so the probe's conditions can be checked")
     }
 
-    #[test]
-    fn the_probe_reads_every_shared_case_as_the_table_says() {
+    fn probe_runner(out: &std::path::Path) -> std::process::Command {
         let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let out = std::env::temp_dir().join(format!("voidc-conditions-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&out);
         let javac = javac();
         let compiled = std::process::Command::new(&javac)
             .arg("-d")
-            .arg(&out)
+            .arg(out)
             .arg(crate_dir.join("probe/Condition.java"))
             .arg(crate_dir.join("probe/ConditionCases.java"))
             .output()
@@ -448,10 +472,40 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&compiled.stderr)
         );
-        let run = std::process::Command::new(javac.with_file_name("java"))
-            .arg("-cp")
-            .arg(&out)
-            .arg("ConditionCases")
+        let mut run = std::process::Command::new(javac.with_file_name("java"));
+        run.arg("-cp").arg(out).arg("ConditionCases");
+        run
+    }
+
+    #[test]
+    fn the_probe_hides_the_same_characters() {
+        let out = std::env::temp_dir().join(format!("voidc-hidden-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let run = probe_runner(&out)
+            .arg("--hidden")
+            .output()
+            .expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert!(run.status.success());
+        let probe: Vec<u32> = String::from_utf8_lossy(&run.stdout)
+            .lines()
+            .map(|line| u32::from_str_radix(line, 16).unwrap())
+            .collect();
+        let rust: Vec<u32> = (0..=0x10FFFF)
+            .filter_map(char::from_u32)
+            .filter(|c| hidden(*c))
+            .map(u32::from)
+            .collect();
+        assert!(probe.contains(&0x200B));
+        assert_eq!(rust, probe);
+    }
+
+    #[test]
+    fn the_probe_reads_every_shared_case_as_the_table_says() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let out = std::env::temp_dir().join(format!("voidc-conditions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let run = probe_runner(&out)
             .arg(crate_dir.join("conditions.tsv"))
             .output()
             .expect("java runs");
