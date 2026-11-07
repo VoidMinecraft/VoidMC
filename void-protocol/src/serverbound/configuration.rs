@@ -9,7 +9,7 @@ pub use known_packs::{KnownPack, KnownPacks};
 pub use plugin_message::PluginMessage;
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, voidmc_codec::PacketName)]
 #[codec(tagged)]
 pub enum ConfigurationPacket {
     #[codec(packet_id = 0x00)]

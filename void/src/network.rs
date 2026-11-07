@@ -352,6 +352,26 @@ pub struct PacketEvent<T> {
     pub packet: T,
 }
 
+#[cfg_attr(not(feature = "packet-trace"), allow(unused_variables))]
+fn decode_packet<T: voidmc_codec::Decode + voidmc_codec::PacketName>(
+    client_id: u32,
+    state: &'static str,
+    packet: &Packet,
+) -> Result<T, voidmc_codec::DecodeError> {
+    let decoded = packet.decode::<T>();
+    #[cfg(feature = "packet-trace")]
+    crate::packet_trace::packet_in(
+        client_id,
+        state,
+        decoded
+            .as_ref()
+            .ok()
+            .map(voidmc_codec::PacketName::packet_name),
+        packet.as_bytes(),
+    );
+    decoded
+}
+
 #[instrument(level = "info", skip(world, packet))]
 fn dispatch_packet(
     world: &mut World,
@@ -365,7 +385,8 @@ fn dispatch_packet(
 
     match state.0 {
         voidmc_protocol::State::Handshake => {
-            let packet = packet.decode::<serverbound::HandshakePacket>()?;
+            let packet =
+                decode_packet::<serverbound::HandshakePacket>(client_id, "Handshake", &packet)?;
             tracing::debug!("[Client {}][Handshake] Received {:?}", client_id, packet);
 
             match packet {
@@ -377,7 +398,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Status => {
-            let packet = packet.decode::<serverbound::StatusPacket>()?;
+            let packet = decode_packet::<serverbound::StatusPacket>(client_id, "Status", &packet)?;
             tracing::debug!("[Client {}][Status] Received {:?}", client_id, packet);
 
             match packet {
@@ -394,15 +415,19 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Login => {
-            let packet = packet.decode::<serverbound::LoginPacket>()?;
+            let packet = decode_packet::<serverbound::LoginPacket>(client_id, "Login", &packet)?;
             tracing::debug!("[Client {}][Login] Received {:?}", client_id, packet);
 
             match packet {
-                serverbound::LoginPacket::LoginStart(packet) => world.trigger(PacketEvent {
-                    client_id,
-                    entity,
-                    packet,
-                }),
+                serverbound::LoginPacket::LoginStart(packet) => {
+                    #[cfg(feature = "packet-trace")]
+                    crate::packet_trace::player_named(client_id, &packet.name);
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
                 serverbound::LoginPacket::LoginAcknowledged(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
@@ -411,7 +436,11 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Configuration => {
-            let packet = packet.decode::<serverbound::ConfigurationPacket>()?;
+            let packet = decode_packet::<serverbound::ConfigurationPacket>(
+                client_id,
+                "Configuration",
+                &packet,
+            )?;
             tracing::debug!(
                 "[Client {}][Configuration] Received {:?}",
                 client_id,
@@ -449,7 +478,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Play => {
-            let packet = packet.decode::<serverbound::PlayPacket>()?;
+            let packet = decode_packet::<serverbound::PlayPacket>(client_id, "Play", &packet)?;
             tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
 
             match packet {

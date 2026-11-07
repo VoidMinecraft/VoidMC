@@ -108,6 +108,9 @@ impl VoidServer {
         .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin);
 
+        #[cfg(feature = "packet-trace")]
+        app.add_plugins(crate::packet_trace::PacketTracePlugin);
+
         if self.config.metrics_debug {
             app.add_plugins(MetricsPlugin::new(self.config.metrics_tps_output.clone()));
         }

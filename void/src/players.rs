@@ -195,31 +195,48 @@ struct Outbox<'a> {
 }
 
 impl Outbox<'_> {
+    #[cfg_attr(not(feature = "packet-trace"), allow(unused_variables))]
     fn deliver(&self, entity: Entity, client_id: u32, packet: ClientboundPacket) {
+        #[cfg(feature = "packet-trace")]
+        let traced = crate::packet_trace::packet_out(client_id, &packet);
+        let dropped = self.queue(entity, client_id, packet);
+        #[cfg(feature = "packet-trace")]
+        crate::packet_trace::packet_out_done(traced, dropped);
+    }
+
+    /// Why the packet was lost, if it was.
+    fn queue(
+        &self,
+        entity: Entity,
+        client_id: u32,
+        packet: ClientboundPacket,
+    ) -> Option<&'static str> {
         let Some(client) = self.direct.and_then(|senders| senders.get(entity)) else {
             if self
                 .fallback
                 .send(OutgoingPacket { client_id, packet })
-                .is_err()
-                && !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed)
+                .is_ok()
             {
+                return None;
+            }
+            if !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed) {
                 tracing::error!(
                     ?entity,
                     client_id,
                     "Client entity has no outbound channel and the fallback channel is closed; dropping packets"
                 );
             }
-            return;
+            return Some("closed");
         };
 
         if client.kicked() {
-            return;
+            return Some("kicked");
         }
         match client
             .outgoing()
             .try_send(OutgoingPacket { client_id, packet })
         {
-            Ok(()) => {}
+            Ok(()) => None,
             Err(TrySendError::Full(_)) => {
                 if client.mark_kicked() {
                     tracing::warn!(
@@ -230,9 +247,11 @@ impl Outbox<'_> {
                     );
                     let _ = self.kick.send(client_id);
                 }
+                Some("full")
             }
             Err(TrySendError::Disconnected(_)) => {
                 tracing::debug!(?entity, client_id, "Client connection already closed");
+                Some("closed")
             }
         }
     }

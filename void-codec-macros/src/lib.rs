@@ -4,6 +4,7 @@ use syn::{parse_macro_input, DeriveInput};
 mod attrs;
 mod decode;
 mod encode;
+mod packet_name;
 
 #[proc_macro_derive(Encode, attributes(codec))]
 pub fn derive_encode(input: TokenStream) -> TokenStream {
@@ -17,6 +18,14 @@ pub fn derive_encode(input: TokenStream) -> TokenStream {
 pub fn derive_decode(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     decode::derive_decode(&input)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+#[proc_macro_derive(PacketName)]
+pub fn derive_packet_name(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    packet_name::derive_packet_name(&input)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }

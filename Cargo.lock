@@ -176,6 +176,7 @@ dependencies = [
  "slotmap",
  "smallvec",
  "thiserror 2.0.17",
+ "tracing",
  "variadics_please",
 ]
 
@@ -1950,8 +1951,11 @@ dependencies = [
  "flume",
  "log",
  "rand 0.8.6",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "ussr-nbt",
  "uuid",
  "voidmc-codec",

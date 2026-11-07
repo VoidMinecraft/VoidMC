@@ -26,6 +26,11 @@
   },
   {
     "type": "file",
+    "name": "packet-trace",
+    "label": "Packet Trace"
+  },
+  {
+    "type": "file",
     "name": "world-serialization",
     "label": "World Serialization"
   }

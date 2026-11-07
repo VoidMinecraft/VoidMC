@@ -174,7 +174,7 @@ pub struct EntityUuid(pub uuid::Uuid);
 
 impl Default for EntityUuid {
     fn default() -> Self {
-        Self(Uuid::new_v4())
+        Self(crate::uuids::random_uuid())
     }
 }
 

@@ -51,7 +51,7 @@ pub use use_item::*;
 pub use use_item_on::*;
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, voidmc_codec::PacketName)]
 #[codec(tagged)]
 pub enum PlayPacket {
     #[codec(packet_id = 0x00)]
