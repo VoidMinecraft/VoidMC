@@ -372,6 +372,19 @@ mod tests {
     }
 
     #[test]
+    fn a_mosaic_has_five_seconds_for_real_to_read_a_request_and_to_quit() {
+        assert_eq!(READ_LIMIT, Duration::from_secs(5));
+        assert_eq!(QUIT_LIMIT, Duration::from_secs(5));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        super::head(&server).unwrap();
+        let left = server.read_timeout().unwrap().unwrap();
+        assert!(left > READ_LIMIT / 2 && left <= READ_LIMIT, "{left:?}");
+    }
+
+    #[test]
     fn a_request_sent_drop_by_drop_is_cut_at_the_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();

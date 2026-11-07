@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn a_living_holder_keeps_the_lock_however_slow() {
+    fn a_waiter_gets_the_lock_only_once_its_holder_lets_go() {
         let path = scratch("lock").join("start.lock");
         let held = Lock::at(&path).unwrap();
         let waiter = {
@@ -388,6 +388,25 @@ mod tests {
         let released = std::time::Instant::now();
         drop(held);
         assert!(waiter.join().unwrap() >= released);
+    }
+
+    #[test]
+    fn no_delay_can_break_the_lock() {
+        let path = scratch("lock-held").join("start.lock");
+        let _held = Lock::at(&path).unwrap();
+        assert!(matches!(
+            fs::File::open(&path).unwrap().try_lock(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
+        let code = include_str!("registry.rs")
+            .split_once("impl Lock {")
+            .and_then(|(_, rest)| rest.split_once("fn leases"))
+            .unwrap()
+            .0;
+        for word in ["Instant", "Duration", "SystemTime", "modified", "try_lock"] {
+            assert!(!code.contains(word), "the lock reads the time: {word}");
+        }
+        assert!(!code.contains("remove_file"), "the lock can be taken away");
     }
 
     #[test]

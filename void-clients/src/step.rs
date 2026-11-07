@@ -19,6 +19,7 @@ const SERVER_LIMIT: Duration = Duration::from_secs(120);
 const ANSWER_LIMIT: Duration = Duration::from_secs(30);
 const QUIET_POLLS: u32 = 4;
 const QUIET_LIMIT: u32 = 200;
+const QUIET_POLL: Duration = Duration::from_millis(50);
 const SETTLE_TICKS: u64 = 20;
 const MIN_CHUNKS: u64 = 200;
 const SPARSE_VIDEO_RATE: u64 = 4;
@@ -296,7 +297,7 @@ fn play<S: Link, C: Link>(
 
 fn settle<S: Link, C: Link>(lock: &mut Lockstep<S, C>) -> Result<(), String> {
     lock.client.ask("clock virtual")?;
-    lock.calibrate(Duration::from_millis(50))?;
+    lock.calibrate(QUIET_POLL)?;
     for _ in 0..SETTLE_TICKS {
         lock.tick()?;
         lock.client.ask(&format!("step {TICK_MS}"))?;
@@ -832,6 +833,23 @@ mod tests {
     fn outputs_are_what_the_glob_of_the_video_takes() {
         assert!(is_output("f00012.png") && is_output("f1x.png"));
         assert!(!is_output("foo.png") && !is_output("f.png"));
+    }
+
+    #[test]
+    fn a_socket_has_thirty_seconds_for_real_to_answer() {
+        let (home, path) = control::fake::test_socket("answers");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let socket = Socket::open("client", &path).unwrap();
+        registry::set_test_home(None);
+        fs::remove_dir_all(home).unwrap();
+        assert_eq!(socket.limit, Duration::from_secs(30));
+        let limit = socket.stream.read_timeout().unwrap();
+        assert_eq!(limit, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn the_counters_have_ten_seconds_for_real_to_fall_quiet() {
+        assert_eq!(QUIET_POLL * QUIET_LIMIT, Duration::from_secs(10));
     }
 
     #[test]

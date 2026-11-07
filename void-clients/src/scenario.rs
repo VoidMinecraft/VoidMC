@@ -1522,6 +1522,14 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_has_five_seconds_for_real_to_move() {
+        let dir = folder("patience");
+        let real = Run::new("test", Level::Render, dir.clone(), dir.join("out"), false);
+        assert_eq!(real.patience, Duration::from_secs(5));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_client_gone_at_the_end_fails_the_run() {
         let dir = folder("clock-gone");
         let scenario = Scenario::parse("act map\n").unwrap();
@@ -2411,6 +2419,29 @@ mod tests {
         assert_eq!(
             fake.heard(),
             ["state", "state", "wait_until 1 chunks>=1", "clock real"]
+        );
+    }
+
+    #[test]
+    fn a_reopening_has_the_limits_of_the_run() {
+        let fake = from_the_state(3, || Reply::current(NEVER_IN_TIME, state_of_a_game()));
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\nact map\n").unwrap();
+        assert_eq!(live_run(&dir, &["--keep-going"]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(
+            report.contains("client fake does not answer: no reply to state within 600ms"),
+            "{report}"
+        );
+        assert_eq!(
+            fake.heard(),
+            [
+                "state",
+                "state",
+                "wait_until 1 chunks>=1",
+                "state",
+                "clock real"
+            ]
         );
     }
 
