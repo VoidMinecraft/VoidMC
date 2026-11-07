@@ -8,6 +8,7 @@ final class Retry {
   private long last = Long.MIN_VALUE / 2;
   private long queuedAt = Long.MIN_VALUE / 2;
   private boolean queued;
+  private long attempt;
   private int kicks;
   private boolean playing;
   private long playingSince;
@@ -31,8 +32,9 @@ final class Retry {
     }
     if (disconnected == null) return false;
     if (disconnected != away) {
+      boolean open = portOpen.getAsBoolean();
       away = disconnected;
-      serverAway = !portOpen.getAsBoolean();
+      serverAway = !open;
       kicks = steady || serverAway ? 0 : kicks + 1;
       steady = false;
     }
@@ -46,15 +48,18 @@ final class Retry {
     last = now;
     queuedAt = now;
     queued = true;
+    attempt++;
     return true;
   }
 
-  Runnable task(Runnable attempt) {
+  synchronized Runnable task(Runnable reconnect) {
+    long mine = attempt;
     return () -> {
       synchronized (this) {
+        if (mine != attempt) return;
         queued = false;
       }
-      attempt.run();
+      reconnect.run();
     };
   }
 }

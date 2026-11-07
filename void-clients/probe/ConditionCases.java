@@ -77,6 +77,60 @@ final class ConditionCases {
       String brief = "brief game " + retry.look(15199, false, s[7], open);
       done.run();
       seen.add(brief + " " + retry.look(15799, false, s[7], open) + " " + retry.look(16199, false, s[7], open));
+      Retry late = new Retry(500, 2000);
+      Object screen = new Object();
+      int[] ran = {0};
+      Runnable reconnect = () -> ran[0]++;
+      late.look(0, false, screen, open);
+      Runnable first = late.task(reconnect);
+      late.look(5000, false, screen, open);
+      Runnable second = late.task(reconnect);
+      first.run();
+      String overtaken = "overtaken task ran " + ran[0] + " still queued " + !late.look(6100, false, screen, open);
+      second.run();
+      seen.add(overtaken + " then " + ran[0]);
+      System.out.println(String.join("\n", seen));
+      return;
+    }
+    if (args[0].equals("--watch")) {
+      List<String> reported = new ArrayList<>();
+      Watch watch = new Watch(new Retry(500, 2000), error -> reported.add(error.getMessage()));
+      Object screen = new DisconnectedScreen();
+      int[] reconnects = {0};
+      Runnable reconnect = () -> reconnects[0]++;
+      java.util.function.Consumer<Runnable> broken = task -> { throw new LinkageError("render thread gone"); };
+      java.util.function.Consumer<Runnable> running = Runnable::run;
+      List<String> seen = new ArrayList<>();
+      watch.look(0, false, screen, () -> true, broken, reconnect);
+      Object next = new DisconnectedScreen();
+      watch.look(100, false, next, () -> { throw new IllegalStateException("port check"); }, running, reconnect);
+      seen.add("survived errors with " + reconnects[0] + " reconnects, reported " + reported);
+      watch.look(5100, false, next, () -> true, running, reconnect);
+      seen.add("tried again " + reconnects[0]);
+      watch.look(6200, false, next, () -> true, running, reconnect);
+      int early = reconnects[0];
+      watch.look(7200, false, next, () -> true, running, reconnect);
+      seen.add("not before 2 s " + early + " then " + reconnects[0]);
+      watch.look(12000, false, new TitleScreen(), () -> true, running, reconnect);
+      seen.add("another screen " + reconnects[0]);
+      watch.look(15000, true, new TitleScreen(), () -> true, running, reconnect);
+      seen.add("in game with a menu " + reconnects[0]);
+      System.out.println(String.join("\n", seen));
+      return;
+    }
+    if (args[0].equals("--guard")) {
+      Guard guard = new Guard();
+      List<String> seen = new ArrayList<>();
+      seen.add("error told " + (guard.run(() -> { throw new LinkageError("boom"); }) != null));
+      seen.add("same error told " + (guard.run(() -> { throw new LinkageError("boom"); }) != null));
+      seen.add("runtime told " + (guard.run(() -> { throw new IllegalStateException("late"); }) != null));
+      seen.add("calm told " + (guard.run(() -> {}) != null));
+      int told = 0;
+      for (int n = 0; n < 100; n++) {
+        String message = "changing " + n;
+        if (guard.run(() -> { throw new IllegalStateException(message); }) != null) told++;
+      }
+      seen.add("changing errors told " + told);
       System.out.println(String.join("\n", seen));
       return;
     }
@@ -166,4 +220,8 @@ final class ConditionCases {
       return "error";
     }
   }
+
+  static final class DisconnectedScreen {}
+
+  static final class TitleScreen {}
 }
