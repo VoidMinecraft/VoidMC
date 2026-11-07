@@ -31,7 +31,6 @@ pub fn needs_a_client(frame: &[u8]) -> Option<&'static str> {
         cb::CODE_OF_CONDUCT => Some("the server shows a code of conduct"),
         cb::SHOW_DIALOG => Some("the server shows a dialog"),
         cb::TRANSFER => Some("the server transfers the client"),
-        cb::RESOURCE_PACK_POP => Some("the server takes a pack back"),
         _ => None,
     }
 }
