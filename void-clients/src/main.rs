@@ -145,26 +145,30 @@ fn stop_on_failure(
     })
 }
 
+fn line_of(client: &Client) -> String {
+    let running = registry::alive(client);
+    let state = if !running {
+        "stopped".to_string()
+    } else if client.level == Level::Play {
+        "playing".to_string()
+    } else {
+        control::chore(&client.name, Chore::State, Duration::from_secs(3))
+            .ok()
+            .and_then(|line| serde_json::from_str::<Value>(&line).ok())
+            .and_then(|reply| reply["state"].as_str().map(str::to_string))
+            .unwrap_or_else(|| "starting".to_string())
+    };
+    format!(
+        "{:<24} {:<7} {:<6} {state}",
+        client.name,
+        client.level.name(),
+        client.port
+    )
+}
+
 fn list() {
     for client in registry::all() {
-        let running = registry::alive(&client);
-        let state = if !running {
-            "stopped".to_string()
-        } else if client.level == Level::Play {
-            "playing".to_string()
-        } else {
-            control::chore(&client.name, Chore::State, Duration::from_secs(3))
-                .ok()
-                .and_then(|line| serde_json::from_str::<Value>(&line).ok())
-                .and_then(|reply| reply["state"].as_str().map(str::to_string))
-                .unwrap_or_else(|| "starting".to_string())
-        };
-        println!(
-            "{:<24} {:<7} {:<6} {state}",
-            client.name,
-            client.level.name(),
-            client.port
-        );
+        println!("{}", line_of(&client));
     }
 }
 
@@ -284,6 +288,15 @@ mod tests {
         let error =
             stop_on_failure("x", Err("not in game".into()), |_| Err("busy".into())).unwrap_err();
         assert!(error.contains("could not be stopped: busy"));
+    }
+
+    #[test]
+    fn list_still_sees_a_probe_of_another_version() {
+        let fake = control::fake::FakeClient::stale(Level::Render);
+        let client = registry::load(control::fake::NAME).unwrap();
+        let line = line_of(&client);
+        assert!(line.ends_with(" connected"), "{line}");
+        assert_eq!(fake.heard(), ["state"]);
     }
 
     #[test]
