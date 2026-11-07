@@ -1,12 +1,12 @@
 //! Reads a packet trace written by `void` with its `packet-trace` feature.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-
-use crate::args::Arguments;
 use std::fs;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::args::Arguments;
 
 const USAGE: &str =
     "voidc trace <file> [filters] [--lines] [--json]   totals, or the lines themselves

@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::os::unix::net::UnixStream;
 
 use serde_json::json;
 
@@ -73,7 +74,10 @@ fn an_expired_barrier_is_an_error_and_nothing_goes_on() {
         client: script(vec![sent(0, 2)]),
         origin: Origin::default(),
     };
-    assert!(lock.tick().unwrap_err().contains("fence expired"));
+    assert_eq!(
+        lock.tick(),
+        Err(r#"server: step 1 2: "fence expired: received 1 of 2""#.to_string())
+    );
     assert_eq!(lock.client.heard, ["sent"]);
 }
 
@@ -228,6 +232,50 @@ fn a_failed_passage_still_stops_the_server() {
 }
 
 #[test]
+fn a_stop_that_fails_is_told_after_the_failure_of_the_passage() {
+    let mut server = script(vec![Err(Failure::Refused(
+        json!({"ok": false, "error": "busy"}),
+    ))]);
+    let result = finish(&mut server, true, Err("the client is gone".into()));
+    assert_eq!(
+        result,
+        Err("the client is gone\nserver: stop: \"busy\"".to_string())
+    );
+}
+
+#[test]
+fn a_server_that_lost_a_line_still_gets_its_stop_on_a_new_connection() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let (home, path) = control::fake::test_socket("server");
+    registry::set_test_home(None);
+    let listener = UnixListener::bind(&path).unwrap();
+    let (heard, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for reply in ["not json", r#"{"ok":true}"#] {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            heard.send(line.trim_end().to_string()).unwrap();
+            writeln!(&stream, "{reply}").unwrap();
+        }
+    });
+    let mut server = Probe::to_socket("server", &path, Limits::REAL).unwrap();
+    let lost = told(&mut server, "server", "step 1 3").unwrap_err();
+    assert!(lost.contains("no JSON"), "{lost}");
+    let result = finish(&mut server, true, Err(lost.clone()));
+    let limit = Duration::from_secs(5);
+    let first = lines.recv_timeout(limit);
+    let second = lines.recv_timeout(limit);
+    fs::remove_dir_all(home).unwrap();
+    assert_eq!(result, Err(lost));
+    assert_eq!(first.as_deref(), Ok("step 1 3"));
+    assert_eq!(second.as_deref(), Ok("stop"));
+}
+
+#[test]
 fn the_server_stays_unless_asked() {
     let mut server = script(vec![]);
     assert_eq!(finish(&mut server, false, Ok(())), Ok(()));
@@ -273,6 +321,18 @@ fn outputs_are_what_the_glob_of_the_video_takes() {
 
 #[test]
 fn a_socket_has_thirty_seconds_for_real_to_answer() {
+    use std::io::{BufRead, BufReader, Write};
+    let (ours, theirs) = UnixStream::pair().unwrap();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        BufReader::new(theirs.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        writeln!(&theirs, r#"{{"ok":true,"tick":0}}"#).unwrap();
+    });
+    let mut probe = Probe::over("server", ours, Limits::REAL).unwrap();
+    probe.ask("status").unwrap();
+    assert_eq!(probe.read_timeout(), Some(Duration::from_secs(30)));
     let verbs = [
         "status",
         "step 1 53",

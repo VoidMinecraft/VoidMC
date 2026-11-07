@@ -83,7 +83,7 @@ fn a_long_tmpdir_leaves_the_fake_client_standing() {
 
 #[test]
 fn a_line_break_cannot_slip_a_second_verb_in() {
-    let error = ask("nobody", "assert chat~ok\nquit")
+    let error = ask_line("nobody", "assert chat~ok\nquit")
         .unwrap_err()
         .to_string();
     assert!(error.contains("line break"), "{error}");

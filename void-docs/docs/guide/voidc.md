@@ -58,8 +58,9 @@ each trace, which compares the shape of a run, not its content.
 ## Frame by frame
 
 A client cut from the server, a barrier that expires or a client that does not answer stops the
-run with an error and exit code 1. `--stop-server` stops the server after a failure as well. A
-server refuses a socket that another server answers on. `--hold T:S` pauses S seconds after tick T.
+run with an error and exit code 1. `--stop-server` stops the server after a failure as well, on a
+new connection when the failure lost the old one. A server refuses a socket that another server
+answers on. `--hold T:S` pauses S seconds after tick T.
 
 The camera repeated exactly in every run measured, at both levels. An assertion on `frames.jsonl`
 can start with no tolerance, but it holds on one condition: every deadline of the server goes

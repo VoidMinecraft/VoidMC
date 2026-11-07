@@ -1,6 +1,5 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::sleep;
@@ -8,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::control::{self, Ask, Chore, Limits, Probe};
+use crate::control::{self, Ask, Chore, Failure, Limits, Probe};
 use crate::registry::{self, Client, Level, Registry};
 use crate::{args, lifecycle};
 
@@ -26,6 +25,14 @@ const FRAMES_GLOB: &str = "f[0-9]*.png";
 const LOCK_TRIES: u32 = 3;
 const SHEET_COLUMNS: u64 = 6;
 const SHEET_CELLS: u64 = 24;
+
+/// A refusal names who refused, and the line it refused.
+fn told(peer: &mut impl Ask, who: &str, line: &str) -> Result<Value, String> {
+    peer.ask(line).map_err(|failure| match failure {
+        Failure::Refused(reply) => format!("{who}: {line}: {}", reply["error"]),
+        Failure::Lost(error) => error,
+    })
+}
 
 fn counter(reply: &Value, name: &str) -> Result<u64, String> {
     reply[name]
@@ -50,7 +57,7 @@ struct Lockstep<S, C> {
 
 impl<S: Ask, C: Ask> Lockstep<S, C> {
     fn counters(&mut self) -> Result<(u64, u64), String> {
-        let reply = self.client.ask("sent")?;
+        let reply = told(&mut self.client, "client", "sent")?;
         if reply["active"] != true {
             return Err("the client lost its connection to the server".into());
         }
@@ -62,7 +69,7 @@ impl<S: Ask, C: Ask> Lockstep<S, C> {
         let mut last = None;
         let mut quiet = 0;
         for _ in 0..QUIET_LIMIT {
-            let status = self.server.ask("status")?;
+            let status = told(&mut self.server, "server", "status")?;
             let (client_in, client_out) = self.counters()?;
             let origin = Origin {
                 sent: counter(&status, "sent")?,
@@ -85,10 +92,10 @@ impl<S: Ask, C: Ask> Lockstep<S, C> {
     fn tick(&mut self) -> Result<u64, String> {
         let (_, client_out) = self.counters()?;
         let need = self.origin.received + client_out - self.origin.client_out;
-        let reply = self.server.ask(&format!("step 1 {need}"))?;
+        let reply = told(&mut self.server, "server", &format!("step 1 {need}"))?;
         let sent = counter(&reply, "sent")?;
         let want = self.origin.client_in + sent - self.origin.sent;
-        self.client.ask(&format!("fence {want}"))?;
+        told(&mut self.client, "client", &format!("fence {want}"))?;
         counter(&reply, "tick")
     }
 }
@@ -197,12 +204,12 @@ fn play<S: Ask, C: Ask>(
         lock.tick()
             .map_err(|error| format!("tick {t} of the passage: {error}"))?;
         for k in 0..plan.frames {
-            let camera = lock.client.ask(&format!("step {frame_ms}"))?;
+            let camera = told(&mut lock.client, "client", &format!("step {frame_ms}"))?;
             writeln!(measures, "{}", measure(t, k, &camera)).map_err(|e| e.to_string())?;
             let index = t * plan.frames + k;
             if plan.wanted(index) {
                 let name = frame_name(index);
-                let shot = lock.client.ask(&format!("shot {name}"))?;
+                let shot = told(&mut lock.client, "client", &format!("shot {name}"))?;
                 let path = shot["path"].as_str().ok_or("shot without a path")?;
                 keep(&name, Path::new(path))?;
                 captured += 1;
@@ -220,11 +227,11 @@ fn play<S: Ask, C: Ask>(
 }
 
 fn settle<S: Ask, C: Ask>(lock: &mut Lockstep<S, C>) -> Result<(), String> {
-    lock.client.ask("clock virtual")?;
+    told(&mut lock.client, "client", "clock virtual")?;
     lock.calibrate(QUIET_POLL)?;
     for _ in 0..SETTLE_TICKS {
         lock.tick()?;
-        lock.client.ask(&format!("step {TICK_MS}"))?;
+        told(&mut lock.client, "client", &format!("step {TICK_MS}"))?;
     }
     Ok(())
 }
@@ -232,8 +239,8 @@ fn settle<S: Ask, C: Ask>(lock: &mut Lockstep<S, C>) -> Result<(), String> {
 fn wait_for_server(path: &Path) -> Result<Probe, String> {
     let start = Instant::now();
     loop {
-        match UnixStream::connect(path) {
-            Ok(stream) => return Probe::over("server", stream, Limits::REAL),
+        match Probe::to_socket("server", path, Limits::REAL) {
+            Ok(server) => return Ok(server),
             Err(error) if start.elapsed() > SERVER_LIMIT => {
                 return Err(format!("no stepped server on {}: {error}", path.display()));
             }
@@ -288,7 +295,7 @@ fn join(
     lock_at: u64,
     pace: Duration,
 ) -> Result<(), String> {
-    let mut tick = counter(&server.ask("status")?, "tick")?;
+    let mut tick = counter(&told(server, "server", "status")?, "tick")?;
     if tick >= lock_at {
         return Err(format!(
             "the server is at tick {tick}, past --lock-at {lock_at}: restart it"
@@ -296,7 +303,7 @@ fn join(
     }
     let mut joined = false;
     while tick < lock_at {
-        let next = counter(&server.ask("step 1")?, "tick")?;
+        let next = counter(&told(server, "server", "step 1")?, "tick")?;
         if next <= tick {
             return Err(format!(
                 "the server stays at tick {tick}: it does not count"
@@ -430,7 +437,7 @@ fn passage(server: &mut impl Ask, client: &Client, plan: &Plan) -> Result<(), St
     };
     settle(&mut lock)?;
     for command in &plan.acts {
-        lock.client.ask(&format!("act {command}"))?;
+        told(&mut lock.client, "client", &format!("act {command}"))?;
     }
     let mut measures =
         BufWriter::new(File::create(plan.out.join("frames.jsonl")).map_err(|e| e.to_string())?);
@@ -466,8 +473,11 @@ fn finish(server: &mut impl Ask, stop: bool, result: Result<(), String>) -> Resu
     if !stop {
         return result;
     }
-    let stopped = server.ask("stop").map(|_| ()).map_err(String::from);
-    result.and(stopped)
+    let stopped = told(server, "server", "stop").map(|_| ());
+    match result {
+        Ok(()) => stopped,
+        Err(error) => Err(lifecycle::with_stop(error, stopped)),
+    }
 }
 
 pub fn run(registry: &Registry, mut client: Client, args: &[String]) -> Result<(), String> {

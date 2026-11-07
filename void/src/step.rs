@@ -274,6 +274,20 @@ mod tests {
     }
 
     #[test]
+    fn the_barrier_counts_what_is_queued_for_the_clients() {
+        let (_connected_tx, connected) = flume::unbounded();
+        let mut app = App::new();
+        app.insert_resource(ClientSenders::new(connected));
+        app.add_plugins(StepPlugin::new(
+            PathBuf::from("unused"),
+            Duration::from_millis(50),
+            Arc::default(),
+        ));
+        app.finish();
+        assert!(app.world().resource::<ClientSenders>().sent().is_some());
+    }
+
+    #[test]
     fn orders_are_read_from_their_line() {
         assert_eq!(
             Order::parse("step 3 40"),

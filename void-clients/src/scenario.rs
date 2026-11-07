@@ -111,14 +111,6 @@ fn target(args: &[String], scenario: &Scenario, host: &impl Host) -> Result<Targ
     })
 }
 
-/// An error of the run keeps the error of the stop that follows it: both have something to say.
-fn with_stop(error: String, stopped: Result<(), String>) -> String {
-    match stopped {
-        Ok(()) => error,
-        Err(stuck) => format!("{error}\n{stuck}"),
-    }
-}
-
 /// `voidc run <file> ...`: a failed line, or a refused scenario, exits with 1.
 pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     let path = PathBuf::from(args.first().ok_or(
@@ -137,7 +129,7 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     if let Some(feature) = &chosen.feature
         && let Err(error) = host.up(feature, chosen.level, args::flag(args, "--port"))
     {
-        return Err(with_stop(error, host.down(&chosen.name)));
+        return Err(lifecycle::with_stop(error, host.down(&chosen.name)));
     }
     let out =
         args::flag(args, "--out").map_or_else(|| default_out(&chosen.name, &path), PathBuf::from);
@@ -159,7 +151,7 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     };
     let report = match played {
         Ok(report) => report,
-        Err(error) => return Err(with_stop(error, stopped)),
+        Err(error) => return Err(lifecycle::with_stop(error, stopped)),
     };
     println!("{}", report.verdict());
     println!("report: {}", out.join("report.txt").display());

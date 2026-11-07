@@ -236,10 +236,8 @@ fn action(registry: &Registry, name: &str, verb: &str) -> Result<(), String> {
             let client = registry::load(name).ok_or("unknown client")?;
             lifecycle::start(registry, client)
         }
-        "take" => {
-            control::answered(control::chore(name, Chore::ShowFocus, ASK_TIMEOUT)).map(|_| ())
-        }
-        "give" => control::answered(control::chore(name, Chore::Hide, ASK_TIMEOUT)).map(|_| ()),
+        "take" => control::chore_line(name, Chore::ShowFocus, ASK_TIMEOUT).map(|_| ()),
+        "give" => control::chore_line(name, Chore::Hide, ASK_TIMEOUT).map(|_| ()),
         other => Err(format!("unknown action {other}")),
     }
 }
@@ -329,6 +327,21 @@ mod tests {
             ["state", "thumb", "show focus", "hide", "quit"]
         );
         assert!(!registry::alive(&client));
+    }
+
+    #[test]
+    fn taking_and_giving_need_only_an_answer() {
+        let fake = FakeClient::scripted(
+            Level::Render,
+            Box::new(|_| crate::control::fake::Reply {
+                after: Duration::ZERO,
+                line: "done".to_string(),
+            }),
+        );
+        let registry = Registry::load();
+        action(&registry, NAME, "take").unwrap();
+        action(&registry, NAME, "give").unwrap();
+        assert_eq!(fake.heard(), ["show focus", "hide"]);
     }
 
     fn head(method: &str, host: Option<&str>, origin: Option<&str>) -> Head {

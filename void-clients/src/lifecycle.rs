@@ -10,6 +10,14 @@ use crate::registry::{self, Client, Level, Registry};
 
 const STOP_PATIENCE: Duration = Duration::from_secs(10);
 
+/// An error of the run keeps the error of the stop that follows it: both have something to say.
+pub fn with_stop(error: String, stopped: Result<(), String>) -> String {
+    match stopped {
+        Ok(()) => error,
+        Err(stuck) => format!("{error}\n{stuck}"),
+    }
+}
+
 pub fn running() -> Vec<Client> {
     registry::all()
         .into_iter()

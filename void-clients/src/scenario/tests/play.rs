@@ -63,6 +63,18 @@ fn a_failed_assert_gives_its_line_and_what_was_received() {
 }
 
 #[test]
+fn a_failed_assert_reads_what_was_received_from_a_refused_state_too() {
+    let dir = folder("assert-refused-state");
+    let scenario = Scenario::parse("assert chunks>=900\n").unwrap();
+    let refusal = json!({"ok": false, "error": "chunks>=900 is false: {...}"});
+    let mut fake = Fake::new(&dir, vec![refusal]);
+    fake.state = json!({"ok": false, "error": "game busy", "chunks": 71});
+    let report = run(&dir, false).play(&scenario, &mut fake).unwrap();
+    assert_eq!(report.lines[0].got, Some(json!(71)));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn a_clock_left_virtual_goes_back_to_real_even_after_a_failure() {
     let dir = folder("clock-left");
     let scenario = Scenario::parse("clock virtual\nassert chunks>=900\nact map\n").unwrap();

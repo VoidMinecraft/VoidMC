@@ -1,6 +1,7 @@
 use std::fmt;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -110,13 +111,19 @@ impl Connection {
         Ok(Self { stream, reader })
     }
 
+    fn to_socket(who: &str, path: &Path) -> Result<Self, String> {
+        let stream = UnixStream::connect(path).map_err(|e| format!("{who}: {e}"))?;
+        Self::over(stream)
+    }
+
     fn to_client(name: &str) -> Result<Self, String> {
         let stream = UnixStream::connect(registry::socket(name)?)
             .map_err(|e| format!("client {name} does not answer: {e}"))?;
         Self::over(stream)
     }
 
-    fn exchange(&mut self, who: &str, verb: &str, timeout: Duration) -> Result<Value, Failure> {
+    /// The line as the peer wrote it, for what shows it as is.
+    fn line(&mut self, who: &str, verb: &str, timeout: Duration) -> Result<String, Failure> {
         let closed = |e| Failure::Lost(format!("{who} closed the connection: {e}"));
         self.stream
             .set_read_timeout(Some(timeout))
@@ -134,28 +141,52 @@ impl Connection {
         if line.is_empty() {
             return Err(Failure::Lost(format!("{who} closed the connection")));
         }
+        Ok(line.trim_end().to_string())
+    }
+
+    fn exchange(&mut self, who: &str, verb: &str, timeout: Duration) -> Result<Value, Failure> {
+        let line = self.line(who, verb, timeout)?;
         let reply = serde_json::from_str(&line)
             .map_err(|e| Failure::Lost(format!("{who} answered {verb} with no JSON: {e}")))?;
         judged(reply)
     }
 }
 
+/// Where a connection that lost a line comes back from.
+enum Reopen {
+    Never,
+    Client(String),
+    Socket(PathBuf),
+}
+
 /// The one client of the line protocol. A connection that loses a line is dropped, and the next
 /// line opens another, checked again when it goes to a client.
 pub struct Probe {
     who: String,
-    client: Option<String>,
+    reopen: Reopen,
     connection: Option<Connection>,
     limits: Limits,
 }
 
 impl Probe {
-    /// The step socket of a server, or any peer that is not a client: never reopened.
+    /// A peer that is not a client, on a stream that is never reopened.
+    #[cfg(test)]
     pub fn over(who: &str, stream: UnixStream, limits: Limits) -> Result<Self, String> {
         Ok(Self {
             who: who.to_string(),
-            client: None,
+            reopen: Reopen::Never,
             connection: Some(Connection::over(stream)?),
+            limits,
+        })
+    }
+
+    /// The step socket of a server: a lost line leaves the next one a new connection, so that a
+    /// `stop` still reaches it.
+    pub fn to_socket(who: &str, path: &Path, limits: Limits) -> Result<Self, String> {
+        Ok(Self {
+            who: who.to_string(),
+            reopen: Reopen::Socket(path.to_path_buf()),
+            connection: Some(Connection::to_socket(who, path)?),
             limits,
         })
     }
@@ -164,7 +195,7 @@ impl Probe {
     pub fn open(name: &str, limits: Limits) -> Result<Self, String> {
         Ok(Self {
             who: format!("client {name}"),
-            client: Some(name.to_string()),
+            reopen: Reopen::Client(name.to_string()),
             connection: Some(Self::checked(name, limits)?),
             limits,
         })
@@ -181,29 +212,56 @@ impl Probe {
     fn unchecked(name: &str) -> Result<Self, String> {
         Ok(Self {
             who: format!("client {name}"),
-            client: None,
+            reopen: Reopen::Never,
             connection: Some(Connection::to_client(name)?),
             limits: Limits::REAL,
         })
     }
 
     pub fn ask_within(&mut self, verb: &str, timeout: Duration) -> Result<Value, Failure> {
+        self.through(verb, |connection, who| {
+            connection.exchange(who, verb, timeout)
+        })
+    }
+
+    /// The line itself, read by no one on the way: for what shows it, or needs no more than an
+    /// answer.
+    fn line_within(&mut self, verb: &str, timeout: Duration) -> Result<String, Failure> {
+        self.through(verb, |connection, who| connection.line(who, verb, timeout))
+    }
+
+    fn through<T>(
+        &mut self,
+        verb: &str,
+        exchange: impl FnOnce(&mut Connection, &str) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
         one_verb(verb).map_err(Failure::Lost)?;
-        let mut connection = match (self.connection.take(), &self.client) {
+        let mut connection = match (self.connection.take(), &self.reopen) {
             (Some(connection), _) => connection,
-            (None, Some(name)) => Self::checked(name, self.limits).map_err(Failure::Lost)?,
-            (None, None) => {
+            (None, Reopen::Client(name)) => {
+                Self::checked(name, self.limits).map_err(Failure::Lost)?
+            }
+            (None, Reopen::Socket(path)) => {
+                Connection::to_socket(&self.who, path).map_err(Failure::Lost)?
+            }
+            (None, Reopen::Never) => {
                 return Err(Failure::Lost(format!(
                     "{} dropped the connection",
                     self.who
                 )));
             }
         };
-        let result = connection.exchange(&self.who, verb, timeout);
+        let result = exchange(&mut connection, &self.who);
         if !matches!(result, Err(Failure::Lost(_))) {
             self.connection = Some(connection);
         }
         result
+    }
+
+    #[cfg(test)]
+    pub fn read_timeout(&self) -> Option<Duration> {
+        let connection = self.connection.as_ref()?;
+        connection.stream.read_timeout().ok().flatten()
     }
 }
 
@@ -214,12 +272,12 @@ impl Ask for Probe {
     }
 }
 
-/// Sends one verb to a client whose probe is of this version.
-pub fn ask(name: &str, verb: &str) -> Result<Value, Failure> {
-    one_verb(verb).map_err(Failure::Lost)?;
-    Probe::open(name, Limits::REAL)
-        .map_err(Failure::Lost)?
-        .ask(verb)
+/// Sends one verb to a client whose probe is of this version, and brings back its reply as the
+/// probe wrote it.
+pub fn ask_line(name: &str, verb: &str) -> Result<String, String> {
+    one_verb(verb)?;
+    let line = Probe::open(name, Limits::REAL)?.line_within(verb, Limits::REAL.of(verb))?;
+    Ok(line)
 }
 
 /// A chore needs no check of the version.
@@ -227,6 +285,12 @@ pub fn chore(name: &str, chore: Chore, timeout: Duration) -> Result<Value, Failu
     Probe::unchecked(name)
         .map_err(Failure::Lost)?
         .ask_within(chore.verb(), timeout)
+}
+
+/// The line of a chore as the probe wrote it.
+pub fn chore_line(name: &str, chore: Chore, timeout: Duration) -> Result<String, String> {
+    let line = Probe::unchecked(name)?.line_within(chore.verb(), timeout)?;
+    Ok(line)
 }
 
 /// How long a client gets. A test takes a smaller set, so that it does not wait for the real one.

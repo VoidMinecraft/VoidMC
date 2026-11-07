@@ -198,8 +198,7 @@ fn condition_step(driver: &mut impl Driver, line: &Line, condition: &Written, li
         Err(Failure::Lost(error)) => return Step::failed(error),
         Err(refused) => refused.to_string(),
     };
-    let got = driver
-        .ask("state")
+    let got = control::answered(driver.ask("state"))
         .ok()
         .and_then(|state| state.get(condition.parsed.field()).cloned());
     let short = error
