@@ -1,6 +1,11 @@
 use std::io::{BufRead, BufReader, Result};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Mutex, PoisonError};
+
+/// On macOS `pipe` and `set_cloexec` are two steps: two children started at once could each hold
+/// the stdin of the other, and neither would ever see it close.
+static SPAWN: Mutex<()> = Mutex::new(());
 
 /// A long-lived child of a test, and the only way to start one: it leads its own process group,
 /// the whole group dies with this value, and the open stdin ends it if the tests are killed.
@@ -21,11 +26,10 @@ fn kill_group(leader: u32) {
 
 impl Held {
     pub fn launch(command: &mut Command) -> Self {
-        let child = command
-            .process_group(0)
-            .stdin(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let one_at_a_time = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
+        let child = command.process_group(0).stdin(Stdio::piped()).spawn();
+        drop(one_at_a_time);
+        let child = child.unwrap();
         Self {
             child,
             reaped: false,
