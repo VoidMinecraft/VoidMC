@@ -125,6 +125,7 @@ pub struct Session {
     phase: Phase,
     stage: Stage,
     bundle_open: bool,
+    away_shown: bool,
     packs: PackBook,
     script: Script,
     lost_at: Option<Instant>,
@@ -151,6 +152,7 @@ impl Session {
                 next_attempt: now,
             },
             bundle_open: false,
+            away_shown: false,
             packs: PackBook::default(),
             script: Script::default(),
             lost_at: None,
@@ -327,6 +329,7 @@ impl Session {
                     .map_or(0, |lost_at| now.duration_since(lost_at).as_secs());
                 let message = format!("Server away for {away}s, hold on");
                 self.send_to_client(action_bar(&message));
+                self.away_shown = true;
             }
             Phase::Configuration => {
                 self.send_to_client(frame(config_cb::KEEP_ALIVE, |body| keep_alive.encode(body)));
@@ -578,6 +581,11 @@ impl Session {
                 play_cb::RESOURCE_PACK_POP => self.note_pack_pop(body),
                 play_cb::START_CONFIGURATION => self.phase = Phase::LeavingPlay,
                 play_cb::BUNDLE_DELIMITER => self.bundle_open = !self.bundle_open,
+                play_cb::LOGIN if std::mem::take(&mut self.away_shown) => {
+                    self.send_to_client(frame);
+                    self.send_to_client(action_bar(""));
+                    return;
+                }
                 _ => {}
             },
         }
@@ -1700,6 +1708,36 @@ mod tests {
         rig.receive_from_client(known_packs_reply());
         rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
         assert_eq!(rig.resumed(), 1);
+    }
+
+    #[test]
+    fn the_away_message_goes_once_the_client_is_back() {
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.tick(Duration::ZERO);
+        assert_eq!(rig.sent_to_client(play_cb::SET_ACTION_BAR_TEXT), 1);
+        rig.come_back();
+        rig.clear();
+        rig.receive_from_backend(empty(play_cb::START_CONFIGURATION));
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
+        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
+        rig.receive_from_backend(login());
+        assert_eq!(rig.sent_to_client(play_cb::SET_ACTION_BAR_TEXT), 0);
+    }
+
+    #[test]
+    fn the_away_message_is_cleared_right_after_the_login() {
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.tick(Duration::ZERO);
+        rig.log_back_in();
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
+        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
+        rig.clear();
+        rig.receive_from_backend(login());
+        assert_eq!(rig.client, vec![login(), action_bar("")]);
     }
 
     #[test]

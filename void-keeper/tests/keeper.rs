@@ -500,6 +500,12 @@ async fn a_client_survives_a_crash_through_a_configuration() {
     assert_eq!(client.come_back().await, login_packet(9));
     let resumed = rig.expect_event("resumed").await;
     assert!(resumed["outage_ms"].as_u64().is_some());
+    assert_eq!(
+        client.next().await,
+        frame(play_cb::SET_ACTION_BAR_TEXT, |body| {
+            voidmc_keeper::wire::text("").encode(body);
+        })
+    );
 
     server.expect(play_sb::PLAYER_LOADED).await;
     server.send(add_entity(60));
