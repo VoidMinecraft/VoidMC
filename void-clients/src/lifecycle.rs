@@ -1,0 +1,198 @@
+use std::fs;
+use std::process::{Child, Command};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+
+use crate::registry::{self, Client, Level, Registry};
+use crate::{control, launch};
+
+const STOP_PATIENCE: Duration = Duration::from_secs(10);
+
+pub fn running() -> Vec<Client> {
+    registry::all()
+        .into_iter()
+        .filter(registry::alive)
+        .collect()
+}
+
+/// Refuses what would go wrong: a limit passed, a port of another feature, a second `JOUER`.
+pub fn check(registry: &Registry, client: &Client, others: &[Client]) -> Result<(), String> {
+    if others.iter().any(|other| other.name == client.name) {
+        return Err(format!("{} is already running", client.name));
+    }
+    let heavy = others
+        .iter()
+        .filter(|other| other.level.counts_towards_limit())
+        .count();
+    if client.level.counts_towards_limit() && heavy >= registry.max_clients {
+        return Err(format!(
+            "{heavy} clients are running, the limit is {}: stop one with voidc down, or use --level bot",
+            registry.max_clients
+        ));
+    }
+    if client.level == Level::Play && others.iter().any(|other| other.level == Level::Play) {
+        return Err(
+            "a client to play is already running: Léo cannot tell two windows apart".into(),
+        );
+    }
+    Ok(())
+}
+
+pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
+    check(registry, &client, &running())?;
+    if client.level != Level::Play {
+        registry::socket(&client.name)?;
+    }
+    let command = match client.level {
+        Level::Bot => launch::bot(registry, &client)?,
+        _ => launch::game(registry, &client)?,
+    };
+    let _lock = registry::Lock::take().map_err(|e| e.to_string())?;
+    check(registry, &client, &running())?;
+    if let Some(owner) = registry::feature_on(client.port)?.filter(|owner| *owner != client.feature)
+    {
+        return Err(format!("port {} is leased to {owner}", client.port));
+    }
+    let mut child = launch::spawn(command, &registry::client_dir(&client.name))?;
+    client.pid = child.id();
+    registry::save(&client).map_err(|error| {
+        stop(&mut child, STOP_PATIENCE);
+        format!(
+            "{} could not be recorded, so it is stopped: {error}",
+            client.name
+        )
+    })
+}
+
+fn stop(child: &mut Child, patience: Duration) {
+    let _ = Command::new("kill").arg(child.id().to_string()).status();
+    let deadline = Instant::now() + patience;
+    while Instant::now() < deadline {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn gone(client: &Client) -> bool {
+    let deadline = Instant::now() + STOP_PATIENCE;
+    while Instant::now() < deadline {
+        if !registry::alive(client) {
+            return true;
+        }
+        sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// Only ever signals a pid that `registry::alive` recognises as this client.
+pub fn down(name: &str) -> Result<(), String> {
+    let client = registry::load(name).ok_or_else(|| format!("unknown client {name}"))?;
+    if !registry::alive(&client) {
+        return Ok(());
+    }
+    if client.level != Level::Play {
+        let _ = control::ask(name, "quit", Duration::from_secs(2));
+    }
+    if gone(&client) {
+        return Ok(());
+    }
+    if registry::alive(&client) {
+        Command::new("kill")
+            .arg(client.pid.to_string())
+            .status()
+            .map_err(|e| e.to_string())?;
+    }
+    if gone(&client) {
+        Ok(())
+    } else {
+        Err(format!("{name} did not stop"))
+    }
+}
+
+pub fn forget(name: &str) -> Result<(), String> {
+    down(name)?;
+    fs::remove_dir_all(registry::client_dir(name)).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_child_that_ignores_the_signal_is_killed_and_reaped() {
+        let mut polite = Command::new("sleep").arg("60").spawn().unwrap();
+        stop(&mut polite, Duration::from_secs(5));
+        assert!(polite.try_wait().unwrap().is_some());
+        let mut stubborn = Command::new("sh")
+            .args(["-c", "trap '' TERM; echo ready; read line"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(stubborn.stdout.take().unwrap()),
+            &mut ready,
+        )
+        .unwrap();
+        let started = Instant::now();
+        stop(&mut stubborn, Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let status = stubborn.try_wait().unwrap().expect("reaped");
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(9)
+        );
+    }
+
+    fn client(name: &str, level: Level) -> Client {
+        Client {
+            name: name.into(),
+            feature: name.into(),
+            port: 25700,
+            level,
+            pid: 0,
+            fps: None,
+            size: None,
+            jfr: false,
+        }
+    }
+
+    #[test]
+    fn the_tenth_client_is_refused_but_a_bot_is_not() {
+        let registry = Registry::load();
+        let nine: Vec<Client> = (0..9)
+            .map(|i| client(&format!("c{i}"), Level::Render))
+            .collect();
+        assert!(check(&registry, &client("next", Level::Render), &nine).is_err());
+        assert!(check(&registry, &client("bot", Level::Bot), &nine).is_ok());
+        assert!(check(&registry, &client("next", Level::Render), &nine[..8]).is_ok());
+    }
+
+    #[test]
+    fn bots_leave_room_for_clients() {
+        let registry = Registry::load();
+        let bots: Vec<Client> = (0..20)
+            .map(|i| client(&format!("b{i}"), Level::Bot))
+            .collect();
+        assert!(check(&registry, &client("next", Level::Render), &bots).is_ok());
+    }
+
+    #[test]
+    fn only_one_client_to_play() {
+        let registry = Registry::load();
+        let others = [client("jouer", Level::Play)];
+        assert!(check(&registry, &client("autre", Level::Play), &others).is_err());
+    }
+
+    #[test]
+    fn a_client_does_not_start_twice() {
+        let registry = Registry::load();
+        let others = [client("same", Level::Render)];
+        assert!(check(&registry, &client("same", Level::Render), &others).is_err());
+    }
+}

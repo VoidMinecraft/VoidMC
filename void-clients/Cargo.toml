@@ -1,0 +1,24 @@
+[package]
+name = "voidmc-clients"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "One tool for the Minecraft clients of the agents: hidden clients, bots, a mosaic"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "voidc"
+path = "src/main.rs"
+
+[dependencies]
+flate2 = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+ussr-nbt = "0.2.1"
+uuid = "1.16.0"
+voidmc-codec = { version = "0.1.1", path = "../void-codec" }
+voidmc-data = { version = "0.1.2", path = "../void-data" }
+voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }

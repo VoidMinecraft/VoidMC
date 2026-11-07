@@ -1,0 +1,52 @@
+max_clients = 9
+idle_minutes = 30
+dashboard_port = 25685
+lease_from = 25700
+lease_to = 25798
+
+[reserved]
+25581 = "session"
+25599 = "session"
+25616 = "session"
+25617 = "session"
+25620 = "Carte"
+25621 = "Carte"
+25630 = "Animations"
+25631 = "Animations"
+25640 = "Looks"
+25641 = "Looks"
+25650 = "Scènes vivantes"
+25651 = "Scènes vivantes"
+25660 = "PNJ"
+25661 = "PNJ"
+25670 = "dev-loop"
+25671 = "dev-loop"
+25680 = "dev-clients"
+25681 = "dev-clients"
+25685 = "mosaïque"
+25690 = "dev-tests"
+25691 = "dev-tests"
+
+[levels.render]
+width = 640
+height = 360
+fps = 40
+render_distance = 8
+simulation_distance = 5
+heap = "768M"
+
+[levels.logic]
+width = 640
+height = 360
+fps = 40
+render_distance = 8
+simulation_distance = 5
+heap = "768M"
+
+[levels.play]
+width = 1280
+height = 720
+fps = 120
+render_distance = 8
+simulation_distance = 5
+heap = "2G"
