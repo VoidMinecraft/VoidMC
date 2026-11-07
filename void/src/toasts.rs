@@ -6,7 +6,6 @@
 //! client's advancement screen.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
@@ -21,6 +20,7 @@ pub use voidmc_protocol::clientbound::AdvancementFrame as ToastFrame;
 use crate::components::Position;
 use crate::item::{ItemId, ItemStack};
 use crate::messages::{Target, TextColor, text_component};
+use crate::pace::Clock;
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 use crate::sounds::{Sound, SoundPosition};
 
@@ -34,6 +34,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 pub struct Toasts<'w, 's> {
     players: Players<'w, 's>,
     positions: Query<'w, 's, &'static Position>,
+    clock: Clock<'w>,
 }
 
 impl Toasts<'_, '_> {
@@ -41,6 +42,7 @@ impl Toasts<'_, '_> {
         Sink::Players {
             players: &self.players,
             positions: &self.positions,
+            now: self.clock.now_millis(),
         }
     }
 
@@ -86,6 +88,7 @@ enum Sink<'a> {
     Players {
         players: &'a Players<'a, 'a>,
         positions: &'a Query<'a, 'a, &'static Position>,
+        now: i64,
     },
     World {
         players: &'a WorldPlayers<'a>,
@@ -94,6 +97,13 @@ enum Sink<'a> {
 }
 
 impl<'a> Sink<'a> {
+    fn now_millis(&self) -> i64 {
+        match self {
+            Sink::Players { now, .. } => *now,
+            Sink::World { world, .. } => crate::pace::of(world).now_millis(),
+        }
+    }
+
     fn ready(&self) -> Recipients<'a> {
         match self {
             Sink::Players { players, .. } => players.ready(),
@@ -254,7 +264,7 @@ impl<'a> ToastRequest<'a> {
                 progress: AdvancementProgress {
                     criteria: vec![CriterionProgressEntry {
                         name: CRITERION.into(),
-                        obtained_epoch_millis: Some(now_millis()),
+                        obtained_epoch_millis: Some(self.sink.now_millis()),
                     }],
                 },
             }],
@@ -292,13 +302,6 @@ impl<'a> ToastRequest<'a> {
             }
         }
     }
-}
-
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -675,5 +678,28 @@ mod tests {
             assert_guarded(&info.description, &long);
         });
         app.update();
+    }
+
+    #[test]
+    fn a_stepped_toast_is_obtained_at_its_tick() {
+        let (mut app, _rx) = test_app();
+        app.add_plugins(crate::pace::SteppedPacePlugin::new(
+            std::time::Duration::from_millis(50),
+        ));
+        let alice = ready_player(&mut app, 1, DimensionId::Overworld);
+        for _ in 0..11 {
+            app.update();
+        }
+        app.add_systems(Update, move |toasts: Toasts| {
+            let (add, _) = toasts.toast(alice, "Pas").packets();
+            let criteria = &add.progress[0].progress.criteria;
+            assert_eq!(criteria[0].obtained_epoch_millis, Some(600));
+        });
+        app.update();
+        let (add, _) = WorldToasts::new(app.world()).toast(alice, "Pas").packets();
+        assert_eq!(
+            add.progress[0].progress.criteria[0].obtained_epoch_millis,
+            Some(600)
+        );
     }
 }

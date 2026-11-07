@@ -20,12 +20,13 @@ use voidmc::{
     Passengers, PlayerAbilities, Players, RegistryDataStore, ServerConfigResource, Silent,
     TabEntry, Teleport, TextColor, TextDisplay, WorldGen, WorldGenerator,
     components::{
-        ChunkStreamBacklog, ChunkStreamingPaused, ClientId, EffectiveViewDistance, LoadedChunks,
-        MinecraftEntityId, PlayerDimension, PlayerUuid, Position, Rotation,
+        ChunkSet, ChunkStreamBacklog, ChunkStreamingPaused, ClientId, EffectiveViewDistance,
+        LoadedChunks, MinecraftEntityId, PlayerDimension, PlayerUuid, Position, Rotation,
         ServerControlledPosition,
     },
     events::{PlayerInputEvent, PlayerQuitEvent},
     network::PacketEvent,
+    pace::{Clock, Deadline},
     world::{
         ChunkData, ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition,
         DimensionId, load_or_generate,
@@ -917,7 +918,7 @@ pub struct MapSession {
     /// The chunks the client has in another look, with that look.
     behind: HashMap<ChunkPos, ChunkLook>,
     /// The chunks of the real world the client keeps meanwhile.
-    world: HashSet<ChunkPos>,
+    world: ChunkSet,
     /// Where the world should be ready next: the player may well go there.
     heading: Option<ChunkPos>,
     /// The entities to see the model through until the rig is up.
@@ -1150,7 +1151,12 @@ impl MapSession {
     /// Takes in a rotation the client reports, and says how to correct it, if at all.
     fn turn(&mut self, yaw: f32, pitch: f32) -> Option<PlayerRotation> {
         self.rig?;
-        self.telemetry.report(Instant::now());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the telemetry of the map only reaches the logs"
+        )]
+        let now = Instant::now();
+        self.telemetry.report(now);
         if let Some(open) = self.wheel.as_mut() {
             let turn = self.mouse.report(yaw, pitch);
             open.wheel.turn(turn.delta);
@@ -1405,6 +1411,7 @@ impl Plugin for MapPlugin {
             middle: None,
             detail: None,
         })
+        .init_resource::<ChunkTime>()
         .add_systems(Startup, build_atlas)
         .add_systems(
             Update,
@@ -1463,6 +1470,10 @@ fn build_atlas(mut atlas: ResMut<Atlas>, generator: Res<WorldGen>, mut commands:
     for level in [&mut overview, &mut middle, &mut detail] {
         level.scene.lay_all(&scenes);
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "measures how long the overview takes to build, for the logs"
+    )]
     let started = Instant::now();
     overview.prepare(atlas.info);
     middle.prepare(atlas.info);
@@ -1817,7 +1828,7 @@ fn rise(
         },
     );
     // Out of the square, the client lets go of them anyway.
-    let (world, gone): (HashSet<_>, HashSet<_>) = loaded
+    let (world, gone): (ChunkSet, ChunkSet) = loaded
         .0
         .iter()
         .copied()
@@ -2354,18 +2365,24 @@ fn stream_chunks(
     mut atlas: ResMut<Atlas>,
     mut world: WorldChunks,
     players: Players,
+    clock: Clock,
+    chunk_time: Res<ChunkTime>,
     mut commands: Commands,
 ) {
     let info = atlas.info;
     for (player, mut session, loaded, dimension) in &mut sessions {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "measures the chunk sending for the telemetry, which only reaches the logs"
+        )]
         let started = Instant::now();
+        let deadline = clock.deadline(chunk_time.0);
         switch_model(&atlas, &mut session, &mut commands);
         let look = session.looks.chunks();
         let model = session.model();
         let wanted = session.wanted();
         // `Players` reads this component, so it is replaced rather than changed here.
         let mut now_loaded = loaded.0.clone();
-        let deadline = started + CHUNKS_TIME_PER_TICK;
         repaint(
             &mut atlas,
             &mut session,
@@ -2392,7 +2409,7 @@ fn stream_chunks(
         };
         let (mut sent, mut weight_sent) = (0, 0);
         for (on, at) in missing.iter().take(budget) {
-            if sent > 0 && Instant::now() >= deadline {
+            if sent > 0 && deadline.passed() {
                 break;
             }
             let Some(level) = atlas.level_mut(*on) else {
@@ -2443,9 +2460,9 @@ fn stream_chunks(
 fn repaint(
     atlas: &mut Atlas,
     session: &mut MapSession,
-    loaded: &HashSet<ChunkPos>,
+    loaded: &ChunkSet,
     (player, players): (Entity, &Players),
-    deadline: Instant,
+    deadline: Deadline,
 ) {
     let look = session.looks.chunks();
     if session.painted != look {
@@ -2459,20 +2476,8 @@ fn repaint(
     if session.behind.is_empty() {
         return;
     }
-    let [x, _, z] = session.standing();
-    let (centre, own) = (((x / 16.0) as i32, (z / 16.0) as i32), session.model());
-    let mut order: Vec<_> = session
-        .behind
-        .iter()
-        .filter_map(|(chunk, from)| {
-            let (model, at) = session.unplaced(*chunk)?;
-            let away = (at.0 - centre.0).pow(2) + (at.1 - centre.1).pow(2);
-            Some(((model != own, away), model, at, *chunk, *from))
-        })
-        .collect();
-    order.sort_by_key(|(rank, ..)| *rank);
     let mut budget = REPAINTED_BLOCKS_PER_TICK;
-    for (_, model, at, chunk, from) in order {
+    for (model, at, chunk, from) in repaint_order(session) {
         let Some(level) = atlas.level_mut(model) else {
             continue;
         };
@@ -2487,21 +2492,57 @@ fn repaint(
             );
         }
         session.behind.remove(&chunk);
-        if budget == 0 || Instant::now() >= deadline {
+        if budget == 0 || deadline.passed() {
             break;
         }
     }
+}
+
+/// How long a tick may spend sending chunks, on the wall clock.
+#[derive(Resource)]
+struct ChunkTime(Duration);
+
+impl Default for ChunkTime {
+    fn default() -> Self {
+        Self(CHUNKS_TIME_PER_TICK)
+    }
+}
+
+/// The chunks left behind, own model first, then nearest, then by position.
+fn repaint_order(session: &MapSession) -> Vec<(Model, (i32, i32), ChunkPos, ChunkLook)> {
+    let [x, _, z] = session.standing();
+    let (centre, own) = (((x / 16.0) as i32, (z / 16.0) as i32), session.model());
+    let mut order: Vec<_> = session
+        .behind
+        .iter()
+        .filter_map(|(chunk, from)| {
+            let (model, at) = session.unplaced(*chunk)?;
+            let away = (at.0 - centre.0).pow(2) + (at.1 - centre.1).pow(2);
+            Some((
+                (model != own, away, chunk.x, chunk.z),
+                model,
+                at,
+                *chunk,
+                *from,
+            ))
+        })
+        .collect();
+    order.sort_by_key(|(rank, ..)| *rank);
+    order
+        .into_iter()
+        .map(|(_, model, at, chunk, from)| (model, at, chunk, from))
+        .collect()
 }
 
 /// Sends the next chunks of where the player is heading, with the closest first. Says
 /// whether it sent any.
 fn send_world_ahead(
     session: &mut MapSession,
-    loaded: &mut HashSet<ChunkPos>,
+    loaded: &mut ChunkSet,
     dimension: DimensionId,
     world: &mut WorldChunks,
     (player, players): (Entity, &Players),
-    deadline: Instant,
+    deadline: Deadline,
     commands: &mut Commands,
 ) -> bool {
     let Some(heading) = session.heading else {
@@ -2510,7 +2551,7 @@ fn send_world_ahead(
     let (site, reach) = (session.site, world.config.view_distance);
     let (mut sent, mut generated) = (0, 0);
     for chunk in heading.chunks_in_radius(reach) {
-        if sent >= WORLD_CHUNKS_PER_TICK || (sent > 0 && Instant::now() >= deadline) {
+        if sent >= WORLD_CHUNKS_PER_TICK || (sent > 0 && deadline.passed()) {
             break;
         }
         if loaded.contains(&chunk) || !site.holds(chunk) {
@@ -3320,7 +3361,12 @@ fn tick_sessions(
 ) {
     for (player, mut session, id) in &mut sessions {
         session.ticks += 1;
-        session.telemetry.tick(Instant::now());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the telemetry of the map only reaches the logs"
+        )]
+        let now = Instant::now();
+        session.telemetry.tick(now);
         let told = session.ticks.saturating_sub(session.told) < TOLD_TICKS && session.told > 0;
         if session.ticks.is_multiple_of(HINT_PERIOD) && !told {
             let content = if session.wheel.is_some() {
@@ -4331,7 +4377,7 @@ mod tests {
             drawn: false,
             painted: ChunkLook::default(),
             behind: HashMap::new(),
-            world: HashSet::new(),
+            world: ChunkSet::new(),
             heading: None,
             camera: None,
             travel: None,
@@ -4833,5 +4879,91 @@ mod tests {
         for part in ["Port-Noir", "Phare", "Confins de l'Est", "100 blocs"] {
             assert!(card.contains(part), "{part}: {card}");
         }
+    }
+
+    #[test]
+    fn chunks_as_far_as_each_other_are_repainted_by_position() {
+        let mut session = session(MapMode::Pan);
+        let model = session.model();
+        let [x, _, z] = session.standing();
+        let centre = ((x / 16.0) as i32, (z / 16.0) as i32);
+        let ring = [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (-1, -1),
+            (1, -1),
+            (-1, 1),
+        ];
+        for (dx, dz) in ring {
+            let at = (centre.0 + dx, centre.1 + dz);
+            session
+                .behind
+                .insert(session.placed(model, at), ChunkLook::default());
+        }
+        let order: Vec<(i32, i32)> = repaint_order(&session)
+            .into_iter()
+            .map(|(_, at, ..)| (at.0 - centre.0, at.1 - centre.1))
+            .collect();
+        let mut near: Vec<(i32, i32)> = ring[..4].to_vec();
+        let mut corners: Vec<(i32, i32)> = ring[4..].to_vec();
+        let by_chunk = |at: &(i32, i32)| {
+            let placed = session.placed(model, (centre.0 + at.0, centre.1 + at.1));
+            (placed.x, placed.z)
+        };
+        near.sort_by_key(by_chunk);
+        corners.sort_by_key(by_chunk);
+        assert_eq!(order.len(), 8, "{order:?}");
+        assert_eq!(order, [near, corners].concat());
+    }
+
+    #[test]
+    fn a_stepped_tick_does_its_whole_count_of_work_whatever_the_time() {
+        let tick = |stepped: bool| {
+            let mut app = engine();
+            if stepped {
+                app.add_plugins(voidmc::pace::SteppedPacePlugin::new(Duration::from_millis(
+                    50,
+                )));
+            }
+            app.insert_resource(ChunkTime(Duration::ZERO));
+            app.update();
+            app.update();
+            let mut session = session(MapMode::Pan);
+            let model = session.model();
+            let behind: Vec<ChunkPos> = (0..5).map(|i| session.placed(model, (i, 40))).collect();
+            for chunk in &behind {
+                session.behind.insert(*chunk, ChunkLook::default());
+            }
+            session.heading = Some(ChunkPos::new(
+                session.site.centre[0],
+                session.site.centre[1],
+            ));
+            let player = app
+                .world_mut()
+                .spawn((
+                    session,
+                    LoadedChunks(behind.iter().copied().collect()),
+                    PlayerDimension(DimensionId::Overworld),
+                ))
+                .id();
+            app.update();
+            let world = app.world();
+            let session = world.get::<MapSession>(player).unwrap();
+            (
+                world.get::<LoadedChunks>(player).unwrap().0.len() - behind.len(),
+                session.world.len(),
+                session.behind.len(),
+            )
+        };
+        let generated = ServerConfig::default().max_chunk_generations_per_tick;
+        assert_eq!(
+            tick(true),
+            (CHUNKS_PER_TICK + generated, generated, 0),
+            "every count, and the generation cap"
+        );
+        assert_eq!(tick(false), (2, 1, 4), "one of each once the time is up");
     }
 }

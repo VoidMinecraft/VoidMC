@@ -5,7 +5,7 @@ pub use login_acknowledged::*;
 pub use login_start::*;
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, voidmc_codec::PacketName)]
 #[codec(tagged)]
 pub enum LoginPacket {
     #[codec(packet_id = 0x00)]

@@ -16,7 +16,7 @@ use bevy_app::{App, PostUpdate};
 use bevy_ecs::lifecycle::Remove;
 use bevy_ecs::prelude::*;
 
-use crate::components::{LoadedChunks, PlayerDimension, PlayerReady};
+use crate::components::{ChunkSet, LoadedChunks, PlayerDimension, PlayerReady};
 use crate::schedule::VoidSystems;
 use crate::world::{ChunkPos, DimensionId};
 
@@ -54,7 +54,7 @@ impl ChunkViewerIndex {
 #[derive(Component, Default)]
 pub struct IndexedChunks {
     dimension: Option<DimensionId>,
-    chunks: HashSet<ChunkPos>,
+    chunks: ChunkSet,
 }
 
 /// Keys whose viewer set changed this tick. Populated by index upkeep, drained
@@ -97,7 +97,7 @@ fn reconcile(
     dirty: &mut DirtyChunks,
     player: Entity,
     dimension: DimensionId,
-    current: &HashSet<ChunkPos>,
+    current: &ChunkSet,
     mirror: &mut IndexedChunks,
 ) {
     let mut changed = false;
@@ -157,7 +157,7 @@ fn maintain_chunk_viewer_index(
         ),
     >,
 ) {
-    let empty = HashSet::new();
+    let empty = ChunkSet::new();
     for (player, dimension, loaded, mut mirror) in players.iter_mut() {
         let current = loaded.map(|l| &l.0).unwrap_or(&empty);
         reconcile(

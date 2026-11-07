@@ -1,0 +1,115 @@
+# One table for the conditions of the bot (condition.rs) and of the probe (Condition.java).
+# fields	<level>	name	value ...: a text is quoted, a number or true/false is not.
+# <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>	[a piece of the message of an error]
+# split	<level>	<verb line>	<name>|<rest>: how the bot, the probe and voidc cut a verb.
+# The logic level has no camera yet, so only the camera rule can refuse camera>=1 there.
+# A cell may hold \t, \\ and \uXXXX.
+fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5	action_bar	"Tour 1"
+fields	logic	chunks	1000	state	"connected"	chat	"a\tb"
+fields	bot	chunks	1000	state	"connected"	chat	"a>=b"	camera	3	x	1.5	action_bar	"Tour 1"
+assert	render	chunks>=800	true
+assert	render	chunks<=800	false
+assert	render	chunks == 1000	true
+assert	render	chunks!=x	true
+assert	render	state==connected	true
+assert	render	state!=connected	false
+assert	render	chat~a>=b	true
+assert	render	chat~zz	false
+assert	render	x>=1.5	true
+assert	render	x==1.50	true
+assert	render	passenger==false	true
+assert	render	nope>=1	false
+assert	render	chunks_2>=1	false
+assert	render	chunks>=200 30000	error	a value is one word
+assert	render	chunks >= 200 30000	error
+assert	render	chunks>=abc	error	needs a number
+assert	render	chunks >=	error	compares with nothing
+assert	render	chunks	error
+assert	render	>= 3	error
+assert	render	chunks==1e3	false
+assert	render	chunks>=1e3	error	needs a number
+assert	render	chunks>=inf	error
+assert	render	chunks>=NaN	error
+assert	render	chunks<=5.	error	needs a number
+assert	render	chunks>=.5	error
+assert	render	chunks>=-1	true
+assert	render	state>=1	error	not a number
+assert	render	chat<=3	error	not a number
+assert	render	camera>=1	error
+assert	bot	camera>=1	true
+assert	render	été>=1	error
+assert	render	chünks>=1	error
+wait	render	chunks >= 100	20000 true
+wait	render	chunks >=	error
+wait	render	5000 chunks >= 100	5000 true
+wait	render	1500 chunks>=5000	1500 false
+wait	render	chat~a b 12	error
+wait	render	chat~>=b	20000 true
+wait	render	123456789 chat~x	123456789 false
+wait	render	2 action_bar~Tour 2	error
+wait	render	2 action_bar~"Tour 1"	2 true
+wait	render	chunks >= 100 5000	error
+wait	render	30s chunks >= 200	error	bad condition
+wait	render	3000 chunks >= abc	error
+wait	render	+5 chunks>=1	error
+wait	render	1234567890 chunks>=1	error	bad limit
+wait	render	5000	error
+assert	render	2chunks>=1	error
+assert	render	_chunks>=1	error
+wait	render	2 action_bar~"Tour 2"	2 false
+wait	render	5000 chat~"x 12"	5000 false
+assert	render	state!=connecting 5000	error
+wait	render	state!=connecting 5000	error
+wait	render	chunks!=0 5000	error
+wait	render	state==connected 5000	error
+assert	render	chat~"a>=b"	true
+assert	render	chat~"a b"	false
+assert	render	chat~	error
+assert	render	chat==	error	compares with nothing
+assert	render	chat!=	error
+assert	render	chat~""	error
+assert	render	chat~"a	error
+assert	render	chat~a"b	error	a quote goes around the whole value
+assert	render	chunks>=+5	error
+assert	render	  chunks>=1  	true
+assert	render	chunks>=1\u0001	error	visible characters
+assert	render	chunks\u00a0>=1	error
+assert	render	state==connected\u00a0	error
+assert	render	version>=1	error
+assert	bot	version>=1	error
+assert	logic	camera>=1	error
+assert	logic	camera==player	false
+assert	logic	chunks>=1000	true
+assert	logic	chat~"a\tb"	true
+assert	logic	chat~a\tb	error
+assert	render	state!=connecting\t5000	error
+wait	render	state!=connecting\t5000	error
+wait	render	5000\tchunks>=1	5000 true
+wait	render	5000\t\t chunks\t>=\t1\t	5000 true
+assert	render	\tchunks\t>=\t1\t	true
+assert	render	state!=connecting\u000b5000	error
+wait	render	state!=connecting\u000b5000	error
+wait	render	state!=connecting\u00a05000	error
+wait	render	5000\u000bchunks>=1	error
+assert	render	chat~"a\u3000b"	error
+assert	render	chat~a\u2028	error
+assert	render	chat~a\u0085	error
+assert	render	chat~a\u007f	error
+assert	render	chat~a\u200b	error
+wait	render	state!=connecting\u200b5000	error
+assert	render	state!=connecting\ufeff	error
+assert	render	chat~a\u0090	error
+assert	render	chat~a\u00ad	error
+split	bot	\u000bstate	\u000bstate|
+split	bot	state\u000b	state\u000b|
+split	bot	\u0001state	\u0001state|
+split	bot	state\u00a0	state\u00a0|
+split	bot	act \u00a0hi\u00a0	act|\u00a0hi\u00a0
+split	bot	wait_until 5000 chunks>=1	wait_until|5000 chunks>=1
+split	bot	wait_until\t40000\tchunks>=1	wait_until|40000\tchunks>=1
+split	bot	 \t state \t	state|
+split	bot	state	state|
+split	bot		|
+split	bot	act  say  a  b 	act|say  a  b
+split	bot	wait_until\u000b5000 chunks>=1	wait_until\u000b5000|chunks>=1
+split	bot	assert\u00a0chunks>=1	assert\u00a0chunks>=1|

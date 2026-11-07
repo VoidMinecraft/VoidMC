@@ -249,6 +249,10 @@ fn play(
     mut cost: ResMut<Cost>,
     mut commands: Commands,
 ) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "measures what the scenes cost, for the logs"
+    )]
     let started = Instant::now();
     life.tick += 1;
     let tick = life.tick;

@@ -96,6 +96,10 @@ mod tests {
 
     #[test]
     fn a_late_tick_counts_and_a_regular_one_does_not() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a test sets a real time on purpose"
+        )]
         let start = Instant::now();
         let mut telemetry = Telemetry::default();
         telemetry.tick(start);
@@ -109,6 +113,10 @@ mod tests {
 
     #[test]
     fn a_resting_mouse_is_no_hole() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a test sets a real time on purpose"
+        )]
         let start = Instant::now();
         let mut telemetry = Telemetry::default();
         telemetry.report(start);

@@ -1256,6 +1256,10 @@ fn walk(
     generator: Res<WorldGen>,
     mut cost: ResMut<Cost>,
 ) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "measures what the characters cost, for the logs"
+    )]
     let started = Instant::now();
     let generator = generator.0.as_ref();
     let surface = |x, z| generator.surface_height_at(x, z);
@@ -1302,6 +1306,10 @@ fn show(
     players: Players,
     mut commands: Commands,
 ) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "measures what the characters cost, for the logs"
+    )]
     let started = Instant::now();
     for (player, session, mut figures, account) in &mut sessions {
         let Some(view) = session.view(&atlas) else {

@@ -5,7 +5,7 @@ pub use ping_response::*;
 pub use status_response::*;
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, voidmc_codec::PacketName)]
 #[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Status)]
 pub enum StatusPacket {
     #[codec(packet_id = 0x00)]

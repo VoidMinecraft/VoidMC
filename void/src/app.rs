@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin, TerminalCtrlCHandlerPlugin};
+use bevy_app::{
+    App, AppExit, ScheduleRunnerPlugin, Startup, TaskPoolPlugin, TerminalCtrlCHandlerPlugin,
+};
 use bevy_ecs::prelude::*;
 
 use crate::Server;
@@ -12,6 +14,7 @@ use crate::network::{ClientConnected, IncomingPacket, NetworkPlugin, OutgoingPac
 use crate::plugins::DefaultPlugins;
 use crate::registry::RegistryDataStore;
 use crate::server_status::ServerStatusSnapshot;
+use crate::step;
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
     ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
@@ -51,6 +54,8 @@ impl VoidServer {
     /// This function blocks until the server shuts down.
     pub fn run(self) {
         let config_resource = ServerConfigResource::from(&self.config);
+        let step_socket = self.config.step_socket.clone();
+        let stepped = step_socket.is_some();
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
         let address = self.config.address.clone();
@@ -59,6 +64,10 @@ impl VoidServer {
         let world_gen = WorldGen(self.config.world_generator);
 
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let incoming_tx = match step_socket {
+            Some(_) => step::counted(incoming_tx),
+            None => incoming_tx,
+        };
         let (outgoing_tx, _) = flume::unbounded::<OutgoingPacket>();
         let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
         let (kick_tx, kick_rx) = flume::unbounded::<u32>();
@@ -90,14 +99,21 @@ impl VoidServer {
 
         let mut app = App::new();
 
-        app.add_plugins((
-            TaskPoolPlugin::default(),
-            ScheduleRunnerPlugin::run_loop(tick_duration),
-            // Ctrl-C / SIGTERM emits AppExit so the server stops gracefully
-            // (the same signal `/stop` uses).
-            TerminalCtrlCHandlerPlugin,
-        ))
-        .add_plugins(NetworkPlugin::new(
+        app.add_plugins(TaskPoolPlugin::default());
+        match step_socket {
+            Some(socket) => {
+                app.add_plugins(step::StepPlugin::new(socket, tick_duration));
+            }
+            None => {
+                app.add_plugins((
+                    ScheduleRunnerPlugin::run_loop(tick_duration),
+                    // Ctrl-C / SIGTERM emits AppExit so the server stops gracefully
+                    // (the same signal `/stop` uses).
+                    TerminalCtrlCHandlerPlugin,
+                ));
+            }
+        }
+        app.add_plugins(NetworkPlugin::new(
             incoming_rx,
             outgoing_tx,
             disconnect_rx,
@@ -107,6 +123,9 @@ impl VoidServer {
         .add_plugins(DefaultPlugins)
         .add_plugins(CommandPlugin)
         .add_plugins(GameSystemsPlugin);
+
+        #[cfg(feature = "packet-trace")]
+        app.add_plugins(crate::packet_trace::PacketTracePlugin);
 
         if self.config.metrics_debug {
             app.add_plugins(MetricsPlugin::new(self.config.metrics_tps_output.clone()));
@@ -132,7 +151,10 @@ impl VoidServer {
             }
         }
 
-        app.run();
+        let exit = app.run();
+        if let (true, AppExit::Error(code)) = (stepped, exit) {
+            std::process::exit(code.get().into());
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bevy_ecs::prelude::*;
+use bevy_platform::collections::HashMap as FixedHashMap;
 use tracing::instrument;
 use voidmc_protocol::clientbound::chunk::{
     Chunk as ProtocolChunk, ChunkDataAndLight, ChunkHeightmaps, ChunkSection, LightData, blocks,
@@ -21,8 +22,8 @@ pub struct ChunkData {
     pub sections: Vec<ChunkSection>,
     pub heightmaps: ChunkHeightmaps,
     pub light: LightData,
-    block_entities: HashMap<LocalBlockPos, BlockEntity>,
-    pending_block_entities: HashMap<LocalBlockPos, BlockEntityKind>,
+    block_entities: FixedHashMap<LocalBlockPos, BlockEntity>,
+    pending_block_entities: FixedHashMap<LocalBlockPos, BlockEntityKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,8 +70,8 @@ impl ChunkData {
             sections,
             heightmaps,
             light,
-            block_entities: HashMap::new(),
-            pending_block_entities: HashMap::new(),
+            block_entities: FixedHashMap::new(),
+            pending_block_entities: FixedHashMap::new(),
         }
     }
 

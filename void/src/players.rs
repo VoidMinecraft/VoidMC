@@ -14,7 +14,7 @@ use bevy_ecs::system::SystemParam;
 use flume::{Sender, TrySendError};
 use voidmc_protocol::clientbound::ClientboundPacket;
 
-use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
+use crate::components::{ChunkSet, ClientId, LoadedChunks, PlayerDimension, PlayerReady};
 use crate::network::{ClientSenders, NetworkChannels, OUTBOUND_QUEUE_CAPACITY, OutgoingPacket};
 use crate::world::{ChunkPos, DimensionId};
 
@@ -25,7 +25,7 @@ pub struct Recipient<'a> {
     entity: Entity,
     client_id: u32,
     dimension: Option<DimensionId>,
-    loaded_chunks: Option<&'a HashSet<ChunkPos>>,
+    loaded_chunks: Option<&'a ChunkSet>,
 }
 
 impl Recipient<'_> {
@@ -196,30 +196,49 @@ struct Outbox<'a> {
 
 impl Outbox<'_> {
     fn deliver(&self, entity: Entity, client_id: u32, packet: ClientboundPacket) {
+        #[cfg(feature = "packet-trace")]
+        let traced = crate::packet_trace::packet_out(client_id, &packet);
+        let dropped = self.queue(entity, client_id, packet);
+        if dropped.is_none() {
+            crate::step::count_sent();
+        }
+        #[cfg(feature = "packet-trace")]
+        crate::packet_trace::packet_out_done(traced, dropped);
+    }
+
+    /// Why the packet was lost, if it was.
+    fn queue(
+        &self,
+        entity: Entity,
+        client_id: u32,
+        packet: ClientboundPacket,
+    ) -> Option<&'static str> {
         let Some(client) = self.direct.and_then(|senders| senders.get(entity)) else {
             if self
                 .fallback
                 .send(OutgoingPacket { client_id, packet })
-                .is_err()
-                && !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed)
+                .is_ok()
             {
+                return None;
+            }
+            if !CHANNEL_CLOSED_LOGGED.swap(true, Ordering::Relaxed) {
                 tracing::error!(
                     ?entity,
                     client_id,
                     "Client entity has no outbound channel and the fallback channel is closed; dropping packets"
                 );
             }
-            return;
+            return Some("closed");
         };
 
         if client.kicked() {
-            return;
+            return Some("kicked");
         }
         match client
             .outgoing()
             .try_send(OutgoingPacket { client_id, packet })
         {
-            Ok(()) => {}
+            Ok(()) => None,
             Err(TrySendError::Full(_)) => {
                 if client.mark_kicked() {
                     tracing::warn!(
@@ -230,9 +249,11 @@ impl Outbox<'_> {
                     );
                     let _ = self.kick.send(client_id);
                 }
+                Some("full")
             }
             Err(TrySendError::Disconnected(_)) => {
                 tracing::debug!(?entity, client_id, "Client connection already closed");
+                Some("closed")
             }
         }
     }
@@ -431,6 +452,7 @@ impl<'w> WorldPlayers<'w> {
 #[cfg(test)]
 mod tests {
     use bevy_app::{App, Update};
+    use bevy_ecs::system::SystemState;
     use flume::Receiver;
     use voidmc_protocol::clientbound::{self, KeepAlive};
 
@@ -473,6 +495,34 @@ mod tests {
 
     fn loaded(chunks: &[(i32, i32)]) -> LoadedChunks {
         LoadedChunks(chunks.iter().map(|&(x, z)| ChunkPos::new(x, z)).collect())
+    }
+
+    #[test]
+    fn a_stepped_server_counts_what_players_send() {
+        let (mut app, _rx) = test_app();
+        let player = app.world_mut().spawn(ClientId(9)).id();
+        crate::step::start_counting();
+        let before = crate::step::sent_on_this_thread();
+        let mut state = SystemState::<Players>::new(app.world_mut());
+        state.get_mut(app.world_mut()).send(player, keep_alive(1));
+        assert_eq!(crate::step::sent_on_this_thread(), before + 1);
+    }
+
+    #[test]
+    fn a_lost_packet_does_not_count_for_the_barrier() {
+        let (mut app, _rx) = test_app();
+        let (gone_tx, gone_rx) = flume::bounded(1);
+        drop(gone_rx);
+        let player = app.world_mut().spawn(ClientId(9)).id();
+        let (_connected_tx, connected_rx) = flume::unbounded();
+        let mut senders = ClientSenders::new(connected_rx);
+        senders.register(player, gone_tx);
+        app.insert_resource(senders);
+        crate::step::start_counting();
+        let before = crate::step::sent_on_this_thread();
+        let mut state = SystemState::<Players>::new(app.world_mut());
+        state.get_mut(app.world_mut()).send(player, keep_alive(1));
+        assert_eq!(crate::step::sent_on_this_thread(), before);
     }
 
     #[test]

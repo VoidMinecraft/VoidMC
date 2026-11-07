@@ -19,6 +19,9 @@ pub mod menu;
 pub mod messages;
 mod metrics;
 pub mod network;
+pub mod pace;
+#[cfg(feature = "packet-trace")]
+pub mod packet_trace;
 pub mod particles;
 pub mod players;
 pub mod plugins;
@@ -26,10 +29,13 @@ pub mod registry;
 pub mod schedule;
 mod server;
 mod server_status;
+pub mod server_tick;
 pub mod sounds;
+mod step;
 pub mod systems;
 pub mod titles;
 pub mod toasts;
+pub mod uuids;
 pub(crate) mod window;
 pub mod world;
 

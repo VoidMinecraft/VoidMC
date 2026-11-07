@@ -48,6 +48,10 @@ fn region_coords(pos: ChunkPos) -> (i32, i32) {
     (pos.x >> 5, pos.z >> 5)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the date of a region file on disk, not of a packet"
+)]
 fn now_secs() -> u32 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

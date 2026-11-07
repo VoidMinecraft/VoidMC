@@ -97,7 +97,12 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Profile {
 
     fn on_enter(&self, id: &Id, context: Context<'_, S>) {
         if let Some(span) = context.span(id) {
-            span.extensions_mut().replace(Entered(Instant::now()));
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the profiler measures the wall clock for the logs"
+            )]
+            let now = Instant::now();
+            span.extensions_mut().replace(Entered(now));
         }
     }
 
@@ -111,6 +116,10 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Profile {
         else {
             return;
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the profiler measures the wall clock for the logs"
+        )]
         let (took, now) = (at.elapsed(), Instant::now());
         let Ok(mut tally) = self.tally.lock() else {
             return;

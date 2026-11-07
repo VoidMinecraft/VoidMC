@@ -119,7 +119,7 @@ impl WorldGenerator for Arena {
 mod tests {
     use super::*;
     use voidmc::{
-        components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady},
+        components::{ChunkSet, ClientId, LoadedChunks, PlayerDimension, PlayerReady},
         network::{NetworkChannels, OutgoingPacket},
     };
     use voidmc_data::v26_1_2::blocks;
@@ -189,13 +189,13 @@ mod tests {
             ClientId(1),
             PlayerReady,
             PlayerDimension(DimensionId::Overworld),
-            LoadedChunks(HashSet::from([pos])),
+            LoadedChunks(ChunkSet::from([pos])),
         ));
         world.spawn((
             ClientId(2),
             PlayerReady,
             PlayerDimension(DimensionId::Overworld),
-            LoadedChunks(HashSet::new()),
+            LoadedChunks(ChunkSet::new()),
         ));
         let block = |data: &ChunkData| {
             data.get_block(

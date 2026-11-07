@@ -9,7 +9,7 @@ pub use registry_data::*;
 pub use update_tags::*;
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, voidmc_codec::PacketName)]
 #[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Configuration)]
 pub enum ConfigurationPacket {
     #[codec(packet_id = 0x03)]
@@ -22,7 +22,7 @@ pub enum ConfigurationPacket {
 
 /// Packets in the configuration phase whose body has a manual `Encode` impl
 /// (e.g. uses VarInt arrays) and therefore can't live inside the tagged enum.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, voidmc_codec::PacketName)]
 pub enum ManualConfigurationPacket {
     UpdateTags(UpdateTags),
 }

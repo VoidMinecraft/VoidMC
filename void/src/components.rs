@@ -91,9 +91,12 @@ pub struct PlayerReady;
 #[derive(Component)]
 pub struct EffectiveViewDistance(pub i32);
 
+/// A set of chunks whose order of iteration is the same in every process.
+pub type ChunkSet = bevy_platform::collections::HashSet<ChunkPos>;
+
 /// Chunks currently loaded (sent) for this player.
 #[derive(Component)]
-pub struct LoadedChunks(pub HashSet<ChunkPos>);
+pub struct LoadedChunks(pub ChunkSet);
 
 /// Set by chunk streaming when a pass could not send every chunk in range
 /// (send budget or generation cap); the player is revisited next tick even
@@ -179,7 +182,7 @@ pub struct EntityUuid(pub uuid::Uuid);
 
 impl Default for EntityUuid {
     fn default() -> Self {
-        Self(Uuid::new_v4())
+        Self(crate::uuids::random_uuid())
     }
 }
 

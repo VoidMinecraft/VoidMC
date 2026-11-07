@@ -3,10 +3,12 @@ use rand::Rng;
 use tracing::instrument;
 
 use crate::components::{Rotation, SpawnedEntity, Velocity, Wander};
+use crate::pace::Chance;
 
 /// Very small, deterministic-seeming wander AI for demonstration.
-#[instrument(name = "mob_ai_wander", level = "info", skip(query))]
+#[instrument(name = "mob_ai_wander", level = "info", skip(query, chance))]
 pub fn wander_system(
+    mut chance: Chance,
     mut query: Query<(&mut Rotation, &mut Velocity, &mut Wander), With<SpawnedEntity>>,
 ) {
     for (mut rot, mut vel, mut wander) in query.iter_mut() {
@@ -14,9 +16,8 @@ pub fn wander_system(
         wander.ticks -= 1;
 
         if wander.ticks <= 0 {
-            let mut rng = rand::thread_rng();
-            wander.yaw = rng.gen_range(0.0..360.0) as f32;
-            wander.ticks = rng.gen_range(40..140);
+            (wander.yaw, wander.ticks) =
+                chance.roll(|rng| (rng.gen_range(0.0..360.0) as f32, rng.gen_range(40..140)));
         }
 
         // Move forward along yaw. Note: yaw is degrees; convert to radians.
@@ -38,5 +39,48 @@ pub fn wander_system(
             vel.x = dx;
             vel.z = dz;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use bevy_app::{App, Update};
+
+    use super::*;
+    use crate::pace::SteppedPacePlugin;
+
+    #[test]
+    fn two_stepped_servers_wander_the_same_way() {
+        let walk = || {
+            let mut app = App::new();
+            app.add_plugins(SteppedPacePlugin::new(Duration::from_millis(50)))
+                .add_systems(Update, wander_system);
+            let mobs: Vec<Entity> = (0..4)
+                .map(|_| {
+                    app.world_mut()
+                        .spawn((
+                            SpawnedEntity(()),
+                            Rotation::default(),
+                            Velocity::default(),
+                            Wander {
+                                ticks: 1,
+                                speed: 0.08,
+                                yaw: 0.0,
+                            },
+                        ))
+                        .id()
+                })
+                .collect();
+            app.update();
+            mobs.iter()
+                .map(|mob| {
+                    let wander = app.world().get::<Wander>(*mob).unwrap();
+                    (wander.yaw.to_bits(), wander.ticks)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(walk(), walk());
     }
 }
