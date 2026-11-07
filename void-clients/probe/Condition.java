@@ -32,7 +32,7 @@ final class Condition {
   record Wait(Parsed parsed, long limit) {}
 
   interface Fields {
-    Map<String, Object> read() throws Exception;
+    Map<String, Object> read(long withinMs) throws Exception;
   }
 
   private Condition() {}
@@ -119,12 +119,13 @@ final class Condition {
     long start = System.currentTimeMillis();
     while (true) {
       try {
-        Map<String, Object> fields = source.read();
+        long left = Math.max(1, wait.limit() - (System.currentTimeMillis() - start));
+        Map<String, Object> fields = source.read(left);
         if (holds(wait.parsed(), fields)) {
           fields.put("waited_ms", System.currentTimeMillis() - start);
           return fields;
         }
-      } catch (IllegalStateException notYet) {
+      } catch (IllegalStateException | java.util.concurrent.TimeoutException notYet) {
       }
       if (System.currentTimeMillis() - start > wait.limit()) throw new AssertionError("timed out on " + text);
       Thread.sleep(pauseMs);

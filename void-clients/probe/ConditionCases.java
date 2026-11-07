@@ -10,15 +10,18 @@ final class ConditionCases {
   public static void main(String[] args) throws Exception {
     if (args[0].equals("--await")) {
       int[] tries = {0};
+      long[] widest = {0};
       Map<String, Object> loaded = new HashMap<>(Map.of("chunks", 1000L));
-      Condition.Fields loading = () -> {
-        if (++tries[0] <= 3) throw new IllegalStateException("game not ready");
+      Condition.Fields loading = within -> {
+        widest[0] = Math.max(widest[0], within);
+        if (++tries[0] <= 2) throw new IllegalStateException("game not ready");
+        if (tries[0] <= 3) throw new java.util.concurrent.TimeoutException();
         return new HashMap<>(loaded);
       };
       Condition.await(Condition.waitOf("2000 chunks>=1000"), "chunks>=1000", loading, 1);
-      System.out.println("ready after " + tries[0] + " tries");
+      System.out.println("ready after " + tries[0] + " tries, within " + (widest[0] <= 2000));
       try {
-        Condition.await(Condition.waitOf("200 chunks>=1"), "chunks>=1", () -> { throw new IllegalStateException("game not ready"); }, 1);
+        Condition.await(Condition.waitOf("200 chunks>=1"), "chunks>=1", within -> { throw new IllegalStateException("game not ready"); }, 1);
       } catch (AssertionError timedOut) {
         System.out.println(timedOut.getMessage());
       }

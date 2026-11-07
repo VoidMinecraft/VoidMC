@@ -88,13 +88,21 @@ impl Registry {
     }
 }
 
-/// The folder of the runtime state, shared by every worktree.
 fn default_home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".voidc")
 }
 
+/// The folder of the runtime state, shared by every worktree.
 pub fn home() -> PathBuf {
     std::env::var_os("VOIDC_HOME").map_or_else(default_home, PathBuf::from)
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.components().collect())
+}
+
+pub fn home_name() -> String {
+    canonical(&home()).display().to_string()
 }
 
 const MOSAIC: &str = "(mosaic)";
@@ -109,10 +117,16 @@ fn mosaic_port_in(
     default: &Path,
     busy: impl Fn(u16) -> bool,
 ) -> Result<u16, String> {
+    let (home, default) = (canonical(home), canonical(default));
     if home == default {
         return Ok(registry.dashboard_port);
     }
-    lease_in(registry, home, MOSAIC, busy)
+    lease_in(
+        registry,
+        &default,
+        &format!("{MOSAIC} {}", home.display()),
+        busy,
+    )
 }
 
 pub fn client_dir(name: &str) -> PathBuf {
@@ -309,22 +323,23 @@ mod tests {
         let registry = Registry::load();
         let default = scratch("home-default");
         let (first, second) = (scratch("home-first"), scratch("home-second"));
+        let mut slashed = default.clone().into_os_string();
+        slashed.push("/");
         assert_eq!(
-            mosaic_port_in(&registry, &default, &default, |_| false).unwrap(),
+            mosaic_port_in(&registry, Path::new(&slashed), &default, |_| false).unwrap(),
             registry.dashboard_port
         );
         let a = mosaic_port_in(&registry, &first, &default, |_| false).unwrap();
-        let b = mosaic_port_in(&registry, &second, &default, |port| port == a).unwrap();
+        let b = mosaic_port_in(&registry, &second, &default, |_| false).unwrap();
+        let feature = lease_in(&registry, &default, "Hot reload", |_| false).unwrap();
         assert_ne!(a, b);
+        assert!(![a, b, registry.dashboard_port].contains(&feature));
         assert_ne!(a, registry.dashboard_port);
         assert_eq!(
             mosaic_port_in(&registry, &first, &default, |_| true).unwrap(),
             a
         );
-        assert_eq!(
-            leases_at(&first.join("ports.json")).unwrap().get(MOSAIC),
-            Some(&a)
-        );
+        assert!(!first.join("ports.json").exists());
     }
 
     #[test]

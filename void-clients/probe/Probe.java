@@ -166,6 +166,10 @@ public class Probe {
   }
 
   private static <T> T onGame(Callable<T> task) throws Exception {
+    return onGame(task, 10_000);
+  }
+
+  private static <T> T onGame(Callable<T> task, long withinMs) throws Exception {
     Minecraft mc = ready();
     CompletableFuture<T> result = new CompletableFuture<>();
     mc.execute(() -> {
@@ -175,7 +179,7 @@ public class Probe {
         result.completeExceptionally(error);
       }
     });
-    return result.get(10, TimeUnit.SECONDS);
+    return result.get(withinMs, TimeUnit.MILLISECONDS);
   }
 
   private static Minecraft ready() {
@@ -291,9 +295,8 @@ public class Probe {
   private static Map<String, Object> waitUntil(String rest) throws Exception {
     Condition.Wait wait = Condition.waitOf(rest);
     Condition.validate(wait.parsed(), LEVEL);
-    return Condition.await(wait, rest, () -> onGame(Probe::fields), 50);
+    return Condition.await(wait, rest, within -> onGame(Probe::fields, Math.min(10_000, within)), 50);
   }
-
 
   private static String shot(String name, int downscale) throws Exception {
     if (LEVEL.equals("logic")) throw new IllegalStateException("the logic level has no picture");

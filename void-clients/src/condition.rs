@@ -493,7 +493,7 @@ mod tests {
         );
         assert_eq!(
             String::from_utf8_lossy(&run.stdout),
-            "ready after 4 tries\ntimed out on chunks>=1\n"
+            "ready after 4 tries, within true\ntimed out on chunks>=1\n"
         );
     }
 
