@@ -322,8 +322,11 @@ mod tests {
         registry::set_test_home(Some(home.clone()));
         let listener = UnixListener::bind(registry::socket("gone").unwrap()).unwrap();
         let mut probe = Probe::connect("gone").unwrap();
-        drop(listener.accept().unwrap());
+        let (hung_up, _) = listener.accept().unwrap();
+        let held_by_a_child = hung_up.try_clone().unwrap();
+        hung_up.shutdown(std::net::Shutdown::Both).unwrap();
         let error = probe.ask("act map", Duration::from_secs(1)).unwrap_err();
+        drop(held_by_a_child);
         registry::set_test_home(None);
         fs::remove_dir_all(home).unwrap();
         assert!(

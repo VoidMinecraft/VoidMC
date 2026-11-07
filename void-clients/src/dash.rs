@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -202,13 +202,17 @@ fn status(client: &Client) -> Value {
     tile
 }
 
+/// Ends with a shutdown, not with the drop: a child forked meanwhile may hold this socket, and the
+/// peer would wait for an end that a close does not send.
 fn respond(stream: &mut TcpStream, code: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
     write!(
         stream,
         "HTTP/1.1 {code}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
-    stream.write_all(body)
+    stream.write_all(body)?;
+    let _ = stream.shutdown(Shutdown::Write);
+    Ok(())
 }
 
 fn thumb(name: &str) -> Option<Vec<u8>> {
@@ -293,6 +297,9 @@ pub fn run(mut registry: Registry) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::control::fake::{FakeClient, NAME};
 
@@ -399,20 +406,33 @@ mod tests {
         assert_eq!(served(old_port), Served::Older);
     }
 
-    fn fake(answer: impl Fn(&str, bool) -> Option<String> + Send + 'static) -> u16 {
+    /// One thread per connection, as `run` does, and every socket stays held after its answer, as
+    /// by a child forked at the wrong moment: only a shutdown ends a request here.
+    fn fake(answer: impl Fn(&str, bool) -> Option<String> + Send + Sync + 'static) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let answer = Arc::new(answer);
+        let quit = Arc::new(AtomicBool::new(false));
+        let held = Arc::new(Mutex::new(Vec::new()));
         thread::spawn(move || {
-            let mut quit = false;
             for mut stream in listener.incoming().flatten() {
-                let Ok(head) = super::head(&stream) else {
-                    continue;
-                };
-                quit |= head.target == "/api/quit";
-                let _ = match answer(&head.target, quit) {
-                    Some(body) => respond(&mut stream, "200 OK", "text/plain", body.as_bytes()),
-                    None => respond(&mut stream, "404 Not Found", "text/plain", b""),
-                };
+                let (answer, quit, held) = (answer.clone(), quit.clone(), held.clone());
+                held.lock().unwrap().push(stream.try_clone().unwrap());
+                thread::spawn(move || {
+                    let Ok(head) = super::head(&stream) else {
+                        return;
+                    };
+                    if head.target.is_empty() {
+                        return;
+                    }
+                    if head.target == "/api/quit" {
+                        quit.store(true, Ordering::SeqCst);
+                    }
+                    let _ = match answer(&head.target, quit.load(Ordering::SeqCst)) {
+                        Some(body) => respond(&mut stream, "200 OK", "text/plain", body.as_bytes()),
+                        None => respond(&mut stream, "404 Not Found", "text/plain", b""),
+                    };
+                });
             }
         });
         port
@@ -432,22 +452,35 @@ mod tests {
 
     #[test]
     fn a_mosaic_of_our_version_that_takes_the_port_meanwhile_is_kept() {
-        let port = fake(|target, quit| match target {
-            "/api/home" => Some(home_name()),
-            _ if quit => Some(version::current()),
-            _ => Some(OTHER.into()),
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let heard = asked.clone();
+        let port = fake(move |target, quit| {
+            heard.lock().unwrap().push(target.to_string());
+            match target {
+                "/api/home" => Some(home_name()),
+                _ if quit => Some(version::current()),
+                _ => Some(OTHER.into()),
+            }
         });
-        let started = Instant::now();
         assert_eq!(ensure_on(port).unwrap(), format!("http://127.0.0.1:{port}"));
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [
+                "/api/version",
+                "/api/home",
+                "/api/quit",
+                "/api/version",
+                "/api/home"
+            ]
+        );
     }
 
     #[test]
     fn the_mosaic_of_another_home_is_never_asked_to_quit() {
-        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asked = Arc::new(AtomicBool::new(false));
         let seen = asked.clone();
         let port = fake(move |target, quit| {
-            seen.store(quit, std::sync::atomic::Ordering::SeqCst);
+            seen.store(quit, Ordering::SeqCst);
             match target {
                 "/api/home" => Some("/somewhere/else".into()),
                 _ => Some(OTHER.into()),
@@ -455,7 +488,7 @@ mod tests {
         });
         let error = ensure_on(port).unwrap_err();
         assert!(error.contains("another VOIDC_HOME"), "{error}");
-        assert!(!asked.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!asked.load(Ordering::SeqCst));
         let ours = fake(|target, _| match target {
             "/api/home" => Some("/somewhere/else".into()),
             _ => Some(version::current()),
