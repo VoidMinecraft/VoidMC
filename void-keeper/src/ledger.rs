@@ -31,6 +31,7 @@ use voidmc_protocol::slot::Slot;
 
 use crate::wire::{frame, split, tagged};
 
+const NO_LOGIN: &str = "the client never received a login";
 const PLAYER_MENU_SLOTS: usize = 46;
 const FRESH_BORDER_DIAMETER: f64 = 59_999_968.0;
 const FRESH_PORTAL_BOUNDARY: i32 = 29_999_984;
@@ -185,6 +186,14 @@ impl Ledger {
 
     pub fn tainted(&self) -> Option<&str> {
         self.tainted.as_deref()
+    }
+
+    /// Why no `login` can be taken over seamlessly, whatever it says.
+    pub fn unfit(&self) -> Option<&str> {
+        match self.standing {
+            None => Some(NO_LOGIN),
+            Some(_) => self.tainted(),
+        }
     }
 
     fn is_player(&self, entity: i32) -> bool {
@@ -566,7 +575,7 @@ impl Ledger {
     /// Whether a seamless return is possible onto this `login`, and why not otherwise.
     pub fn fits(&self, login: &Login) -> Result<(), String> {
         let Some(standing) = &self.standing else {
-            return Err("the client never received a login".to_string());
+            return Err(NO_LOGIN.to_string());
         };
         if let Some(reason) = &self.tainted {
             return Err(reason.clone());

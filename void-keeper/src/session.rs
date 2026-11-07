@@ -45,7 +45,8 @@ pub struct Settings {
     /// How long a new server has to send its chunks and packs before the old ones go.
     pub settle: Duration,
     /// How long a backend may stay silent before it counts as lost. Below the 30 seconds after
-    /// which a client gives up by itself, above the interval of the keep-alives of a server.
+    /// which a client gives up by itself, above the interval of the keep-alives of a server:
+    /// the engine counts it in ticks, 200 of them, which is 10 seconds only at 20 TPS.
     pub backend_silence: Duration,
 }
 
@@ -114,8 +115,12 @@ enum Phase {
     /// `login_finished` is on its way and the client has not acknowledged it.
     Joining,
     Configuration,
+    /// The server's `finish_configuration` is on its way and the client has not answered it.
+    LeavingConfiguration,
     Play,
-    /// `start_configuration` is on its way and the client has not acknowledged it.
+    /// The server's `start_configuration` is on its way and the client has not acknowledged it.
+    LeavingPlay,
+    /// The proxy's own `start_configuration` is on its way and the client has not acknowledged it.
     AwaitingAck,
 }
 
@@ -171,8 +176,6 @@ pub struct Session {
     keep_alive_count: i64,
     settle_at: Option<Instant>,
     backend_heard_at: Instant,
-    leaving_play: bool,
-    leaving_configuration: bool,
     handed_over: Tally,
     closed: bool,
     actions: Vec<Action>,
@@ -204,8 +207,6 @@ impl Session {
             keep_alive_count: 0,
             settle_at: None,
             backend_heard_at: now,
-            leaving_play: false,
-            leaving_configuration: false,
             handed_over: Tally::default(),
             closed: false,
             actions: Vec::new(),
@@ -274,7 +275,7 @@ impl Session {
     fn backend_is_silent(&self, now: Instant) -> bool {
         let watched = match self.stage {
             Stage::Waiting { .. } => false,
-            Stage::Relaying => self.phase == Phase::Play,
+            Stage::Relaying => matches!(self.phase, Phase::Play | Phase::LeavingPlay),
             _ => true,
         };
         watched && now.duration_since(self.backend_heard_at) >= self.settings.backend_silence
@@ -305,7 +306,7 @@ impl Session {
         }
         if self.phase == Phase::Play {
             if self.reconfigure_because.is_none() {
-                self.reconfigure_because = self.ledger.tainted().map(str::to_string);
+                self.reconfigure_because = self.ledger.unfit().map(str::to_string);
             }
             if self.reconfigure_because.is_some() {
                 self.start_configuration();
@@ -318,7 +319,7 @@ impl Session {
         if self.closed {
             return;
         }
-        if std::mem::take(&mut self.leaving_play) {
+        if self.phase == Phase::LeavingPlay {
             self.phase = Phase::AwaitingAck;
         }
         if self.phase == Phase::Play
@@ -335,13 +336,17 @@ impl Session {
                 tally: self.ledger.tally(),
             }));
         }
-        let patience = match self.phase {
-            Phase::Login | Phase::Joining => self.settings.return_timeout.min(LOGIN_PATIENCE),
-            _ => self.settings.return_timeout,
-        };
+        let patience = self.patience();
         self.deadline.get_or_insert(now + patience);
         self.drop_known_packs_reply = false;
         self.wait_for_backend(now + self.settings.retry_every);
+    }
+
+    fn patience(&self) -> Duration {
+        match self.phase {
+            Phase::Login | Phase::Joining => self.settings.return_timeout.min(LOGIN_PATIENCE),
+            _ => self.settings.return_timeout,
+        }
     }
 
     fn wait_for_backend(&mut self, next_attempt: Instant) {
@@ -361,18 +366,14 @@ impl Session {
     fn client_reads(&self) -> Reads {
         match self.phase {
             Phase::Login => Reads::Login,
-            Phase::Joining | Phase::AwaitingAck => Reads::Configuration,
-            Phase::Configuration if self.leaving_configuration => Reads::Play,
-            Phase::Configuration => Reads::Configuration,
-            Phase::Play if self.leaving_play => Reads::Configuration,
-            Phase::Play => Reads::Play,
+            Phase::Joining | Phase::Configuration | Phase::LeavingPlay | Phase::AwaitingAck => {
+                Reads::Configuration
+            }
+            Phase::LeavingConfiguration | Phase::Play => Reads::Play,
         }
     }
 
     fn keep_client_alive(&mut self, now: Instant) {
-        if self.leaving_configuration {
-            return;
-        }
         self.keep_alive_count += 1;
         let keep_alive = KeepAlive {
             keep_alive_id: OWN_KEEP_ALIVE | self.keep_alive_count,
@@ -391,7 +392,11 @@ impl Session {
             Phase::Configuration => {
                 self.send_to_client(frame(config_cb::KEEP_ALIVE, |body| keep_alive.encode(body)));
             }
-            Phase::Login | Phase::Joining | Phase::AwaitingAck => {}
+            Phase::Login
+            | Phase::Joining
+            | Phase::LeavingConfiguration
+            | Phase::LeavingPlay
+            | Phase::AwaitingAck => {}
         }
     }
 
@@ -406,7 +411,12 @@ impl Session {
                 json.to_string().encode(body);
             }),
             Reads::Configuration => frame(config_cb::DISCONNECT, |body| disconnect.encode(body)),
-            Reads::Play => frame(play_cb::DISCONNECT, |body| disconnect.encode(body)),
+            Reads::Play => {
+                if let Some(closing) = self.ledger.close_bundle() {
+                    self.send_to_client(closing);
+                }
+                frame(play_cb::DISCONNECT, |body| disconnect.encode(body))
+            }
         };
         self.send_to_client(goodbye);
         self.actions.push(Action::Event(Event::GaveUp { reason }));
@@ -415,10 +425,7 @@ impl Session {
     }
 
     fn settle(&mut self, now: Instant) {
-        if self.phase != Phase::Play
-            || self.leaving_play
-            || self.settle_at.is_none_or(|at| now < at)
-        {
+        if self.phase != Phase::Play || self.settle_at.is_none_or(|at| now < at) {
             return;
         }
         self.settle_at = None;
@@ -438,8 +445,10 @@ impl Session {
         };
         let forward = match self.phase {
             Phase::Login | Phase::Joining => self.client_in_login(id, body, &frame),
-            Phase::Configuration => self.client_in_configuration(id, body, &frame, now),
-            Phase::Play => self.client_in_play(id, body, &frame),
+            Phase::Configuration | Phase::LeavingConfiguration => {
+                self.client_in_configuration(id, body, &frame, now)
+            }
+            Phase::Play | Phase::LeavingPlay => self.client_in_play(id, body, &frame),
             Phase::AwaitingAck => {
                 if id == play_sb::CONFIGURATION_ACKNOWLEDGED {
                     self.client_acknowledged();
@@ -460,7 +469,12 @@ impl Session {
                     self.actions.push(Action::Event(Event::Joined { name }));
                 }
             }
-            login_sb::LOGIN_ACKNOWLEDGED => self.phase = Phase::Configuration,
+            login_sb::LOGIN_ACKNOWLEDGED => {
+                self.phase = Phase::Configuration;
+                if let (Some(lost_at), Some(_)) = (self.lost_at, self.deadline) {
+                    self.deadline = Some(lost_at + self.patience());
+                }
+            }
             _ => {}
         }
         true
@@ -497,7 +511,6 @@ impl Session {
             config_sb::KEEP_ALIVE if is_own_keep_alive(body) => return false,
             config_sb::FINISH_CONFIGURATION => {
                 self.phase = Phase::Play;
-                self.leaving_configuration = false;
                 match self.stage {
                     Stage::Relaying => self.finish_reconfiguration(now),
                     Stage::Replaying { .. } => {
@@ -522,7 +535,6 @@ impl Session {
             play_sb::RESOURCE_PACK => self.note_pack_status(body),
             play_sb::CONTAINER_CLOSE => self.ledger.menu_closed(),
             play_sb::CONFIGURATION_ACKNOWLEDGED => {
-                self.leaving_play = false;
                 self.phase = Phase::Configuration;
                 self.ledger.forget();
                 self.script = Script::default();
@@ -619,6 +631,7 @@ impl Session {
         let Some((id, body)) = split(&frame) else {
             return;
         };
+        let sent_away = is_sent_away(self.client_reads(), id);
         match self.phase {
             Phase::Login => match id {
                 login_cb::LOGIN_COMPRESSION => {
@@ -640,7 +653,7 @@ impl Session {
                 _ => {}
             },
             Phase::Joining | Phase::AwaitingAck => return,
-            Phase::Configuration => match id {
+            Phase::Configuration | Phase::LeavingConfiguration => match id {
                 config_cb::RESOURCE_PACK_PUSH => {
                     if self.answer_known_pack(body, config_sb::RESOURCE_PACK) {
                         return;
@@ -649,23 +662,28 @@ impl Session {
                 config_cb::RESOURCE_PACK_POP => self.note_pack_pop(body),
                 config_cb::KEEP_ALIVE | config_cb::PING => {}
                 config_cb::FINISH_CONFIGURATION => {
-                    self.leaving_configuration = true;
+                    self.phase = Phase::LeavingConfiguration;
                     self.script.record(&frame);
                 }
                 _ => self.script.record(&frame),
             },
-            Phase::Play => match id {
+            Phase::Play | Phase::LeavingPlay => match id {
                 play_cb::RESOURCE_PACK_PUSH => {
                     if self.answer_known_pack(body, play_sb::RESOURCE_PACK) {
                         return;
                     }
                 }
                 play_cb::RESOURCE_PACK_POP => self.note_pack_pop(body),
-                play_cb::START_CONFIGURATION => self.leaving_play = true,
+                play_cb::START_CONFIGURATION => self.phase = Phase::LeavingPlay,
                 _ => self.ledger.observe(&frame),
             },
         }
         self.send_to_client(frame);
+        if sent_away && !self.closed {
+            self.actions.push(Action::DropBackend);
+            self.actions.push(Action::Close);
+            self.closed = true;
+        }
     }
 
     fn refuse_online_mode(&mut self) {
@@ -749,15 +767,19 @@ impl Session {
                 held: Vec::new(),
                 answered_known_packs: false,
             },
-            Phase::AwaitingAck => Stage::Reconfiguring {
+            Phase::AwaitingAck | Phase::LeavingPlay => Stage::Reconfiguring {
                 held: Vec::new(),
                 answered_known_packs: false,
             },
-            Phase::Configuration if !self.script.is_finished_at(0) => Stage::Replaying {
-                step: 0,
-                question_open: false,
-            },
-            Phase::Login | Phase::Joining | Phase::Configuration => {
+            Phase::Configuration | Phase::LeavingConfiguration
+                if !self.script.is_finished_at(0) =>
+            {
+                Stage::Replaying {
+                    step: 0,
+                    question_open: false,
+                }
+            }
+            Phase::Login | Phase::Joining | Phase::Configuration | Phase::LeavingConfiguration => {
                 self.deadline = None;
                 Stage::Relaying
             }
@@ -782,7 +804,7 @@ impl Session {
             id,
             config_cb::RESOURCE_PACK_PUSH | config_cb::RESOURCE_PACK_POP
         ) {
-            if self.leaving_configuration {
+            if self.phase == Phase::LeavingConfiguration {
                 self.actions.push(Action::DropBackend);
                 self.give_up(
                     "The server changes its packs for a client that already left its \
@@ -792,6 +814,14 @@ impl Session {
                 return;
             }
             self.relay_from_backend(frame_in);
+            return;
+        }
+        if let Some(reason) = needs_a_client(&frame_in) {
+            self.actions.push(Action::DropBackend);
+            self.give_up(format!(
+                "The server came back during the configuration and {reason}: only the client \
+                 can answer that. Connect again."
+            ));
             return;
         }
         if !self.script.follows(step, &frame_in) {
@@ -958,6 +988,15 @@ impl Session {
     }
 }
 
+/// Whether a live server sends the client away with this packet.
+fn is_sent_away(reads: Reads, id: i32) -> bool {
+    match reads {
+        Reads::Login => id == login_cb::LOGIN_DISCONNECT,
+        Reads::Configuration => id == config_cb::DISCONNECT,
+        Reads::Play => id == play_cb::DISCONNECT,
+    }
+}
+
 fn empty_frame(id: i32) -> Bytes {
     frame(id, |_| {})
 }
@@ -1070,9 +1109,13 @@ mod tests {
 
     impl Rig {
         fn fresh() -> Self {
+            Self::with(settings())
+        }
+
+        fn with(settings: Settings) -> Self {
             let now = Instant::now();
             Self {
-                session: Session::new(settings(), now, empty(0)),
+                session: Session::new(settings, now, empty(0)),
                 now,
                 client: Vec::new(),
                 backend: Vec::new(),
@@ -1768,8 +1811,79 @@ mod tests {
     #[test]
     fn a_client_waiting_for_its_packs_does_not_make_a_server_silent() {
         let mut rig = Rig::in_configuration();
+        rig.receive_from_backend(config_push(Uuid::from_u128(5)));
+        assert_eq!(rig.sent_to_client(config_cb::RESOURCE_PACK_PUSH), 1);
+        rig.clear();
         rig.tick(settings().backend_silence);
         assert!(rig.rest.is_empty());
+    }
+
+    #[test]
+    fn a_disconnect_inside_a_bundle_closes_the_bundle_first() {
+        let mut rig = Rig::in_play();
+        rig.receive_from_backend(empty(play_cb::BUNDLE_DELIMITER));
+        rig.clear();
+        rig.receive_from_backend(frame(play_cb::SYSTEM_CHAT, |body| {
+            body.resize(MAX_PLAIN_FRAME_BYTES + 1, 0);
+        }));
+        let ids: Vec<i32> = rig.client.iter().map(|f| split(f).unwrap().0).collect();
+        assert_eq!(ids, vec![play_cb::BUNDLE_DELIMITER, play_cb::DISCONNECT]);
+    }
+
+    #[test]
+    fn a_client_that_reaches_its_configuration_waits_the_whole_return_timeout() {
+        let patient = Settings {
+            return_timeout: Duration::from_secs(60),
+            ..settings()
+        };
+        let mut rig = Rig::with(patient);
+        rig.tick(Duration::ZERO);
+        rig.connected();
+        rig.receive_from_client(hello());
+        rig.receive_from_backend(login_finished());
+        rig.lose_backend();
+        rig.receive_from_client(empty(login_sb::LOGIN_ACKNOWLEDGED));
+        rig.clear();
+        rig.tick(Duration::from_secs(30));
+        assert_eq!(rig.sent_to_client(config_cb::DISCONNECT), 0);
+        rig.tick(Duration::from_secs(31));
+        assert_eq!(rig.sent_to_client(config_cb::DISCONNECT), 1);
+    }
+
+    #[test]
+    fn a_question_only_the_client_answers_ends_a_replay_with_a_message() {
+        let cookie = frame(config_cb::COOKIE_REQUEST, |body| {
+            "minecraft:token".to_string().encode(body);
+        });
+        let mut rig = Rig::in_configuration();
+        rig.receive_from_backend(cookie.clone());
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.clear();
+
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_backend(registry(1));
+        rig.receive_from_backend(cookie);
+        assert_eq!(rig.sent_to_client(config_cb::DISCONNECT), 1);
+        assert!(rig.rest.contains(&Action::DropBackend));
+        assert!(matches!(
+            rig.events()[..],
+            [Event::GaveUp { reason }] if reason.contains("cookie")
+        ));
+    }
+
+    #[test]
+    fn a_kick_from_a_live_server_ends_the_session_without_a_loss() {
+        let mut rig = Rig::in_play();
+        let kick = frame(play_cb::DISCONNECT, |body| {
+            text("Kicked").encode(body);
+        });
+        rig.receive_from_backend(kick.clone());
+        assert_eq!(rig.client, vec![kick]);
+        assert!(rig.rest.contains(&Action::DropBackend));
+        assert!(rig.rest.contains(&Action::Close));
+        rig.lose_backend();
+        assert!(rig.events().is_empty());
     }
 
     #[test]
@@ -1858,15 +1972,21 @@ mod tests {
         rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
         rig.lose_backend();
         rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        assert!(rig.rest.contains(&Action::DropBackend));
         rig.clear();
-        rig.tick(Duration::ZERO);
+        rig.tick(settings().retry_every);
         rig.connected();
         assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
+        rig.receive_from_backend(login_finished());
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
+        assert!(!rig.rest.contains(&Action::DropBackend));
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        assert_eq!(rig.sent_to_client(config_cb::FINISH_CONFIGURATION), 1);
+        rig.receive_from_client(known_packs_reply());
+        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
+        let (path, reason) = rig.resumed().unwrap();
+        assert_eq!(path, Path::Reconfigured);
+        assert!(reason.unwrap().contains("never received a login"));
     }
 
     #[test]

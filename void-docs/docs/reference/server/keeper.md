@@ -16,7 +16,7 @@ cargo run --profile fast -p voidmc-keeper -- --backend 127.0.0.1:25566 --listen 
 | `--listen ADDRESS` | `127.0.0.1:25565` | Where clients connect |
 | `--return-timeout SECONDS` | `120` | How long a client waits for a lost server |
 | `--settle SECONDS` | `3` | How long a new server has before old chunks and packs go |
-| `--backend-silence SECONDS` | `20` | How long a server may stay silent before it counts as lost, at least 15: a quiet server only sends a keep-alive every 10 seconds |
+| `--backend-silence SECONDS` | `20` | How long a server may stay silent before it counts as lost, from 15 to 25: a quiet server only sends a keep-alive every 200 ticks, 10 seconds at 20 TPS, and a client hangs up after 30 seconds without a packet |
 
 ## The two paths
 
@@ -39,7 +39,9 @@ inventory. The client keeps its connection, not its game.
 A client lost in the middle of a configuration has neither path: it adds up the
 registries it receives and fails on a double when the configuration ends, and it cannot
 start over. The proxy keeps from it what the new server repeats, and goes on live from
-there. A server that says anything else ends the session with a message. `resumed` then
+there. A server that says anything else ends the session with a message, and so does a
+server that asks what only the client can answer: a cookie, a code of conduct, a dialog
+or a transfer. `resumed` then
 comes with path `reconfigured` and reason `the server went away during a configuration`.
 Resource packs stay out of this comparison: a push of a pack the client does not hold yet
 reaches it at once. A client that receives a push for an id it already has replaces that
@@ -52,6 +54,11 @@ message.
 
 A client that received `login_finished` and has not acknowledged it yet waits for that
 acknowledgement before the proxy logs in again, so that a new server never tells it twice.
+Once it acknowledges, it waits the whole `--return-timeout`, not the 20 seconds of a login.
+
+A client that ended its configuration but never received its `login` holds nothing to
+compare: it goes straight through the reconfigured path, with reason
+`the client never received a login`.
 
 The seamless path needs all of the following; `resumed.reason` names the one that failed:
 
@@ -97,7 +104,8 @@ the proxy answers the server what the client would have answered.
 
 A client cannot change its entity id without a new level: `handleLogin` on an existing
 player keeps the old level, and `handleRespawn` always shows the loading screen. So the
-id must not change. With `VOIDMC_STABLE_PLAYER_IDS` set (or
+id must not change. With `VOIDMC_STABLE_PLAYER_IDS` set to anything but empty, `0` or
+`false` (or
 `ServerConfigBuilder::stable_player_ids`), the engine derives the id from the UUID, in
 a range the allocator does not reach, and falls back to the allocator on a collision.
 
@@ -127,7 +135,9 @@ chunks of the new server are still on their way, so the world is not yet on scre
 `outage_ms` and the times below measure up to that point.
 
 Events go through a bounded queue on a thread of their own: a reader that stalls or dies
-loses events and slows nothing.
+loses events and slows nothing. Lost events are counted, and said on stderr at the first
+one, then at every power of two, with the total when the proxy stops. On Ctrl-C the
+proxy writes what is queued, for at most 2 seconds, before it exits.
 
 ## Refusals and failures
 
@@ -139,13 +149,15 @@ loses events and slows nothing.
 - A disconnect, and anything else the proxy writes itself, follows what the client
   decodes, not what it has answered: `login_finished`, `start_configuration` and
   `finish_configuration` switch a client as they arrive. Between `finish_configuration`
-  and the client's answer the proxy sends no keep-alive.
+  and the client's answer the proxy sends no keep-alive. A disconnect that falls inside
+  an open bundle closes it first: the client holds a bundle's packets until it ends.
 - A frame cut by the crash never reaches the client. A packet that cannot be read is
   still relayed, and forces the reconfigured path at the next return.
 - A server silent for `--backend-silence` counts as lost, in play and during a return,
   and is tried again. A write stuck for 15 seconds does the same. The default stays
   below the 30 seconds after which a client hangs up, and above the 10 seconds between
-  two keep-alives of the engine; a value under 15 seconds is refused. A server paused
+  two keep-alives of the engine, which it counts in ticks: 200 of them, 10 seconds at 20 TPS,
+  more on a server that lags. A value under 15 or over 25 seconds is refused. A server paused
   in a debugger counts as lost too.
 - A difference only the `login` shows, such as another player id, costs one more login:
   the new server sees the player join, leave, and join again, with the client
@@ -180,4 +192,5 @@ memory and 0.45 s of CPU for a whole series of these runs, and the ledger held
 
 - Sounds already playing and map item data stay.
 - Commands typed before the restart are not replayed.
-- `/kick` and other disconnects from a live server pass through to the client.
+- `/kick` and other disconnects from a live server pass through to the client and end
+  its session there, without `backend_lost`.
