@@ -40,9 +40,11 @@ Measuring frames? Start with `--fps 120`, or send `fps 120`. Add `--jfr` for a r
 
 All levels: `state`, `act <command>`, `wait_until [ms] <condition>`, `assert <condition>`,
 `entities`, `quit`. A condition is `field op value`, with `>=`, `<=`, `==`, `!=`, and `~` for
-"contains". `state` lists the fields. A field starts with a letter, so the limit of a wait comes
-first and is never taken from the value: `wait_until 5000 action_bar~Tour 2` waits 5 s for
-"Tour 2". `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
+"contains". `state` lists the fields. A field starts with a letter and a value is one word: a value
+with spaces goes between quotes, and the limit of a wait comes first.
+`wait_until 5000 'action_bar~"Tour 2"'` waits 5 s for "Tour 2"; `wait_until state!=connecting 5000`
+is an error, never a wait. `conditions.tsv` holds the cases, checked against the bot and the
+probe by `cargo test`, which needs `javac`. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
 
 Bots add `packets`.
 

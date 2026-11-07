@@ -7,6 +7,9 @@ use crate::registry;
 
 /// Sends one verb to a client and returns its JSON line.
 pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> {
+    if verb.contains(['\n', '\r']) {
+        return Err(format!("one verb at a time: {verb:?} holds a line break"));
+    }
     let mut stream = UnixStream::connect(registry::socket(name)?)
         .map_err(|e| format!("client {name} does not answer: {e}"))?;
     stream
@@ -48,5 +51,11 @@ mod tests {
             Duration::from_secs(25)
         );
         assert_eq!(timeout_of("state"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_line_break_cannot_slip_a_second_verb_in() {
+        let error = ask("nobody", "assert chat~ok\nquit", Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("line break"), "{error}");
     }
 }

@@ -1,66 +1,113 @@
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 final class Condition {
   static final long DEFAULT_WAIT_MS = 20_000;
-  private static final Pattern NUMBER = Pattern.compile("-?\\d+(\\.\\d+)?");
-  private static final Pattern LIMIT = Pattern.compile("\\d{1,9}");
-  private static final Pattern DIGITS = Pattern.compile("\\d+");
-  private static final Pattern PARTS = Pattern.compile("^([A-Za-z][A-Za-z0-9_]*)\\s*(>=|<=|==|!=|~)\\s*(.*)$");
+  static final List<String> TEXT_FIELDS = List.of(
+      "action_bar",
+      "clock",
+      "state",
+      "screen",
+      "level",
+      "chat",
+      "dimension",
+      "last_error",
+      "passenger",
+      "spectator",
+      "shown",
+      "version");
+  private static final Pattern NUMBER = Pattern.compile("-?[0-9]+(\\.[0-9]+)?");
+  private static final Pattern LIMIT = Pattern.compile("[0-9]{1,9}");
+  private static final Pattern DIGITS = Pattern.compile("[0-9]+");
+  private static final Pattern PARTS = Pattern.compile("^([A-Za-z][A-Za-z0-9_]*)[ \t]*(>=|<=|==|!=|~)(.*)$", Pattern.DOTALL);
 
-  record Wait(Matcher parts, long limit) {}
+  record Parsed(String field, String op, String expected) {
+    boolean orders() {
+      return op.equals(">=") || op.equals("<=");
+    }
+  }
+
+  record Wait(Parsed parsed, long limit) {}
 
   private Condition() {}
 
-  static Matcher parse(String condition) {
-    Matcher parts = PARTS.matcher(condition.trim());
-    if (!parts.matches() || parts.group(3).isBlank()) return null;
-    boolean order = parts.group(2).equals(">=") || parts.group(2).equals("<=");
-    if (order && !NUMBER.matcher(parts.group(3).trim()).matches()) return null;
-    return parts;
+  private static boolean blank(char c) {
+    return c == ' ' || c == '\t';
   }
 
-  static Matcher require(String condition) {
-    Matcher parts = parse(condition);
-    if (parts == null) {
-      throw new IllegalArgumentException("bad condition " + condition + ": field op value, and >= or <= need a number");
+  private static String trimmed(String text) {
+    int start = 0, end = text.length();
+    while (start < end && blank(text.charAt(start))) start++;
+    while (end > start && blank(text.charAt(end - 1))) end--;
+    return text.substring(start, end);
+  }
+
+  private static boolean hasBlank(String text) {
+    return text.indexOf(' ') >= 0 || text.indexOf('\t') >= 0;
+  }
+
+  private static String valueOf(String raw, String text) {
+    if (raw.startsWith("\"")) {
+      String inner = raw.length() >= 2 && raw.endsWith("\"") ? raw.substring(1, raw.length() - 1) : null;
+      if (inner == null || inner.contains("\"")) throw new IllegalArgumentException(text + ": a quoted value opens and closes with one \" each");
+      if (inner.isEmpty()) throw new IllegalArgumentException(text + " compares with nothing");
+      return inner;
     }
-    return parts;
+    if (raw.isEmpty()) throw new IllegalArgumentException(text + " compares with nothing");
+    if (hasBlank(raw)) {
+      throw new IllegalArgumentException(text + ": a value is one word, so quote one with spaces, field~\"a b\", and give a wait its limit first, wait_until 5000 condition");
+    }
+    if (raw.contains("\"")) throw new IllegalArgumentException(text + ": a quote goes around the whole value");
+    return raw;
+  }
+
+  static Parsed parse(String text) {
+    Matcher parts = PARTS.matcher(trimmed(text));
+    if (!parts.matches()) throw new IllegalArgumentException("bad condition " + text);
+    String expected = valueOf(trimmed(parts.group(3)), text);
+    Parsed parsed = new Parsed(parts.group(1), parts.group(2), expected);
+    if (parsed.orders() && !NUMBER.matcher(expected).matches()) {
+      throw new IllegalArgumentException(text + ": " + parsed.op() + " needs a number, not " + expected);
+    }
+    return parsed;
+  }
+
+  static void validate(Parsed parsed, String level) {
+    boolean text = TEXT_FIELDS.contains(parsed.field()) || (parsed.field().equals("camera") && !level.equals("bot"));
+    if (parsed.orders() && text) {
+      throw new IllegalArgumentException(parsed.field() + " is not a number: " + parsed.op() + " cannot compare it");
+    }
   }
 
   static Wait waitOf(String rest) {
-    String text = rest.trim();
+    String text = trimmed(rest);
     int space = text.indexOf(' '), tab = text.indexOf('\t');
     int cut = space < 0 ? tab : tab < 0 ? space : Math.min(space, tab);
     if (cut > 0 && DIGITS.matcher(text.substring(0, cut)).matches()) {
       String first = text.substring(0, cut);
       if (!LIMIT.matcher(first).matches()) throw new IllegalArgumentException("bad limit " + first + ": 1 to 9 digits of milliseconds");
-      return new Wait(require(text.substring(cut + 1)), Long.parseLong(first));
+      return new Wait(parse(text.substring(cut + 1)), Long.parseLong(first));
     }
-    return new Wait(require(text), DEFAULT_WAIT_MS);
+    return new Wait(parse(text), DEFAULT_WAIT_MS);
   }
 
-  static boolean holds(String condition, Map<String, Object> fields) {
-    return holds(require(condition), fields);
-  }
-
-  static boolean holds(Matcher parts, Map<String, Object> fields) {
-    Object actual = fields.get(parts.group(1));
+  static boolean holds(Parsed parsed, Map<String, Object> fields) {
+    Object actual = fields.get(parsed.field());
     if (actual == null) return false;
-    String op = parts.group(2), expected = parts.group(3).trim();
-    if (op.equals("~")) return actual.toString().contains(expected);
-    boolean order = op.equals(">=") || op.equals("<=");
+    String text = actual.toString(), expected = parsed.expected();
+    if (parsed.op().equals("~")) return text.contains(expected);
     if (actual instanceof Number number && NUMBER.matcher(expected).matches()) {
       int compared = Double.compare(number.doubleValue(), Double.parseDouble(expected));
-      return switch (op) {
+      return switch (parsed.op()) {
         case ">=" -> compared >= 0;
         case "<=" -> compared <= 0;
         case "==" -> compared == 0;
         default -> compared != 0;
       };
     }
-    if (order) throw new IllegalArgumentException(parts.group(1) + " is " + actual + ", not a number");
-    return op.equals("==") == actual.toString().equals(expected);
+    if (parsed.orders()) throw new IllegalArgumentException(parsed.field() + " is " + actual + ", not a number");
+    return parsed.op().equals("==") == text.equals(expected);
   }
 }

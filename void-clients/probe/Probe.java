@@ -195,7 +195,9 @@ public class Probe {
       case "wait_until" -> reply.putAll(waitUntil(rest));
       case "assert" -> {
         Map<String, Object> fields = onGame(Probe::fields);
-        if (!Condition.holds(rest, fields)) throw new AssertionError(rest + " is false: " + fields);
+        Condition.Parsed parsed = Condition.parse(rest);
+        Condition.validate(parsed, LEVEL);
+        if (!Condition.holds(parsed, fields)) throw new AssertionError(rest + " is false: " + fields);
         reply.putAll(fields);
       }
       case "shot" -> reply.put("path", shot(w[1], w.length > 2 ? Integer.parseInt(w[2]) : 1));
@@ -284,11 +286,12 @@ public class Probe {
 
   private static Map<String, Object> waitUntil(String rest) throws Exception {
     Condition.Wait wait = Condition.waitOf(rest);
+    Condition.validate(wait.parsed(), LEVEL);
     long start = System.currentTimeMillis();
     while (true) {
       try {
         Map<String, Object> fields = onGame(Probe::fields);
-        if (Condition.holds(wait.parts(), fields)) {
+        if (Condition.holds(wait.parsed(), fields)) {
           fields.put("waited_ms", System.currentTimeMillis() - start);
           return fields;
         }

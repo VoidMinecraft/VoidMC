@@ -20,6 +20,39 @@ const TEXT_FIELDS: [&str; 12] = [
     "version",
 ];
 
+fn blank(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
+fn trimmed(text: &str) -> &str {
+    text.trim_matches(blank)
+}
+
+fn value_of(raw: &str, text: &str) -> Result<String, String> {
+    if let Some(inner) = raw.strip_prefix('"') {
+        let inner = inner
+            .strip_suffix('"')
+            .filter(|inner| !inner.contains('"'))
+            .ok_or_else(|| format!("{text}: a quoted value opens and closes with one \" each"))?;
+        if inner.is_empty() {
+            return Err(format!("{text} compares with nothing"));
+        }
+        return Ok(inner.into());
+    }
+    if raw.is_empty() {
+        return Err(format!("{text} compares with nothing"));
+    }
+    if raw.contains(blank) {
+        return Err(format!(
+            "{text}: a value is one word, so quote one with spaces, field~\"a b\", and give a wait its limit first, wait_until 5000 condition"
+        ));
+    }
+    if raw.contains('"') {
+        return Err(format!("{text}: a quote goes around the whole value"));
+    }
+    Ok(raw.into())
+}
+
 pub fn is_number(text: &str) -> bool {
     let digits = text.strip_prefix('-').unwrap_or(text);
     let (whole, fraction) = digits.split_once('.').unwrap_or((digits, "0"));
@@ -43,22 +76,20 @@ impl Condition {
             .filter_map(|op| text.find(op).map(|at| (at, *op)))
             .min_by_key(|(at, _)| *at)
             .ok_or_else(bad)?;
-        let (field, expected) = (text[..at].trim(), text[at + op.len()..].trim());
+        let (field, expected) = (trimmed(&text[..at]), trimmed(&text[at + op.len()..]));
         let mut letters = field.chars();
         let starts = letters.next().is_some_and(|c| c.is_ascii_alphabetic());
         if !starts || !letters.all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(bad());
         }
-        if expected.is_empty() {
-            return Err(format!("{text} compares with nothing"));
-        }
-        if ORDERS.contains(&op) && !is_number(expected) {
+        let expected = value_of(expected, text)?;
+        if ORDERS.contains(&op) && !is_number(&expected) {
             return Err(format!("{text}: {op} needs a number, not {expected}"));
         }
         Ok(Self {
             field: field.into(),
             op,
-            expected: expected.into(),
+            expected,
         })
     }
 
@@ -109,8 +140,8 @@ impl Condition {
 /// `[ms] condition`: a field starts with a letter, so a first word of digits is the limit and
 /// nothing else, and the whole rest is the condition.
 pub fn wait(rest: &str) -> Result<(Condition, u64), String> {
-    let rest = rest.trim();
-    if let Some((first, condition)) = rest.split_once([' ', '\t'])
+    let rest = trimmed(rest);
+    if let Some((first, condition)) = rest.split_once(blank)
         && first.bytes().all(|byte| byte.is_ascii_digit())
     {
         if !(1..=9).contains(&first.len()) {
@@ -131,7 +162,8 @@ pub fn of(verb: &str, rest: &str) -> Option<Result<(Condition, u64), String>> {
 }
 
 pub fn check(verb: &str, level: Level) -> Result<(), String> {
-    let (name, rest) = verb.trim().split_once(' ').unwrap_or((verb.trim(), ""));
+    let verb = trimmed(verb);
+    let (name, rest) = verb.split_once(blank).unwrap_or((verb, ""));
     match of(name, rest) {
         Some(parsed) => parsed?.0.validate(level),
         None => Ok(()),
@@ -202,16 +234,20 @@ mod tests {
             (Condition::parse("chunks>=100").unwrap(), 5000)
         );
         assert_eq!(
-            wait("chat~a b 12").unwrap(),
-            (Condition::parse("chat~a b 12").unwrap(), DEFAULT_WAIT_MS)
+            wait("chat~\"a b 12\"").unwrap(),
+            (
+                Condition::parse("chat~\"a b 12\"").unwrap(),
+                DEFAULT_WAIT_MS
+            )
         );
+        assert!(wait("chat~a b 12").unwrap_err().contains("wait_until 5000"));
         assert!(wait("chunks >= 100 5000").is_err());
         assert!(wait("chunks >=").is_err());
     }
 
     #[test]
-    fn an_assert_takes_all_after_its_operator_as_its_value() {
-        let (condition, _) = of("assert", "chat~a b 12").unwrap().unwrap();
+    fn a_quoted_value_keeps_its_spaces_without_its_quotes() {
+        let (condition, _) = of("assert", "chat~\"a b 12\"").unwrap().unwrap();
         assert_eq!(condition.expected, "a b 12");
         assert!(of("act", "map").is_none());
     }
@@ -231,13 +267,26 @@ mod tests {
         assert!(check("assert camera>=1", Level::Bot).is_ok());
     }
 
-    fn case_value(cell: &str) -> Value {
-        match cell
+    fn case_value(cell: &str, line: &str) -> Value {
+        if let Some(text) = cell
             .strip_prefix('"')
             .and_then(|text| text.strip_suffix('"'))
         {
-            Some(text) => json!(text),
-            None => serde_json::from_str(cell).unwrap_or_else(|_| panic!("bad value {cell}")),
+            return json!(text);
+        }
+        match cell {
+            "true" | "false" => json!(cell == "true"),
+            _ if is_number(cell) => serde_json::from_str(cell).unwrap(),
+            _ => panic!("a value is quoted text, a number, true or false: {line}"),
+        }
+    }
+
+    fn level_of(name: &str, line: &str) -> Level {
+        match name {
+            "bot" => Level::Bot,
+            "logic" => Level::Logic,
+            "render" => Level::Render,
+            _ => panic!("no such level in: {line}"),
         }
     }
 
@@ -268,30 +317,53 @@ mod tests {
         let mut cases = 0;
         for line in CASES
             .lines()
-            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
         {
             let cells: Vec<&str> = line.split('\t').collect();
             if cells[0] == "fields" {
+                assert!(
+                    cells.len() >= 4 && cells.len().is_multiple_of(2),
+                    "a fields line holds a level and pairs: {line}"
+                );
+                level_of(cells[1], line);
                 let fields: serde_json::Map<String, Value> = cells[2..]
                     .chunks(2)
-                    .map(|pair| (pair[0].to_string(), case_value(pair[1])))
+                    .map(|pair| (pair[0].to_string(), case_value(pair[1], line)))
                     .collect();
                 levels.insert(cells[1], Value::Object(fields));
                 continue;
             }
+            assert_eq!(cells.len(), 4, "a case has exactly four cells: {line}");
+            assert!(
+                matches!(cells[0], "assert" | "wait"),
+                "a case is an assert or a wait: {line}"
+            );
+            let fields = levels
+                .get(cells[1])
+                .unwrap_or_else(|| panic!("no fields for the level of: {line}"));
             cases += 1;
-            let level = match cells[1] {
-                "bot" => Level::Bot,
-                "logic" => Level::Logic,
-                _ => Level::Render,
-            };
-            let got = outcome(cells[0], cells[2], level, &levels[cells[1]]);
+            let got = outcome(cells[0], cells[2], level_of(cells[1], line), fields);
             if got != cells[3] {
                 wrong.push(format!("{line}\tbut Rust says {got}"));
             }
         }
         assert!(cases > 0);
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn the_probe_knows_the_same_text_fields() {
+        let java = include_str!("../probe/Condition.java");
+        let list = java
+            .split("TEXT_FIELDS = List.of(")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .expect("TEXT_FIELDS in Condition.java");
+        let probe: Vec<&str> = list
+            .split(',')
+            .map(|name| name.trim().trim_matches('"'))
+            .collect();
+        assert_eq!(probe, TEXT_FIELDS);
     }
 
     fn javac() -> std::path::PathBuf {

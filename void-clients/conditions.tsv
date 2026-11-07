@@ -39,11 +39,11 @@ wait	render	chunks >= 100	20000 true
 wait	render	chunks >=	error
 wait	render	5000 chunks >= 100	5000 true
 wait	render	1500 chunks>=5000	1500 false
-wait	render	chat~a b 12	20000 false
+wait	render	chat~a b 12	error
 wait	render	chat~>=b	20000 true
 wait	render	123456789 chat~x	123456789 false
-wait	render	2 action_bar~Tour 2	2 false
-wait	render	2 action_bar~Tour 1	2 true
+wait	render	2 action_bar~Tour 2	error
+wait	render	2 action_bar~"Tour 1"	2 true
 wait	render	chunks >= 100 5000	error
 wait	render	30s chunks >= 200	error
 wait	render	3000 chunks >= abc	error
@@ -52,3 +52,24 @@ wait	render	1234567890 chunks>=1	error
 wait	render	5000	error
 assert	render	2chunks>=1	error
 assert	render	_chunks>=1	error
+wait	render	2 action_bar~"Tour 2"	2 false
+wait	render	5000 chat~"x 12"	5000 false
+assert	render	state!=connecting 5000	error
+wait	render	state!=connecting 5000	error
+wait	render	chunks!=0 5000	error
+wait	render	state==connected 5000	error
+assert	render	chat~"a>=b"	true
+assert	render	chat~"a b"	false
+assert	render	chat~	error
+assert	render	chat==	error
+assert	render	chat!=	error
+assert	render	chat~""	error
+assert	render	chat~"a	error
+assert	render	chat~a"b	error
+assert	render	chunks>=+5	error
+assert	render	  chunks>=1  	true
+assert	render	chunks>=1	error
+assert	render	chunks >=1	error
+assert	render	state==connected 	false
+assert	render	version>=1	error
+assert	bot	version>=1	error
