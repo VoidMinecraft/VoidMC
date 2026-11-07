@@ -1,3 +1,5 @@
+use tokio::net::TcpSocket;
+
 use super::*;
 
 #[tokio::test]
@@ -127,7 +129,10 @@ async fn a_silent_server_has_its_connection_closed() {
 
 #[tokio::test]
 async fn a_server_that_stops_reading_counts_as_lost() {
-    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let socket = TcpSocket::new_v6().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    socket.bind("[::1]:0".parse().unwrap()).unwrap();
+    let listener = socket.listen(16).unwrap();
     let address = listener.local_addr().unwrap();
     let mut rig = Rig::start(address).await;
     let server = tokio::spawn(async move {

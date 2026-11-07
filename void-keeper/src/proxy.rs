@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
-use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
+use tokio::time::{MissedTickBehavior, interval, sleep, timeout, timeout_at};
 use voidmc_codec::{Decode, Encode, VarI32};
 use voidmc_data::v26_1_2::packets::login::clientbound as login_cb;
 use voidmc_data::v26_1_2::packets::status::clientbound as status_cb;
@@ -176,6 +176,7 @@ struct Peer<S = TcpStream> {
     codec: FrameCodec,
     inbound: BytesMut,
     outbound: Vec<u8>,
+    stalled_since: Option<tokio::time::Instant>,
 }
 
 impl<S> Peer<S> {
@@ -185,6 +186,7 @@ impl<S> Peer<S> {
             codec: FrameCodec::default(),
             inbound: BytesMut::with_capacity(READ_CHUNK),
             outbound: Vec::new(),
+            stalled_since: None,
         }
     }
 
@@ -220,14 +222,35 @@ impl Peer {
         self.flush_within(WRITE_TIMEOUT).await
     }
 
+    /// Fails once the peer's socket has stayed full for `limit`, counted from the first write
+    /// that had to wait: a peer that takes a few bytes now and then is still stuck. Only a
+    /// queue written whole without waiting ends the stall.
     async fn flush_within(&mut self, limit: Duration) -> io::Result<()> {
-        if self.outbound.is_empty() {
-            return Ok(());
+        let mut written = 0;
+        while written < self.outbound.len() {
+            match self.stream.try_write(&self.outbound[written..]) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(count) => written += count,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    let since = *self
+                        .stalled_since
+                        .get_or_insert_with(tokio::time::Instant::now);
+                    timeout_at(
+                        since + limit,
+                        self.stream.write_all(&self.outbound[written..]),
+                    )
+                    .await
+                    .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
+                    self.outbound.clear();
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
         }
-        timeout(limit, self.stream.write_all(&self.outbound))
-            .await
-            .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
-        self.outbound.clear();
+        if written > 0 {
+            self.outbound.clear();
+            self.stalled_since = None;
+        }
         Ok(())
     }
 }
@@ -779,6 +802,37 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_swallows_a_little_now_and_then_is_lost_from_its_first_stall() {
+        let (near, mut far) = pair().await;
+        let swallowing = tokio::spawn(async move {
+            let mut buffer = vec![0; 64 * 1024];
+            loop {
+                sleep(Duration::from_millis(20)).await;
+                if far.read(&mut buffer).await.map_or(true, |read| read == 0) {
+                    break;
+                }
+            }
+        });
+        let mut peer = Peer::new(near);
+        let limit = Duration::from_secs(1);
+        let started = tokio::time::Instant::now();
+        let error = loop {
+            peer.outbound.resize(1024 * 1024, 0);
+            if let Err(error) = peer.flush_within(limit).await {
+                break error;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "every flush made a little progress, and the peer was never lost"
+            );
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let stalled_for = peer.stalled_since.expect("the peer stalled").elapsed();
+        assert!(stalled_for >= limit && stalled_for < limit * 3);
+        swallowing.abort();
     }
 
     #[tokio::test]
