@@ -7,6 +7,7 @@ on:
       - "**/benches/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/benchmarks.yml"
   workflow_dispatch:
     inputs:
@@ -34,18 +35,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run Criterion benchmarks
         run: cargo bench --workspace --all-features
 
       - name: Publish benchmark summary
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           {
             echo "## Criterion benchmarks"
             echo
-            echo "Executed on \`${{ github.ref_name }}\` at commit \`${{ github.sha }}\`."
+            echo "Executed on \`$REF_NAME\` at commit \`$GITHUB_SHA\`."
             echo
             echo "The complete HTML reports are attached as the \`criterion-reports\` artifact."
             echo "Results are informative: shared GitHub runners are not stable enough for performance thresholds."
@@ -64,8 +69,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and start the example server
         shell: bash

@@ -1,0 +1,37 @@
+name: Clippy beta
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy-beta:
+    name: clippy on beta
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: beta
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install beta --profile minimal --component clippy
+      - name: Clippy on beta
+        run: |
+          rustc --version
+          status=0
+          cargo clippy --workspace --all-targets --all-features --message-format=short > clippy-beta.txt 2>&1 || status=$?
+          {
+            echo "## Clippy on $(rustc --version)"
+            echo
+            echo "$(grep -c ': warning' clippy-beta.txt || true) warning(s), $(grep -c ': error' clippy-beta.txt || true) error(s)."
+            echo
+            echo '```text'
+            grep -E ': (warning|error)' clippy-beta.txt | sed -E 's/^[^ ]+: //' | sort | uniq -c | sort -rn | head -50 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
