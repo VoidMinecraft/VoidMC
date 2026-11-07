@@ -6,6 +6,8 @@ mod control;
 mod dash;
 mod frame;
 #[cfg(test)]
+mod hangup;
+#[cfg(test)]
 mod held;
 mod launch;
 mod lifecycle;

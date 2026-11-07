@@ -311,6 +311,7 @@ mod tests {
 
     use super::*;
     use crate::control::fake::{FakeClient, NAME};
+    use crate::hangup::{hang_up, held_by_a_child};
 
     #[test]
     fn a_stale_client_stays_visible_and_stoppable() {
@@ -371,6 +372,19 @@ mod tests {
     }
 
     #[test]
+    fn a_mosaic_has_five_seconds_for_real_to_read_a_request_and_to_quit() {
+        assert_eq!(READ_LIMIT, Duration::from_secs(5));
+        assert_eq!(QUIT_LIMIT, Duration::from_secs(5));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        super::head(&server).unwrap();
+        let left = server.read_timeout().unwrap().unwrap();
+        assert!(left > READ_LIMIT / 2 && left <= READ_LIMIT, "{left:?}");
+    }
+
+    #[test]
     fn a_request_sent_drop_by_drop_is_cut_at_the_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -386,7 +400,8 @@ mod tests {
         let started = Instant::now();
         assert!(head_within(&server, Duration::from_millis(200)).is_err());
         assert!(started.elapsed() < Duration::from_secs(4));
-        drop(server);
+        let _child = held_by_a_child(&server);
+        hang_up(server);
         dripping.join().unwrap();
     }
 
@@ -400,7 +415,8 @@ mod tests {
         };
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let _ = request(&registry, stream);
+                let registry = registry.clone();
+                thread::spawn(move || request(&registry, stream));
             }
         });
         assert_eq!(served(port), Served::Ours);
@@ -408,8 +424,10 @@ mod tests {
         let old_port = other.local_addr().unwrap().port();
         thread::spawn(move || {
             for mut stream in other.incoming().flatten() {
-                let _ = super::head(&stream);
-                let _ = respond(&mut stream, "404 Not Found", "text/plain", b"");
+                thread::spawn(move || {
+                    let _ = super::head(&stream);
+                    let _ = respond(&mut stream, "404 Not Found", "text/plain", b"");
+                });
             }
         });
         assert_eq!(served(old_port), Served::Older);
@@ -426,7 +444,7 @@ mod tests {
         thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
                 let (answer, quit, held) = (answer.clone(), quit.clone(), held.clone());
-                held.lock().unwrap().push(stream.try_clone().unwrap());
+                held.lock().unwrap().push(held_by_a_child(&stream));
                 thread::spawn(move || {
                     let Ok(head) = super::head(&stream) else {
                         return;

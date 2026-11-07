@@ -1,13 +1,22 @@
-use std::io::{BufRead, BufReader};
-use std::ops::{Deref, DerefMut};
+use std::io::{BufRead, BufReader, Result};
 use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 
 /// A long-lived child of a test, and the only way to start one: it leads its own process group,
 /// the whole group dies with this value, and the open stdin ends it if the tests are killed.
+///
+/// A group outlives its leader, but only an unreaped leader keeps its id: every wait goes through
+/// here, so that nothing is signalled once the id may belong to someone else.
 pub struct Held {
     child: Child,
-    stopped: bool,
+    reaped: bool,
+}
+
+fn kill_group(leader: u32) {
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{leader}")])
+        .stderr(Stdio::null())
+        .status();
 }
 
 impl Held {
@@ -19,30 +28,50 @@ impl Held {
             .unwrap();
         Self {
             child,
-            stopped: false,
+            reaped: false,
         }
     }
 
-    /// One process and no shell, which `ps` shows under `title`, until its stdin closes.
+    /// One process, which `ps` shows with `title` among its words, until its stdin closes. A
+    /// builtin of the shell, and no `arg0`: a multi-call `cat` would take it for its own name.
     pub fn waiting(title: &str) -> Self {
         Self::launch(
-            Command::new("cat")
-                .arg0(title)
+            Command::new("sh")
+                .args(["-c", "read line; exit 0", title])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null()),
         )
     }
 
-    /// Before the wait: a group outlives its leader, but only an unreaped leader keeps its id.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Closes its stdin, then waits. What it has started stays: only `stop` takes the group.
+    pub fn wait(&mut self) -> Result<ExitStatus> {
+        let status = self.child.wait();
+        self.reaped = true;
+        status
+    }
+
+    /// Lends the child to what ends it on its own, and notes whether it did.
+    pub fn ended_by(&mut self, end: impl FnOnce(&mut Child)) -> Option<ExitStatus> {
+        end(&mut self.child);
+        let status = self.child.try_wait().ok().flatten();
+        self.reaped = status.is_some();
+        status
+    }
+
     pub fn stop(&mut self) {
-        if std::mem::replace(&mut self.stopped, true) {
+        self.stop_with(kill_group);
+    }
+
+    fn stop_with(&mut self, kill: impl FnOnce(u32)) {
+        if self.reaped {
             return;
         }
-        let _ = Command::new("kill")
-            .args(["-KILL", "--", &format!("-{}", self.child.id())])
-            .stderr(Stdio::null())
-            .status();
-        let _ = self.child.wait();
+        kill(self.id());
+        let _ = self.wait();
     }
 
     pub fn first_line(&mut self) -> String {
@@ -50,20 +79,6 @@ impl Held {
         let mut line = String::new();
         BufReader::new(out).read_line(&mut line).unwrap();
         line.trim_end().to_string()
-    }
-}
-
-impl Deref for Held {
-    type Target = Child;
-
-    fn deref(&self) -> &Child {
-        &self.child
-    }
-}
-
-impl DerefMut for Held {
-    fn deref_mut(&mut self) -> &mut Child {
-        &mut self.child
     }
 }
 
@@ -75,6 +90,7 @@ impl Drop for Held {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::ExitStatusExt;
     use std::thread::sleep;
     use std::time::{Duration, Instant};
 
@@ -112,14 +128,47 @@ mod tests {
     fn a_second_stop_does_nothing() {
         let mut child = Held::waiting("held-twice");
         child.stop();
-        child.stop();
-        assert!(child.try_wait().unwrap().is_some());
+        child.stop_with(|_| panic!("the leader is already reaped"));
+        assert_eq!(child.wait().unwrap().signal(), Some(9));
     }
 
     #[test]
     fn what_waits_ends_with_its_stdin() {
         let mut child = Held::waiting("held-stdin");
-        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn nothing_is_signalled_once_a_wait_has_reaped_the_leader() {
+        let mut child = Held::waiting("held-reaped");
+        child.wait().unwrap();
+        child.stop_with(|_| panic!("the id may be someone else's"));
+    }
+
+    #[test]
+    fn nothing_is_signalled_once_what_ended_the_child_has_reaped_it() {
+        let mut child = Held::waiting("held-lent");
+        let status = child.ended_by(|child| {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        });
+        assert_eq!(status.and_then(|status| status.signal()), Some(9));
+        child.stop_with(|_| panic!("the id may be someone else's"));
+    }
+
+    #[test]
+    fn a_child_still_running_after_it_was_lent_is_still_stopped() {
+        let mut child = Held::waiting("held-still-lent");
+        assert!(child.ended_by(|_| {}).is_none());
+        let mut signalled = false;
+        child.stop_with(|_| signalled = true);
+        assert!(signalled);
+    }
+
+    #[test]
+    fn a_refused_kill_does_not_leave_the_stop_waiting() {
+        let mut child = Held::waiting("held-unkilled");
+        child.stop_with(|_| {});
         assert!(child.wait().unwrap().success());
     }
 
