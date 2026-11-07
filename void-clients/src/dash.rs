@@ -200,8 +200,8 @@ fn status(client: &Client) -> Value {
         tile["state"] = json!("connected");
         return tile;
     }
-    let reply = control::chore(&client.name, Chore::State, ASK_TIMEOUT).ok();
-    if let Some(Value::Object(fields)) = reply.and_then(|line| serde_json::from_str(&line).ok()) {
+    let reply = control::answered(control::chore(&client.name, Chore::State, ASK_TIMEOUT));
+    if let Ok(Value::Object(fields)) = reply {
         for (key, value) in fields {
             if key != "level" {
                 tile[key] = value;
@@ -225,8 +225,7 @@ fn respond(stream: &mut TcpStream, code: &str, kind: &str, body: &[u8]) -> std::
 }
 
 fn thumb(name: &str) -> Option<Vec<u8>> {
-    let line = control::chore(name, Chore::Thumb, ASK_TIMEOUT).ok()?;
-    let reply: Value = serde_json::from_str(&line).ok()?;
+    let reply = control::answered(control::chore(name, Chore::Thumb, ASK_TIMEOUT)).ok()?;
     fs::read(reply["path"].as_str()?).ok()
 }
 
@@ -237,8 +236,10 @@ fn action(registry: &Registry, name: &str, verb: &str) -> Result<(), String> {
             let client = registry::load(name).ok_or("unknown client")?;
             lifecycle::start(registry, client)
         }
-        "take" => control::chore(name, Chore::ShowFocus, ASK_TIMEOUT).map(|_| ()),
-        "give" => control::chore(name, Chore::Hide, ASK_TIMEOUT).map(|_| ()),
+        "take" => {
+            control::answered(control::chore(name, Chore::ShowFocus, ASK_TIMEOUT)).map(|_| ())
+        }
+        "give" => control::answered(control::chore(name, Chore::Hide, ASK_TIMEOUT)).map(|_| ()),
         other => Err(format!("unknown action {other}")),
     }
 }

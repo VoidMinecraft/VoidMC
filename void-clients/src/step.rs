@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, ErrorKind, Write};
+use std::io::{BufWriter, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::control::{self, Chore};
+use crate::control::{self, Ask, Chore, Limits, Probe};
 use crate::lifecycle;
 use crate::registry::{self, Client, Level, Registry};
 
@@ -16,7 +16,6 @@ const TICK_MS: f64 = 50.0;
 const TICKS_PER_SECOND: u64 = 20;
 const STEP_FPS: u32 = 260;
 const SERVER_LIMIT: Duration = Duration::from_secs(120);
-const ANSWER_LIMIT: Duration = Duration::from_secs(30);
 const QUIET_POLLS: u32 = 4;
 const QUIET_LIMIT: u32 = 200;
 const QUIET_POLL: Duration = Duration::from_millis(50);
@@ -27,70 +26,6 @@ const FRAMES_GLOB: &str = "f[0-9]*.png";
 const LOCK_TRIES: u32 = 3;
 const SHEET_COLUMNS: u64 = 6;
 const SHEET_CELLS: u64 = 24;
-
-/// One line out, one JSON line back: the server's step socket and the client's verbs.
-trait Link {
-    fn ask(&mut self, line: &str) -> Result<Value, String>;
-}
-
-impl<T: Link> Link for &mut T {
-    fn ask(&mut self, line: &str) -> Result<Value, String> {
-        (**self).ask(line)
-    }
-}
-
-struct Socket {
-    who: String,
-    limit: Duration,
-    stream: UnixStream,
-    reader: BufReader<UnixStream>,
-}
-
-impl Socket {
-    fn open(who: &str, path: &Path) -> Result<Self, String> {
-        let stream = UnixStream::connect(path).map_err(|e| format!("{who}: {e}"))?;
-        Self::over(who, stream, ANSWER_LIMIT)
-    }
-
-    fn over(who: &str, stream: UnixStream, limit: Duration) -> Result<Self, String> {
-        stream
-            .set_read_timeout(Some(limit))
-            .map_err(|e| e.to_string())?;
-        let reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
-        Ok(Self {
-            who: who.to_string(),
-            limit,
-            stream,
-            reader,
-        })
-    }
-}
-
-impl Link for Socket {
-    fn ask(&mut self, line: &str) -> Result<Value, String> {
-        writeln!(self.stream, "{line}")
-            .map_err(|e| format!("{} stopped answering: {e}", self.who))?;
-        let mut answer = String::new();
-        self.reader
-            .read_line(&mut answer)
-            .map_err(|e| match e.kind() {
-                ErrorKind::WouldBlock | ErrorKind::TimedOut => format!(
-                    "{} gave no answer to {line} in {} s",
-                    self.who,
-                    self.limit.as_secs_f32()
-                ),
-                _ => format!("{}: {line}: {e}", self.who),
-            })?;
-        if answer.is_empty() {
-            return Err(format!("{} closed the connection on {line}", self.who));
-        }
-        let reply: Value = serde_json::from_str(&answer).map_err(|e| e.to_string())?;
-        if reply["ok"] == true {
-            return Ok(reply);
-        }
-        Err(format!("{}: {line}: {}", self.who, reply["error"]))
-    }
-}
 
 fn counter(reply: &Value, name: &str) -> Result<u64, String> {
     reply[name]
@@ -113,7 +48,7 @@ struct Lockstep<S, C> {
     origin: Origin,
 }
 
-impl<S: Link, C: Link> Lockstep<S, C> {
+impl<S: Ask, C: Ask> Lockstep<S, C> {
     fn counters(&mut self) -> Result<(u64, u64), String> {
         let reply = self.client.ask("sent")?;
         if reply["active"] != true {
@@ -261,7 +196,7 @@ fn frame_name(index: u64) -> String {
     format!("f{index:05}")
 }
 
-fn play<S: Link, C: Link>(
+fn play<S: Ask, C: Ask>(
     lock: &mut Lockstep<S, C>,
     plan: &Plan,
     measures: &mut impl Write,
@@ -295,7 +230,7 @@ fn play<S: Link, C: Link>(
     Ok(captured)
 }
 
-fn settle<S: Link, C: Link>(lock: &mut Lockstep<S, C>) -> Result<(), String> {
+fn settle<S: Ask, C: Ask>(lock: &mut Lockstep<S, C>) -> Result<(), String> {
     lock.client.ask("clock virtual")?;
     lock.calibrate(QUIET_POLL)?;
     for _ in 0..SETTLE_TICKS {
@@ -305,11 +240,11 @@ fn settle<S: Link, C: Link>(lock: &mut Lockstep<S, C>) -> Result<(), String> {
     Ok(())
 }
 
-fn wait_for_server(path: &Path) -> Result<Socket, String> {
+fn wait_for_server(path: &Path) -> Result<Probe, String> {
     let start = Instant::now();
     loop {
-        match Socket::open("server", path) {
-            Ok(socket) => return Ok(socket),
+        match UnixStream::connect(path) {
+            Ok(stream) => return Probe::over("server", stream, Limits::REAL),
             Err(error) if start.elapsed() > SERVER_LIMIT => {
                 return Err(format!("no stepped server on {}: {error}", path.display()));
             }
@@ -337,12 +272,15 @@ impl Joining for Joiner<'_> {
     }
 
     fn in_game(&self) -> bool {
-        control::chore(&self.client.name, Chore::State, Duration::from_millis(500))
-            .ok()
-            .and_then(|line| serde_json::from_str::<Value>(&line).ok())
-            .is_some_and(|state| {
-                state["state"] == "connected" && state["chunks"].as_u64() >= Some(self.min_chunks)
-            })
+        control::answered(control::chore(
+            &self.client.name,
+            Chore::State,
+            Duration::from_millis(500),
+        ))
+        .ok()
+        .is_some_and(|state| {
+            state["state"] == "connected" && state["chunks"].as_u64() >= Some(self.min_chunks)
+        })
     }
 
     fn name(&self) -> &str {
@@ -356,7 +294,7 @@ impl Joining for Joiner<'_> {
 
 /// Runs the server at game speed up to the tick of the lock, with the client in game by then.
 fn join(
-    server: &mut impl Link,
+    server: &mut impl Ask,
     client: &impl Joining,
     lock_at: u64,
     pace: Duration,
@@ -489,21 +427,16 @@ fn size_of(out: &Path) -> u64 {
         .sum()
 }
 
-fn passage(server: &mut impl Link, client: &Client, plan: &Plan) -> Result<(), String> {
+fn passage(server: &mut impl Ask, client: &Client, plan: &Plan) -> Result<(), String> {
     let joiner = Joiner {
         client,
         min_chunks: plan.min_chunks,
     };
     let pace = Duration::from_millis(1000 / TICKS_PER_SECOND);
     join(server, &joiner, plan.lock_at, pace)?;
-    let socket = Socket::over(
-        "client",
-        control::Probe::open(&client.name, control::Limits::REAL)?.into_stream(),
-        ANSWER_LIMIT,
-    )?;
     let mut lock = Lockstep {
         server,
-        client: socket,
+        client: Probe::open(&client.name, Limits::REAL)?,
         origin: Origin::default(),
     };
     settle(&mut lock)?;
@@ -540,11 +473,11 @@ fn passage(server: &mut impl Link, client: &Client, plan: &Plan) -> Result<(), S
 }
 
 /// A server left behind would hold its port and its socket against the next run.
-fn finish(server: &mut impl Link, stop: bool, result: Result<(), String>) -> Result<(), String> {
+fn finish(server: &mut impl Ask, stop: bool, result: Result<(), String>) -> Result<(), String> {
     if !stop {
         return result;
     }
-    let stopped = server.ask("stop").map(|_| ());
+    let stopped = server.ask("stop").map(|_| ()).map_err(String::from);
     result.and(stopped)
 }
 
@@ -570,21 +503,22 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::control::Failure;
 
     #[derive(Default)]
     struct Script {
         heard: Vec<String>,
-        answers: VecDeque<Result<Value, String>>,
+        answers: VecDeque<Result<Value, Failure>>,
     }
 
-    impl Link for Script {
-        fn ask(&mut self, line: &str) -> Result<Value, String> {
+    impl Ask for Script {
+        fn ask(&mut self, line: &str) -> Result<Value, Failure> {
             self.heard.push(line.to_string());
             self.answers.pop_front().expect(line)
         }
     }
 
-    fn script(answers: Vec<Result<Value, String>>) -> Script {
+    fn script(answers: Vec<Result<Value, Failure>>) -> Script {
         Script {
             heard: Vec::new(),
             answers: answers.into(),
@@ -598,7 +532,7 @@ mod tests {
         Plan::parse(&all, Level::Render)
     }
 
-    fn sent(client_in: u64, out: u64) -> Result<Value, String> {
+    fn sent(client_in: u64, out: u64) -> Result<Value, Failure> {
         Ok(json!({"in": client_in, "out": out, "active": true}))
     }
 
@@ -633,7 +567,9 @@ mod tests {
     #[test]
     fn an_expired_barrier_is_an_error_and_nothing_goes_on() {
         let mut lock = Lockstep {
-            server: script(vec![Err("server: fence expired: received 1 of 2".into())]),
+            server: script(vec![Err(Failure::Refused(
+                json!({"ok": false, "error": "fence expired: received 1 of 2"}),
+            ))]),
             client: script(vec![sent(0, 2)]),
             origin: Origin::default(),
         };
@@ -837,14 +773,18 @@ mod tests {
 
     #[test]
     fn a_socket_has_thirty_seconds_for_real_to_answer() {
-        let (home, path) = control::fake::test_socket("answers");
-        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        let socket = Socket::open("client", &path).unwrap();
-        registry::set_test_home(None);
-        fs::remove_dir_all(home).unwrap();
-        assert_eq!(socket.limit, Duration::from_secs(30));
-        let limit = socket.stream.read_timeout().unwrap();
-        assert_eq!(limit, Some(Duration::from_secs(30)));
+        let verbs = [
+            "status",
+            "step 1 53",
+            "stop",
+            "sent",
+            "fence 50",
+            "step 12.5",
+            "shot f00000",
+        ];
+        for verb in verbs.into_iter().chain(["clock virtual", "act tp 0 90 0"]) {
+            assert_eq!(Limits::REAL.of(verb), Duration::from_secs(30), "{verb}");
+        }
     }
 
     #[test]
@@ -855,9 +795,15 @@ mod tests {
     #[test]
     fn a_silent_peer_is_named_in_the_error() {
         let (ours, _theirs) = UnixStream::pair().unwrap();
-        let mut socket = Socket::over("client", ours, Duration::from_millis(20)).unwrap();
-        let error = socket.ask("sent").unwrap_err();
-        assert!(error.contains("client gave no answer to sent"), "{error}");
+        let mut probe = Probe::over("client", ours, Limits::REAL).unwrap();
+        let error = probe
+            .ask_within("sent", Duration::from_millis(20))
+            .unwrap_err();
+        let error = error.to_string();
+        assert!(
+            error.contains("client does not answer: no reply to sent"),
+            "{error}"
+        );
     }
 
     #[test]

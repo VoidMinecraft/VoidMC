@@ -21,9 +21,8 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use control::Chore;
+use control::{Chore, Failure};
 use registry::{Client, Level, Registry};
-use serde_json::Value;
 
 const USAGE: &str = "voidc: the clients of the agents
 
@@ -76,15 +75,13 @@ fn wait_in_game(name: &str) -> Result<(), String> {
                 log.display()
             ));
         }
-        if let Ok(line) = control::chore(name, Chore::State, Duration::from_secs(5)) {
-            let reply: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-            if reply["state"] == "connected" {
-                println!(
-                    "{name}: in game after {:.1} s",
-                    start.elapsed().as_secs_f32()
-                );
-                return Ok(());
-            }
+        let state = control::answered(control::chore(name, Chore::State, Duration::from_secs(5)));
+        if state.is_ok_and(|reply| reply["state"] == "connected") {
+            println!(
+                "{name}: in game after {:.1} s",
+                start.elapsed().as_secs_f32()
+            );
+            return Ok(());
         }
         sleep(Duration::from_millis(250));
     }
@@ -153,11 +150,14 @@ fn line_of(client: &Client) -> String {
     } else if client.level == Level::Play {
         "playing".to_string()
     } else {
-        control::chore(&client.name, Chore::State, Duration::from_secs(3))
-            .ok()
-            .and_then(|line| serde_json::from_str::<Value>(&line).ok())
-            .and_then(|reply| reply["state"].as_str().map(str::to_string))
-            .unwrap_or_else(|| "starting".to_string())
+        control::answered(control::chore(
+            &client.name,
+            Chore::State,
+            Duration::from_secs(3),
+        ))
+        .ok()
+        .and_then(|reply| reply["state"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "starting".to_string())
     };
     format!(
         "{:<24} {:<7} {:<6} {state}",
@@ -181,13 +181,16 @@ fn cmd(args: &[String]) -> Result<(), String> {
     }
     let verb = args[1..].join(" ");
     condition::check(&verb, client.level)?;
-    let reply = control::ask(name, &verb, control::timeout_of(&verb))?;
-    println!("{reply}");
-    let parsed: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
-    if parsed["ok"] == true {
-        Ok(())
-    } else {
-        Err(String::new())
+    match control::ask(name, &verb) {
+        Ok(reply) => {
+            println!("{reply}");
+            Ok(())
+        }
+        Err(Failure::Refused(reply)) => {
+            println!("{reply}");
+            Err(String::new())
+        }
+        Err(Failure::Lost(error)) => Err(error),
     }
 }
 

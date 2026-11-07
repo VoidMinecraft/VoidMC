@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::condition::{self, Condition, DEFAULT_WAIT_MS};
-use crate::control::{self, Chore, Limits};
+use crate::control::{self, Ask, Chore, Failure, Limits, Probe};
 use crate::registry::{self, Level};
 use crate::{check, compare, lifecycle, version};
 
@@ -365,10 +365,9 @@ pub struct Run<'a> {
 }
 
 /// The one thing a scenario talks to, so its runs can be tested without a game.
-pub trait Driver {
-    fn ask(&mut self, verb: &str) -> Result<Value, String>;
+pub trait Driver: Ask {
     /// `clock real` at the end of a run, which nothing may stop on its way to the client.
-    fn give_back_clock(&mut self) -> Result<Value, String>;
+    fn give_back_clock(&mut self) -> Result<Value, Failure>;
     fn recording(&self, name: &str) -> PathBuf;
 
     fn read(&self, path: &Path) -> Result<String, String> {
@@ -376,41 +375,34 @@ pub trait Driver {
     }
 }
 
-/// One connection, checked once, for a whole run. A verb that fails takes it down, so that its
-/// late answer cannot pass for the next one: the next verb opens and checks another.
-pub struct Socket {
+/// The client of a run, on one checked connection that a lost line takes down: the next verb
+/// opens and checks another.
+pub struct LiveClient {
     name: String,
-    probe: Option<control::Probe>,
+    probe: Probe,
     limits: Limits,
 }
 
-impl Socket {
+impl LiveClient {
     pub fn open(name: &str, limits: Limits) -> Result<Self, String> {
         Ok(Self {
             name: name.to_string(),
-            probe: Some(control::Probe::open(name, limits)?),
+            probe: Probe::open(name, limits)?,
             limits,
         })
     }
 }
 
-impl Driver for Socket {
-    fn ask(&mut self, verb: &str) -> Result<Value, String> {
-        let mut probe = match self.probe.take() {
-            Some(probe) => probe,
-            None => control::Probe::open(&self.name, self.limits)?,
-        };
-        let line = probe.ask(verb, self.limits.of(verb))?;
-        let reply = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-        self.probe = Some(probe);
-        Ok(reply)
+impl Ask for LiveClient {
+    fn ask(&mut self, verb: &str) -> Result<Value, Failure> {
+        self.probe.ask(verb)
     }
+}
 
+impl Driver for LiveClient {
     /// On a connection of its own: no check can stop it, and no late answer can reach it.
-    fn give_back_clock(&mut self) -> Result<Value, String> {
-        let timeout = self.limits.of("clock real");
-        let line = control::chore(&self.name, Chore::ClockReal, timeout)?;
-        serde_json::from_str(&line).map_err(|e| e.to_string())
+    fn give_back_clock(&mut self) -> Result<Value, Failure> {
+        control::chore(&self.name, Chore::ClockReal, self.limits.of("clock real"))
     }
 
     fn recording(&self, name: &str) -> PathBuf {
@@ -458,14 +450,6 @@ fn whole(verb: &str, text: &str, recording: &Recording) -> Result<(), String> {
     }
 }
 
-pub fn reply_error(reply: &Value) -> Option<String> {
-    (reply["ok"] != true).then(|| {
-        reply["error"]
-            .as_str()
-            .map_or_else(|| reply.to_string(), str::to_string)
-    })
-}
-
 /// `wait_still <ms> [limit]`: until the camera has not moved for that long. A sleep would only
 /// guess when a flight ends, and a picture taken during one compares with nothing.
 fn wait_still(driver: &mut impl Driver, line: &Line) -> Step {
@@ -481,7 +465,7 @@ fn wait_still(driver: &mut impl Driver, line: &Line) -> Step {
     let (mut last, mut since) = (None, Instant::now());
     let mut seen = Value::Null;
     while start.elapsed() < Duration::from_millis(limit) {
-        seen = match driver.ask("state") {
+        seen = match control::answered(driver.ask("state")) {
             Ok(state) => state,
             Err(error) => return Step::failed(error),
         };
@@ -508,12 +492,10 @@ fn wait_still(driver: &mut impl Driver, line: &Line) -> Step {
 }
 
 fn condition_step(driver: &mut impl Driver, line: &Line, condition: &Written, limit: u64) -> Step {
-    let reply = match driver.ask(&verb_of(&line.verb, condition, limit)) {
-        Ok(reply) => reply,
-        Err(error) => return Step::failed(error),
-    };
-    let Some(error) = reply_error(&reply) else {
-        return Step::default();
+    let error = match driver.ask(&verb_of(&line.verb, condition, limit)) {
+        Ok(_) => return Step::default(),
+        Err(Failure::Lost(error)) => return Step::failed(error),
+        Err(refused) => refused.to_string(),
     };
     let got = driver
         .ask("state")
@@ -565,19 +547,20 @@ impl<'a> Run<'a> {
 
     fn shot(&self, driver: &mut impl Driver, line: &Line) -> Step {
         let loaded = format!("wait_until {DEFAULT_WAIT_MS} loading==false");
-        let reply = driver
-            .ask(&loaded)
-            .and_then(|reply| match reply_error(&reply) {
-                Some(error) => Err(format!("the loading screen stayed: {error}")),
-                None => driver.ask(&format!("shot {}", line.words.join(" "))),
-            });
+        let reply = match driver.ask(&loaded) {
+            Err(Failure::Refused(reply)) => Err(format!(
+                "the loading screen stayed: {}",
+                Failure::Refused(reply)
+            )),
+            Err(lost) => Err(lost.to_string()),
+            Ok(_) => driver
+                .ask(&format!("shot {}", line.words.join(" ")))
+                .map_err(String::from),
+        };
         let reply = match reply {
             Ok(reply) => reply,
             Err(error) => return Step::failed(error),
         };
-        if let Some(error) = reply_error(&reply) {
-            return Step::failed(error);
-        }
         let from = PathBuf::from(reply["path"].as_str().unwrap_or_default());
         let dir = self.out.join("shots");
         let to = dir.join(format!("{}.png", line.words[0]));
@@ -710,11 +693,15 @@ impl<'a> Run<'a> {
         let verb = format!("{} {}", line.verb, line.words.join(" "));
         match driver.ask(verb.trim()) {
             Ok(reply) => Step {
-                error: reply_error(&reply),
                 detail: Some(reply),
                 ..Step::default()
             },
-            Err(error) => Step::failed(error),
+            Err(Failure::Refused(reply)) => Step {
+                error: Some(Failure::Refused(reply.clone()).to_string()),
+                detail: Some(reply),
+                ..Step::default()
+            },
+            Err(Failure::Lost(error)) => Step::failed(error),
         }
     }
 
@@ -739,7 +726,7 @@ impl<'a> Run<'a> {
     /// verb. Only a client in the world shows all its fields: one that is coming back after a
     /// restart proves nothing, and its run is left to its first `wait_until`.
     fn preflight(&self, scenario: &Scenario, driver: &mut impl Driver) -> Result<(), String> {
-        let state = driver.ask("state")?;
+        let state = control::answered(driver.ask("state"))?;
         let resets = scenario
             .lines
             .first()
@@ -849,15 +836,15 @@ fn give_back_clock(client: &str, driver: &mut impl Driver) -> Option<LineResult>
         )
     };
     let (error, advice) = match driver.give_back_clock() {
-        Ok(reply) => {
-            let error = reply_error(&reply)?;
+        Ok(_) => return None,
+        Err(Failure::Refused(reply)) => {
             let advice = version::check(client, &reply).map_or_else(
                 |_| format!("Its probe takes no voidc cmd: restart the client with voidc down {client}, then voidc up"),
                 |()| by_command(),
             );
-            (error, advice)
+            (Failure::Refused(reply).to_string(), advice)
         }
-        Err(error) => (error, by_command()),
+        Err(Failure::Lost(error)) => (error, by_command()),
     };
     let result = LineResult::new(
         0,
@@ -946,7 +933,7 @@ impl<F> Host for Live<F>
 where
     F: FnMut(&str, Level, Option<String>) -> Result<(), String>,
 {
-    type Driver = Socket;
+    type Driver = LiveClient;
 
     fn find(&self, name: &str) -> Option<(Level, bool)> {
         registry::load(name).map(|client| (client.level, registry::alive(&client)))
@@ -960,8 +947,8 @@ where
         lifecycle::down(name)
     }
 
-    fn driver(&self, name: &str) -> Result<Socket, String> {
-        Socket::open(name, self.1)
+    fn driver(&self, name: &str) -> Result<LiveClient, String> {
+        LiveClient::open(name, self.1)
     }
 }
 
@@ -1123,14 +1110,14 @@ mod tests {
         }
     }
 
-    impl Driver for Fake {
-        fn ask(&mut self, verb: &str) -> Result<Value, String> {
+    impl Ask for Fake {
+        fn ask(&mut self, verb: &str) -> Result<Value, Failure> {
             self.log.push(verb.to_string());
             if verb == "state" {
                 if self.moving {
                     self.state["cam_x"] = json!(self.state["cam_x"].as_f64().unwrap() + 1.0);
                 }
-                return Ok(self.state.clone());
+                return control::judged(self.state.clone());
             }
             self.asked.push(verb.to_string());
             if verb.starts_with("frames") {
@@ -1142,7 +1129,7 @@ mod tests {
                 }
             }
             if verb == "clock real" && self.gone_at_release {
-                return Err("connection refused".into());
+                return Err(Failure::Lost("connection refused".into()));
             }
             if verb == "clock real" {
                 let collected = self.dir.join("out/frames.txt").exists();
@@ -1154,10 +1141,12 @@ mod tests {
             {
                 self.state["clock"] = json!(mode);
             }
-            Ok(reply)
+            control::judged(reply)
         }
+    }
 
-        fn give_back_clock(&mut self) -> Result<Value, String> {
+    impl Driver for Fake {
+        fn give_back_clock(&mut self) -> Result<Value, Failure> {
             self.ask("clock real")
         }
 
@@ -2096,7 +2085,7 @@ mod tests {
                 assert!(refused.contains(error), "{verb}: {refused}");
             }
         }
-        let limit = control::timeout_of("wait_until chunks >= 200");
+        let limit = Limits::REAL.of("wait_until chunks >= 200");
         assert_eq!(limit, Duration::from_millis(DEFAULT_WAIT_MS + 5_000));
     }
 
