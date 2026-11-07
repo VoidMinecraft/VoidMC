@@ -24,8 +24,6 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.components.ChatComponent;
@@ -46,12 +44,9 @@ import org.lwjgl.system.macosx.ObjCRuntime;
 
 /** Runs the game and answers verbs on a unix socket, one line in, one JSON line out. */
 public class Probe {
-  private static final Pattern NUMBER = Pattern.compile("-?\\d+(\\.\\d+)?");
-  private static final Pattern CONDITION = Pattern.compile("^(\\w+)\\s*(>=|<=|==|!=|~)\\s*(.*)$");
   private static final String LEVEL = System.getProperty("void.level", "render");
   private static final String SERVER = System.getProperty("void.server");
   private static final long IDLE_MS = Long.getLong("void.idle.minutes", 30) * 60_000;
-  private static final long DEFAULT_WAIT_MS = 20_000;
   private static volatile long lastVerb = System.currentTimeMillis();
   private static volatile boolean shown;
   private static volatile int reconnects;
@@ -200,7 +195,7 @@ public class Probe {
       case "wait_until" -> reply.putAll(waitUntil(rest));
       case "assert" -> {
         Map<String, Object> fields = onGame(Probe::fields);
-        if (!holds(rest, fields)) throw new AssertionError(rest + " is false: " + fields);
+        if (!Condition.holds(rest, fields)) throw new AssertionError(rest + " is false: " + fields);
         reply.putAll(fields);
       }
       case "shot" -> reply.put("path", shot(w[1], w.length > 2 ? Integer.parseInt(w[2]) : 1));
@@ -287,65 +282,20 @@ public class Probe {
   }
 
   private static Map<String, Object> waitUntil(String rest) throws Exception {
-    String condition = rest.trim();
-    long limit = DEFAULT_WAIT_MS;
-    int cut = condition.lastIndexOf(' ');
-    if (cut > 0 && condition.substring(cut + 1).matches("\\d+") && parse(condition.substring(0, cut)) != null) {
-      limit = Long.parseLong(condition.substring(cut + 1));
-      condition = condition.substring(0, cut);
-    }
-    Matcher parts = parse(condition);
-    if (parts == null) throw new IllegalArgumentException(refusal(condition));
+    Condition.Wait wait = Condition.waitOf(rest);
     long start = System.currentTimeMillis();
     while (true) {
       try {
         Map<String, Object> fields = onGame(Probe::fields);
-        if (holds(parts, fields)) {
+        if (Condition.holds(wait.parts(), fields)) {
           fields.put("waited_ms", System.currentTimeMillis() - start);
           return fields;
         }
       } catch (IllegalStateException notYet) {
       }
-      if (System.currentTimeMillis() - start > limit) throw new AssertionError("timed out on " + condition);
+      if (System.currentTimeMillis() - start > wait.limit()) throw new AssertionError("timed out on " + rest.trim());
       Thread.sleep(50);
     }
-  }
-
-  private static Matcher parse(String condition) {
-    Matcher parts = CONDITION.matcher(condition.trim());
-    if (!parts.matches() || parts.group(3).isBlank()) return null;
-    boolean order = parts.group(2).equals(">=") || parts.group(2).equals("<=");
-    if (order && !NUMBER.matcher(parts.group(3).trim()).matches()) return null;
-    return parts;
-  }
-
-  private static String refusal(String condition) {
-    return "bad condition " + condition + ": field op value, and >= or <= need a number";
-  }
-
-  private static boolean holds(String condition, Map<String, Object> fields) {
-    Matcher parts = parse(condition);
-    if (parts == null) throw new IllegalArgumentException(refusal(condition));
-    return holds(parts, fields);
-  }
-
-  private static boolean holds(Matcher parts, Map<String, Object> fields) {
-    Object actual = fields.get(parts.group(1));
-    if (actual == null) return false;
-    String op = parts.group(2), expected = parts.group(3).trim();
-    if (op.equals("~")) return actual.toString().contains(expected);
-    boolean order = op.equals(">=") || op.equals("<=");
-    if (actual instanceof Number number && NUMBER.matcher(expected).matches()) {
-      int compared = Double.compare(number.doubleValue(), Double.parseDouble(expected));
-      return switch (op) {
-        case ">=" -> compared >= 0;
-        case "<=" -> compared <= 0;
-        case "==" -> compared == 0;
-        default -> compared != 0;
-      };
-    }
-    if (order) throw new IllegalArgumentException(parts.group(1) + " is " + actual + ", not a number");
-    return op.equals("==") == actual.toString().equals(expected);
   }
 
   private static String shot(String name, int downscale) throws Exception {

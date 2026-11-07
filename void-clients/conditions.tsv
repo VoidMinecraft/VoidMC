@@ -1,0 +1,47 @@
+# One table for the conditions of the bot (condition.rs) and of the probe (Condition.java).
+# fields	<level>	name	value ...: a text is quoted, a number or true/false is not.
+# <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>
+fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5
+fields	bot	chunks	1000	state	"connected"	chat	"a>=b"	camera	3	x	1.5
+assert	render	chunks>=800	true
+assert	render	chunks<=800	false
+assert	render	chunks == 1000	true
+assert	render	chunks!=x	true
+assert	render	state==connected	true
+assert	render	state!=connected	false
+assert	render	chat~a>=b	true
+assert	render	chat~zz	false
+assert	render	x>=1.5	true
+assert	render	x==1.50	true
+assert	render	passenger==false	true
+assert	render	nope>=1	false
+assert	render	chunks_2>=1	false
+assert	render	chunks>=200 30000	error
+assert	render	chunks >= 200 30000	error
+assert	render	chunks>=abc	error
+assert	render	chunks >=	error
+assert	render	chunks	error
+assert	render	>= 3	error
+assert	render	chunks==1e3	false
+assert	render	chunks>=1e3	error
+assert	render	chunks>=inf	error
+assert	render	chunks>=NaN	error
+assert	render	chunks<=5.	error
+assert	render	chunks>=.5	error
+assert	render	chunks>=-1	true
+assert	render	state>=1	error
+assert	render	chat<=3	error
+assert	render	camera>=1	error
+assert	bot	camera>=1	true
+assert	render	été>=1	error
+assert	render	chünks>=1	error
+wait	render	chunks >= 100	20000 true
+wait	render	chunks >= 100 5000	5000 true
+wait	render	chunks>=5000 1500	1500 false
+wait	render	chat~a b 12	12 false
+wait	render	chat~x 123456789	123456789 false
+wait	render	chunks >= 200 30s	error
+wait	render	chunks >= abc 3000	error
+wait	render	chunks >=	error
+wait	render	chunks>=1 +5	error
+wait	render	chunks>=1 1234567890	error

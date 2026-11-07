@@ -46,7 +46,7 @@ impl Condition {
             .min_by_key(|(at, _)| *at)
             .ok_or_else(bad)?;
         let (field, expected) = (text[..at].trim(), text[at + op.len()..].trim());
-        if field.is_empty() || !field.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        if field.is_empty() || !field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(bad());
         }
         if expected.is_empty() {
@@ -109,10 +109,15 @@ impl Condition {
 
 /// `condition [ms]`: a last word is a limit only when what comes before is a whole condition.
 pub fn wait(rest: &str) -> Result<(Condition, u64), String> {
-    if let Some((before, last)) = rest.trim().rsplit_once(char::is_whitespace)
-        && let (Ok(ms), Ok(condition)) = (last.parse::<u64>(), Condition::parse(before))
+    if let Some((before, last)) = rest.trim().rsplit_once([' ', '\t'])
+        && (1..=9).contains(&last.len())
+        && last.bytes().all(|byte| byte.is_ascii_digit())
+        && let Ok(condition) = Condition::parse(before)
     {
-        return Ok((condition, ms));
+        return Ok((
+            condition,
+            last.parse().map_err(|_| format!("bad limit {last}"))?,
+        ));
     }
     Ok((Condition::parse(rest)?, DEFAULT_WAIT_MS))
 }
@@ -223,5 +228,121 @@ mod tests {
         }
         assert!(check("assert camera>=1", Level::Render).is_err());
         assert!(check("assert camera>=1", Level::Bot).is_ok());
+    }
+
+    fn case_value(cell: &str) -> Value {
+        match cell
+            .strip_prefix('"')
+            .and_then(|text| text.strip_suffix('"'))
+        {
+            Some(text) => json!(text),
+            None => serde_json::from_str(cell).unwrap_or_else(|_| panic!("bad value {cell}")),
+        }
+    }
+
+    fn outcome(kind: &str, text: &str, level: Level, fields: &Value) -> String {
+        let verb = if kind == "assert" {
+            "assert"
+        } else {
+            "wait_until"
+        };
+        let result = check(&format!("{verb} {text}"), level).and_then(|()| match kind {
+            "assert" => Condition::parse(text)?
+                .holds(fields)
+                .map(|ok| ok.to_string()),
+            _ => {
+                let (condition, ms) = wait(text)?;
+                Ok(format!("{ms} {}", condition.holds(fields)?))
+            }
+        });
+        result.unwrap_or_else(|_| "error".into())
+    }
+
+    const CASES: &str = include_str!("../conditions.tsv");
+
+    #[test]
+    fn rust_reads_every_shared_case_as_the_table_says() {
+        let mut levels = std::collections::HashMap::new();
+        let mut wrong = Vec::new();
+        let mut cases = 0;
+        for line in CASES
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        {
+            let cells: Vec<&str> = line.split('\t').collect();
+            if cells[0] == "fields" {
+                let fields: serde_json::Map<String, Value> = cells[2..]
+                    .chunks(2)
+                    .map(|pair| (pair[0].to_string(), case_value(pair[1])))
+                    .collect();
+                levels.insert(cells[1], Value::Object(fields));
+                continue;
+            }
+            cases += 1;
+            let level = match cells[1] {
+                "bot" => Level::Bot,
+                "logic" => Level::Logic,
+                _ => Level::Render,
+            };
+            let got = outcome(cells[0], cells[2], level, &levels[cells[1]]);
+            if got != cells[3] {
+                wrong.push(format!("{line}\tbut Rust says {got}"));
+            }
+        }
+        assert!(cases > 0);
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    fn javac() -> std::path::PathBuf {
+        let mut candidates = vec![crate::launch::java_home().join("bin/javac")];
+        if let Some(home) = std::env::var_os("JAVA_HOME") {
+            candidates.push(std::path::PathBuf::from(home).join("bin/javac"));
+        }
+        let on_path: Vec<_> = std::env::var_os("PATH")
+            .map(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join("javac"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        candidates
+            .into_iter()
+            .chain(on_path)
+            .find(|candidate| candidate.is_file())
+            .expect("no javac: install a JDK, or the Minecraft runtime that voidc uses, so the probe's conditions can be checked")
+    }
+
+    #[test]
+    fn the_probe_reads_every_shared_case_as_the_table_says() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let out = std::env::temp_dir().join(format!("voidc-conditions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let javac = javac();
+        let compiled = std::process::Command::new(&javac)
+            .arg("-d")
+            .arg(&out)
+            .arg(crate_dir.join("probe/Condition.java"))
+            .arg(crate_dir.join("probe/ConditionCases.java"))
+            .output()
+            .expect("javac runs");
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let run = std::process::Command::new(javac.with_file_name("java"))
+            .arg("-cp")
+            .arg(&out)
+            .arg("ConditionCases")
+            .arg(crate_dir.join("conditions.tsv"))
+            .output()
+            .expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert!(
+            run.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
     }
 }
