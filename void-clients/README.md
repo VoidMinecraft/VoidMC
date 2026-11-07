@@ -306,8 +306,10 @@ report lands in `~/.voidc/clients/<name>/perf/`.
   gives `state` 12 s, and a client silent that long is said not to answer. Once open, every verb has
   30 s, `state` included, a `wait_until` its limit and 5 s, and `perf` what its measure needs.
 - The `clock real` at the end of a run takes a connection of its own, with no check and 30 s, so
-  that a connection down or a probe of another version cannot leave the clock virtual. A probe that
-  does not know it fails the run, in the report.
+  that a connection down or a probe of another version does not stop it. A probe that does not
+  know it fails the run, in the report. One case still ends virtual: a `clock virtual` that timed
+  out on a stuck game can leave its `freeze` queued in the probe, to land after that `clock real`.
+  The preflight of the next run sees it and refuses, unless that run starts with `clock real`.
 - The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.
 - `voidc up` and `voidc step` warn when the disk has less than `min_free_gib` free, and still
   start.

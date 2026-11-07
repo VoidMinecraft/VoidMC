@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::condition::{self, Condition, DEFAULT_WAIT_MS};
 use crate::control::{self, Chore, Limits};
 use crate::registry::{self, Level};
-use crate::{check, compare, lifecycle};
+use crate::{check, compare, lifecycle, version};
 
 const ALL: &[Level] = &[Level::Bot, Level::Logic, Level::Render];
 const GAME: &[Level] = &[Level::Logic, Level::Render];
@@ -843,16 +843,28 @@ impl<'a> Run<'a> {
 
 /// A frozen clock outlives the run on a client that stays up: the next run would play frozen.
 fn give_back_clock(client: &str, driver: &mut impl Driver) -> Option<LineResult> {
-    let error = driver
-        .give_back_clock()
-        .map(|reply| reply_error(&reply))
-        .unwrap_or_else(Some)?;
+    let by_command = || {
+        format!(
+            "Send voidc cmd {client} clock real, or restart the client if voidc refuses its version"
+        )
+    };
+    let (error, advice) = match driver.give_back_clock() {
+        Ok(reply) => {
+            let error = reply_error(&reply)?;
+            let advice = version::check(client, &reply).map_or_else(
+                |_| format!("Its probe takes no voidc cmd: restart the client with voidc down {client}, then voidc up"),
+                |()| by_command(),
+            );
+            (error, advice)
+        }
+        Err(error) => (error, by_command()),
+    };
     let result = LineResult::new(
         0,
         "clock real, at the end of the run".to_string(),
         0,
         Step::failed(format!(
-            "the clock of {client} was not given back, and the next run could play frozen: {error}. Send voidc cmd {client} clock real, or restart the client if its probe does not know clock"
+            "the clock of {client} was not given back, and the next run could play frozen: {error}. {advice}"
         )),
     );
     println!("{}", result.report());
@@ -1507,7 +1519,7 @@ mod tests {
     fn a_clock_that_cannot_go_back_fails_the_run() {
         let dir = folder("clock-stuck");
         let scenario = Scenario::parse("clock virtual\n").unwrap();
-        let refused = json!({"ok": false, "error": "no"});
+        let refused = json!({"ok": false, "error": "no", "version": version::current()});
         let mut fake = Fake::new(&dir, vec![json!({"ok": true}), refused]);
         let report = run(&dir, false).play(&scenario, &mut fake).unwrap();
         assert!(!report.passed);
@@ -1561,6 +1573,8 @@ mod tests {
             error.contains("unknown verb clock") && error.contains("restart the client"),
             "{error}"
         );
+        assert!(!error.contains("voidc cmd test"), "{error}");
+        assert!(error.contains("voidc down test"), "{error}");
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1588,7 +1602,7 @@ mod tests {
     fn a_failed_clock_real_is_given_back_at_the_end_all_the_same() {
         let dir = folder("clock-real-failed");
         let scenario = Scenario::parse("clock virtual\nclock real\n").unwrap();
-        let refused = json!({"ok": false, "error": "no"});
+        let refused = json!({"ok": false, "error": "no", "version": version::current()});
         let mut fake = Fake::new(&dir, vec![json!({"ok": true}), refused]);
         let report = run(&dir, false).play(&scenario, &mut fake).unwrap();
         assert!(!report.passed);
@@ -2489,6 +2503,7 @@ mod tests {
         assert!(report.contains("was not given back"), "{report}");
         assert!(report.contains("unknown verb clock"), "{report}");
         assert!(report.contains("restart the client"), "{report}");
+        assert!(!report.contains("voidc cmd fake"), "{report}");
         assert_eq!(fake.heard(), ["state", "state", "act a", "clock real"]);
     }
 
