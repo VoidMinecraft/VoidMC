@@ -24,7 +24,7 @@ use voidmc_protocol::clientbound::{Disconnect, KeepAlive, ResourcePackPush};
 
 use crate::packs::PackBook;
 use crate::script::{Script, needs_a_client};
-use crate::wire::{MAX_PLAIN_FRAME_BYTES, frame, split, text};
+use crate::wire::{MAX_PLAIN_FRAME_BYTES, Packet, frame, split, text};
 
 const OWN_KEEP_ALIVE: i64 = 0x4B45_4550_0000_0000;
 const OWN_KEEP_ALIVE_MASK: i64 = 0x7FFF_FFFF_0000_0000;
@@ -113,7 +113,7 @@ enum Stage {
         question_open: bool,
     },
     Reconfiguring {
-        held: Vec<Bytes>,
+        held: Vec<Packet>,
     },
 }
 
@@ -502,8 +502,8 @@ impl Session {
         self.script = Script::default();
         match std::mem::replace(&mut self.stage, Stage::Relaying) {
             Stage::Reconfiguring { held } => {
-                for frame in held {
-                    self.relay_from_backend(frame);
+                for packet in held {
+                    self.relay_from_backend(packet);
                 }
             }
             other => self.stage = other,
@@ -528,24 +528,22 @@ impl Session {
     }
 
     pub fn on_backend(&mut self, frame: Bytes, now: Instant) {
-        if split(&frame).is_none() {
+        let Some(packet) = Packet::read(frame) else {
             tracing::warn!("backend frame without an id");
             return;
-        }
+        };
         self.backend_heard_at = now;
         match self.stage {
-            Stage::Relaying => self.relay_from_backend(frame),
-            Stage::LoggingIn => self.log_in(frame, now),
-            Stage::Replaying { .. } => self.replay(frame, now),
-            Stage::Reconfiguring { .. } => self.hold_for_client(frame, now),
+            Stage::Relaying => self.relay_from_backend(packet),
+            Stage::LoggingIn => self.log_in(&packet, now),
+            Stage::Replaying { .. } => self.replay(packet, now),
+            Stage::Reconfiguring { .. } => self.hold_for_client(packet, now),
             Stage::Waiting { .. } => {}
         }
     }
 
-    fn relay_from_backend(&mut self, frame: Bytes) {
-        let Some((id, body)) = split(&frame) else {
-            return;
-        };
+    fn relay_from_backend(&mut self, packet: Packet) {
+        let (id, body) = (packet.id(), packet.body());
         let sent_away = is_sent_away(self.client_reads(), id);
         match self.phase {
             Phase::Login => match id {
@@ -574,9 +572,9 @@ impl Session {
                 config_cb::KEEP_ALIVE | config_cb::PING => {}
                 config_cb::FINISH_CONFIGURATION => {
                     self.phase = Phase::LeavingConfiguration;
-                    self.script.record(&frame);
+                    self.script.record(packet.frame());
                 }
-                _ => self.script.record(&frame),
+                _ => self.script.record(packet.frame()),
             },
             Phase::Play | Phase::LeavingPlay => match id {
                 play_cb::RESOURCE_PACK_PUSH => {
@@ -588,14 +586,14 @@ impl Session {
                 play_cb::START_CONFIGURATION => self.phase = Phase::LeavingPlay,
                 play_cb::BUNDLE_DELIMITER => self.bundle_open = !self.bundle_open,
                 play_cb::LOGIN if std::mem::take(&mut self.away_shown) => {
-                    self.send_to_client(frame);
+                    self.send_to_client(packet.into_frame());
                     self.send_to_client(action_bar(""));
                     return;
                 }
                 _ => {}
             },
         }
-        self.send_to_client(frame);
+        self.send_to_client(packet.into_frame());
         if sent_away && !self.closed {
             self.actions.push(Action::DropBackend);
             self.actions.push(Action::Close);
@@ -634,11 +632,9 @@ impl Session {
         true
     }
 
-    fn log_in(&mut self, frame_in: Bytes, now: Instant) {
-        let Some((id, mut body)) = split(&frame_in) else {
-            return;
-        };
-        match id {
+    fn log_in(&mut self, packet: &Packet, now: Instant) {
+        let mut body = packet.body();
+        match packet.id() {
             login_cb::LOGIN_COMPRESSION => {
                 if let Ok(threshold) = VarI32::decode(&mut body) {
                     self.actions.push(Action::Compress(threshold.0));
@@ -699,8 +695,8 @@ impl Session {
 
     /// Keeps from the client what it holds already: it would add it up, and fail on the double
     /// when the configuration ends.
-    fn replay(&mut self, frame_in: Bytes, now: Instant) {
-        if self.answer_for_client(&frame_in, now) {
+    fn replay(&mut self, packet: Packet, now: Instant) {
+        if self.answer_for_client(&packet, now) {
             return;
         }
         let Stage::Replaying {
@@ -710,7 +706,7 @@ impl Session {
         else {
             return;
         };
-        let id = split(&frame_in).map_or(-1, |(id, _)| id);
+        let id = packet.id();
         if matches!(
             id,
             config_cb::RESOURCE_PACK_PUSH | config_cb::RESOURCE_PACK_POP
@@ -724,10 +720,10 @@ impl Session {
                 );
                 return;
             }
-            self.relay_from_backend(frame_in);
+            self.relay_from_backend(packet);
             return;
         }
-        if let Some(reason) = needs_a_client(&frame_in) {
+        if let Some(reason) = needs_a_client(id) {
             self.actions.push(Action::DropBackend);
             self.give_up(format!(
                 "The server came back during the configuration and {reason}: only the client \
@@ -735,7 +731,7 @@ impl Session {
             ));
             return;
         }
-        if !self.script.follows(step, &frame_in) {
+        if !self.script.follows(step, packet.frame()) {
             self.actions.push(Action::DropBackend);
             self.give_up(format!(
                 "The server changed during the configuration, at packet {step} (id {id:#x}), and \
@@ -763,11 +759,9 @@ impl Session {
 
     /// Answers what a backend asks during a configuration no client is listening to.
     /// `true` when that took care of `frame`.
-    fn answer_for_client(&mut self, frame_in: &Bytes, now: Instant) -> bool {
-        let Some((id, body)) = split(frame_in) else {
-            return true;
-        };
-        match id {
+    fn answer_for_client(&mut self, packet: &Packet, now: Instant) -> bool {
+        let body = packet.body();
+        match packet.id() {
             config_cb::KEEP_ALIVE => {
                 self.send_to_backend(frame(config_sb::KEEP_ALIVE, |out| {
                     out.extend_from_slice(body);
@@ -783,17 +777,21 @@ impl Session {
                 self.retry(now);
                 true
             }
-            config_cb::RESOURCE_PACK_PUSH => self.answer_known_pack(body, config_sb::RESOURCE_PACK),
             _ => false,
         }
     }
 
-    fn hold_for_client(&mut self, frame: Bytes, now: Instant) {
-        if self.answer_for_client(&frame, now) {
+    fn hold_for_client(&mut self, packet: Packet, now: Instant) {
+        if self.answer_for_client(&packet, now) {
+            return;
+        }
+        if packet.id() == config_cb::RESOURCE_PACK_PUSH
+            && self.answer_known_pack(packet.body(), config_sb::RESOURCE_PACK)
+        {
             return;
         }
         if let Stage::Reconfiguring { held } = &mut self.stage {
-            held.push(frame);
+            held.push(packet);
         }
     }
 }

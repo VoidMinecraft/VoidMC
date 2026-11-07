@@ -131,6 +131,38 @@ fn inflate(frame: Bytes) -> Result<Bytes, WireError> {
     Ok(inflated.into())
 }
 
+/// A frame whose packet id was read once.
+#[derive(Debug, Clone)]
+pub(crate) struct Packet {
+    frame: Bytes,
+    id: i32,
+    body_at: usize,
+}
+
+impl Packet {
+    pub(crate) fn read(frame: Bytes) -> Option<Self> {
+        let (id, body) = split(&frame)?;
+        let body_at = frame.len() - body.len();
+        Some(Self { frame, id, body_at })
+    }
+
+    pub(crate) fn id(&self) -> i32 {
+        self.id
+    }
+
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.frame[self.body_at..]
+    }
+
+    pub(crate) fn frame(&self) -> &Bytes {
+        &self.frame
+    }
+
+    pub(crate) fn into_frame(self) -> Bytes {
+        self.frame
+    }
+}
+
 /// The packet id of a frame, and what follows it.
 pub fn split(frame: &[u8]) -> Option<(i32, &[u8])> {
     let mut body = frame;

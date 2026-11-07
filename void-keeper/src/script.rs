@@ -10,8 +10,6 @@ use std::hash::{DefaultHasher, Hasher};
 use bytes::Bytes;
 use voidmc_data::v26_1_2::packets::configuration::clientbound as cb;
 
-use crate::wire::split;
-
 #[derive(Debug, Default)]
 pub struct Script {
     fingerprints: Vec<u64>,
@@ -25,8 +23,8 @@ fn fingerprint(frame: &[u8]) -> u64 {
 }
 
 /// Why a proxy cannot answer this packet in the client's name, if it cannot.
-pub fn needs_a_client(frame: &[u8]) -> Option<&'static str> {
-    match split(frame)?.0 {
+pub fn needs_a_client(id: i32) -> Option<&'static str> {
+    match id {
         cb::COOKIE_REQUEST => Some("the server asks for a cookie"),
         cb::CODE_OF_CONDUCT => Some("the server shows a code of conduct"),
         cb::SHOW_DIALOG => Some("the server shows a dialog"),
@@ -70,7 +68,6 @@ impl Script {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::frame;
 
     #[test]
     fn a_script_is_followed_frame_by_frame() {
@@ -96,7 +93,7 @@ mod tests {
 
     #[test]
     fn a_question_only_a_client_can_answer_is_named() {
-        assert!(needs_a_client(&frame(cb::COOKIE_REQUEST, |_| {})).is_some());
-        assert!(needs_a_client(&frame(cb::REGISTRY_DATA, |_| {})).is_none());
+        assert!(needs_a_client(cb::COOKIE_REQUEST).is_some());
+        assert!(needs_a_client(cb::REGISTRY_DATA).is_none());
     }
 }
