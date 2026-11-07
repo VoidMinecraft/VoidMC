@@ -54,7 +54,13 @@ pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
         return Err(format!("port {} is leased to {owner}", client.port));
     }
     client.pid = launch::spawn(command, &registry::client_dir(&client.name))?;
-    registry::save(&client).map_err(|e| e.to_string())
+    registry::save(&client).map_err(|error| {
+        let _ = Command::new("kill").arg(client.pid.to_string()).status();
+        format!(
+            "{} could not be recorded, so it is stopped: {error}",
+            client.name
+        )
+    })
 }
 
 fn gone(client: &Client) -> bool {

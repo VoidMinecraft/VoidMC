@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::registry::{self, Client, Level, Registry};
-use crate::{control, lifecycle};
+use crate::{control, lifecycle, version};
 
 const PAGE: &str = include_str!("dash.html");
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
@@ -81,10 +81,59 @@ fn trusted(head: &Head, port: u16) -> bool {
 }
 
 /// Starts the page if nobody serves it yet, and says where it is.
+fn call(port: u16, method: &str, path: &str) -> Option<(u16, String)> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(ASK_TIMEOUT)).ok()?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).ok()?;
+    let code = answer.split_whitespace().nth(1)?.parse().ok()?;
+    let body = answer.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+    Some((code, body.to_string()))
+}
+
+#[derive(Debug, PartialEq)]
+enum Served {
+    Nothing,
+    Ours,
+    Other,
+    Older,
+}
+
+fn served(port: u16) -> Served {
+    if TcpStream::connect(("127.0.0.1", port)).is_err() {
+        return Served::Nothing;
+    }
+    match call(port, "GET", "/api/version") {
+        Some((200, version)) if version == version::current() => Served::Ours,
+        Some((200, _)) => Served::Other,
+        _ => Served::Older,
+    }
+}
+
 pub fn ensure(registry: &Registry) -> Result<String, String> {
-    let url = format!("http://127.0.0.1:{}", registry.dashboard_port);
-    if TcpStream::connect(("127.0.0.1", registry.dashboard_port)).is_ok() {
-        return Ok(url);
+    let port = registry.dashboard_port;
+    let url = format!("http://127.0.0.1:{port}");
+    match served(port) {
+        Served::Ours => return Ok(url),
+        Served::Older => {
+            eprintln!(
+                "the mosaic on {port} comes from an older voidc and starts clients this one refuses: stop it, and voidc starts its own"
+            );
+            return Ok(url);
+        }
+        Served::Other => {
+            let _ = call(port, "POST", "/api/quit");
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while served(port) != Served::Nothing && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+        Served::Nothing => {}
     }
     use std::os::unix::process::CommandExt;
     fs::create_dir_all(registry::home()).map_err(|e| e.to_string())?;
@@ -167,6 +216,16 @@ fn request(registry: &Registry, mut stream: TcpStream) -> std::io::Result<()> {
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
     let safe = |name: &str| registry::load(name).is_some_and(|client| client.name == name);
     match (method, parts.as_slice()) {
+        ("GET", ["api", "version"]) => respond(
+            &mut stream,
+            "200 OK",
+            "text/plain",
+            version::current().as_bytes(),
+        ),
+        ("POST", ["api", "quit"]) => {
+            respond(&mut stream, "200 OK", "text/plain", b"")?;
+            std::process::exit(0)
+        }
         ("GET", [""]) => respond(
             &mut stream,
             "200 OK",
@@ -267,5 +326,30 @@ mod tests {
         assert!(started.elapsed() < READ_LIMIT + Duration::from_secs(1));
         drop(server);
         dripping.join().unwrap();
+    }
+
+    #[test]
+    fn a_mosaic_tells_its_version_and_another_is_told_apart() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let registry = Registry {
+            dashboard_port: port,
+            ..crate::registry::Registry::load()
+        };
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let _ = request(&registry, stream);
+            }
+        });
+        assert_eq!(served(port), Served::Ours);
+        let other = TcpListener::bind("127.0.0.1:0").unwrap();
+        let old_port = other.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for mut stream in other.incoming().flatten() {
+                let _ = super::head(&stream);
+                let _ = respond(&mut stream, "404 Not Found", "text/plain", b"");
+            }
+        });
+        assert_eq!(served(old_port), Served::Older);
     }
 }
