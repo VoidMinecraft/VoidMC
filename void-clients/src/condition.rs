@@ -28,7 +28,12 @@ fn trimmed(text: &str) -> &str {
     text.trim_matches(blank)
 }
 
-const FORMAT: [(u32, u32); 21] = [
+/// Written out rather than asked of Unicode: the probe runs on whatever JDK is there, and two
+/// Unicode versions would read one condition differently.
+const HIDDEN: [(u32, u32); 26] = [
+    (0x0000, 0x0008),
+    (0x000A, 0x001F),
+    (0x007F, 0x00A0),
     (0x00AD, 0x00AD),
     (0x0600, 0x0605),
     (0x061C, 0x061C),
@@ -36,11 +41,13 @@ const FORMAT: [(u32, u32); 21] = [
     (0x070F, 0x070F),
     (0x0890, 0x0891),
     (0x08E2, 0x08E2),
+    (0x1680, 0x1680),
     (0x180E, 0x180E),
-    (0x200B, 0x200F),
-    (0x202A, 0x202E),
-    (0x2060, 0x2064),
+    (0x2000, 0x200F),
+    (0x2028, 0x202F),
+    (0x205F, 0x2064),
     (0x2066, 0x206F),
+    (0x3000, 0x3000),
     (0xFEFF, 0xFEFF),
     (0xFFF9, 0xFFFB),
     (0x110BD, 0x110BD),
@@ -53,10 +60,9 @@ const FORMAT: [(u32, u32); 21] = [
 ];
 
 fn hidden(c: char) -> bool {
-    let format = FORMAT
+    HIDDEN
         .iter()
-        .any(|(from, to)| (*from..=*to).contains(&u32::from(c)));
-    !blank(c) && (c.is_control() || c.is_whitespace() || format)
+        .any(|(from, to)| (*from..=*to).contains(&u32::from(c)))
 }
 
 pub fn split(line: &str) -> (&str, &str) {
