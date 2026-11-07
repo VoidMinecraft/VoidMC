@@ -70,7 +70,7 @@ Stdout carries one JSON object per line, for tools; logs go to stderr.
 | Event | Fields | Meaning |
 |---|---|---|
 | `listening` | `address`, `backend` | The proxy accepts clients |
-| `backend_up`, `backend_down` | `backend` | Status probe, every 500 ms |
+| `backend_up`, `backend_down` | `backend` | Status probe, every 500 ms while no client is connected |
 | `client_joined` | `session`, `name` | |
 | `backend_lost` | `session` | The server went away under a client |
 | `resumed` | `session`, `outage_ms` | The client ended the configuration of the new server |
@@ -78,9 +78,10 @@ Stdout carries one JSON object per line, for tools; logs go to stderr.
 | `client_left` | `session` | |
 
 `resumed` is the signal that a server is really back for a client. `backend_up` only
-says that the status answers, and comes before a login is possible. `resumed` leaves as
-soon as the client ends its configuration: the `login` and the chunks of the new server
-are still on their way, so the world is not yet on screen.
+says that the status answers, and comes before a login is possible. While a client is
+connected the proxy stops probing: its session tells when the server is lost and back.
+`resumed` leaves as soon as the client ends its configuration: the `login` and the
+chunks of the new server are still on their way, so the world is not yet on screen.
 
 Events go through a bounded queue on a thread of their own: a reader that stalls or dies
 loses events and slows nothing. Lost events are counted, and said on stderr at the first

@@ -11,6 +11,7 @@ use bytes::{Bytes, BytesMut};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 use voidmc_codec::{Decode, Encode, VarI32};
 use voidmc_data::v26_1_2::packets::login::clientbound as login_cb;
@@ -529,12 +530,29 @@ async fn relay_status(mut client: Peer, handshake: Bytes, backend_address: Socke
     }
 }
 
+/// Counts a session among the open ones for as long as it runs.
+struct Open(Arc<watch::Sender<usize>>);
+
+impl Open {
+    fn new(open: &Arc<watch::Sender<usize>>) -> Self {
+        open.send_modify(|count| *count += 1);
+        Self(open.clone())
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0.send_modify(|count| *count -= 1);
+    }
+}
+
 async fn serve(
     stream: TcpStream,
     id: u64,
     backend_address: SocketAddr,
     settings: Settings,
     events: Events,
+    open: Arc<watch::Sender<usize>>,
 ) {
     let _ = stream.set_nodelay(true);
     let mut client = Peer::new(stream);
@@ -559,6 +577,7 @@ async fn serve(
             refuse_login(client, &message).await;
         }
         _ => {
+            let _open = Open::new(&open);
             let session = Session::new(settings, Instant::now(), handshake);
             let keeper = Keeper {
                 relay: Relay::with_client(id, session, client, events),
@@ -589,9 +608,13 @@ pub async fn probe(address: SocketAddr) -> bool {
         .is_ok_and(|answer| answer.is_some())
 }
 
-async fn watch_backend(address: SocketAddr, events: Events) {
+/// Probes the server while no session is open: a session says itself when it is lost.
+async fn watch_backend(address: SocketAddr, events: Events, mut open: watch::Receiver<usize>) {
     let mut up = None;
     loop {
+        if open.wait_for(|count| *count == 0).await.is_err() {
+            return;
+        }
         let now_up = probe(address).await;
         if up != Some(now_up) {
             up = Some(now_up);
@@ -632,12 +655,24 @@ pub async fn run(
             "backend": backend_address.to_string(),
         }),
     );
-    tokio::spawn(watch_backend(backend_address, events.clone()));
+    let open = Arc::new(watch::Sender::new(0));
+    tokio::spawn(watch_backend(
+        backend_address,
+        events.clone(),
+        open.subscribe(),
+    ));
     let sessions = AtomicU64::new(1);
     loop {
         let (stream, _) = next_connection(|| listener.accept()).await;
         let id = sessions.fetch_add(1, Ordering::Relaxed);
-        tokio::spawn(serve(stream, id, backend_address, settings, events.clone()));
+        tokio::spawn(serve(
+            stream,
+            id,
+            backend_address,
+            settings,
+            events.clone(),
+            open.clone(),
+        ));
     }
 }
 

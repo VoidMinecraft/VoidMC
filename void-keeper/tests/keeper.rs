@@ -29,6 +29,14 @@ use voidmc_protocol::PROTOCOL_VERSION;
 use voidmc_protocol::clientbound::{Login, PlayPacket};
 
 const PATIENCE: Duration = Duration::from_secs(10);
+/// How long the proxy waits on a write before it gives the peer up.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+
+async fn within<T>(waiting: impl Future<Output = T>) -> T {
+    timeout(PATIENCE, waiting)
+        .await
+        .expect("the test waited too long")
+}
 
 fn settings() -> Settings {
     Settings {
@@ -150,6 +158,7 @@ struct FakeServer {
     address: SocketAddr,
     task: JoinHandle<()>,
     logins: Arc<AtomicUsize>,
+    probes: Arc<AtomicUsize>,
     received: mpsc::UnboundedReceiver<Bytes>,
     broadcast: broadcast::Sender<Bytes>,
     stop: watch::Sender<bool>,
@@ -160,11 +169,13 @@ impl FakeServer {
         let listener = TcpListener::bind(address).await.unwrap();
         let address = listener.local_addr().unwrap();
         let logins = Arc::new(AtomicUsize::new(0));
+        let probes = Arc::new(AtomicUsize::new(0));
         let (received_tx, received) = mpsc::unbounded_channel();
         let (broadcast, _) = broadcast::channel(64);
         let (stop, stopping) = watch::channel(false);
         let task = tokio::spawn({
             let logins = logins.clone();
+            let probes = probes.clone();
             let broadcast = broadcast.clone();
             let mut stopping = stopping.clone();
             async move {
@@ -176,7 +187,7 @@ impl FakeServer {
                             connections.spawn(serve_fake(
                                 Peer::new(stream),
                                 plan.clone(),
-                                logins.clone(),
+                                (logins.clone(), probes.clone()),
                                 received_tx.clone(),
                                 (broadcast.subscribe(), stopping.clone()),
                             ));
@@ -194,6 +205,7 @@ impl FakeServer {
             address,
             task,
             logins,
+            probes,
             received,
             broadcast,
             stop,
@@ -202,6 +214,10 @@ impl FakeServer {
 
     fn logins(&self) -> usize {
         self.logins.load(Ordering::SeqCst)
+    }
+
+    fn probes(&self) -> usize {
+        self.probes.load(Ordering::SeqCst)
     }
 
     fn send(&self, frame: Bytes) {
@@ -218,7 +234,7 @@ impl FakeServer {
     /// closes without a disconnect.
     async fn stop(self) -> SocketAddr {
         self.stop.send(true).unwrap();
-        self.task.await.unwrap();
+        within(self.task).await.unwrap();
         self.address
     }
 
@@ -239,7 +255,7 @@ impl FakeServer {
 async fn serve_fake(
     mut peer: Peer,
     plan: Plan,
-    logins: Arc<AtomicUsize>,
+    (logins, probes): (Arc<AtomicUsize>, Arc<AtomicUsize>),
     received: mpsc::UnboundedSender<Bytes>,
     (mut broadcast, mut stopping): (broadcast::Receiver<Bytes>, watch::Receiver<bool>),
 ) {
@@ -248,6 +264,7 @@ async fn serve_fake(
     };
     let is_status = handshake.last() == Some(&1);
     if is_status {
+        probes.fetch_add(1, Ordering::SeqCst);
         while let Some(frame_in) = peer.next().await {
             if id_of(&frame_in) == status_sb::STATUS_REQUEST {
                 peer.send(&frame(status_cb::STATUS_RESPONSE, |body| {
@@ -446,7 +463,11 @@ impl Rig {
     }
 
     async fn expect_event(&mut self, name: &str) -> Value {
-        timeout(PATIENCE, async {
+        self.expect_event_within(name, PATIENCE).await
+    }
+
+    async fn expect_event_within(&mut self, name: &str, limit: Duration) -> Value {
+        timeout(limit, async {
             loop {
                 let event = self.events.recv().await.expect("proxy is up");
                 if event["event"] == name {
@@ -475,6 +496,20 @@ async fn accept_login(listener: &TcpListener) -> Peer {
             return peer;
         }
     }
+}
+
+/// The server side of a join, by hand, up to the `login`.
+async fn log_in_by_hand(peer: &mut Peer) {
+    peer.next().await;
+    peer.send(&login_finished()).await;
+    peer.next().await;
+    peer.next().await;
+    peer.send(&frame(config_cb::SELECT_KNOWN_PACKS, |body| body.push(0)))
+        .await;
+    peer.next().await;
+    peer.send(&empty(config_cb::FINISH_CONFIGURATION)).await;
+    peer.next().await;
+    peer.send(&login_packet(1)).await;
 }
 
 async fn rig_with(plan: Plan) -> (Rig, FakeServer) {
@@ -609,7 +644,7 @@ async fn a_server_that_never_returns_ends_with_a_clear_message() {
     assert!(started.elapsed() >= patience);
     let text = String::from_utf8_lossy(&goodbye);
     assert!(text.contains("did not come back"), "{text}");
-    assert!(client.peer.next().await.is_none());
+    assert!(within(client.peer.next()).await.is_none());
     rig.expect_event("gave_up").await;
 }
 
@@ -641,7 +676,7 @@ async fn garbage_from_the_server_is_a_lost_server_not_a_crash() {
             Uuid::nil().encode(body);
         }))
         .await;
-    let _stuck = accepting.await.unwrap();
+    let _stuck = within(accepting).await.unwrap();
     let server = FakeServer::start(address, Plan::player(1)).await;
     client.expect(login_cb::LOGIN_FINISHED).await;
     assert_eq!(server.logins(), 1);
@@ -656,20 +691,11 @@ async fn a_frame_cut_by_the_crash_never_reaches_the_client() {
     let rig = Rig::start(address).await;
     let server = tokio::spawn(async move {
         let mut peer = accept_login(&listener).await;
-        peer.next().await;
-        peer.send(&login_finished()).await;
-        peer.next().await;
-        peer.next().await;
-        peer.send(&frame(config_cb::SELECT_KNOWN_PACKS, |body| body.push(0)))
-            .await;
-        peer.next().await;
-        peer.send(&empty(config_cb::FINISH_CONFIGURATION)).await;
-        peer.next().await;
-        peer.send(&login_packet(1)).await;
+        log_in_by_hand(&mut peer).await;
         peer.write.write_all(&[200, 1, 5, 5, 5]).await.unwrap();
     });
     let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
-    server.await.unwrap();
+    within(server).await.unwrap();
     assert_eq!(id_of(&client.next().await), play_cb::KEEP_ALIVE);
 }
 
@@ -692,10 +718,10 @@ async fn a_server_lost_after_a_registry_does_not_hand_it_to_the_client_twice() {
     });
     let proxy = rig.proxy;
     let joining = tokio::spawn(async move { FakeClient::join(proxy, "Bot").await });
-    first.await.unwrap();
+    within(first).await.unwrap();
 
     let _server = FakeServer::start(address, Plan::player(1)).await;
-    let (_client, login) = joining.await.unwrap();
+    let (_client, login) = within(joining).await.unwrap();
     assert_eq!(login, login_packet(1));
     rig.expect_event("resumed").await;
 }
@@ -794,6 +820,81 @@ async fn a_client_arriving_before_its_server_waits_for_it() {
     let joining = tokio::spawn(async move { FakeClient::join(rig.proxy, "Bot").await });
     sleep(Duration::from_millis(100)).await;
     let _server = FakeServer::start(address, Plan::player(1)).await;
-    let (_client, login) = joining.await.unwrap();
+    let (_client, login) = within(joining).await.unwrap();
     assert_eq!(login, login_packet(1));
+}
+
+#[tokio::test]
+async fn a_silent_server_has_its_connection_closed() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let silence = Duration::from_millis(300);
+    let mut settings = settings();
+    settings.backend_silence = silence;
+    settings.retry_every = Duration::from_secs(5);
+    settings.return_timeout = Duration::from_secs(20);
+    let rig = Rig::start_with(address, settings).await;
+    let server = tokio::spawn(async move {
+        let mut peer = accept_login(&listener).await;
+        log_in_by_hand(&mut peer).await;
+        let silent_since = Instant::now();
+        while peer.next().await.is_some() {}
+        (silent_since.elapsed(), listener)
+    });
+    let (_client, _) = FakeClient::join(rig.proxy, "Bot").await;
+    let (closed_after, _listener) = within(server).await.unwrap();
+    assert!(closed_after >= silence / 2, "{closed_after:?}");
+    assert!(
+        closed_after < silence + Duration::from_secs(2),
+        "{closed_after:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_stops_reading_counts_as_lost() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut rig = Rig::start(address).await;
+    let server = tokio::spawn(async move {
+        let mut peer = accept_login(&listener).await;
+        log_in_by_hand(&mut peer).await;
+        (peer, listener)
+    });
+    let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
+    let (_deaf, _listener) = within(server).await.unwrap();
+    let flood = frame(play_sb::CLIENT_TICK_END, |body| {
+        body.extend_from_slice(&[0; 4000])
+    });
+    let flooding = tokio::spawn(async move {
+        for _ in 0..8000 {
+            client.peer.send(&flood).await;
+        }
+    });
+    rig.expect_event_within("backend_lost", WRITE_TIMEOUT + PATIENCE)
+        .await;
+    flooding.abort();
+}
+
+#[tokio::test]
+async fn the_server_is_not_probed_while_a_client_plays() {
+    let (rig, server) = rig_with(Plan::player(1)).await;
+    within(async {
+        while server.probes() == 0 {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let (client, _) = FakeClient::join(rig.proxy, "Bot").await;
+    sleep(Duration::from_millis(200)).await;
+    let probed = server.probes();
+    sleep(Duration::from_millis(1500)).await;
+    assert_eq!(server.probes(), probed);
+
+    drop(client);
+    within(async {
+        while server.probes() == probed {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 }
