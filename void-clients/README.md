@@ -19,6 +19,15 @@ voidc cmd hot-reload assert "chunks>=100"
 voidc down hot-reload
 ```
 
+The map serves its resource pack on the second port of the pair, and `act map` opens it:
+
+```sh
+VOID_MAP_ADDRESS=127.0.0.1:25700 VOID_MAP_PACK_ADDRESS=127.0.0.1:25701 cargo run -p voidmc-map &
+voidc up "Hot reload"
+voidc cmd hot-reload act map
+voidc cmd hot-reload wait_until 15000 "passenger==true"
+```
+
 A failed `assert`, `wait_until` or verb exits with 1. A feature is one or two words: the
 window title is `SONDE` and the feature. The client's name is the feature in lower case.
 
@@ -91,6 +100,7 @@ tick and its system. The format is in `void-docs/docs/reference/server/packet-tr
 
 ```sh
 VOID_TRACE=a.jsonl cargo run -p voidmc-example --features packet-trace
+VOID_TRACE=b.jsonl cargo run -p voidmc-map --features packet-trace     # the map has the feature too
 voidc trace a.jsonl                              # totals by system, packet and client
 voidc trace a.jsonl --system stream_chunks --from 600 --to 700 --json
 voidc trace a.jsonl --player hot-reload --packet SpawnEntity --lines
@@ -124,6 +134,14 @@ P=($(voidc port "Ouverture"))
 SOCK=~/.voidc/run/ouverture.step
 VOID_EXAMPLE_STEP_SOCKET=$SOCK VOID_EXAMPLE_ADDRESS=127.0.0.1:${P[1]} cargo run -p voidmc-example &
 voidc step "Ouverture" --server $SOCK --out shots --ticks 120 --frames 4 --stop-server
+```
+
+The map reads `VOID_MAP_STEP_SOCKET`, serves its pack on the second port, and `--act map` opens it
+before the first tick:
+
+```sh
+VOID_MAP_STEP_SOCKET=$SOCK VOID_MAP_ADDRESS=127.0.0.1:${P[1]} VOID_MAP_PACK_ADDRESS=127.0.0.1:${P[2]} cargo run -p voidmc-map &
+voidc step "Ouverture" --server $SOCK --out shots --ticks 120 --frames 4 --act map --stop-server
 ```
 
 A run first deletes what an earlier run wrote in `--out`. It starts the client, runs the server at
