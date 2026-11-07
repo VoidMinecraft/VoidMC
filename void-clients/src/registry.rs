@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::thread::sleep;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -190,35 +188,40 @@ pub fn alive(client: &Client) -> bool {
         || command.contains(&format!("bot-run {} ", client.name))
 }
 
-/// One `voidc` at a time between a check and what it guards.
-pub struct Lock(PathBuf);
+/// One `voidc` at a time between a check and what it guards. The kernel holds it for the
+/// holder's process: a living holder keeps it however slow, a dead one loses it at once.
+pub struct Lock {
+    _held: fs::File,
+}
 
 impl Lock {
     pub fn take() -> std::io::Result<Self> {
         fs::create_dir_all(home())?;
-        let path = home().join("lock");
-        for _ in 0..500 {
-            if fs::create_dir(&path).is_ok() {
-                return Ok(Self(path));
-            }
-            sleep(Duration::from_millis(10));
-        }
-        let _ = fs::remove_dir(&path);
-        fs::create_dir(&path)?;
-        Ok(Self(path))
+        Self::at(&home().join("start.lock"))
     }
-}
 
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir(&self.0);
+    fn at(path: &Path) -> std::io::Result<Self> {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.lock()?;
+        file.set_len(0)?;
+        write!(file, "{}", std::process::id())?;
+        Ok(Self { _held: file })
     }
 }
 
 /// No file is no lease; a file that does not parse is an error, never an empty table.
 fn leases() -> Result<BTreeMap<String, u16>, String> {
-    let path = home().join("ports.json");
-    match fs::read(&path) {
+    leases_at(&home().join("ports.json"))
+}
+
+fn leases_at(path: &Path) -> Result<BTreeMap<String, u16>, String> {
+    match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| format!("{} is damaged ({e}): fix or delete it", path.display())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
@@ -269,6 +272,47 @@ fn free_pair(registry: &Registry, taken: &[u16], busy: impl Fn(u16) -> bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("voidc-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_living_holder_keeps_the_lock_however_slow() {
+        let path = scratch("lock").join("start.lock");
+        let held = Lock::at(&path).unwrap();
+        let waiter = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let _lock = Lock::at(&path).unwrap();
+                std::time::Instant::now()
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        let released = std::time::Instant::now();
+        drop(held);
+        assert!(waiter.join().unwrap() >= released);
+    }
+
+    #[test]
+    fn a_damaged_ports_file_is_an_error_and_a_missing_one_is_empty() {
+        let dir = scratch("ports");
+        let path = dir.join("ports.json");
+        assert!(leases_at(&path).unwrap().is_empty());
+        write_whole(&path, b"{\"Hot reload\": 257").unwrap();
+        assert!(leases_at(&path).unwrap_err().contains("damaged"));
+        write_whole(&path, b"{\"Hot reload\": 25700}").unwrap();
+        assert_eq!(leases_at(&path).unwrap()["Hot reload"], 25700);
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(names, ["ports.json"]);
+    }
 
     #[test]
     fn a_socket_macos_cannot_bind_is_refused_before_anything_starts() {
