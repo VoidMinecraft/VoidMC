@@ -52,10 +52,14 @@ impl DecodeLimits {
     }
 
     /// Runs `f` on a decoder over `bytes`, for reads in several steps.
+    /// Hot paths use [`DecodeLimits::decode_exact`]: this scope can cost a
+    /// small value its inlining.
     ///
     /// A [`Decoder`] only exists inside such a scope or inside
     /// [`Decode::decode_with`], so a decoder can never be replaced while it
-    /// is decoding. A `Decode` may open a scope of its own:
+    /// is decoding. A scope has its own budgets and depth, so nested values
+    /// go through [`Decoder::decode`], never through a scope. A `Decode` may
+    /// open one to look ahead, not to recurse:
     ///
     /// ```
     /// use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder};
@@ -105,6 +109,37 @@ impl DecodeLimits {
     ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
     ///         *decoder = Decoder::new(decoder.remaining(), decoder.limits());
     ///         Ok(Resets)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Nor copy one to restore it later:
+    ///
+    /// ```compile_fail
+    /// use voidmc_codec::{Decode, DecodeError, Decoder};
+    ///
+    /// struct Restores;
+    ///
+    /// impl Decode for Restores {
+    ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    ///         let saved = decoder.clone();
+    ///         *decoder = saved;
+    ///         Ok(Restores)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Nor take it out:
+    ///
+    /// ```compile_fail
+    /// use voidmc_codec::{Decode, DecodeError, Decoder};
+    ///
+    /// struct Takes;
+    ///
+    /// impl Decode for Takes {
+    ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    ///         let _ = std::mem::take(decoder);
+    ///         Ok(Takes)
     ///     }
     /// }
     /// ```

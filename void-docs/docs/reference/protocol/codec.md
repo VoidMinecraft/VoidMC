@@ -31,7 +31,10 @@ pub trait Decode: Sized {
 
 A `Decoder` has no public constructor: it only exists inside `decode_with` or
 such a closure, so a `Decode` cannot replace the decoder it is given, and the
-closure can return owned values but not the decoder or slices of it.
+closure can return owned values but not the decoder or slices of it. A closure
+has its own budgets and depth, so nested values go through `decoder.decode`,
+never through a new `with_decoder`. Hot paths use `decode_exact`: the closure can
+cost a small value its inlining.
 
 `DecodeLimits` configures string bytes, collection and total element counts,
 allocation bytes, remaining-byte fields, NBT bytes/depth, and general decode

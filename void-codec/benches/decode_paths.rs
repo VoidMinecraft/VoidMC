@@ -113,6 +113,15 @@ fn decode_paths(c: &mut Criterion) {
         b.iter(|| black_box(decode::<MovePlayerPosRot>(black_box(&movement))))
     });
 
+    group.bench_function("move_player_pos_rot_scoped", |b| {
+        b.iter(|| {
+            black_box(
+                DecodeLimits::default()
+                    .with_decoder(black_box(&movement), |d| d.decode::<MovePlayerPosRot>()),
+            )
+        })
+    });
+
     let chat = encoded(&chat());
     group.bench_function("nbt_chat", |b| {
         b.iter(|| black_box(decode::<Nbt>(black_box(&chat))))
