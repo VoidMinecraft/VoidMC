@@ -1,5 +1,123 @@
+use std::fmt;
+
 use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
-use ussr_nbt::{owned::Nbt, ReadOpts};
+use tracing::{error, warn};
+use ussr_nbt::mutf8::MString;
+use ussr_nbt::owned::{Compound, List, Nbt, Tag};
+use ussr_nbt::{ReadOpts, WriteOpts};
+
+/// The client reads an NBT string length as an unsigned 16-bit prefix.
+pub const MAX_STRING_BYTES: usize = u16::MAX as usize;
+
+/// What a character costs in an NBT string: Java's modified UTF-8 writes NUL on 2 bytes and a
+/// character outside the BMP as a surrogate pair, 6 bytes.
+pub const fn modified_utf8_width(c: char) -> usize {
+    match c {
+        '\0' => 2,
+        c if c as u32 >= 0x1_0000 => 6,
+        c => c.len_utf8(),
+    }
+}
+
+/// The length in bytes of the longest prefix of `text`, cut on a character, that fits in an NBT
+/// string.
+pub fn fitting_len(text: &str) -> usize {
+    let mut width = 0;
+    for (index, c) in text.char_indices() {
+        width += modified_utf8_width(c);
+        if width > MAX_STRING_BYTES {
+            return index;
+        }
+    }
+    text.len()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NbtStringTooLong {
+    pub bytes: usize,
+}
+
+impl fmt::Display for NbtStringTooLong {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "an NBT string takes {} modified UTF-8 bytes, the client reads at most {MAX_STRING_BYTES}",
+            self.bytes
+        )
+    }
+}
+
+impl std::error::Error for NbtStringTooLong {}
+
+/// Refuses an NBT that holds a string, name or value, longer than the client reads.
+pub fn check(nbt: &Nbt) -> Result<(), NbtStringTooLong> {
+    match longest_in(&nbt.compound) {
+        bytes if bytes > MAX_STRING_BYTES => Err(NbtStringTooLong { bytes }),
+        _ => Ok(()),
+    }
+}
+
+fn longest_in(compound: &Compound) -> usize {
+    compound
+        .tags
+        .iter()
+        .map(|(name, tag)| name.len().max(longest_in_tag(tag)))
+        .max()
+        .unwrap_or(0)
+}
+
+fn longest_in_tag(tag: &Tag) -> usize {
+    match tag {
+        Tag::String(text) => text.len(),
+        Tag::List(list) => longest_in_list(list),
+        Tag::Compound(compound) => longest_in(compound),
+        _ => 0,
+    }
+}
+
+fn longest_in_list(list: &List) -> usize {
+    match list {
+        List::String(texts) => texts.iter().map(|text| text.len()).max().unwrap_or(0),
+        List::List(lists) => lists.iter().map(longest_in_list).max().unwrap_or(0),
+        List::Compound(compounds) => compounds.iter().map(longest_in).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn fit_compound(compound: &mut Compound) {
+    for (name, tag) in &mut compound.tags {
+        fit_string(name);
+        match tag {
+            Tag::String(text) => fit_string(text),
+            Tag::List(list) => fit_list(list),
+            Tag::Compound(compound) => fit_compound(compound),
+            _ => {}
+        }
+    }
+}
+
+fn fit_list(list: &mut List) {
+    match list {
+        List::String(texts) => texts.iter_mut().for_each(fit_string),
+        List::List(lists) => lists.iter_mut().for_each(fit_list),
+        List::Compound(compounds) => compounds.iter_mut().for_each(fit_compound),
+        _ => {}
+    }
+}
+
+fn fit_string(text: &mut MString) {
+    if text.len() <= MAX_STRING_BYTES {
+        return;
+    }
+    let Ok(decoded) = text.decode() else {
+        error!(
+            bytes = text.len(),
+            "NBT string is not modified UTF-8 and cannot be cut on a character"
+        );
+        return;
+    };
+    *text = MString::from(&decoded[..fitting_len(&decoded)]);
+}
 
 /// Custom reader that prepends the NBT protocol header for the root compound tag
 /// For Minecraft 1.21.4+ (Protocol >= 764): 0x0A (compound) + 0x00 0x00 (empty root name) + payload
@@ -54,16 +172,27 @@ impl<'a> std::io::Read for NbtReader<'a> {
 
 impl Encode for Nbt {
     fn encode(&self, buf: &mut Vec<u8>) {
-        let mut temp_buf = Vec::new();
-        if self.write(&mut temp_buf).is_ok() {
-            // Write the compound tag
-            buf.push(0x0A);
-            // NBT library includes: tag (1) + name_len (2) + name (0 for empty root) + payload
-            // We skip 3 bytes for the tag + empty name_len, then write the rest
-            if let Some(payload) = temp_buf.get(3..) {
-                buf.extend_from_slice(payload);
+        match check(self) {
+            Ok(()) => write_network(self, buf),
+            Err(too_long) => {
+                warn!(
+                    bytes = too_long.bytes,
+                    "NBT string over the client limit, cut to fit"
+                );
+                let mut fitted = self.clone();
+                fit_compound(&mut fitted.compound);
+                write_network(&fitted, buf);
             }
         }
+    }
+}
+
+fn write_network(nbt: &Nbt, buf: &mut Vec<u8>) {
+    let start = buf.len();
+    if let Err(failure) = nbt.write_with_opts(buf, WriteOpts { name: false }) {
+        error!(%failure, "NBT could not be written: an empty compound goes instead");
+        buf.truncate(start);
+        buf.extend_from_slice(&[0x0A, 0x00]);
     }
 }
 
@@ -247,6 +376,188 @@ fn check_nbt_depth(decoder: &Decoder<'_>, depth: usize) -> Result<(), DecodeErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text(value: &str) -> Nbt {
+        Nbt {
+            name: "".into(),
+            compound: Compound {
+                tags: vec![("text".into(), Tag::String(value.into()))],
+            },
+        }
+    }
+
+    fn sent_text(nbt: &Nbt) -> (usize, String) {
+        let mut bytes = Vec::new();
+        nbt.encode(&mut bytes);
+        let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
+        let decoded = Nbt::decode(&mut bytes.as_slice()).expect("the client reads it");
+        let Tag::String(value) = &decoded.compound.tags[0].1 else {
+            panic!("a string");
+        };
+        (
+            len,
+            value.decode().expect("valid modified UTF-8").into_owned(),
+        )
+    }
+
+    #[test]
+    fn check_refuses_a_string_the_client_cannot_read() {
+        let emoji = format!("a{}", "\u{1F600}".repeat(11_000));
+        assert_eq!(
+            check(&text(&emoji)),
+            Err(NbtStringTooLong { bytes: 66_001 })
+        );
+        assert_eq!(check(&text(&"a".repeat(MAX_STRING_BYTES))), Ok(()));
+        let nested = Nbt {
+            name: "".into(),
+            compound: Compound {
+                tags: vec![(
+                    "lines".into(),
+                    Tag::List(List::Compound(vec![Compound {
+                        tags: vec![(
+                            "messages".into(),
+                            Tag::List(List::String(vec!["\0".repeat(40_000).into()])),
+                        )],
+                    }])),
+                )],
+            },
+        };
+        assert_eq!(check(&nested), Err(NbtStringTooLong { bytes: 80_000 }));
+        let long_name = Nbt {
+            name: "".into(),
+            compound: Compound {
+                tags: vec![("x".repeat(MAX_STRING_BYTES + 1).into(), Tag::Byte(1))],
+            },
+        };
+        assert!(check(&long_name).is_err());
+    }
+
+    #[test]
+    fn an_oversized_string_is_cut_on_a_character_and_still_decodes() {
+        for value in [
+            format!("a{}", "\u{1F600}".repeat(11_000)),
+            "\u{1F600}".repeat(11_000),
+            "a\0".repeat(30_000),
+            "\u{e9}".repeat(40_000),
+        ] {
+            let (len, sent) = sent_text(&text(&value));
+            assert!(len <= MAX_STRING_BYTES, "{len}");
+            assert!(sent.len() < value.len());
+            assert!(value.starts_with(&sent));
+            assert_eq!(check(&text(&sent)), Ok(()));
+        }
+        let fits = "a".repeat(MAX_STRING_BYTES);
+        assert_eq!(sent_text(&text(&fits)), (MAX_STRING_BYTES, fits));
+    }
+
+    #[test]
+    fn a_cut_counts_nul_on_two_bytes() {
+        let (len, sent) = sent_text(&text(&"\0".repeat(40_000)));
+        assert_eq!(len, MAX_STRING_BYTES - 1);
+        assert_eq!(sent.chars().count(), MAX_STRING_BYTES / 2);
+    }
+
+    #[test]
+    fn a_cut_keeps_every_character_that_fits() {
+        let value = format!("a{}", "\u{1F600}".repeat(11_000));
+        let (len, sent) = sent_text(&text(&value));
+        assert_eq!(sent.chars().count(), 1 + (MAX_STRING_BYTES - 1) / 6);
+        assert_eq!(len, 1 + (MAX_STRING_BYTES - 1) / 6 * 6);
+        let (_, sent) = sent_text(&text(&"\u{e9}".repeat(40_000)));
+        assert_eq!(sent.chars().count(), MAX_STRING_BYTES / 2);
+    }
+
+    #[test]
+    fn a_long_key_and_a_list_of_lists_are_cut_too() {
+        let key = "\u{e9}".repeat(40_000);
+        let nbt = Nbt {
+            name: "".into(),
+            compound: Compound {
+                tags: vec![
+                    (key.as_str().into(), Tag::Byte(1)),
+                    (
+                        "rows".into(),
+                        Tag::List(List::List(vec![List::String(vec!["\u{1F600}"
+                            .repeat(11_000)
+                            .into()])])),
+                    ),
+                ],
+            },
+        };
+        let mut bytes = Vec::new();
+        nbt.encode(&mut bytes);
+        let decoded = Nbt::decode(&mut bytes.as_slice()).expect("the client reads it");
+        assert_eq!(check(&decoded), Ok(()));
+        let name = decoded.compound.tags[0].0.decode().unwrap().into_owned();
+        assert!(key.starts_with(&name));
+        assert_eq!(name.chars().count(), MAX_STRING_BYTES / 2);
+        let Tag::List(List::List(rows)) = &decoded.compound.tags[1].1 else {
+            panic!("a list of lists");
+        };
+        let List::String(cells) = &rows[0] else {
+            panic!("a list of strings");
+        };
+        assert_eq!(cells[0].len(), MAX_STRING_BYTES / 6 * 6);
+    }
+
+    #[test]
+    fn a_long_string_only_in_a_list_of_lists_is_found_and_cut() {
+        let nbt = Nbt {
+            name: "".into(),
+            compound: Compound {
+                tags: vec![(
+                    "rows".into(),
+                    Tag::List(List::List(vec![List::String(vec![format!(
+                        "a{}",
+                        "\u{1F600}".repeat(11_000)
+                    )
+                    .into()])])),
+                )],
+            },
+        };
+        assert_eq!(check(&nbt), Err(NbtStringTooLong { bytes: 66_001 }));
+        let mut bytes = Vec::new();
+        nbt.encode(&mut bytes);
+        let decoded = Nbt::decode(&mut bytes.as_slice()).expect("the client reads it");
+        let Tag::List(List::List(rows)) = &decoded.compound.tags[0].1 else {
+            panic!("a list of lists");
+        };
+        let List::String(cells) = &rows[0] else {
+            panic!("a list of strings");
+        };
+        assert_eq!(cells[0].len(), 1 + (MAX_STRING_BYTES - 1) / 6 * 6);
+    }
+
+    #[test]
+    fn writing_appends_to_what_the_buffer_already_holds() {
+        let mut bytes = vec![0xFF, 0x01];
+        text("hi").encode(&mut bytes);
+        let mut alone = Vec::new();
+        text("hi").encode(&mut alone);
+        assert_eq!(bytes[..2], [0xFF, 0x01]);
+        assert_eq!(bytes[2..], alone[..]);
+    }
+
+    #[test]
+    fn fitting_len_stops_before_the_first_character_that_overflows() {
+        assert_eq!(fitting_len("abc"), 3);
+        let emoji = format!("a{}", "\u{1F600}".repeat(11_000));
+        assert_eq!(fitting_len(&emoji), 1 + (MAX_STRING_BYTES - 1) / 6 * 4);
+        assert_eq!(fitting_len(&"\0".repeat(40_000)), MAX_STRING_BYTES / 2);
+    }
+
+    #[test]
+    fn a_named_root_still_goes_out_as_network_nbt() {
+        let mut named = text("hi");
+        named.name = "root".into();
+        let mut bytes = Vec::new();
+        named.encode(&mut bytes);
+        let mut plain = Vec::new();
+        text("hi").encode(&mut plain);
+        assert_eq!(bytes, plain);
+        let decoded = Nbt::decode(&mut bytes.as_slice()).expect("the client reads it");
+        assert_eq!(decoded.compound, text("hi").compound);
+    }
 
     #[test]
     fn test_nbt_encode_produces_output() {

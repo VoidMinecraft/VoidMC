@@ -288,7 +288,7 @@ impl Menu {
     }
 
     pub(crate) fn title_nbt(&self) -> Nbt {
-        crate::messages::plain_text_component(&self.title)
+        crate::messages::Text::truncated(&self.title).plain()
     }
 
     pub(crate) fn layout(&self) -> Layout {
@@ -602,7 +602,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn oversized_title_round_trips_below_the_nbt_limit() {
+    fn an_oversized_title_is_cut_when_built() {
         let text = "😀".repeat(11000);
         crate::messages::assert_guarded(&Menu::hopper(text.clone()).title_nbt(), &text);
     }
