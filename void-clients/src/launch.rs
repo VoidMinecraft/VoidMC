@@ -9,8 +9,9 @@ use serde_json::Value;
 use crate::registry::{self, Client, Level, Registry, Settings};
 
 const VERSION: &str = "26.1.2";
-pub const PROBE_SOURCES: [(&str, &str); 6] = [
+pub const PROBE_SOURCES: [(&str, &str); 7] = [
     ("Probe.java", include_str!("../probe/Probe.java")),
+    ("Perf.java", include_str!("../probe/Perf.java")),
     ("HideAgent.java", include_str!("../probe/HideAgent.java")),
     ("Condition.java", include_str!("../probe/Condition.java")),
     ("Retry.java", include_str!("../probe/Retry.java")),

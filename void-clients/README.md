@@ -128,7 +128,7 @@ voidc run open-map.scn --feature "Carte" --port 25700   # starts a client, stops
 voidc run open-map.scn --on carte --keep-going          # on a running client, plays every line
 ```
 
-The verbs of the level are there, except `show`, `hide`, `thumb` and `quit`, which a
+The verbs of the level are there, except `show`, `hide`, `thumb`, `perf` and `quit`, which a
 scenario refuses as unknown. It adds:
 
 - `level bot|logic|render`: its level. `--level` overrides it, and a client given with `--on`
@@ -181,6 +181,19 @@ and the `frames.txt` and `track.txt` of the verbs, whose ticks come from their c
 
 `cut=56`, `cut=56:2` and `cut=56-60` declare what is meant to happen there. More in the
 [reference](../void-docs/docs/guide/voidc.md#checking-an-animation).
+
+## The cost of a frame
+
+```sh
+voidc perf carte                    # all of it: F3+L, GPU, JFR
+voidc perf carte ab clouds          # with and without clouds, in turns
+voidc perf carte ab particles --count 16000
+```
+
+`metrics` is the F3+L recording by section, `gpu` whole frames with `TimerQuery`, `jfr` packets by
+type, and `ab` the only GPU figure to trust. Options: `--seconds`, `--frames`, `--rounds`,
+`--count`. The report lands in `~/.voidc/clients/<name>/perf/`. What spoils a figure:
+[reference](../void-docs/docs/guide/voidc.md#the-cost-of-a-frame).
 
 ## What it guards
 

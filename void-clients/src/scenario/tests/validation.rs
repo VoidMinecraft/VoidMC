@@ -267,7 +267,7 @@ fn a_condition_on_the_command_line_is_refused_as_in_a_scenario() {
 #[test]
 fn what_a_scenario_does_not_play_is_refused_and_the_readme_says_so() {
     let readme = include_str!("../../../README.md");
-    for verb in ["show", "hide", "thumb", "quit"] {
+    for verb in ["show", "hide", "thumb", "perf", "quit"] {
         let scenario = Scenario::parse(verb).unwrap();
         let error = scenario
             .validate(Level::Render, Path::new("."))

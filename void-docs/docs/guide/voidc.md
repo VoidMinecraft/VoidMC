@@ -111,6 +111,21 @@ is left out. `cut=56`, `cut=56:2`
 and `cut=56-60` declare what is meant to happen: there it is no error, and a cut where nothing
 happens is one. Without a locked clock a tick moves from one run to the next, so declare a range.
 
+## The cost of a frame
+
+- `metrics`: the F3+L recording by section, ten seconds at most. CPU submission, not GPU time.
+- `gpu`: whole frames with `TimerQuery`. Entities are stopped on the client and the frame limiter
+  is off during the measure: with it, a sample is only the length of its wait.
+- `jfr`: packets by type, from a recording started while in game.
+- `ab`: the only GPU figure to trust. It alternates two settings without rebuilding a chunk, gives
+  the difference with its 95 % interval from at least 6 rounds, and says so when a round has no
+  sample or chunks were rebuilt, which exits with 1, when the two sides draw the same picture, or
+  when nothing stands clear of the noise. `particles` makes its own, as a map has none: the figure
+  is the price of that many in front of the camera.
+
+Take it on a calm machine: the report counts the other clients and the entities that still moved,
+which packets of the server can do. An option `perf` does not know is refused.
+
 ## What it guards
 
 
@@ -131,18 +146,18 @@ happens is one. Without a locked clock a tick moves from one run to the next, so
 - A condition that cannot be compared, like `chunks>=abc`, is an error, never true.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.
-- `voidc cmd`, `run` and `step` refuse a client started by another version of the probe or
+- `voidc cmd`, `run`, `step` and `perf` refuse a client started by another version of the probe or
   the bot, and say to restart it: every verb of `voidc` passes through one check. The socket itself
   checks nothing, so a verb written straight to it reaches any client. `list`, `down` and the
   mosaic still see, stop, show and hide such a client, and the end of a run still gives it its
   clock back. The version is a hash of their sources outside tests (the probe, the bot,
   conditions, framing, launch), not of the protocol crates. A client tells it in every answer, from
   the moment its socket opens, even while it loads.
-- A `voidc run` opens one connection and checks the version once. A verb that fails takes
+- A `voidc run` or `perf` opens one connection and checks the version once. A verb that fails takes
   that connection down and the next verb opens and checks another, so a late answer never passes
   for the next verb. A game stuck for more than 10 s still answers `state`, with a failure. Opening
   gives `state` 12 s, and a client silent that long is said not to answer. Once open, every verb has
-  30 s, `state` included, and a `wait_until` its limit and 5 s.
+  30 s, `state` included, a `wait_until` its limit and 5 s, and `perf` what its measure needs.
 - The `clock real` at the end of a run takes a connection of its own, with no check and 30 s, so
   that a connection down or a probe of another version does not stop it. A probe that does not
   know it fails the run, in the report. One case still ends virtual: a `clock virtual` that timed

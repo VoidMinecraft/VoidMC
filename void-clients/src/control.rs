@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::condition::{self, DEFAULT_WAIT_MS};
-use crate::{registry, version};
+use crate::{perf, registry, version};
 
 /// Above the 10 s the probe gives the game thread: a stuck game answers with a failure, in time.
 const STATE_LIMIT: Duration = Duration::from_secs(12);
@@ -318,6 +318,10 @@ impl Limits {
 
     /// How long a verb may take: a `wait_until` carries its own limit.
     pub fn of(self, verb: &str) -> Duration {
+        let words: Vec<&str> = verb.split_whitespace().collect();
+        if words.first() == Some(&"perf") {
+            return perf::timeout_of(&words);
+        }
         let limit = match condition::split(verb) {
             ("wait_until", rest) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
             _ => return self.verb,
