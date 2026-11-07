@@ -5,9 +5,11 @@ restarts or crashes, the client stays connected and in game, and picks up the ne
 server when it comes back. It is a development tool: offline mode, one server, no
 encryption.
 
+`void-example` takes the default port, 25565, so the client joins the proxy on 25566:
+
 ```sh
-VOIDMC_STABLE_PLAYER_IDS=1 VOID_MAP_ADDRESS=127.0.0.1:25566 cargo run --profile fast -p voidmc-map &
-cargo run --profile fast -p voidmc-keeper -- --backend 127.0.0.1:25566 --listen 127.0.0.1:25565
+VOIDMC_STABLE_PLAYER_IDS=1 cargo run -p voidmc-example &
+cargo run -p voidmc-keeper -- --backend 127.0.0.1:25565 --listen 127.0.0.1:25566
 ```
 
 | Option | Default | Meaning |
@@ -165,7 +167,8 @@ proxy writes what is queued, for at most 2 seconds, before it exits.
 
 ## Measures
 
-`voidmc-map`, profile `fast`, server killed with `SIGKILL` and restarted at once. `resumed`
+These measures come from `voidmc-map`, a server that is not on `main`, built with a `fast`
+profile, the server killed with `SIGKILL` and restarted at once. `resumed`
 runs from the kill to the event; in game runs to the player standing at spawn, camera on
 the player, no screen; chunks runs to the 289 chunks around the spawn.
 
