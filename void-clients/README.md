@@ -120,9 +120,10 @@ each trace, which compares the shape of a run, not its content.
 watching it. Each run needs a fresh server, started with a step socket:
 
 ```sh
-P=($(voidc port "Ouverture"))
+PORTS=$(voidc port "Ouverture")
+PORT=${PORTS% *}
 SOCK=~/.voidc/run/ouverture.step
-VOID_EXAMPLE_STEP_SOCKET=$SOCK VOID_EXAMPLE_ADDRESS=127.0.0.1:${P[1]} cargo run -p voidmc-example &
+VOID_EXAMPLE_STEP_SOCKET=$SOCK VOID_EXAMPLE_ADDRESS=127.0.0.1:$PORT cargo run -p voidmc-example &
 voidc step "Ouverture" --server $SOCK --out shots --ticks 120 --frames 4 --stop-server
 ```
 
