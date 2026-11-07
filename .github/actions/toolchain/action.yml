@@ -31,8 +31,9 @@ runs:
         fi
         channel=$channels
         install=(rustup toolchain install "$channel" --profile minimal)
-        if [ -n "${COMPONENTS//[[:space:],]/}" ]; then
-          install+=(--component "$COMPONENTS")
+        components=${COMPONENTS//[[:space:]]/}
+        if [ -n "${components//,/}" ]; then
+          install+=(--component "$components")
         fi
         "${install[@]}"
         echo "PINNED_CHANNEL=$channel" >> "$GITHUB_ENV"
