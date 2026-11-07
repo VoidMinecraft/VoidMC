@@ -26,6 +26,8 @@ uuid = "1.16.0"
 [features]
 # Logs where the time of a slow tick goes, system by system.
 profile = ["bevy_ecs/trace", "bevy_ecs/debug"]
+packet-trace = ["voidmc/packet-trace"]
+seeded-uuids = ["voidmc/seeded-uuids"]
 
 [dev-dependencies]
 flume = "0.12.0"

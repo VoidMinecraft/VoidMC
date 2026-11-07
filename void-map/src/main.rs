@@ -13,6 +13,8 @@ fn init_logs() {
     let registry = tracing_subscriber::registry().with(logs);
     #[cfg(feature = "profile")]
     let registry = registry.with(voidmc_map::profile::Profile::new());
+    #[cfg(feature = "packet-trace")]
+    let registry = registry.with(voidmc::packet_trace::trace_layer());
     registry.init();
 }
 
@@ -28,12 +30,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(%address, %pack_url, "Carte - Java 26.1.2");
 
     // No generator set: the map shows `DefaultWorldGenerator`, through `WorldGen`.
-    let config = ServerConfigBuilder::new()
+    let mut builder = ServerConfigBuilder::new()
         .address(address)
         .tick_rate(20)
         .view_distance(VIEW_DISTANCE)
-        .motd("Carte | Void")
-        .build();
+        .motd("Carte | Void");
+    if let Some(socket) = std::env::var_os("VOID_MAP_STEP_SOCKET") {
+        builder = builder.step_socket(socket);
+    }
+    let config = builder.build();
     let prompt =
         Text::new("Les fiches de la carte sont dessinées par ce pack.").color(TextColor::Yellow);
     VoidServer::new(config)
