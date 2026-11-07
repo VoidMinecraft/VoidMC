@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -7,7 +7,8 @@ use serde_json::Value;
 use crate::condition::{self, DEFAULT_WAIT_MS};
 use crate::{perf, registry, version};
 
-const STATE_LIMIT: Duration = Duration::from_secs(5);
+/// Above the 10 s the probe gives the game thread: a stuck game answers with a failure, in time.
+const STATE_LIMIT: Duration = Duration::from_secs(12);
 
 /// What every probe answers alike, whatever its version: a stale client stays visible and stoppable.
 #[derive(Clone, Copy)]
@@ -38,6 +39,15 @@ pub struct Probe {
     reader: BufReader<UnixStream>,
 }
 
+fn no_answer(name: &str, verb: &str, timeout: Duration, error: &std::io::Error) -> String {
+    match error.kind() {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+            format!("client {name} does not answer: no reply to {verb} within {timeout:?}")
+        }
+        _ => format!("client {name}, on {verb}: {error}"),
+    }
+}
+
 fn one_verb(verb: &str) -> Result<(), String> {
     if verb.contains(['\n', '\r']) {
         return Err(format!("one verb at a time: {verb:?} holds a line break"));
@@ -66,17 +76,19 @@ impl Probe {
         Ok(probe)
     }
 
-    /// Sends one verb and returns its JSON line.
+    /// Sends one verb and returns its JSON line. After an error the connection may still get the
+    /// late answer, which would read as the answer to the next verb: drop it.
     pub fn ask(&mut self, verb: &str, timeout: Duration) -> Result<String, String> {
         one_verb(verb)?;
         self.stream
             .set_read_timeout(Some(timeout))
             .map_err(|e| e.to_string())?;
-        writeln!(self.stream, "{verb}").map_err(|e| e.to_string())?;
+        writeln!(self.stream, "{verb}")
+            .map_err(|e| format!("client {} closed the connection: {e}", self.name))?;
         let mut line = String::new();
         self.reader
             .read_line(&mut line)
-            .map_err(|e| format!("{verb}: {e}"))?;
+            .map_err(|e| no_answer(&self.name, verb, timeout, &e))?;
         if line.is_empty() {
             return Err(format!("client {} closed the connection", self.name));
         }
@@ -113,68 +125,112 @@ pub fn timeout_of(verb: &str) -> Duration {
 }
 
 #[cfg(test)]
-pub mod stale {
+pub mod fake {
     use std::fs;
     use std::os::unix::net::UnixListener;
-    use std::path::PathBuf;
-    use std::process::{Child, Command};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
 
+    use serde_json::json;
+
     use super::*;
     use crate::registry::{Client, Level};
 
-    pub const NAME: &str = "stale";
+    pub const NAME: &str = "fake";
 
-    /// A running client whose probe answers every verb, from another version than this voidc.
-    pub struct Stale {
-        home: PathBuf,
-        heard: Arc<Mutex<Vec<String>>>,
-        process: Child,
+    /// What the probe sends back to a verb, and how long it takes to.
+    pub struct Reply {
+        pub after: Duration,
+        pub line: String,
     }
 
-    fn serve(stream: UnixStream, heard: &Mutex<Vec<String>>) {
+    impl Reply {
+        /// Stamped with the version of this voidc.
+        pub fn current(after: Duration, mut fields: Value) -> Self {
+            fields["version"] = json!(version::current());
+            let line = fields.to_string();
+            Self { after, line }
+        }
+    }
+
+    type Script = Box<dyn Fn(&str) -> Reply + Send + Sync>;
+
+    /// A running client whose probe answers from a script, with a real socket and a real pid.
+    pub struct FakeClient {
+        home: PathBuf,
+        heard: Arc<Mutex<Vec<String>>>,
+        process: Arc<Mutex<Child>>,
+    }
+
+    struct Serving {
+        heard: Arc<Mutex<Vec<String>>>,
+        process: Arc<Mutex<Child>>,
+        script: Arc<Script>,
+    }
+
+    fn serve(stream: UnixStream, serving: &Serving) {
         let Ok(mut out) = stream.try_clone() else {
             return;
         };
-        for line in BufReader::new(stream).lines().map_while(Result::ok) {
-            heard.lock().unwrap().push(line);
-            let reply = r#"{"ok":true,"state":"connected","chunks":1000,"clock":"real","version":"0000000000000000"}"#;
-            if writeln!(out, "{reply}").is_err() {
+        for verb in BufReader::new(stream).lines().map_while(Result::ok) {
+            serving.heard.lock().unwrap().push(verb.clone());
+            let reply = (serving.script)(&verb);
+            thread::sleep(reply.after);
+            if writeln!(out, "{}", reply.line).is_err() {
                 return;
+            }
+            if verb == "quit" {
+                let mut process = serving.process.lock().unwrap();
+                let _ = process.kill();
+                let _ = process.wait();
             }
         }
     }
 
-    impl Stale {
-        pub fn start(level: Level) -> Self {
-            static RUN: AtomicU32 = AtomicU32::new(0);
-            let home = std::env::temp_dir().join(format!(
-                "vs{}-{}",
-                std::process::id(),
-                RUN.fetch_add(1, Ordering::Relaxed)
-            ));
+    /// Under `/tmp` and not `temp_dir`: a socket has 103 bytes, whatever `TMPDIR` holds.
+    fn short_home() -> PathBuf {
+        static RUN: AtomicU32 = AtomicU32::new(0);
+        Path::new("/tmp").join(format!(
+            "voidc-fake-{}-{}",
+            std::process::id(),
+            RUN.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    impl FakeClient {
+        /// A client whose probe answers every verb, from another version than this voidc.
+        pub fn stale(level: Level) -> Self {
+            Self::scripted(
+                level,
+                Box::new(|_| {
+                    Reply {
+                    after: Duration::ZERO,
+                    line: r#"{"ok":true,"state":"connected","chunks":1000,"clock":"real","version":"0000000000000000"}"#.to_string(),
+                }
+                }),
+            )
+        }
+
+        pub fn scripted(level: Level, script: Script) -> Self {
+            let home = short_home();
             let _ = fs::remove_dir_all(&home);
             registry::set_test_home(Some(home.clone()));
             let socket = registry::socket(NAME).unwrap();
             fs::create_dir_all(socket.parent().unwrap()).unwrap();
             let listener = UnixListener::bind(&socket).unwrap();
-            let heard = Arc::new(Mutex::new(Vec::new()));
-            let shared = heard.clone();
-            thread::spawn(move || {
-                for stream in listener.incoming().flatten() {
-                    let heard = shared.clone();
-                    thread::spawn(move || serve(stream, &heard));
-                }
-            });
             let process = Command::new("sh")
                 .args(["-c", "sleep 60; :", &format!("-Dvoid.client={NAME}"), "x"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .unwrap();
             registry::save(&Client {
                 name: NAME.to_string(),
-                feature: "Stale".to_string(),
+                feature: "Fake".to_string(),
                 port: 1,
                 level,
                 pid: process.id(),
@@ -183,6 +239,20 @@ pub mod stale {
                 jfr: false,
             })
             .unwrap();
+            let heard = Arc::new(Mutex::new(Vec::new()));
+            let process = Arc::new(Mutex::new(process));
+            let (shared_heard, shared_process) = (heard.clone(), process.clone());
+            let script = Arc::new(script);
+            thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let serving = Serving {
+                        heard: shared_heard.clone(),
+                        process: shared_process.clone(),
+                        script: script.clone(),
+                    };
+                    thread::spawn(move || serve(stream, &serving));
+                }
+            });
             Self {
                 home,
                 heard,
@@ -210,10 +280,11 @@ pub mod stale {
         }
     }
 
-    impl Drop for Stale {
+    impl Drop for FakeClient {
         fn drop(&mut self) {
-            let _ = self.process.kill();
-            let _ = self.process.wait();
+            let mut process = self.process.lock().unwrap();
+            let _ = process.kill();
+            let _ = process.wait();
             registry::set_test_home(None);
             let _ = fs::remove_dir_all(&self.home);
         }
@@ -240,6 +311,23 @@ mod tests {
             Duration::from_secs(45)
         );
         assert_eq!(timeout_of("state"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_state_outlives_what_the_probe_gives_the_game_thread() {
+        assert!(include_str!("../probe/Probe.java").contains("onGame(task, 10_000)"));
+        assert!(STATE_LIMIT > Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_long_tmpdir_leaves_the_fake_client_standing() {
+        let run = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::cmd_refuses_a_probe_of_another_version"])
+            .env("TMPDIR", std::env::temp_dir().join("t".repeat(120)))
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&run.stdout);
+        assert!(run.status.success() && out.contains("1 passed"), "{out}");
     }
 
     #[test]

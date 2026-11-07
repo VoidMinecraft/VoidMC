@@ -1,10 +1,11 @@
 # One table for the conditions of the bot (condition.rs) and of the probe (Condition.java).
 # fields	<level>	name	value ...: a text is quoted, a number or true/false is not.
-# <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>	[a piece of the message of an error]
+# <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>	[a piece of the message of an error, never empty]
 # split	<level>	<verb line>	<name>|<rest>: how the bot, the probe and voidc cut a verb.
 # The logic level has no camera yet, so only the camera rule can refuse camera>=1 there.
+# mood is text that no list knows, so that only the value read can refuse an order on it.
 # A cell may hold \t, \\ and \uXXXX.
-fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5	action_bar	"Tour 1"
+fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5	action_bar	"Tour 1"	mood	"calm"
 fields	logic	chunks	1000	state	"connected"	chat	"a\tb"
 fields	bot	chunks	1000	state	"connected"	chat	"a>=b"	camera	3	x	1.5	action_bar	"Tour 1"
 assert	render	chunks>=800	true
@@ -35,6 +36,8 @@ assert	render	chunks>=.5	error
 assert	render	chunks>=-1	true
 assert	render	state>=1	error	not a number
 assert	render	chat<=3	error	not a number
+assert	render	mood>=1	error	mood is calm, not a number
+wait	render	5000 mood<=1	error	mood is calm, not a number
 assert	render	camera>=1	error
 assert	bot	camera>=1	true
 assert	render	été>=1	error

@@ -56,7 +56,7 @@ is an error, never a wait. Only spaces and tabs separate words: another space or
 character, or an invisible format character like U+200B, in a condition is an error.
 `conditions.tsv` holds the cases, with `\t`, `\\` and `\uXXXX` escapes: `cargo test`, which needs `javac`, runs them through the Rust and Java code that splits a
 verb and reads a condition, the code the bot and the probe use. An error case may add a fifth cell, a
-piece of the message both sides must give. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
+piece of the message both sides must give, never empty. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
 
 Bots add `packets`.
 
@@ -84,7 +84,7 @@ no `clock real` at its end. A `shot` of a scenario waits for the loading
 screen to go; `voidc cmd` takes the picture at once.
 
 `voidc cmd` is a shortcut for the socket: `~/.voidc/run/<name>.sock` takes one verb per line
-and answers one JSON line. A condition reads the same everywhere, in `void-clients/src/condition.rs`
+and answers one JSON line, with none of the checks of `voidc`. A condition reads the same everywhere, in `void-clients/src/condition.rs`
 and in `probe/Condition.java`, as [Verbs](#verbs) says: `wait_until 30000 chunks >= 200` waits 30 s
 and `wait_until chunks >= 200 30000` is refused. `voidc cmd` refuses what a scenario refuses, before sending it:
 `>=` or `<=` on a text field such as `chat`, against a value that is not a number (`1e3`, `5.` and
@@ -311,10 +311,15 @@ report lands in `~/.voidc/clients/<name>/perf/`.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.
 - `voidc cmd`, `run`, `step` and `perf` refuse a client started by another version of the probe or
-  the bot, and say to restart it: every verb passes through one check. `list`, `down` and the
+  the bot, and say to restart it: every verb of `voidc` passes through one check. The socket itself
+  checks nothing, so a verb written straight to it reaches any client. `list`, `down` and the
   mosaic still see, stop, show and hide such a client. The version is a hash of their sources outside tests (the probe, the bot,
   conditions, framing, launch), not of the protocol crates. A client tells it in every answer, from
   the moment its socket opens, even while it loads.
+- A `voidc run` or `perf` opens one connection and checks the version once. A verb that fails takes
+  that connection down and the next verb opens and checks another, so a late answer never passes
+  for the next verb. A game stuck for more than 10 s still answers `state`, with a failure; one
+  silent for 12 s is said not to answer.
 - The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.
 - `voidc up` and `voidc step` warn when the disk has less than `min_free_gib` free, and still
   start.

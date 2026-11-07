@@ -7,8 +7,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::compare::{self, Picture, Rules};
+use crate::lifecycle;
 use crate::registry::{self, Level};
-use crate::{control, lifecycle};
+use crate::scenario::{Driver, Socket, reply_error};
 
 const NOISE_MS: f64 = 0.05;
 const MIN_ROUNDS: usize = 6;
@@ -52,13 +53,11 @@ fn positional(args: &[String]) -> Vec<&str> {
     words
 }
 
-fn ask(name: &str, verb: &str) -> Result<Value, String> {
-    let line = control::ask(name, verb, control::timeout_of(verb))?;
-    let reply: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
-    if reply["ok"] == true {
-        Ok(reply)
-    } else {
-        Err(reply["error"].as_str().unwrap_or(&line).to_string())
+fn ask(socket: &mut Socket, verb: &str) -> Result<Value, String> {
+    let reply = socket.ask(verb)?;
+    match reply_error(&reply) {
+        Some(error) => Err(error),
+        None => Ok(reply),
     }
 }
 
@@ -432,35 +431,45 @@ pub fn command(args: &[String]) -> Result<(), String> {
     let others = other_clients(name);
     let mut report = String::new();
     let mut json = BTreeMap::new();
-    let gpu = |report: &mut String, json: &mut BTreeMap<&str, Value>| -> Result<(), String> {
-        let reply = ask(name, &format!("perf gpu {}", options.frames))?;
+    let gpu = |socket: &mut Socket,
+               report: &mut String,
+               json: &mut BTreeMap<&str, Value>|
+     -> Result<(), String> {
+        let reply = ask(socket, &format!("perf gpu {}", options.frames))?;
         let (text, value) = gpu_report(name, &reply, others);
         report.push_str(&text);
         json.insert("gpu", value);
         Ok(())
     };
-    let metrics = |report: &mut String, json: &mut BTreeMap<&str, Value>| -> Result<(), String> {
-        let reply = ask(name, &format!("perf metrics {}", options.seconds))?;
+    let metrics = |socket: &mut Socket,
+                   report: &mut String,
+                   json: &mut BTreeMap<&str, Value>|
+     -> Result<(), String> {
+        let reply = ask(socket, &format!("perf metrics {}", options.seconds))?;
         let (text, value) = metrics_report(&reply)?;
         report.push_str(&text);
         json.insert("metrics", value);
         Ok(())
     };
-    let jfr = |report: &mut String, json: &mut BTreeMap<&str, Value>| -> Result<(), String> {
-        let reply = ask(name, &format!("perf jfr {}", options.seconds))?;
+    let jfr = |socket: &mut Socket,
+               report: &mut String,
+               json: &mut BTreeMap<&str, Value>|
+     -> Result<(), String> {
+        let reply = ask(socket, &format!("perf jfr {}", options.seconds))?;
         let (text, value) = jfr_report(&reply);
         report.push_str(&text);
         json.insert("jfr", value);
         Ok(())
     };
+    let mut socket = Socket::open(name)?;
     match what {
-        "gpu" => gpu(&mut report, &mut json)?,
-        "metrics" => metrics(&mut report, &mut json)?,
-        "jfr" => jfr(&mut report, &mut json)?,
+        "gpu" => gpu(&mut socket, &mut report, &mut json)?,
+        "metrics" => metrics(&mut socket, &mut report, &mut json)?,
+        "jfr" => jfr(&mut socket, &mut report, &mut json)?,
         "ab" => {
             let setting = words.get(1).ok_or(USAGE)?;
             let reply = ask(
-                name,
+                &mut socket,
                 &format!(
                     "perf ab {setting} {} {} {}",
                     options.rounds, options.frames, options.count
@@ -471,13 +480,13 @@ pub fn command(args: &[String]) -> Result<(), String> {
             json.insert("ab", value);
         }
         "all" if client.level == Level::Logic => {
-            metrics(&mut report, &mut json)?;
-            jfr(&mut report, &mut json)?;
+            metrics(&mut socket, &mut report, &mut json)?;
+            jfr(&mut socket, &mut report, &mut json)?;
         }
         "all" => {
-            metrics(&mut report, &mut json)?;
-            gpu(&mut report, &mut json)?;
-            jfr(&mut report, &mut json)?;
+            metrics(&mut socket, &mut report, &mut json)?;
+            gpu(&mut socket, &mut report, &mut json)?;
+            jfr(&mut socket, &mut report, &mut json)?;
         }
         _ => return Err(USAGE.to_string()),
     }
@@ -506,12 +515,47 @@ pub fn timeout_of(words: &[&str]) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::fake::{FakeClient, NAME, Reply};
 
     #[test]
     fn perf_refuses_a_probe_of_another_version() {
-        let stale = control::stale::Stale::start(Level::Render);
-        let args = [control::stale::NAME, "gpu"].map(String::from);
-        stale.assert_refused(command(&args));
+        let fake = FakeClient::stale(Level::Render);
+        let args = [NAME, "gpu"].map(String::from);
+        fake.assert_refused(command(&args));
+    }
+
+    fn profiling_archive(dir: &Path) -> PathBuf {
+        fs::create_dir_all(dir.join("client")).unwrap();
+        fs::write(
+            dir.join("client/profiling.txt"),
+            "[00] frame(2/1) - 90.00%/90.00%\n[01] |   render(2/1) - 10.00%/9.00%\n",
+        )
+        .unwrap();
+        let zipped = Command::new("zip")
+            .args(["-qr", "run.zip", "client"])
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(zipped.success());
+        dir.join("run.zip")
+    }
+
+    #[test]
+    fn every_measure_of_a_report_goes_down_one_checked_connection() {
+        let dir = std::env::temp_dir().join(format!("voidc-one-socket-{}", std::process::id()));
+        let archive = profiling_archive(&dir);
+        let fake = FakeClient::scripted(
+            Level::Logic,
+            Box::new(move |_| {
+                Reply::current(
+                    Duration::ZERO,
+                    json!({"ok": true, "path": archive, "seconds": 10}),
+                )
+            }),
+        );
+        command(&[NAME.to_string()]).unwrap();
+        assert_eq!(fake.heard(), ["state", "perf metrics 10", "perf jfr 10"]);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -572,19 +616,7 @@ mod tests {
     #[test]
     fn metrics_read_the_sections_of_a_real_archive() {
         let dir = std::env::temp_dir().join(format!("voidc-metrics-{}", std::process::id()));
-        fs::create_dir_all(dir.join("client")).unwrap();
-        fs::write(
-            dir.join("client/profiling.txt"),
-            "[00] frame(2/1) - 90.00%/90.00%\n[01] |   render(2/1) - 10.00%/9.00%\n",
-        )
-        .unwrap();
-        let zipped = Command::new("zip")
-            .args(["-qr", "run.zip", "client"])
-            .current_dir(&dir)
-            .status()
-            .unwrap();
-        assert!(zipped.success());
-        let reply = json!({"path": dir.join("run.zip"), "seconds": 6});
+        let reply = json!({"path": profiling_archive(&dir), "seconds": 6});
         let (text, json) = metrics_report(&reply).unwrap();
         assert!(text.contains("frame/render"), "{text}");
         assert_eq!(json["sections"][1]["share"], 9.0);

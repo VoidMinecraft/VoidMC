@@ -373,16 +373,35 @@ pub trait Driver {
     }
 }
 
-pub struct Socket(String);
+/// One connection, checked once, for a whole run. A verb that fails takes it down, so that its
+/// late answer cannot pass for the next one: the next verb opens and checks another.
+pub struct Socket {
+    name: String,
+    probe: Option<control::Probe>,
+}
+
+impl Socket {
+    pub fn open(name: &str) -> Result<Self, String> {
+        Ok(Self {
+            name: name.to_string(),
+            probe: Some(control::Probe::open(name)?),
+        })
+    }
+}
 
 impl Driver for Socket {
     fn ask(&mut self, verb: &str) -> Result<Value, String> {
-        let line = control::ask(&self.0, verb, control::timeout_of(verb))?;
+        let mut probe = match self.probe.take() {
+            Some(probe) => probe,
+            None => control::Probe::open(&self.name)?,
+        };
+        let line = probe.ask(verb, control::timeout_of(verb))?;
+        self.probe = Some(probe);
         serde_json::from_str(&line).map_err(|e| e.to_string())
     }
 
     fn recording(&self, name: &str) -> PathBuf {
-        registry::client_dir(&self.0).join(format!("{name}.txt"))
+        registry::client_dir(&self.name).join(format!("{name}.txt"))
     }
 }
 
@@ -426,7 +445,7 @@ fn whole(verb: &str, text: &str, recording: &Recording) -> Result<(), String> {
     }
 }
 
-fn reply_error(reply: &Value) -> Option<String> {
+pub fn reply_error(reply: &Value) -> Option<String> {
     (reply["ok"] != true).then(|| {
         reply["error"]
             .as_str()
@@ -893,7 +912,7 @@ pub trait Host {
     fn find(&self, name: &str) -> Option<(Level, bool)>;
     fn up(&mut self, feature: &str, level: Level, port: Option<String>) -> Result<(), String>;
     fn down(&mut self, name: &str) -> Result<(), String>;
-    fn driver(&self, name: &str) -> Self::Driver;
+    fn driver(&self, name: &str) -> Result<Self::Driver, String>;
 }
 
 pub struct Live<F>(pub F);
@@ -916,8 +935,8 @@ where
         lifecycle::down(name)
     }
 
-    fn driver(&self, name: &str) -> Socket {
-        Socket(name.to_string())
+    fn driver(&self, name: &str) -> Result<Socket, String> {
+        Socket::open(name)
     }
 }
 
@@ -1004,7 +1023,9 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
         out.clone(),
         args.iter().any(|arg| arg == "--keep-going"),
     );
-    let played = run.play(&scenario, &mut host.driver(&chosen.name));
+    let played = host
+        .driver(&chosen.name)
+        .and_then(|mut driver| run.play(&scenario, &mut driver));
     let written = match &played {
         Ok(report) => report.write(&out),
         Err(_) => Ok(()),
@@ -1031,6 +1052,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use super::*;
+    use crate::control::fake::{FakeClient, NAME, Reply};
 
     struct Fake {
         state: Value,
@@ -2127,6 +2149,7 @@ mod tests {
         dir: PathBuf,
         clients: BTreeMap<String, (Level, bool)>,
         up: Result<(), String>,
+        driver: Result<(), String>,
         down: Result<(), String>,
         ups: Vec<String>,
         downs: Vec<String>,
@@ -2138,6 +2161,7 @@ mod tests {
                 dir: dir.to_path_buf(),
                 clients: BTreeMap::new(),
                 up: Ok(()),
+                driver: Ok(()),
                 down: Ok(()),
                 ups: Vec::new(),
                 downs: Vec::new(),
@@ -2162,22 +2186,145 @@ mod tests {
             self.down.clone()
         }
 
-        fn driver(&self, _: &str) -> Fake {
-            Fake::new(&self.dir, vec![])
+        fn driver(&self, _: &str) -> Result<Fake, String> {
+            self.driver.clone().map(|()| Fake::new(&self.dir, vec![]))
         }
     }
 
     #[test]
     fn run_refuses_a_probe_of_another_version() {
-        let stale = crate::control::stale::Stale::start(Level::Render);
+        let fake = FakeClient::stale(Level::Render);
         let dir = registry::home();
         fs::write(dir.join("s.scn"), "act map\n").unwrap();
+        fake.assert_refused(live_run(&dir, &[]));
+    }
+
+    fn live_run(dir: &Path, more: &[&str]) -> Result<(), String> {
         let mut host =
             Live(|_: &str, _, _: Option<String>| Err("no client starts here".to_string()));
-        stale.assert_refused(command(
-            &words(&dir, &["--on", crate::control::stale::NAME]),
-            &mut host,
-        ));
+        let mut args = vec!["--on", NAME];
+        args.extend(more);
+        command(&words(dir, &args), &mut host)
+    }
+
+    fn state_of_a_game() -> Value {
+        json!({"ok": true, "state": "connected", "clock": "real"})
+    }
+
+    /// Every verb is fine and at once, but for the ones named.
+    fn answering(
+        level: Level,
+        script: impl Fn(&str) -> Option<Reply> + Send + Sync + 'static,
+    ) -> FakeClient {
+        FakeClient::scripted(
+            level,
+            Box::new(move |verb| {
+                script(verb).unwrap_or_else(|| Reply::current(Duration::ZERO, state_of_a_game()))
+            }),
+        )
+    }
+
+    #[test]
+    fn a_game_slower_than_the_old_limit_lets_a_line_fail_for_its_own_reason() {
+        let fake = answering(Level::Render, |verb| match verb {
+            "state" => Some(Reply::current(Duration::from_secs(7), state_of_a_game())),
+            "wait_until 60000 chunks>=1" => Some(Reply::current(
+                Duration::ZERO,
+                json!({"ok": false, "error": "java.lang.AssertionError: timed out on chunks>=1"}),
+            )),
+            _ => None,
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "# top\nwait_until 60000 chunks>=1\n").unwrap();
+        assert_eq!(live_run(&dir, &[]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(
+            report.contains("FAIL   2") && report.contains("wait_until 60000 chunks>=1"),
+            "{report}"
+        );
+        assert!(report.contains("timed out on chunks>=1"), "{report}");
+        assert!(!report.contains("os error"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            [
+                "state",
+                "state",
+                "wait_until 60000 chunks>=1",
+                "state",
+                "clock real"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_game_past_the_limit_of_state_is_said_not_to_answer() {
+        let _fake = answering(Level::Render, |verb| {
+            (verb == "state").then(|| Reply::current(Duration::from_secs(14), state_of_a_game()))
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act map\n").unwrap();
+        let error = live_run(&dir, &[]).unwrap_err();
+        assert!(
+            error.contains("client fake does not answer: no reply to state within 12s"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_late_answer_never_passes_for_the_answer_to_the_next_verb() {
+        let fake = answering(Level::Render, |verb| {
+            verb.starts_with("wait_until").then(|| {
+                Reply::current(
+                    Duration::from_secs(6),
+                    json!({"ok": false, "error": "the late answer"}),
+                )
+            })
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "wait_until 1 chunks>=1\nact map\n").unwrap();
+        assert_eq!(live_run(&dir, &["--keep-going"]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(
+            report.contains("client fake does not answer: no reply to wait_until 1 chunks>=1"),
+            "{report}"
+        );
+        assert!(report.contains("ok     2"), "{report}");
+        assert!(!report.contains("the late answer"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            [
+                "state",
+                "state",
+                "wait_until 1 chunks>=1",
+                "state",
+                "act map",
+                "clock real"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_clock_of_the_end_of_a_run_keeps_its_thirty_seconds() {
+        assert_eq!(control::timeout_of("clock real"), Duration::from_secs(30));
+        let fake = answering(Level::Render, |verb| {
+            (verb == "clock real")
+                .then(|| Reply::current(Duration::from_secs(13), state_of_a_game()))
+        });
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act map\n").unwrap();
+        live_run(&dir, &[]).unwrap();
+        assert_eq!(fake.heard(), ["state", "state", "act map", "clock real"]);
+    }
+
+    #[test]
+    fn a_client_that_cannot_be_opened_is_still_stopped() {
+        let dir = staged("no-open", "act map\n");
+        let mut stage = Stage::new(&dir);
+        stage.driver = Err("client carte does not answer".into());
+        let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
+        assert!(error.contains("does not answer"), "{error}");
+        assert_eq!(stage.downs, ["carte"]);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn words(dir: &Path, more: &[&str]) -> Vec<String> {
