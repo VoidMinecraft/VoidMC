@@ -22,9 +22,9 @@ pub const fn modified_utf8_width(c: char) -> usize {
 /// The length in bytes of the longest prefix of `text`, cut on a character, that fits in an NBT
 /// string.
 pub fn fitting_len(text: &str) -> usize {
-    let mut width = 0;
+    let mut width = 0usize;
     for (index, c) in text.char_indices() {
-        width += modified_utf8_width(c);
+        width = width.saturating_add(modified_utf8_width(c));
         if width > MAX_STRING_BYTES {
             return index;
         }
@@ -116,7 +116,9 @@ fn fit_string(text: &mut MString) {
         );
         return;
     };
-    *text = MString::from(&decoded[..fitting_len(&decoded)]);
+    if let Some(prefix) = decoded.get(..fitting_len(&decoded)) {
+        *text = MString::from(prefix);
+    }
 }
 
 /// Custom reader that prepends the NBT protocol header for the root compound tag
