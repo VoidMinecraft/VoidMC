@@ -1842,6 +1842,17 @@ mod tests {
     }
 
     #[test]
+    fn a_server_heard_every_second_is_never_counted_as_lost() {
+        let mut rig = Rig::in_play();
+        for _ in 0..30 {
+            rig.tick(Duration::from_secs(1));
+            rig.receive_from_backend(frame(play_cb::KEEP_ALIVE, |body| 1i64.encode(body)));
+        }
+        assert!(!rig.rest.contains(&Action::DropBackend));
+        assert!(rig.events().is_empty());
+    }
+
+    #[test]
     fn a_pack_the_client_holds_is_answered_in_its_name_before_it_acknowledges() {
         let pack = Uuid::from_u128(5);
         let mut rig = Rig::in_play();
