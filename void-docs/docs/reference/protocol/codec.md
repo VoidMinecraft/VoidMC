@@ -183,9 +183,25 @@ Built-in `Encode`/`Decode` implementations:
 | `VarI32` | 1-5 bytes, variable-length encoding |
 | `VarI64` | 1-10 bytes, variable-length encoding |
 | `Uuid` | 16 bytes (128-bit, big-endian) |
-| `Nbt` (ussr_nbt) | NBT binary format |
+| `Nbt` (ussr_nbt) | Network NBT: root compound without its name; strings cut to fit, see below |
 | `Vec<T>` | VarI32 length prefix + elements |
 | `Option<T>` | 1-byte bool prefix + value if present |
+
+## NBT strings
+
+The client reads an NBT string with a 16-bit length, in modified UTF-8: `\0`
+costs 2 bytes and a character outside the BMP 6. `voidmc_codec::nbt` exposes
+the rule:
+
+- `MAX_STRING_BYTES` (65 535) and `modified_utf8_width(c)`;
+- `check(&nbt)` returns `Err(NbtStringTooLong { bytes })` when a name or a
+  value, at any depth, is longer, for callers who refuse such a text upstream.
+
+Encoding an `Nbt` that `check` refuses cuts each long string on a character
+boundary below the limit and logs a warning, so the client never receives a
+string cut in the middle of a character. Strings within the limit cost one
+length comparison each. If the NBT cannot be written, an empty compound goes
+instead and an error is logged.
 
 ## DecodeError
 

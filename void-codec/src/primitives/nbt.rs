@@ -4,9 +4,20 @@ use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
 use tracing::{error, warn};
 use ussr_nbt::mutf8::MString;
 use ussr_nbt::owned::{Compound, List, Nbt, Tag};
+use ussr_nbt::WriteOpts;
 
 /// The client reads an NBT string length as an unsigned 16-bit prefix.
 pub const MAX_STRING_BYTES: usize = u16::MAX as usize;
+
+/// What a character costs in an NBT string: Java's modified UTF-8 writes NUL on 2 bytes and a
+/// character outside the BMP as a surrogate pair, 6 bytes.
+pub const fn modified_utf8_width(c: char) -> usize {
+    match c {
+        '\0' => 2,
+        c if c as u32 >= 0x1_0000 => 6,
+        c => c.len_utf8(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NbtStringTooLong {
@@ -86,16 +97,16 @@ fn fit_string(text: &mut MString) {
         return;
     }
     let Ok(decoded) = text.decode() else {
+        error!(
+            bytes = text.len(),
+            "NBT string is not modified UTF-8 and cannot be cut on a character"
+        );
         return;
     };
     let mut width = 0;
     let mut end = decoded.len();
     for (index, c) in decoded.char_indices() {
-        width += match c {
-            '\0' => 2,
-            c if c as u32 >= 0x1_0000 => 6,
-            c => c.len_utf8(),
-        };
+        width += modified_utf8_width(c);
         if width > MAX_STRING_BYTES {
             end = index;
             break;
@@ -176,16 +187,12 @@ impl Encode for Nbt {
 
 fn write_network(nbt: &Nbt, buf: &mut Vec<u8>) {
     let mut temp_buf = Vec::new();
-    if let Err(failure) = nbt.write(&mut temp_buf) {
-        error!(%failure, "NBT could not be written: the packet carries none");
-        return;
-    }
-    // Write the compound tag
-    buf.push(0x0A);
-    // NBT library includes: tag (1) + name_len (2) + name (0 for empty root) + payload
-    // We skip 3 bytes for the tag + empty name_len, then write the rest
-    if temp_buf.len() > 3 {
-        buf.extend_from_slice(&temp_buf[3..]);
+    match nbt.write_with_opts(&mut temp_buf, WriteOpts { name: false }) {
+        Ok(()) => buf.extend_from_slice(&temp_buf),
+        Err(failure) => {
+            error!(%failure, "NBT could not be written: an empty compound goes instead");
+            buf.extend_from_slice(&[0x0A, 0x00]);
+        }
     }
 }
 
@@ -425,6 +432,69 @@ mod tests {
         }
         let fits = "a".repeat(MAX_STRING_BYTES);
         assert_eq!(sent_text(&text(&fits)), (MAX_STRING_BYTES, fits));
+    }
+
+    #[test]
+    fn a_cut_counts_nul_on_two_bytes() {
+        let (len, sent) = sent_text(&text(&"\0".repeat(40_000)));
+        assert_eq!(len, MAX_STRING_BYTES - 1);
+        assert_eq!(sent.chars().count(), MAX_STRING_BYTES / 2);
+    }
+
+    #[test]
+    fn a_cut_keeps_every_character_that_fits() {
+        let value = format!("a{}", "\u{1F600}".repeat(11_000));
+        let (len, sent) = sent_text(&text(&value));
+        assert_eq!(sent.chars().count(), 1 + (MAX_STRING_BYTES - 1) / 6);
+        assert_eq!(len, 1 + (MAX_STRING_BYTES - 1) / 6 * 6);
+        let (_, sent) = sent_text(&text(&"\u{e9}".repeat(40_000)));
+        assert_eq!(sent.chars().count(), MAX_STRING_BYTES / 2);
+    }
+
+    #[test]
+    fn a_long_key_and_a_list_of_lists_are_cut_too() {
+        let key = "\u{e9}".repeat(40_000);
+        let nbt = Nbt {
+            name: "".into(),
+            compound: Compound {
+                tags: vec![
+                    (key.as_str().into(), Tag::Byte(1)),
+                    (
+                        "rows".into(),
+                        Tag::List(List::List(vec![List::String(vec!["\u{1F600}"
+                            .repeat(11_000)
+                            .into()])])),
+                    ),
+                ],
+            },
+        };
+        let mut bytes = Vec::new();
+        nbt.encode(&mut bytes);
+        let decoded = Nbt::decode(&mut bytes.as_slice()).expect("the client reads it");
+        assert_eq!(check(&decoded), Ok(()));
+        let name = decoded.compound.tags[0].0.decode().unwrap().into_owned();
+        assert!(key.starts_with(&name));
+        assert_eq!(name.chars().count(), MAX_STRING_BYTES / 2);
+        let Tag::List(List::List(rows)) = &decoded.compound.tags[1].1 else {
+            panic!("a list of lists");
+        };
+        let List::String(cells) = &rows[0] else {
+            panic!("a list of strings");
+        };
+        assert_eq!(cells[0].len(), MAX_STRING_BYTES / 6 * 6);
+    }
+
+    #[test]
+    fn a_named_root_still_goes_out_as_network_nbt() {
+        let mut named = text("hi");
+        named.name = "root".into();
+        let mut bytes = Vec::new();
+        named.encode(&mut bytes);
+        let mut plain = Vec::new();
+        text("hi").encode(&mut plain);
+        assert_eq!(bytes, plain);
+        let decoded = Nbt::decode(&mut bytes.as_slice()).expect("the client reads it");
+        assert_eq!(decoded.compound, text("hi").compound);
     }
 
     #[test]

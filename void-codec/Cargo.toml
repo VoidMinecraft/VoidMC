@@ -22,3 +22,7 @@ proptest = "1.8"
 [[bench]]
 name = "codec_comparison"
 harness = false
+
+[[bench]]
+name = "nbt_encode"
+harness = false
