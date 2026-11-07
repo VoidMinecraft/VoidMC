@@ -30,6 +30,13 @@ allocation bytes, remaining-byte fields, NBT bytes/depth, and general decode
 depth. Length conversions and fixed-length arithmetic are checked before any
 allocation or iteration.
 
+Decoding never panics: any input, valid or not, ends in a value or a
+`DecodeError`. A manual decoder reads raw bytes with `decoder.take(len)`,
+`decoder.take_u8()` or `decoder.take_array::<N>()`, which return
+`DecodeError::UnexpectedEof` at the end of the input. The crate denies
+indexing, slicing, `unwrap`, `expect` and `panic!` outside its tests, and a
+proptest suite feeds every primitive random bytes and lying lengths.
+
 ## Derive Macros
 
 The `void-codec-macros` crate provides `#[derive(Encode, Decode)]` for automatic implementation:
