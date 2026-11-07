@@ -5,6 +5,8 @@ mod condition;
 mod control;
 mod dash;
 mod frame;
+#[cfg(test)]
+mod held;
 mod launch;
 mod lifecycle;
 mod perf;

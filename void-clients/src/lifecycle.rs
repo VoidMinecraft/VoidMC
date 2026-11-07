@@ -155,24 +155,19 @@ pub fn forget(name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::held::Held;
 
     #[test]
     fn a_child_that_ignores_the_signal_is_killed_and_reaped() {
-        let mut polite = Command::new("sleep").arg("60").spawn().unwrap();
+        let mut polite = Held::waiting("polite");
         stop(&mut polite, Duration::from_secs(5));
         assert!(polite.try_wait().unwrap().is_some());
-        let mut stubborn = Command::new("sh")
-            .args(["-c", "trap '' TERM; echo ready; read line"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut ready = String::new();
-        std::io::BufRead::read_line(
-            &mut std::io::BufReader::new(stubborn.stdout.take().unwrap()),
-            &mut ready,
-        )
-        .unwrap();
+        let mut stubborn = Held::launch(
+            Command::new("sh")
+                .args(["-c", "trap '' TERM; echo ready; read line"])
+                .stdout(std::process::Stdio::piped()),
+        );
+        assert_eq!(stubborn.first_line(), "ready");
         let started = Instant::now();
         stop(&mut stubborn, Duration::from_millis(500));
         assert!(started.elapsed() < Duration::from_secs(5));

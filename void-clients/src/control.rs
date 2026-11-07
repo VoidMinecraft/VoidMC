@@ -132,7 +132,6 @@ pub mod fake {
     use std::fs;
     use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -140,6 +139,7 @@ pub mod fake {
     use serde_json::json;
 
     use super::*;
+    use crate::held::Held;
     use crate::registry::{Client, Level};
 
     pub const NAME: &str = "fake";
@@ -165,12 +165,12 @@ pub mod fake {
     pub struct FakeClient {
         home: PathBuf,
         heard: Arc<Mutex<Vec<String>>>,
-        process: Arc<Mutex<Child>>,
+        process: Arc<Mutex<Held>>,
     }
 
     struct Serving {
         heard: Arc<Mutex<Vec<String>>>,
-        process: Arc<Mutex<Child>>,
+        process: Arc<Mutex<Held>>,
         script: Arc<Script>,
     }
 
@@ -186,9 +186,7 @@ pub mod fake {
                 return;
             }
             if verb == "quit" {
-                let mut process = serving.process.lock().unwrap();
-                let _ = process.kill();
-                let _ = process.wait();
+                serving.process.lock().unwrap().stop();
             }
         }
     }
@@ -224,13 +222,7 @@ pub mod fake {
             let socket = registry::socket(NAME).unwrap();
             fs::create_dir_all(socket.parent().unwrap()).unwrap();
             let listener = UnixListener::bind(&socket).unwrap();
-            let process = Command::new("sh")
-                .args(["-c", "sleep 60; :", &format!("-Dvoid.client={NAME}"), "x"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
+            let process = Held::waiting(&format!("fake-client -Dvoid.client={NAME} x"));
             registry::save(&Client {
                 name: NAME.to_string(),
                 feature: "Fake".to_string(),
@@ -285,9 +277,7 @@ pub mod fake {
 
     impl Drop for FakeClient {
         fn drop(&mut self) {
-            let mut process = self.process.lock().unwrap();
-            let _ = process.kill();
-            let _ = process.wait();
+            self.process.lock().unwrap().stop();
             registry::set_test_home(None);
             let _ = fs::remove_dir_all(&self.home);
         }
@@ -340,6 +330,15 @@ mod tests {
             error.contains("client gone closed the connection"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_fake_client_leaves_nothing_behind() {
+        let fake = fake::FakeClient::stale(registry::Level::Render);
+        let client = registry::load(fake::NAME).unwrap();
+        assert!(registry::alive(&client));
+        drop(fake);
+        assert!(!registry::alive(&client));
     }
 
     #[test]
