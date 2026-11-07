@@ -395,7 +395,7 @@ mod tests {
         let path = scratch("lock-held").join("start.lock");
         let _held = Lock::at(&path).unwrap();
         assert!(matches!(
-            fs::File::open(&path).unwrap().try_lock(),
+            fs::File::open(&path).unwrap().try_lock_shared(),
             Err(fs::TryLockError::WouldBlock)
         ));
     }
