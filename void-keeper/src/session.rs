@@ -166,8 +166,9 @@ impl Session {
         }
     }
 
-    pub fn take_actions(&mut self) -> Vec<Action> {
-        std::mem::take(&mut self.actions)
+    /// What the session decided since the last call. Its buffer stays, for the next packet.
+    pub fn actions(&mut self) -> std::vec::Drain<'_, Action> {
+        self.actions.drain(..)
     }
 
     fn send_to_client(&mut self, frame: Bytes) {
@@ -933,7 +934,7 @@ mod tests {
         }
 
         fn drain(&mut self) {
-            for action in self.session.take_actions() {
+            for action in self.session.actions() {
                 match action {
                     Action::ToClient(frame) => self.client.push(frame),
                     Action::ToBackend(frame) => self.backend.push(frame),

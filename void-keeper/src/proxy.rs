@@ -319,28 +319,9 @@ impl<S> Relay<S> {
         queued
     }
 
-    fn emit(&self, event: Event) {
-        match event {
-            Event::Joined { name } => self
-                .events
-                .emit("client_joined", json!({ "session": self.id, "name": name })),
-            Event::BackendLost => {
-                self.events
-                    .emit("backend_lost", json!({ "session": self.id }));
-            }
-            Event::Resumed { outage } => self.events.emit(
-                "resumed",
-                json!({ "session": self.id, "outage_ms": outage.as_millis() as u64 }),
-            ),
-            Event::GaveUp { reason } => self
-                .events
-                .emit("gave_up", json!({ "session": self.id, "reason": reason })),
-        }
-    }
-
     /// Takes in what the session decided. Queued frames stay queued: a burst leaves as one write.
     fn absorb(&mut self) {
-        for action in self.session.take_actions() {
+        for action in self.session.actions() {
             match action {
                 Action::ToClient(frame) => self.client.queue(&frame),
                 Action::ToBackend(frame) => {
@@ -356,7 +337,7 @@ impl<S> Relay<S> {
                 Action::Connect => self.wants_backend = true,
                 Action::DropBackend => self.backend = None,
                 Action::Close => self.closing = true,
-                Action::Event(event) => self.emit(event),
+                Action::Event(event) => emit(&self.events, self.id, event),
             }
         }
     }
@@ -397,6 +378,22 @@ impl<S> Relay<S> {
     fn tick(&mut self) {
         self.session.on_tick(Instant::now());
         self.absorb();
+    }
+}
+
+fn emit(events: &Events, id: u64, event: Event) {
+    match event {
+        Event::Joined { name } => {
+            events.emit("client_joined", json!({ "session": id, "name": name }));
+        }
+        Event::BackendLost => events.emit("backend_lost", json!({ "session": id })),
+        Event::Resumed { outage } => events.emit(
+            "resumed",
+            json!({ "session": id, "outage_ms": outage.as_millis() as u64 }),
+        ),
+        Event::GaveUp { reason } => {
+            events.emit("gave_up", json!({ "session": id, "reason": reason }));
+        }
     }
 }
 
