@@ -2002,6 +2002,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "socket2",
  "toml",
  "ussr-nbt",
  "uuid",

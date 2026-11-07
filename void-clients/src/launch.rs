@@ -9,11 +9,13 @@ use serde_json::Value;
 use crate::registry::{self, Client, Level, Registry, Settings};
 
 const VERSION: &str = "26.1.2";
-pub const PROBE_SOURCES: [(&str, &str); 4] = [
+pub const PROBE_SOURCES: [(&str, &str); 6] = [
     ("Probe.java", include_str!("../probe/Probe.java")),
     ("HideAgent.java", include_str!("../probe/HideAgent.java")),
     ("Condition.java", include_str!("../probe/Condition.java")),
     ("Retry.java", include_str!("../probe/Retry.java")),
+    ("Guard.java", include_str!("../probe/Guard.java")),
+    ("Watch.java", include_str!("../probe/Watch.java")),
 ];
 const NO_RENDER_URL: &str = "https://github.com/headlesshq/headlessmc/releases/download/3.0.0-RC8/headlessmc-lwjgl-3.0.0-RC8-all.jar";
 const NO_RENDER_SHA256: &str = "45c7a0041d580e7c80a190c49140e65c521e992af13229ca71795f3414146009";

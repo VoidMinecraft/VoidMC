@@ -70,9 +70,8 @@ public class Probe {
   private static final String VERSION = System.getProperty("void.version", "");
   private static final long IDLE_MS = Long.getLong("void.idle.minutes", 30) * 60_000;
   private static final long LOOK_MS = 100;
-  private static final Retry RETRY = new Retry(500, 2_000);
   private static final int PORT_CHECK_MS = 200;
-  private static String lastWatchError;
+  private static final Watch WATCH = new Watch(new Retry(500, 2_000), Throwable::printStackTrace);
   private static volatile long lastVerb = System.currentTimeMillis();
   private static volatile boolean shown;
   private static volatile int reconnects;
@@ -157,17 +156,7 @@ public class Probe {
         mc.execute(mc::stop);
         return;
       }
-      Screen screen = mc.screen;
-      Screen away = !Stepping.virtual() && screen != null && screen.getClass().getSimpleName().equals("DisconnectedScreen") ? screen : null;
-      try {
-        if (RETRY.look(System.nanoTime() / 1_000_000, mc.level != null, away, Probe::portOpen)) {
-          mc.execute(RETRY.task(() -> reconnect(mc)));
-        }
-      } catch (RuntimeException error) {
-        String seen = String.valueOf(error);
-        if (!seen.equals(lastWatchError)) error.printStackTrace();
-        lastWatchError = seen;
-      }
+      WATCH.look(System.nanoTime() / 1_000_000, mc.level != null, Stepping.virtual() ? null : mc.screen, Probe::portOpen, mc::execute, () -> reconnect(mc));
     }
   }
 

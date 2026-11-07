@@ -700,11 +700,14 @@ fn session(name: &str, port: u16, writer: &Writer, world: &Shared) -> std::io::R
 fn stay_connected(name: String, port: u16, writer: Writer, world: Shared) {
     let mut backoff = Backoff::default();
     loop {
-        let result = session(&name, port, &writer, &world);
-        let pause = pause_after(&mut backoff, &world, result);
-        *writer.lock().unwrap() = None;
-        thread::sleep(pause);
+        thread::sleep(step(&name, port, &writer, &world, &mut backoff));
     }
+}
+
+fn step(name: &str, port: u16, writer: &Writer, world: &Shared, backoff: &mut Backoff) -> Duration {
+    let result = session(name, port, writer, world);
+    *writer.lock().unwrap() = None;
+    pause_after(backoff, world, result)
 }
 
 fn pause_after(backoff: &mut Backoff, world: &Shared, result: std::io::Result<()>) -> Duration {
@@ -899,6 +902,83 @@ mod tests {
         }
         assert_eq!(pause_after(&mut backoff, &world, Err(error)), FIRST_PAUSE);
         assert_eq!(pause_after(&mut backoff, &world, Ok(())), FIRST_PAUSE);
+    }
+
+    #[test]
+    fn a_step_clears_its_link_and_returns_the_pause_it_computed() {
+        let world: Shared = Default::default();
+        let writer: Writer = Default::default();
+        let mut backoff = Backoff::default();
+        for _ in 0..5 {
+            backoff.after(Ending::Ended(None));
+        }
+        let closing = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        closing.set_nonblocking(true).unwrap();
+        let open_port = closing.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok((stream, _)) = closing.accept() {
+                    drop(stream);
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            false
+        });
+        assert_eq!(
+            step("bot", open_port, &writer, &world, &mut backoff),
+            LONGEST_PAUSE
+        );
+        assert!(server.join().unwrap(), "the bot never reached the server");
+        assert!(writer.lock().unwrap().is_none());
+        let freed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_port = freed.local_addr().unwrap().port();
+        drop(freed);
+        assert_eq!(
+            step("bot", closed_port, &writer, &world, &mut backoff),
+            FIRST_PAUSE
+        );
+        assert!(writer.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_server_that_never_accepts_is_waited_for_two_seconds() {
+        let listener =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        listener
+            .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        listener.listen(1).unwrap();
+        let address = listener.local_addr().unwrap().as_socket().unwrap();
+        let mut full = Vec::new();
+        while full.len() < 64 {
+            match TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
+                Ok(stream) => full.push(stream),
+                Err(_) => break,
+            }
+        }
+        assert!(full.len() < 64, "the listen queue never filled");
+        let started = Instant::now();
+        let error = session(
+            "bot",
+            address.port(),
+            &Writer::default(),
+            &Shared::default(),
+        )
+        .unwrap_err();
+        let waited = started.elapsed();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut,
+            "the queue held {} connections: {error}",
+            full.len()
+        );
+        assert!(
+            (CONNECT_LIMIT..CONNECT_LIMIT + Duration::from_secs(1)).contains(&waited),
+            "{waited:?} {error}"
+        );
+        assert!(error.to_string().contains("waited up to 2 s"), "{error}");
     }
 
     #[test]

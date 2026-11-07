@@ -1,10 +1,10 @@
 use serde_json::Value;
 
-const RUST: [&str; 4] = [
-    include_str!("bot.rs"),
-    include_str!("condition.rs"),
-    include_str!("frame.rs"),
-    include_str!("launch.rs"),
+const RUST: [(&str, &str); 4] = [
+    ("bot.rs", include_str!("bot.rs")),
+    ("condition.rs", include_str!("condition.rs")),
+    ("frame.rs", include_str!("frame.rs")),
+    ("launch.rs", include_str!("launch.rs")),
 ];
 
 fn without_tests(source: &str) -> &str {
@@ -14,18 +14,18 @@ fn without_tests(source: &str) -> &str {
 }
 
 pub fn current() -> String {
-    format!("{:016x}", of_probe(&crate::launch::PROBE_SOURCES))
+    format!("{:016x}", of_probe(&crate::launch::PROBE_SOURCES, &RUST))
 }
 
 pub fn probe_build() -> String {
     format!("{:016x}", of_build(&crate::launch::PROBE_SOURCES))
 }
 
-fn of_probe(probe: &[(&str, &str)]) -> u64 {
+fn of_probe(probe: &[(&str, &str)], rust: &[(&str, &str)]) -> u64 {
     let code: Vec<&str> = probe
         .iter()
         .map(|(_, source)| *source)
-        .chain(RUST.iter().map(|source| without_tests(source)))
+        .chain(rust.iter().map(|(_, source)| without_tests(source)))
         .collect();
     of(&code)
 }
@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(without_tests(&tested), without_tests(&retested));
         assert!(
             RUST.iter()
-                .all(|source| source.contains("\n#[cfg(test)]\nmod tests"))
+                .all(|(_, source)| source.contains("\n#[cfg(test)]\nmod tests"))
         );
     }
 
@@ -85,13 +85,38 @@ mod tests {
         assert_ne!(of(&["a", "b"]), of(&["a", "c"]));
         assert_ne!(of(&["ab", ""]), of(&["a", "b"]));
         let probe = crate::launch::PROBE_SOURCES;
-        assert_eq!(current(), format!("{:016x}", of_probe(&probe)));
+        assert_eq!(current(), format!("{:016x}", of_probe(&probe, &RUST)));
         assert_eq!(probe_build(), format!("{:016x}", of_build(&probe)));
+        let sources: Vec<&str> = probe.iter().map(|(_, source)| *source).collect();
+        assert_eq!(of_build(&probe), of(&sources));
         for changed in 0..probe.len() {
             let mut edited = probe;
             edited[changed].1 = "";
-            assert_ne!(of_probe(&edited), of_probe(&probe), "{}", probe[changed].0);
-            assert_ne!(of_build(&edited), of_build(&probe), "{}", probe[changed].0);
+            let name = probe[changed].0;
+            assert_ne!(of_probe(&edited, &RUST), of_probe(&probe, &RUST), "{name}");
+            assert_ne!(of_build(&edited), of_build(&probe), "{name}");
+        }
+        let names: Vec<&str> = RUST.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["bot.rs", "condition.rs", "frame.rs", "launch.rs"]);
+        for changed in 0..RUST.len() {
+            let mut edited = RUST;
+            edited[changed].1 = "";
+            assert_ne!(
+                of_probe(&probe, &edited),
+                of_probe(&probe, &RUST),
+                "{changed}"
+            );
+            let retested = format!(
+                "{}\n#[cfg(test)]\nmod tests {{ fn other() {{}} }}",
+                without_tests(RUST[changed].1)
+            );
+            let mut tests_only = RUST;
+            tests_only[changed].1 = &retested;
+            assert_eq!(
+                of_probe(&probe, &tests_only),
+                of_probe(&probe, &RUST),
+                "{changed}"
+            );
         }
     }
 }
