@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -7,7 +7,8 @@ use serde_json::Value;
 use crate::condition::{self, DEFAULT_WAIT_MS};
 use crate::{perf, registry, version};
 
-const STATE_LIMIT: Duration = Duration::from_secs(5);
+/// Above the 10 s the probe gives the game thread: a stuck game answers with a failure, in time.
+const STATE_LIMIT: Duration = Duration::from_secs(12);
 
 /// What every probe answers alike, whatever its version: a stale client stays visible and stoppable.
 #[derive(Clone, Copy)]
@@ -38,6 +39,15 @@ pub struct Probe {
     reader: BufReader<UnixStream>,
 }
 
+fn no_answer(name: &str, verb: &str, timeout: Duration, error: &std::io::Error) -> String {
+    match error.kind() {
+        ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+            format!("client {name} does not answer: no reply to {verb} within {timeout:?}")
+        }
+        _ => format!("client {name}, on {verb}: {error}"),
+    }
+}
+
 fn one_verb(verb: &str) -> Result<(), String> {
     if verb.contains(['\n', '\r']) {
         return Err(format!("one verb at a time: {verb:?} holds a line break"));
@@ -66,17 +76,19 @@ impl Probe {
         Ok(probe)
     }
 
-    /// Sends one verb and returns its JSON line.
+    /// Sends one verb and returns its JSON line. After an error the connection may still get the
+    /// late answer, which would read as the answer to the next verb: drop it.
     pub fn ask(&mut self, verb: &str, timeout: Duration) -> Result<String, String> {
         one_verb(verb)?;
         self.stream
             .set_read_timeout(Some(timeout))
             .map_err(|e| e.to_string())?;
-        writeln!(self.stream, "{verb}").map_err(|e| e.to_string())?;
+        writeln!(self.stream, "{verb}")
+            .map_err(|e| format!("client {} closed the connection: {e}", self.name))?;
         let mut line = String::new();
         self.reader
             .read_line(&mut line)
-            .map_err(|e| format!("{verb}: {e}"))?;
+            .map_err(|e| no_answer(&self.name, verb, timeout, &e))?;
         if line.is_empty() {
             return Err(format!("client {} closed the connection", self.name));
         }
@@ -122,6 +134,8 @@ pub mod fake {
     use std::sync::{Arc, Mutex};
     use std::thread;
 
+    use serde_json::json;
+
     use super::*;
     use crate::registry::{Client, Level};
 
@@ -131,6 +145,15 @@ pub mod fake {
     pub struct Reply {
         pub after: Duration,
         pub line: String,
+    }
+
+    impl Reply {
+        /// Stamped with the version of this voidc.
+        pub fn current(after: Duration, mut fields: Value) -> Self {
+            fields["version"] = json!(version::current());
+            let line = fields.to_string();
+            Self { after, line }
+        }
     }
 
     type Script = Box<dyn Fn(&str) -> Reply + Send + Sync>;
@@ -288,6 +311,12 @@ mod tests {
             Duration::from_secs(45)
         );
         assert_eq!(timeout_of("state"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_state_outlives_what_the_probe_gives_the_game_thread() {
+        assert!(include_str!("../probe/Probe.java").contains("onGame(task, 10_000)"));
+        assert!(STATE_LIMIT > Duration::from_secs(10));
     }
 
     #[test]

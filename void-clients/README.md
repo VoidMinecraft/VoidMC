@@ -297,6 +297,10 @@ report lands in `~/.voidc/clients/<name>/perf/`.
   mosaic still see, stop, show and hide such a client. The version is a hash of their sources outside tests (the probe, the bot,
   conditions, framing, launch), not of the protocol crates. A client tells it in every answer, from
   the moment its socket opens, even while it loads.
+- A `voidc run` or `perf` opens one connection and checks the version once. A verb that fails takes
+  that connection down and the next verb opens and checks another, so a late answer never passes
+  for the next verb. A game stuck for more than 10 s still answers `state`, with a failure; one
+  silent for 12 s is said not to answer.
 - The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.
 - `voidc up` and `voidc step` warn when the disk has less than `min_free_gib` free, and still
   start.
