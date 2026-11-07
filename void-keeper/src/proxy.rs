@@ -20,8 +20,8 @@ use voidmc_data::v26_1_2::packets::status::serverbound as status_sb;
 use voidmc_protocol::serverbound::Handshake;
 use voidmc_protocol::{MINECRAFT_VERSION, PROTOCOL_VERSION, State};
 
+use crate::frame::{Frame, FrameCodec, FrameError};
 use crate::session::{Action, Event, Session, Settings};
-use crate::wire::{Framing, WireError, frame, split};
 
 const TICK: Duration = Duration::from_millis(50);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -159,21 +159,21 @@ impl Events {
 #[derive(Debug)]
 enum PeerError {
     Io(io::Error),
-    Wire(WireError),
+    Frame(FrameError),
 }
 
 impl std::fmt::Display for PeerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => error.fmt(f),
-            Self::Wire(error) => error.fmt(f),
+            Self::Frame(error) => error.fmt(f),
         }
     }
 }
 
 struct Peer<S = TcpStream> {
     stream: S,
-    framing: Framing,
+    codec: FrameCodec,
     inbound: BytesMut,
     outbound: Vec<u8>,
 }
@@ -182,18 +182,18 @@ impl<S> Peer<S> {
     fn new(stream: S) -> Self {
         Self {
             stream,
-            framing: Framing::default(),
+            codec: FrameCodec::default(),
             inbound: BytesMut::with_capacity(READ_CHUNK),
             outbound: Vec::new(),
         }
     }
 
-    fn buffered(&mut self) -> Result<Option<Bytes>, WireError> {
-        self.framing.decode(&mut self.inbound)
+    fn buffered(&mut self) -> Result<Option<Bytes>, FrameError> {
+        self.codec.decode(&mut self.inbound)
     }
 
     fn queue(&mut self, frame: &[u8]) {
-        self.framing.encode(frame, &mut self.outbound);
+        self.codec.encode(frame, &mut self.outbound);
     }
 }
 
@@ -201,7 +201,7 @@ impl Peer {
     /// `None` when the peer closed. Safe to cancel: bytes only ever land in `inbound`.
     async fn next(&mut self) -> Result<Option<Bytes>, PeerError> {
         loop {
-            if let Some(frame) = self.buffered().map_err(PeerError::Wire)? {
+            if let Some(frame) = self.buffered().map_err(PeerError::Frame)? {
                 return Ok(Some(frame));
             }
             self.inbound.reserve(READ_CHUNK);
@@ -301,7 +301,7 @@ impl<S> Relay<S> {
     }
 
     /// Takes in `bytes` read from the client, and every frame they complete.
-    pub fn received_from_client(&mut self, bytes: &[u8]) -> Result<(), WireError> {
+    pub fn received_from_client(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
         self.client.inbound.extend_from_slice(bytes);
         match self.client.buffered()? {
             Some(first) => self.receive_from_client(first),
@@ -332,7 +332,7 @@ impl<S> Relay<S> {
                 }
                 Action::Compress(threshold) => {
                     if let Some(backend) = &mut self.backend {
-                        backend.framing.set_threshold(threshold);
+                        backend.codec.set_threshold(threshold);
                     }
                 }
                 Action::Connect => self.wants_backend = true,
@@ -368,7 +368,7 @@ impl<S> Relay<S> {
         }
     }
 
-    fn receive_from_client(&mut self, first: Bytes) -> Result<(), WireError> {
+    fn receive_from_client(&mut self, first: Bytes) -> Result<(), FrameError> {
         let now = Instant::now();
         let mut next = Some(first);
         while let Some(frame) = next.take() {
@@ -480,7 +480,7 @@ impl Keeper {
 }
 
 async fn refuse_login(mut client: Peer, message: &str) {
-    client.queue(&frame(login_cb::LOGIN_DISCONNECT, |body| {
+    client.queue(&Frame::encode(login_cb::LOGIN_DISCONNECT, |body| {
         let json = json!({ "text": format!("[keeper] {message}") });
         json.to_string().encode(body);
     }));
@@ -513,12 +513,12 @@ async fn relay_status(mut client: Peer, handshake: Bytes, backend_address: Socke
         return;
     }
     while let Ok(Ok(Some(frame_in))) = timeout(STATUS_TIMEOUT, client.next()).await {
-        match split(&frame_in) {
+        match Frame::id_and_body(&frame_in) {
             Some((status_sb::STATUS_REQUEST, _)) => {
-                client.queue(&frame(status_cb::STATUS_RESPONSE, status_response));
+                client.queue(&Frame::encode(status_cb::STATUS_RESPONSE, status_response));
             }
             Some((status_sb::PING_REQUEST, body)) => {
-                client.queue(&frame(status_cb::PONG_RESPONSE, |out| {
+                client.queue(&Frame::encode(status_cb::PONG_RESPONSE, |out| {
                     out.extend_from_slice(body);
                 }));
             }
@@ -559,7 +559,7 @@ async fn serve(
     let Ok(Ok(Some(handshake))) = timeout(HANDSHAKE_TIMEOUT, client.next()).await else {
         return;
     };
-    let Some((_, mut body)) = split(&handshake) else {
+    let Some((_, mut body)) = Frame::id_and_body(&handshake) else {
         return;
     };
     let Ok(intent) = Handshake::decode(&mut body) else {
@@ -593,13 +593,13 @@ pub async fn probe(address: SocketAddr) -> bool {
     let attempt = async {
         let mut peer = Peer::new(connect(address).await?);
         let port = address.port();
-        peer.queue(&frame(0, |body| {
+        peer.queue(&Frame::encode(0, |body| {
             VarI32(PROTOCOL_VERSION).encode(body);
             address.ip().to_string().encode(body);
             port.encode(body);
             VarI32(1).encode(body);
         }));
-        peer.queue(&frame(status_sb::STATUS_REQUEST, |_| {}));
+        peer.queue(&Frame::encode(status_sb::STATUS_REQUEST, |_| {}));
         peer.flush().await.ok()?;
         peer.next().await.ok()?
     };

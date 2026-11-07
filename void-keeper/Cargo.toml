@@ -19,6 +19,7 @@ ussr-nbt = "0.2.1"
 uuid = "1.16.0"
 voidmc-codec = { version = "0.1.1", path = "../void-codec" }
 voidmc-data = { version = "0.1.2", path = "../void-data" }
+voidmc-net = { version = "0.1.1", path = "../void-net" }
 voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
 
 [dev-dependencies]
