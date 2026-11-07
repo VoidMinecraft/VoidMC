@@ -142,6 +142,7 @@ impl ClientSenders {
     }
 
     /// Counts the packets queued from now on, for the barrier of a stepped server.
+    #[cfg(unix)]
     pub(crate) fn count_sent(&mut self, sent: Arc<AtomicU64>) {
         self.sent = Some(sent);
     }

@@ -453,9 +453,11 @@ impl<'w> WorldPlayers<'w> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::sync::atomic::AtomicU64;
 
     use bevy_app::{App, Update};
+    #[cfg(unix)]
     use bevy_ecs::system::SystemState;
     use flume::Receiver;
     use voidmc_protocol::clientbound::{self, KeepAlive};
@@ -501,6 +503,7 @@ mod tests {
         LoadedChunks(chunks.iter().map(|&(x, z)| ChunkPos::new(x, z)).collect())
     }
 
+    #[cfg(unix)]
     fn counted_app(outgoing: Sender<OutgoingPacket>) -> (App, Entity, Arc<AtomicU64>) {
         let (mut app, _rx) = test_app();
         let player = app.world_mut().spawn(ClientId(9)).id();
@@ -513,6 +516,7 @@ mod tests {
         (app, player, sent)
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_stepped_server_counts_what_players_send() {
         let (outgoing, _queue) = flume::bounded(1);
@@ -522,6 +526,7 @@ mod tests {
         assert_eq!(sent.load(Ordering::SeqCst), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_lost_packet_does_not_count_for_the_barrier() {
         let (gone_tx, gone_rx) = flume::bounded(1);

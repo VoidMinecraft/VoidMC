@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use bevy_ecs::prelude::*;
@@ -45,6 +46,7 @@ pub struct ServerConfig {
     pub slow_tick_ms: u64,
     pub frame_limits: FrameLimits,
     /// When set, the server stands still and runs a tick only when this unix socket says so.
+    #[cfg(unix)]
     pub step_socket: Option<PathBuf>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
@@ -71,6 +73,7 @@ impl Default for ServerConfig {
             max_chunk_generations_per_tick: 8,
             slow_tick_ms: 200,
             frame_limits: FrameLimits::default(),
+            #[cfg(unix)]
             step_socket: None,
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
@@ -180,6 +183,7 @@ impl ServerConfigBuilder {
         self
     }
 
+    #[cfg(unix)]
     pub fn step_socket(mut self, socket: impl Into<PathBuf>) -> Self {
         self.config.step_socket = Some(socket.into());
         self

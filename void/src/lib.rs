@@ -30,6 +30,7 @@ pub mod schedule;
 mod server;
 mod server_status;
 pub mod sounds;
+#[cfg(unix)]
 mod step;
 pub mod systems;
 pub mod titles;

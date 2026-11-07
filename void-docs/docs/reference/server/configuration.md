@@ -49,7 +49,7 @@ let config = ServerConfigBuilder::new()
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
-| `step_socket` | `Option<PathBuf>` | `None` | Unix socket that drives the server tick by tick. See [Stepped server](#stepped-server) |
+| `step_socket` | `Option<PathBuf>` | `None` | Unix socket that drives the server tick by tick, on Unix only: the field and its builder method do not exist elsewhere. See [Stepped server](#stepped-server) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
 
