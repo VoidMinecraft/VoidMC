@@ -14,6 +14,7 @@ pub struct Registry {
     pub dashboard_port: u16,
     pub lease_from: u16,
     pub lease_to: u16,
+    pub min_free_gib: u64,
     pub reserved: BTreeMap<String, String>,
     pub levels: BTreeMap<String, Settings>,
 }
@@ -94,7 +95,22 @@ fn default_home() -> PathBuf {
 
 /// The folder of the runtime state, shared by every worktree.
 pub fn home() -> PathBuf {
+    #[cfg(test)]
+    if let Some(home) = TEST_HOME.with(|home| home.borrow().clone()) {
+        return home;
+    }
     std::env::var_os("VOIDC_HOME").map_or_else(default_home, PathBuf::from)
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A home for the calling test thread alone, so a test never writes to the real one.
+#[cfg(test)]
+pub fn set_test_home(home: Option<PathBuf>) {
+    TEST_HOME.with(|cell| *cell.borrow_mut() = home);
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -127,6 +143,14 @@ fn mosaic_port_in(
         &format!("{MOSAIC} {}", home.display()),
         busy,
     )
+}
+
+/// The nearest folder that exists, for what has to look at the disk before the first client.
+pub fn home_or_parent() -> PathBuf {
+    let home = home();
+    home.ancestors()
+        .find(|path| path.exists())
+        .map_or(home.clone(), PathBuf::from)
 }
 
 pub fn client_dir(name: &str) -> PathBuf {
@@ -274,6 +298,7 @@ fn listening(port: u16) -> bool {
 
 /// The pair of ports of a feature, the same one every time.
 pub fn lease(registry: &Registry, feature: &str) -> Result<u16, String> {
+    slug(feature)?;
     lease_in(registry, &home(), feature, listening)
 }
 
@@ -349,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn a_living_holder_keeps_the_lock_however_slow() {
+    fn a_waiter_gets_the_lock_only_once_its_holder_lets_go() {
         let path = scratch("lock").join("start.lock");
         let held = Lock::at(&path).unwrap();
         let waiter = {
@@ -359,10 +384,20 @@ mod tests {
                 std::time::Instant::now()
             })
         };
-        std::thread::sleep(std::time::Duration::from_secs(6));
+        std::thread::sleep(std::time::Duration::from_millis(300));
         let released = std::time::Instant::now();
         drop(held);
         assert!(waiter.join().unwrap() >= released);
+    }
+
+    #[test]
+    fn a_held_lock_is_exclusive() {
+        let path = scratch("lock-held").join("start.lock");
+        let _held = Lock::at(&path).unwrap();
+        assert!(matches!(
+            fs::File::open(&path).unwrap().try_lock_shared(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
     }
 
     #[test]
@@ -424,6 +459,12 @@ mod tests {
         let busy = first + 3;
         let port = free_pair(&registry, &taken, |p| p == busy).unwrap();
         assert_eq!(port, registry.lease_from + 6);
+    }
+
+    #[test]
+    fn a_lease_refuses_a_feature_no_client_could_take() {
+        let error = lease(&Registry::load(), "Trois mots ici").unwrap_err();
+        assert!(error.contains("one or two words"), "{error}");
     }
 
     #[test]

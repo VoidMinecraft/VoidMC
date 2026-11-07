@@ -3,6 +3,7 @@ idle_minutes = 30
 dashboard_port = 25685
 lease_from = 25700
 lease_to = 25798
+min_free_gib = 15
 
 [reserved]
 25581 = "session"

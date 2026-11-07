@@ -65,6 +65,9 @@ This shape mirrors the defaults while making the reliability budgets visible.
 | `VOID_FLAME_OUTPUT` | `logs/trace.folded` | Selects flame trace output. |
 | `VOID_FLAME_INCLUDE_IDLE` | `1` | Includes idle time to show server utilization. |
 | `VOID_PACKET_DEBUG` | `1` | Adds network packet debug logging. |
+| `VOID_EXAMPLE_ADDRESS` | `127.0.0.1:25700` | Listens on this address instead of the default. |
+| `VOID_EXAMPLE_STEP_SOCKET` | `/tmp/example.step` | Starts a [stepped server](/reference/server/configuration#stepped-server) on this socket. |
+| `VOID_TRACE` | `logs/trace.jsonl` | Writes the [packet trace](/reference/server/packet-trace), with the `packet-trace` feature. |
 
 ## Configuration Reference
 

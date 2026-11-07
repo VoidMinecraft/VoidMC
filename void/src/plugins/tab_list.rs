@@ -884,11 +884,7 @@ mod tests {
         let (mut app, rx) = test_app();
         app.add_plugins(crate::plugins::play::PlayPlugin);
         let leo = known_player(&mut app, 1, TabEntry::new());
-        let sent_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64
-            - 100;
+        let sent_at = crate::pace::Pace::REAL.elapsed_millis() - 100;
         app.world_mut().entity_mut(leo).insert(KeepAliveState {
             last_sent_id: sent_at,
             awaiting_response: true,

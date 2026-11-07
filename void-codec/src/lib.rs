@@ -17,10 +17,15 @@
 mod primitives;
 
 pub use primitives::*;
-pub use voidmc_codec_macros::{Decode, Encode};
+pub use voidmc_codec_macros::{Decode, Encode, PacketName};
 
 pub trait Encode {
     fn encode(&self, buf: &mut Vec<u8>);
+}
+
+/// The name of the packet a tagged enum holds, which is the name of its variant.
+pub trait PacketName {
+    fn packet_name(&self) -> &'static str;
 }
 
 pub trait Decode: Sized {

@@ -23,7 +23,21 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.Supplier;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
+import io.netty.handler.timeout.ReadTimeoutHandler;
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.components.ChatComponent;
@@ -37,6 +51,11 @@ import net.minecraft.client.input.MouseButtonInfo;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.network.Connection;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
+import net.minecraft.util.TimeSource;
+import net.minecraft.util.Util;
 import net.minecraft.world.entity.Entity;
 import org.lwjgl.glfw.GLFW;
 import org.lwjgl.system.JNI;
@@ -61,8 +80,44 @@ public class Probe {
     net.minecraft.client.main.Main.main(args);
   }
 
+  static final Map<String, GivenBack> RECORDING = new ConcurrentHashMap<>();
+  static final String SPOILED = "invalid: the clock went back to real time during this recording";
+
   private interface Task {
     void run() throws Exception;
+  }
+
+  interface Writing {
+    void run(Recorder out) throws Exception;
+  }
+
+  static class GivenBack {
+    private volatile boolean set;
+
+    void set() {
+      set = true;
+    }
+
+    boolean isSet() {
+      return set;
+    }
+  }
+
+  /** Only on the game thread, where `release` runs: a line stamped after it finds `givenBack` set. */
+  static final class Recorder {
+    private final PrintWriter out;
+    private final GivenBack givenBack;
+    private volatile boolean late;
+
+    Recorder(PrintWriter out, GivenBack givenBack) {
+      this.out = out;
+      this.givenBack = givenBack;
+    }
+
+    void stamp(String line) {
+      out.println(line);
+      if (givenBack.isSet()) late = true;
+    }
   }
 
   private static void daemon(String name, Task task) {
@@ -96,7 +151,7 @@ public class Probe {
         mc.execute(mc::stop);
         return;
       }
-      if (mc.screen != null && mc.screen.getClass().getSimpleName().equals("DisconnectedScreen")) {
+      if (!Stepping.virtual() && mc.screen != null && mc.screen.getClass().getSimpleName().equals("DisconnectedScreen")) {
         mc.execute(() -> reconnect(mc));
       }
     }
@@ -229,10 +284,19 @@ public class Probe {
       case "entities" -> reply.put("entities", onGame(() -> entities(mc)));
       case "track" -> track(mc, Integer.parseInt(w[1]));
       case "frames" -> frames(mc, Integer.parseInt(w[1]));
+      case "clock" -> reply.put("clock", Stepping.clock(mc, w[1]));
+      case "step" -> reply.putAll(Stepping.step(mc, Double.parseDouble(w[1]), w.length > 2 ? Integer.parseInt(w[2]) : 1));
+      case "fence" -> reply.put("in", Stepping.fence(Long.parseLong(w[1])));
+      case "sent" -> reply.putAll(Stepping.counters());
+      case "perf" -> reply.putAll(Perf.run(mc, w));
       case "quit" -> mc.execute(mc::stop);
       default -> throw new IllegalArgumentException("unknown verb " + verb);
     }
     return reply;
+  }
+
+  static boolean isLogic() {
+    return LEVEL.equals("logic");
   }
 
   private static Screen screen(Minecraft mc) {
@@ -256,11 +320,13 @@ public class Probe {
       : screen.contains("Connect") || screen.contains("Progress") || screen.contains("Reconfig") ? "connecting" : "waiting";
     fields.put("state", state);
     fields.put("screen", screen);
+    fields.put("loading", mc.getOverlay() != null);
     fields.put("fps", mc.getFps());
     fields.put("level", LEVEL);
     fields.put("version", VERSION);
     fields.put("reconnects", reconnects);
     fields.put("shown", shown);
+    fields.put("clock", Stepping.virtual() ? "virtual" : "real");
     LocalPlayer player = mc.player;
     if (player != null) {
       fields.put("x", player.getX());
@@ -277,6 +343,12 @@ public class Probe {
       fields.put("entities", mc.level.getEntityCount());
       Entity camera = mc.getCameraEntity();
       fields.put("camera", camera == null ? "" : camera.getType().toShortString());
+      var view = mc.gameRenderer.getMainCamera();
+      fields.put("cam_x", view.position().x);
+      fields.put("cam_y", view.position().y);
+      fields.put("cam_z", view.position().z);
+      fields.put("cam_yaw", view.yRot());
+      fields.put("cam_pitch", view.xRot());
     }
     fields.put("chat", lastChat(mc));
     return fields;
@@ -298,14 +370,18 @@ public class Probe {
     return Condition.await(wait, rest, within -> onGame(Probe::fields, Math.min(10_000, within)), 50);
   }
 
-  private static String shot(String name, int downscale) throws Exception {
+  static String shot(String name, int downscale) throws Exception {
     if (LEVEL.equals("logic")) throw new IllegalStateException("the logic level has no picture");
     if (!name.matches("[\\w-]+")) throw new IllegalArgumentException("bad name " + name);
     Minecraft mc = ready();
     CompletableFuture<Object> saved = new CompletableFuture<>();
     File file = new File(new File(mc.gameDirectory, "screenshots"), name + ".png");
+    Files.deleteIfExists(file.toPath());
     mc.execute(() -> Screenshot.grab(mc.gameDirectory, name + ".png", mc.getMainRenderTarget(), downscale, saved::complete));
-    saved.get(10, TimeUnit.SECONDS);
+    Object outcome = saved.get(10, TimeUnit.SECONDS);
+    if (outcome instanceof Component message && message.getContents() instanceof TranslatableContents key && key.getKey().equals("screenshot.failure")) {
+      throw new IllegalStateException(message.getString());
+    }
     if (file.length() == 0) throw new IllegalStateException("empty capture " + file);
     return file.getPath();
   }
@@ -357,44 +433,84 @@ public class Probe {
     return all;
   }
 
-  private static void track(Minecraft mc, int samples) {
-    daemon("void-track", () -> {
-      try (PrintWriter out = new PrintWriter(new FileWriter(new File(mc.gameDirectory.getParentFile(), "track.txt")), true)) {
-        double last = Double.NaN;
-        for (int i = 0; i < samples; i++) {
-          Entity camera = mc.getCameraEntity();
-          if (camera != null && camera.getX() != last) {
-            last = camera.getX();
-            out.println(System.nanoTime() / 1_000_000 + " " + camera.getX() + " " + camera.getZ());
-          }
-          Thread.sleep(2);
-        }
+  private static void recording(Minecraft mc, String name, Writing task) {
+    File dir = mc.gameDirectory.getParentFile();
+    recording(new File(dir, name + ".txt"), new File(dir, name + ".done"), name, task);
+  }
+
+  /**
+   * One recording of a name at a time: a second would share its file, and the first would sign
+   * for it. The mark says a recording is whole: only its own thread knows when it ends.
+   */
+  static void recording(File file, File done, String name, Writing task) {
+    GivenBack givenBack = new GivenBack();
+    if (RECORDING.putIfAbsent(name, givenBack) != null) throw new IllegalStateException(name + " is still recording");
+    done.delete();
+    daemon("void-" + name, () -> {
+      try (PrintWriter out = new PrintWriter(new FileWriter(file), true)) {
+        Recorder recorder = new Recorder(out, givenBack);
+        task.run(recorder);
+        if (recorder.late) out.println(SPOILED);
+      } finally {
+        RECORDING.remove(name);
       }
+      done.createNewFile();
     });
+  }
+
+  static void noteTimeGivenBack() {
+    RECORDING.values().forEach(GivenBack::set);
+  }
+
+  private static void track(Minecraft mc, int samples) {
+    Supplier<double[]> camera = () -> {
+      Entity entity = mc.getCameraEntity();
+      return entity == null ? null : new double[] {entity.getX(), entity.getZ()};
+    };
+    recording(mc, "track", out -> track(mc, camera, samples, out));
+  }
+
+  static void track(Executor game, Supplier<double[]> camera, int samples, Recorder out) throws Exception {
+    double[] last = {Double.NaN};
+    for (int i = 0; i < samples; i++) {
+      game.execute(() -> {
+        double[] at = camera.get();
+        if (at != null && at[0] != last[0]) {
+          last[0] = at[0];
+          out.stamp(Util.getNanos() / 1_000_000 + " " + at[0] + " " + at[1]);
+        }
+      });
+      Thread.sleep(2);
+    }
+    waitForGame(game);
   }
 
   private static void frames(Minecraft mc, int count) throws Exception {
     Field frames = Minecraft.class.getDeclaredField("frames");
     frames.setAccessible(true);
-    daemon("void-frames", () -> {
-      try (PrintWriter out = new PrintWriter(new FileWriter(new File(mc.gameDirectory.getParentFile(), "frames.txt")), true)) {
-        int last = -1, seen = 0;
-        while (seen < count) {
-          int now = frames.getInt(mc);
-          if (now != last) {
-            last = now;
-            seen++;
-            mc.execute(() -> {
-              var camera = mc.gameRenderer.getMainCamera();
-              var at = camera.position();
-              out.println(System.nanoTime() / 1000 + " " + at.x() + " " + at.z() + " " + at.y() + " " + mc.levelRenderer.countRenderedSections() + " " + mc.levelRenderer.hasRenderedAllSections() + " " + camera.yRot() + " " + camera.xRot());
-            });
-          }
-          Thread.sleep(1);
+    recording(mc, "frames", out -> {
+      int last = -1, seen = 0;
+      while (seen < count) {
+        int now = frames.getInt(mc);
+        if (now != last) {
+          last = now;
+          seen++;
+          mc.execute(() -> {
+            var camera = mc.gameRenderer.getMainCamera();
+            var at = camera.position();
+            out.stamp(Util.getNanos() / 1000 + " " + at.x() + " " + at.z() + " " + at.y() + " " + mc.levelRenderer.countRenderedSections() + " " + mc.levelRenderer.hasRenderedAllSections() + " " + camera.yRot() + " " + camera.xRot());
+          });
         }
-        Thread.sleep(100);
+        Thread.sleep(1);
       }
+      waitForGame(mc);
     });
+  }
+
+  static void waitForGame(Executor game) throws Exception {
+    CompletableFuture<Boolean> written = new CompletableFuture<>();
+    game.execute(() -> written.complete(true));
+    written.get(10, TimeUnit.SECONDS);
   }
 
   private static long messageSend() {
@@ -471,5 +587,205 @@ public class Probe {
       }
     }
     return out.append('"').toString();
+  }
+
+  /** Time stands still and moves only on `step`, so a frame depends on the verbs and not on the machine. */
+  static final class Stepping {
+    private static final long SECOND = 1_000_000_000L;
+    private static final long FENCE_LIMIT = 10 * SECOND;
+    private static final long FENCE_POLL = 50_000L;
+    /** A locked server sends nothing, and the game hangs up after this much silence. */
+    private static final String TIMEOUT = "timeout";
+    private static final int TIMEOUT_SECONDS = 30;
+    /** Above zero, so that K frames of a tick add up to at least one tick despite float rounding. */
+    private static final float PHASE = 1e-4f;
+    static volatile TimeSource.NanoTimeSource real;
+    private static final AtomicLong clock = new AtomicLong();
+    private static long origin;
+    private static double elapsedMs;
+    private static final AtomicLong read = new AtomicLong();
+    private static final AtomicLong written = new AtomicLong();
+    private static volatile Channel channel;
+
+    static boolean virtual() {
+      return real != null;
+    }
+
+    static String clock(Minecraft mc, String mode) throws Exception {
+      switch (mode) {
+        case "virtual" -> {
+          requireNoRecording();
+          onGame(() -> { freeze(mc); return 0; });
+        }
+        case "real" -> {
+          if (virtual()) onGame(() -> { release(mc); return 0; });
+        }
+        default -> throw new IllegalArgumentException("clock is virtual or real");
+      }
+      return mode;
+    }
+
+    static void requireNoRecording() {
+      String name = RECORDING.keySet().stream().findFirst().orElse(null);
+      if (name != null) {
+        throw new IllegalStateException("clock virtual would freeze the time under the " + name + " still recording, and its check would fail: wait for its end");
+      }
+    }
+
+    static boolean giveBackTime() {
+      if (!virtual()) return false;
+      noteTimeGivenBack();
+      Util.timeSource = real;
+      real = null;
+      return true;
+    }
+
+    /** A whole second: the fractions of a millisecond then fall the same way on every run. */
+    private static void freeze(Minecraft mc) throws Exception {
+      if (virtual()) return;
+      long now = Util.timeSource.getAsLong() / SECOND * SECOND;
+      wire(channelOf(player().connection.getConnection()));
+      start(now);
+      restart(mc, now / 1_000_000L);
+      real = Util.timeSource;
+      Util.timeSource = clock::get;
+    }
+
+    private static void release(Minecraft mc) throws Exception {
+      if (!giveBackTime()) return;
+      restart(mc, Util.getMillis());
+      rearm(wired());
+    }
+
+    private static void restart(Minecraft mc, long millis) throws Exception {
+      DeltaTracker.Timer timer = (DeltaTracker.Timer) field(Minecraft.class, "deltaTracker").get(mc);
+      field(DeltaTracker.Timer.class, "lastMs").setLong(timer, millis);
+      field(DeltaTracker.Timer.class, "lastUiMs").setLong(timer, millis);
+      field(DeltaTracker.Timer.class, "deltaTickResidual").setFloat(timer, PHASE);
+      field(Minecraft.class, "lastTime").setLong(mc, millis);
+    }
+
+    private static Field field(Class<?> owner, String name) throws Exception {
+      Field field = owner.getDeclaredField(name);
+      field.setAccessible(true);
+      return field;
+    }
+
+    static void start(long nanos) {
+      origin = nanos;
+      elapsedMs = 0;
+      clock.set(nanos);
+    }
+
+    /** From the origin and not from the last frame: rounding each frame would lose nanoseconds. */
+    static long advance(double ms) {
+      elapsedMs += ms;
+      long now = origin + Math.round(elapsedMs * 1_000_000);
+      clock.set(now);
+      return now;
+    }
+
+    private static Channel channelOf(Connection connection) throws Exception {
+      return (Channel) field(Connection.class, "channel").get(connection);
+    }
+
+    static void rearm(Channel current) {
+      if (current.pipeline().get(TIMEOUT) == null) current.pipeline().addFirst(TIMEOUT, new ReadTimeoutHandler(TIMEOUT_SECONDS));
+    }
+
+    static void wire(Channel current) {
+      ChannelPipeline pipeline = current.pipeline();
+      if (pipeline.get(TIMEOUT) != null) pipeline.remove(TIMEOUT);
+      if (current == channel) return;
+      read.set(0);
+      written.set(0);
+      pipeline.addAfter("splitter", "vt-in", new ChannelInboundHandlerAdapter() {
+        @Override
+        public void channelRead(ChannelHandlerContext context, Object message) {
+          read.incrementAndGet();
+          context.fireChannelRead(message);
+        }
+      });
+      pipeline.addFirst("vt-out", new ChannelOutboundHandlerAdapter() {
+        @Override
+        public void write(ChannelHandlerContext context, Object message, ChannelPromise promise) {
+          written.incrementAndGet();
+          context.write(message, promise);
+        }
+      });
+      channel = current;
+    }
+
+    /** `frames` goes back to 0 every second, so a frame is told by `lastTime` as well. */
+    private static long frame(Minecraft mc) throws Exception {
+      return field(Minecraft.class, "lastTime").getLong(mc) * 1_000_000L + field(Minecraft.class, "frames").getInt(mc);
+    }
+
+    /**
+     * The game reads the clock before it runs tasks, so a task that moves the clock in frame N is
+     * seen by frame N+1, and N+1 is only finished once a task runs in N+2. Frames in between see
+     * the same time and draw the same thing.
+     */
+    static Map<String, Object> step(Minecraft mc, double ms, int count) throws Exception {
+      if (!virtual()) throw new IllegalStateException("the clock is real: send clock virtual");
+      Map<String, Object> camera = Map.of();
+      for (int i = 0; i < count; i++) {
+        long seen = onGame(() -> { advance(ms); return frame(mc); });
+        for (int changes = 0; changes < 2; ) {
+          long before = seen;
+          Map<String, Object> now = onGame(() -> camera(mc));
+          seen = (long) now.remove("frame");
+          if (seen != before) changes++;
+          camera = now;
+        }
+      }
+      return camera;
+    }
+
+    private static Map<String, Object> camera(Minecraft mc) throws Exception {
+      var camera = mc.gameRenderer.getMainCamera();
+      var at = camera.position();
+      Map<String, Object> reply = new LinkedHashMap<>();
+      reply.put("frame", frame(mc));
+      reply.put("x", at.x());
+      reply.put("y", at.y());
+      reply.put("z", at.z());
+      reply.put("yaw", camera.yRot());
+      reply.put("pitch", camera.xRot());
+      return reply;
+    }
+
+    private static Channel wired() {
+      Channel current = channel;
+      if (current == null) throw new IllegalStateException("no counters: send clock virtual");
+      return current;
+    }
+
+    private static void drain(Channel current) throws Exception {
+      current.eventLoop().submit((Runnable) () -> {}).get(5, TimeUnit.SECONDS);
+    }
+
+    static long fence(long count) throws Exception {
+      Channel current = wired();
+      long start = System.nanoTime();
+      while (read.get() < count) {
+        if (!current.isActive()) throw new IllegalStateException("connection lost");
+        if (System.nanoTime() - start > FENCE_LIMIT) throw new TimeoutException("fence expired: read " + read.get() + " of " + count);
+        LockSupport.parkNanos(FENCE_POLL);
+      }
+      drain(current);
+      return read.get();
+    }
+
+    static Map<String, Object> counters() throws Exception {
+      Channel current = wired();
+      boolean active = current.isActive();
+      if (active) drain(current);
+      Map<String, Object> reply = new LinkedHashMap<>();
+      reply.put("in", read.get());
+      reply.put("out", written.get());
+      reply.put("active", active);
+      return reply;
+    }
   }
 }

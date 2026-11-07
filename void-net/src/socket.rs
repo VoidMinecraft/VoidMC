@@ -121,6 +121,11 @@ pub struct Packet {
 }
 
 impl Packet {
+    /// The packet id and its payload, without the frame length.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     pub fn decode<T: Decode>(&self) -> Result<T, DecodeError> {
         self.decode_limits.decode_exact::<T>(&self.bytes)
     }

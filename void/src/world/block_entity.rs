@@ -699,6 +699,47 @@ mod tests {
     const CHUNK: ChunkPos = ChunkPos { x: -1, z: 1 };
 
     #[test]
+    fn two_servers_send_the_block_entities_of_a_chunk_in_the_same_order() {
+        let packet = || {
+            let mut data = chunk_with(POS, blocks::OAK_SIGN);
+            for x in 0..16u8 {
+                let at = BlockPosition {
+                    x: CHUNK.x * 16 + i32::from(x),
+                    ..POS
+                };
+                data.set_block(
+                    x,
+                    POS.y as i32,
+                    POS.z.rem_euclid(16) as u8,
+                    blocks::OAK_SIGN,
+                )
+                .unwrap();
+                data.set_block_entity(
+                    CHUNK,
+                    at,
+                    Sign::lines([x.to_string(), String::new(), String::new(), String::new()]),
+                )
+                .unwrap();
+            }
+            let order: Vec<i32> = data
+                .to_packet(CHUNK.x, CHUNK.z)
+                .block_entities
+                .iter()
+                .map(|entry| i32::from(entry.local_x))
+                .collect();
+            let pending: Vec<BlockPosition> = data
+                .take_pending_block_entities(CHUNK)
+                .into_iter()
+                .map(|(at, _)| at)
+                .collect();
+            (order, pending)
+        };
+        let first = packet();
+        assert_eq!(first.0.len(), 16);
+        assert_eq!(first, packet());
+    }
+
+    #[test]
     fn storage_set_get_remove() {
         let mut data = chunk_with(POS, blocks::OAK_SIGN);
         assert_eq!(data.block_entity(CHUNK, POS), None);

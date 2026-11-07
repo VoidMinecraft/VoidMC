@@ -5,7 +5,7 @@ pub use ping_request::PingRequest;
 pub use status_request::StatusRequest;
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, voidmc_codec::PacketName)]
 #[codec(tagged)]
 pub enum StatusPacket {
     #[codec(packet_id = 0x00)]

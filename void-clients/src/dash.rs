@@ -1,19 +1,21 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::control::{self, Chore};
 use crate::registry::{self, Client, Level, Registry, home_name};
-use crate::{control, lifecycle, version};
+use crate::{lifecycle, version};
 
 const PAGE: &str = include_str!("dash.html");
 const ASK_TIMEOUT: Duration = Duration::from_secs(3);
 const HEAD_LIMIT: u64 = 16 * 1024;
 const READ_LIMIT: Duration = Duration::from_secs(5);
+const QUIT_LIMIT: Duration = Duration::from_secs(5);
 
 struct Head {
     method: String,
@@ -39,9 +41,13 @@ impl Read for Deadline {
 }
 
 fn head(stream: &TcpStream) -> std::io::Result<Head> {
+    head_within(stream, READ_LIMIT)
+}
+
+fn head_within(stream: &TcpStream, limit: Duration) -> std::io::Result<Head> {
     let whole = Deadline {
         stream: stream.try_clone()?,
-        until: Instant::now() + READ_LIMIT,
+        until: Instant::now() + limit,
     };
     let mut lines = BufReader::new(whole.take(HEAD_LIMIT)).lines();
     let first = lines.next().transpose()?.unwrap_or_default();
@@ -124,6 +130,10 @@ pub fn ensure(registry: &Registry) -> Result<String, String> {
 }
 
 fn ensure_on(port: u16) -> Result<String, String> {
+    ensure_within(port, QUIT_LIMIT)
+}
+
+fn ensure_within(port: u16, quit_limit: Duration) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{port}");
     match served(port) {
         Served::Ours => return Ok(url),
@@ -141,7 +151,7 @@ fn ensure_on(port: u16) -> Result<String, String> {
         }
         Served::Other => {
             let _ = call(port, "POST", "/api/quit");
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + quit_limit;
             let mut now = served(port);
             while !matches!(now, Served::Nothing | Served::Ours) && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(100));
@@ -190,7 +200,7 @@ fn status(client: &Client) -> Value {
         tile["state"] = json!("connected");
         return tile;
     }
-    let reply = control::ask(&client.name, "state", ASK_TIMEOUT).ok();
+    let reply = control::chore(&client.name, Chore::State, ASK_TIMEOUT).ok();
     if let Some(Value::Object(fields)) = reply.and_then(|line| serde_json::from_str(&line).ok()) {
         for (key, value) in fields {
             if key != "level" {
@@ -201,17 +211,21 @@ fn status(client: &Client) -> Value {
     tile
 }
 
+/// Ends with a shutdown, not with the drop: a child forked meanwhile may hold this socket, and the
+/// peer would wait for an end that a close does not send.
 fn respond(stream: &mut TcpStream, code: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
     write!(
         stream,
         "HTTP/1.1 {code}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
-    stream.write_all(body)
+    stream.write_all(body)?;
+    let _ = stream.shutdown(Shutdown::Write);
+    Ok(())
 }
 
 fn thumb(name: &str) -> Option<Vec<u8>> {
-    let line = control::ask(name, "thumb", ASK_TIMEOUT).ok()?;
+    let line = control::chore(name, Chore::Thumb, ASK_TIMEOUT).ok()?;
     let reply: Value = serde_json::from_str(&line).ok()?;
     fs::read(reply["path"].as_str()?).ok()
 }
@@ -223,8 +237,8 @@ fn action(registry: &Registry, name: &str, verb: &str) -> Result<(), String> {
             let client = registry::load(name).ok_or("unknown client")?;
             lifecycle::start(registry, client)
         }
-        "take" => control::ask(name, "show focus", ASK_TIMEOUT).map(|_| ()),
-        "give" => control::ask(name, "hide", ASK_TIMEOUT).map(|_| ()),
+        "take" => control::chore(name, Chore::ShowFocus, ASK_TIMEOUT).map(|_| ()),
+        "give" => control::chore(name, Chore::Hide, ASK_TIMEOUT).map(|_| ()),
         other => Err(format!("unknown action {other}")),
     }
 }
@@ -292,7 +306,29 @@ pub fn run(mut registry: Registry) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+    use crate::control::fake::{FakeClient, NAME};
+    use crate::hangup::{hang_up, held_by_a_child};
+
+    #[test]
+    fn a_stale_client_stays_visible_and_stoppable() {
+        let fake = FakeClient::stale(Level::Render);
+        let registry = Registry::load();
+        let client = registry::load(NAME).unwrap();
+        assert_eq!(status(&client)["state"], "connected");
+        thumb(NAME);
+        action(&registry, NAME, "take").unwrap();
+        action(&registry, NAME, "give").unwrap();
+        action(&registry, NAME, "stop").unwrap();
+        assert_eq!(
+            fake.heard(),
+            ["state", "thumb", "show focus", "hide", "quit"]
+        );
+        assert!(!registry::alive(&client));
+    }
 
     fn head(method: &str, host: Option<&str>, origin: Option<&str>) -> Head {
         Head {
@@ -336,22 +372,36 @@ mod tests {
     }
 
     #[test]
+    fn a_mosaic_has_five_seconds_for_real_to_read_a_request_and_to_quit() {
+        assert_eq!(READ_LIMIT, Duration::from_secs(5));
+        assert_eq!(QUIT_LIMIT, Duration::from_secs(5));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        super::head(&server).unwrap();
+        let left = server.read_timeout().unwrap().unwrap();
+        assert!(left > READ_LIMIT / 2 && left <= READ_LIMIT, "{left:?}");
+    }
+
+    #[test]
     fn a_request_sent_drop_by_drop_is_cut_at_the_deadline() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (server, _) = listener.accept().unwrap();
         let dripping = thread::spawn(move || {
-            for _ in 0..20 {
+            for _ in 0..200 {
                 if client.write_all(b"G").is_err() {
                     break;
                 }
-                thread::sleep(Duration::from_millis(400));
+                thread::sleep(Duration::from_millis(20));
             }
         });
         let started = Instant::now();
-        assert!(super::head(&server).is_err());
-        assert!(started.elapsed() < READ_LIMIT + Duration::from_secs(1));
-        drop(server);
+        assert!(head_within(&server, Duration::from_millis(200)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(4));
+        let _child = held_by_a_child(&server);
+        hang_up(server);
         dripping.join().unwrap();
     }
 
@@ -365,7 +415,8 @@ mod tests {
         };
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let _ = request(&registry, stream);
+                let registry = registry.clone();
+                thread::spawn(move || request(&registry, stream));
             }
         });
         assert_eq!(served(port), Served::Ours);
@@ -373,27 +424,42 @@ mod tests {
         let old_port = other.local_addr().unwrap().port();
         thread::spawn(move || {
             for mut stream in other.incoming().flatten() {
-                let _ = super::head(&stream);
-                let _ = respond(&mut stream, "404 Not Found", "text/plain", b"");
+                thread::spawn(move || {
+                    let _ = super::head(&stream);
+                    let _ = respond(&mut stream, "404 Not Found", "text/plain", b"");
+                });
             }
         });
         assert_eq!(served(old_port), Served::Older);
     }
 
-    fn fake(answer: impl Fn(&str, bool) -> Option<String> + Send + 'static) -> u16 {
+    /// One thread per connection, as `run` does, and every socket stays held after its answer, as
+    /// by a child forked at the wrong moment: only a shutdown ends a request here.
+    fn fake(answer: impl Fn(&str, bool) -> Option<String> + Send + Sync + 'static) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let answer = Arc::new(answer);
+        let quit = Arc::new(AtomicBool::new(false));
+        let held = Arc::new(Mutex::new(Vec::new()));
         thread::spawn(move || {
-            let mut quit = false;
             for mut stream in listener.incoming().flatten() {
-                let Ok(head) = super::head(&stream) else {
-                    continue;
-                };
-                quit |= head.target == "/api/quit";
-                let _ = match answer(&head.target, quit) {
-                    Some(body) => respond(&mut stream, "200 OK", "text/plain", body.as_bytes()),
-                    None => respond(&mut stream, "404 Not Found", "text/plain", b""),
-                };
+                let (answer, quit, held) = (answer.clone(), quit.clone(), held.clone());
+                held.lock().unwrap().push(held_by_a_child(&stream));
+                thread::spawn(move || {
+                    let Ok(head) = super::head(&stream) else {
+                        return;
+                    };
+                    if head.target.is_empty() {
+                        return;
+                    }
+                    if head.target == "/api/quit" {
+                        quit.store(true, Ordering::SeqCst);
+                    }
+                    let _ = match answer(&head.target, quit.load(Ordering::SeqCst)) {
+                        Some(body) => respond(&mut stream, "200 OK", "text/plain", body.as_bytes()),
+                        None => respond(&mut stream, "404 Not Found", "text/plain", b""),
+                    };
+                });
             }
         });
         port
@@ -407,28 +473,41 @@ mod tests {
             "/api/home" => Some(home_name()),
             _ => Some(OTHER.into()),
         });
-        let error = ensure_on(port).unwrap_err();
+        let error = ensure_within(port, Duration::from_millis(200)).unwrap_err();
         assert!(error.contains("did not quit"), "{error}");
     }
 
     #[test]
     fn a_mosaic_of_our_version_that_takes_the_port_meanwhile_is_kept() {
-        let port = fake(|target, quit| match target {
-            "/api/home" => Some(home_name()),
-            _ if quit => Some(version::current()),
-            _ => Some(OTHER.into()),
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let heard = asked.clone();
+        let port = fake(move |target, quit| {
+            heard.lock().unwrap().push(target.to_string());
+            match target {
+                "/api/home" => Some(home_name()),
+                _ if quit => Some(version::current()),
+                _ => Some(OTHER.into()),
+            }
         });
-        let started = Instant::now();
         assert_eq!(ensure_on(port).unwrap(), format!("http://127.0.0.1:{port}"));
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [
+                "/api/version",
+                "/api/home",
+                "/api/quit",
+                "/api/version",
+                "/api/home"
+            ]
+        );
     }
 
     #[test]
     fn the_mosaic_of_another_home_is_never_asked_to_quit() {
-        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asked = Arc::new(AtomicBool::new(false));
         let seen = asked.clone();
         let port = fake(move |target, quit| {
-            seen.store(quit, std::sync::atomic::Ordering::SeqCst);
+            seen.store(quit, Ordering::SeqCst);
             match target {
                 "/api/home" => Some("/somewhere/else".into()),
                 _ => Some(OTHER.into()),
@@ -436,7 +515,7 @@ mod tests {
         });
         let error = ensure_on(port).unwrap_err();
         assert!(error.contains("another VOIDC_HOME"), "{error}");
-        assert!(!asked.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!asked.load(Ordering::SeqCst));
         let ours = fake(|target, _| match target {
             "/api/home" => Some("/somewhere/else".into()),
             _ => Some(version::current()),

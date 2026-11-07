@@ -1,7 +1,8 @@
 use serde_json::Value;
 
-const SOURCES: [&str; 7] = [
+const SOURCES: [&str; 8] = [
     include_str!("../probe/Probe.java"),
+    include_str!("../probe/Perf.java"),
     include_str!("../probe/HideAgent.java"),
     include_str!("../probe/Condition.java"),
     include_str!("bot.rs"),
@@ -61,7 +62,7 @@ mod tests {
         let retested = format!("{code}\n#[cfg(test)]\nmod tests {{ fn u() {{}} }}");
         assert_eq!(without_tests(&tested), without_tests(&retested));
         assert!(
-            SOURCES[3..]
+            SOURCES[4..]
                 .iter()
                 .all(|source| source.contains("\n#[cfg(test)]\nmod tests"))
         );

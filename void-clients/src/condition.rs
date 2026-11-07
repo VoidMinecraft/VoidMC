@@ -180,7 +180,11 @@ impl Condition {
         Ok(())
     }
 
-    fn orders(&self) -> bool {
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    pub fn orders(&self) -> bool {
         ORDERS.contains(&self.op)
     }
 }
@@ -363,17 +367,17 @@ mod tests {
         out
     }
 
-    fn outcome(kind: &str, text: &str, level: Level, fields: &Value) -> String {
+    fn outcome(kind: &str, text: &str, level: Level, fields: &Value) -> Result<String, String> {
         if kind == "split" {
             let (name, rest) = split(text);
-            return format!("{name}|{rest}");
+            return Ok(format!("{name}|{rest}"));
         }
         let verb = if kind == "assert" {
             "assert"
         } else {
             "wait_until"
         };
-        let result = check(&format!("{verb} {text}"), level).and_then(|()| match kind {
+        check(&format!("{verb} {text}"), level).and_then(|()| match kind {
             "assert" => Condition::parse(text)?
                 .holds(fields)
                 .map(|ok| ok.to_string()),
@@ -381,8 +385,18 @@ mod tests {
                 let (condition, ms) = wait(text)?;
                 Ok(format!("{ms} {}", condition.holds(fields)?))
             }
-        });
-        result.unwrap_or_else(|_| "error".into())
+        })
+    }
+
+    fn told(result: Result<String, String>, fragment: Option<&str>) -> String {
+        match (result, fragment) {
+            (_, Some("")) => "a fifth cell with nothing in it".into(),
+            (Ok(result), _) => result,
+            (Err(message), Some(fragment)) if !message.contains(fragment) => {
+                format!("an error without {fragment:?}: {message}")
+            }
+            (Err(_), _) => "error".into(),
+        }
     }
 
     const CASES: &str = include_str!("../conditions.tsv");
@@ -411,7 +425,10 @@ mod tests {
                 levels.insert(cells[1].to_string(), Value::Object(fields));
                 continue;
             }
-            assert_eq!(cells.len(), 4, "a case has exactly four cells: {line}");
+            assert!(
+                cells.len() == 4 || (cells.len() == 5 && cells[3] == "error"),
+                "a case has four cells, and an error a fifth, not empty, for a piece of its message: {line}"
+            );
             assert!(
                 matches!(cells[0], "assert" | "wait" | "split"),
                 "a case is an assert, a wait or a split: {line}"
@@ -420,7 +437,10 @@ mod tests {
                 .get(cells[1])
                 .unwrap_or_else(|| panic!("no fields for the level of: {line}"));
             cases += 1;
-            let got = outcome(cells[0], cells[2], level_of(cells[1], line), fields);
+            let got = told(
+                outcome(cells[0], cells[2], level_of(cells[1], line), fields),
+                cells.get(4).copied(),
+            );
             if got != cells[3] {
                 wrong.push(format!("{line}\tbut Rust says {got}"));
             }
@@ -524,6 +544,25 @@ mod tests {
             .collect();
         assert!(probe.contains(&0x200B));
         assert_eq!(rust, probe);
+    }
+
+    #[test]
+    fn a_fifth_cell_left_empty_is_refused_on_both_sides() {
+        assert_ne!(told(Err("any message".into()), Some("")), "error");
+        let out = std::env::temp_dir().join(format!("voidc-fifth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let mut run = probe_runner(&out);
+        let table = out.join("table.tsv");
+        std::fs::write(
+            &table,
+            "fields\trender\tchunks\t1\nassert\trender\tchunks>=abc\terror\t\n",
+        )
+        .unwrap();
+        let run = run.arg(&table).output().expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert_eq!(run.status.code(), Some(2));
+        let said = String::from_utf8_lossy(&run.stdout);
+        assert!(said.contains("not empty"), "{said}");
     }
 
     #[test]

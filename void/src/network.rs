@@ -196,11 +196,12 @@ pub fn ingest_network_packets(world: &mut World) {
     } else {
         Some(max_packets_per_tick)
     };
-    let packet_budget = if packet_budget_ms == 0 {
-        None
-    } else {
-        Some(Duration::from_millis(packet_budget_ms))
-    };
+    let deadline = (packet_budget_ms > 0)
+        .then(|| crate::pace::of(world).deadline(Duration::from_millis(packet_budget_ms)));
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "only measures the ingest for a warning in the logs"
+    )]
     let start = Instant::now();
     let mut hit_limit = false;
     let mut hit_budget = false;
@@ -218,11 +219,9 @@ pub fn ingest_network_packets(world: &mut World) {
                         break;
                     }
                 }
-                if let Some(budget) = packet_budget {
-                    if start.elapsed() >= budget {
-                        hit_budget = true;
-                        break;
-                    }
+                if deadline.is_some_and(|deadline| deadline.passed()) {
+                    hit_budget = true;
+                    break;
                 }
 
                 match channels.incoming.try_recv() {
@@ -352,6 +351,26 @@ pub struct PacketEvent<T> {
     pub packet: T,
 }
 
+#[cfg_attr(not(feature = "packet-trace"), allow(unused_variables))]
+fn decode_packet<T: voidmc_codec::Decode + voidmc_codec::PacketName>(
+    client_id: u32,
+    state: &'static str,
+    packet: &Packet,
+) -> Result<T, voidmc_codec::DecodeError> {
+    let decoded = packet.decode::<T>();
+    #[cfg(feature = "packet-trace")]
+    crate::packet_trace::packet_in(
+        client_id,
+        state,
+        decoded
+            .as_ref()
+            .ok()
+            .map(voidmc_codec::PacketName::packet_name),
+        packet.as_bytes(),
+    );
+    decoded
+}
+
 #[instrument(level = "info", skip(world, packet))]
 fn dispatch_packet(
     world: &mut World,
@@ -365,7 +384,8 @@ fn dispatch_packet(
 
     match state.0 {
         voidmc_protocol::State::Handshake => {
-            let packet = packet.decode::<serverbound::HandshakePacket>()?;
+            let packet =
+                decode_packet::<serverbound::HandshakePacket>(client_id, "Handshake", &packet)?;
             tracing::debug!("[Client {}][Handshake] Received {:?}", client_id, packet);
 
             match packet {
@@ -377,7 +397,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Status => {
-            let packet = packet.decode::<serverbound::StatusPacket>()?;
+            let packet = decode_packet::<serverbound::StatusPacket>(client_id, "Status", &packet)?;
             tracing::debug!("[Client {}][Status] Received {:?}", client_id, packet);
 
             match packet {
@@ -394,15 +414,19 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Login => {
-            let packet = packet.decode::<serverbound::LoginPacket>()?;
+            let packet = decode_packet::<serverbound::LoginPacket>(client_id, "Login", &packet)?;
             tracing::debug!("[Client {}][Login] Received {:?}", client_id, packet);
 
             match packet {
-                serverbound::LoginPacket::LoginStart(packet) => world.trigger(PacketEvent {
-                    client_id,
-                    entity,
-                    packet,
-                }),
+                serverbound::LoginPacket::LoginStart(packet) => {
+                    #[cfg(feature = "packet-trace")]
+                    crate::packet_trace::player_named(client_id, &packet.name);
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
                 serverbound::LoginPacket::LoginAcknowledged(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
@@ -411,7 +435,11 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Configuration => {
-            let packet = packet.decode::<serverbound::ConfigurationPacket>()?;
+            let packet = decode_packet::<serverbound::ConfigurationPacket>(
+                client_id,
+                "Configuration",
+                &packet,
+            )?;
             tracing::debug!(
                 "[Client {}][Configuration] Received {:?}",
                 client_id,
@@ -449,7 +477,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Play => {
-            let packet = packet.decode::<serverbound::PlayPacket>()?;
+            let packet = decode_packet::<serverbound::PlayPacket>(client_id, "Play", &packet)?;
             tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
 
             match packet {
@@ -710,6 +738,43 @@ mod tests {
         }
     }
 
+    fn handshake_packets(count: usize) -> Vec<Packet> {
+        let packet = serverbound::HandshakePacket::Handshake(serverbound::Handshake {
+            protocol_version: PROTOCOL_VERSION,
+            server_address: "localhost".to_string(),
+            server_port: 25565,
+            next_state: voidmc_protocol::State::Login,
+        });
+        let mut bytes = Vec::new();
+        packet.encode(&mut bytes);
+        let mut frame = Vec::new();
+        VarI32(bytes.len() as i32).encode(&mut frame);
+        frame.extend(bytes);
+        let frames = frame.repeat(count);
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut peer = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (mut reader, _writer) = ServerSocket::new(listener, Default::default())
+                .accept()
+                .await
+                .unwrap()
+                .into_split();
+            let writing = tokio::spawn(async move {
+                peer.write_all(&frames).await.unwrap();
+                peer
+            });
+            let mut packets = Vec::with_capacity(count);
+            for _ in 0..count {
+                packets.push(reader.receive().await.unwrap());
+            }
+            drop(writing.await.unwrap());
+            packets
+        })
+    }
+
     fn handshake_packet() -> Packet {
         let packet = serverbound::HandshakePacket::Handshake(serverbound::Handshake {
             protocol_version: PROTOCOL_VERSION,
@@ -775,6 +840,30 @@ mod tests {
 
     #[derive(Resource, Default)]
     struct Handshakes(Vec<(u32, Entity)>);
+
+    #[test]
+    fn a_stepped_server_ingests_every_packet_whatever_the_budget() {
+        let mut h = harness();
+        h.app
+            .add_plugins(crate::pace::SteppedPacePlugin::new(
+                std::time::Duration::from_millis(50),
+            ))
+            .insert_resource(ServerConfigResource::from(&crate::ServerConfig {
+                max_packets_per_tick: 0,
+                packet_ingest_budget_ms: 1,
+                ..Default::default()
+            }));
+        for packet in handshake_packets(100_000) {
+            h.incoming_tx
+                .send(IncomingPacket {
+                    client_id: 7,
+                    packet,
+                })
+                .unwrap();
+        }
+        h.app.update();
+        assert_eq!(h.incoming_tx.len(), 0);
+    }
 
     #[test]
     fn first_packet_spawns_a_registered_client_entity() {

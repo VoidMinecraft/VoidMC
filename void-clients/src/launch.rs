@@ -10,10 +10,18 @@ use crate::registry::{self, Client, Level, Registry, Settings};
 
 const VERSION: &str = "26.1.2";
 const PROBE: &str = include_str!("../probe/Probe.java");
+const PERF: &str = include_str!("../probe/Perf.java");
 const AGENT: &str = include_str!("../probe/HideAgent.java");
 const CONDITION: &str = include_str!("../probe/Condition.java");
 const NO_RENDER_URL: &str = "https://github.com/headlesshq/headlessmc/releases/download/3.0.0-RC8/headlessmc-lwjgl-3.0.0-RC8-all.jar";
 const NO_RENDER_SHA256: &str = "45c7a0041d580e7c80a190c49140e65c521e992af13229ca71795f3414146009";
+
+/// Whether the probe of this build answers a verb.
+#[cfg(test)]
+pub fn probe_answers(verb: &str) -> bool {
+    PROBE.contains(&format!("case \"{verb}\""))
+        || PROBE.contains(&format!("verb.equals(\"{verb}\")"))
+}
 
 fn minecraft() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").expect("HOME"))
@@ -84,7 +92,7 @@ fn run(command: &mut Command, what: &str) -> Result<(), String> {
 /// Compiled once for each version of the sources, against the game jar itself.
 fn build(classes: &[String]) -> Result<PathBuf, String> {
     let mut hasher = DefaultHasher::new();
-    (PROBE, AGENT, CONDITION, VERSION).hash(&mut hasher);
+    (PROBE, PERF, AGENT, CONDITION, VERSION).hash(&mut hasher);
     let dir = registry::home()
         .join("build")
         .join(format!("{:x}", hasher.finish()));
@@ -94,13 +102,19 @@ fn build(classes: &[String]) -> Result<PathBuf, String> {
     let staging = dir.with_extension(format!("tmp{}", std::process::id()));
     fs::create_dir_all(staging.join("src")).map_err(|e| e.to_string())?;
     fs::write(staging.join("src/Probe.java"), PROBE).map_err(|e| e.to_string())?;
+    fs::write(staging.join("src/Perf.java"), PERF).map_err(|e| e.to_string())?;
     fs::write(staging.join("src/HideAgent.java"), AGENT).map_err(|e| e.to_string())?;
     fs::write(staging.join("src/Condition.java"), CONDITION).map_err(|e| e.to_string())?;
     let bin = java_home().join("bin");
     run(
         Command::new(bin.join("javac"))
             .args(["-nowarn", "-d", "classes", "-cp", &classes.join(":")])
-            .args(["src/Probe.java", "src/HideAgent.java", "src/Condition.java"])
+            .args([
+                "src/Probe.java",
+                "src/Perf.java",
+                "src/HideAgent.java",
+                "src/Condition.java",
+            ])
             .current_dir(&staging),
         "javac",
     )?;
@@ -336,6 +350,40 @@ pub fn spawn(mut command: Command, dir: &Path) -> Result<std::process::Child, St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stepping_of_the_probe_holds_on_a_channel() {
+        let Ok(version) = version_json() else {
+            eprintln!("no game installed: skipped");
+            return;
+        };
+        let mut classes = class_path(&version);
+        let built = build(&classes).unwrap();
+        classes.push(built.join("classes").to_string_lossy().into_owned());
+        let dir = std::env::temp_dir().join(format!("voidc-stepping-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("probe/SteppingTest.java");
+        run(
+            Command::new(java_home().join("bin/javac"))
+                .args(["-nowarn", "-d"])
+                .arg(&dir)
+                .args(["-cp", &classes.join(":")])
+                .arg(source),
+            "javac",
+        )
+        .unwrap();
+        classes.push(dir.to_string_lossy().into_owned());
+        let result = run(
+            Command::new(java_home().join("bin/java")).args([
+                "-cp",
+                &classes.join(":"),
+                "SteppingTest",
+            ]),
+            "SteppingTest",
+        );
+        fs::remove_dir_all(dir).unwrap();
+        result.unwrap();
+    }
 
     #[test]
     fn servers_dat_is_a_list_of_one_server_that_accepts_the_pack() {

@@ -1,10 +1,12 @@
 use std::fs;
+use std::path::Path;
 use std::process::{Child, Command};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use crate::control::{self, Chore};
+use crate::launch;
 use crate::registry::{self, Client, Level, Registry};
-use crate::{control, launch};
 
 const STOP_PATIENCE: Duration = Duration::from_secs(10);
 
@@ -38,8 +40,40 @@ pub fn check(registry: &Registry, client: &Client, others: &[Client]) -> Result<
     Ok(())
 }
 
+fn free_gib(path: &Path) -> Option<u64> {
+    let output = Command::new("df").arg("-Pk").arg(path).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let available: u64 = text
+        .lines()
+        .last()?
+        .split_whitespace()
+        .nth(3)?
+        .parse()
+        .ok()?;
+    Some(available / (1024 * 1024))
+}
+
+fn low_disk(free: u64, least: u64) -> Option<String> {
+    (free < least).then(|| {
+        format!(
+            "WARNING: DISK NEARLY FULL, {free} GiB free, under the {least} GiB of clients.toml. Empty a target/ before a build breaks the other sessions."
+        )
+    })
+}
+
+/// Only warns: a client that does not start helps nobody free the disk.
+fn disk_warning(registry: &Registry) -> Option<String> {
+    low_disk(
+        free_gib(&registry::home_or_parent())?,
+        registry.min_free_gib,
+    )
+}
+
 pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     check(registry, &client, &running())?;
+    if let Some(warning) = disk_warning(registry) {
+        eprintln!("{warning}");
+    }
     if client.level != Level::Play {
         registry::socket(&client.name)?;
     }
@@ -56,7 +90,7 @@ pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     let mut child = launch::spawn(command, &registry::client_dir(&client.name))?;
     client.pid = child.id();
     registry::save(&client).map_err(|error| {
-        stop(&mut child, STOP_PATIENCE);
+        stop(&mut child);
         format!(
             "{} could not be recorded, so it is stopped: {error}",
             client.name
@@ -64,7 +98,11 @@ pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     })
 }
 
-fn stop(child: &mut Child, patience: Duration) {
+fn stop(child: &mut Child) {
+    stop_within(child, STOP_PATIENCE);
+}
+
+fn stop_within(child: &mut Child, patience: Duration) {
     let _ = Command::new("kill").arg(child.id().to_string()).status();
     let deadline = Instant::now() + patience;
     while Instant::now() < deadline {
@@ -95,7 +133,7 @@ pub fn down(name: &str) -> Result<(), String> {
         return Ok(());
     }
     if client.level != Level::Play {
-        let _ = control::ask(name, "quit", Duration::from_secs(2));
+        let _ = control::chore(name, Chore::Quit, Duration::from_secs(2));
     }
     if gone(&client) {
         return Ok(());
@@ -121,28 +159,28 @@ pub fn forget(name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::held::Held;
+
+    #[test]
+    fn a_client_has_ten_seconds_to_stop_for_real() {
+        assert_eq!(STOP_PATIENCE, Duration::from_secs(10));
+    }
 
     #[test]
     fn a_child_that_ignores_the_signal_is_killed_and_reaped() {
-        let mut polite = Command::new("sleep").arg("60").spawn().unwrap();
-        stop(&mut polite, Duration::from_secs(5));
-        assert!(polite.try_wait().unwrap().is_some());
-        let mut stubborn = Command::new("sh")
-            .args(["-c", "trap '' TERM; echo ready; read line"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut ready = String::new();
-        std::io::BufRead::read_line(
-            &mut std::io::BufReader::new(stubborn.stdout.take().unwrap()),
-            &mut ready,
-        )
-        .unwrap();
+        let mut polite = Held::waiting("polite");
+        let ended = polite.ended_by(|child| stop_within(child, Duration::from_secs(5)));
+        assert!(ended.is_some());
+        let mut stubborn = Held::launch(
+            Command::new("sh")
+                .args(["-c", "trap '' TERM; echo ready; read line"])
+                .stdout(std::process::Stdio::piped()),
+        );
+        assert_eq!(stubborn.first_line(), "ready");
         let started = Instant::now();
-        stop(&mut stubborn, Duration::from_millis(500));
+        let ended = stubborn.ended_by(|child| stop_within(child, Duration::from_millis(500)));
         assert!(started.elapsed() < Duration::from_secs(5));
-        let status = stubborn.try_wait().unwrap().expect("reaped");
+        let status = ended.expect("reaped");
         assert_eq!(
             std::os::unix::process::ExitStatusExt::signal(&status),
             Some(9)
@@ -160,6 +198,18 @@ mod tests {
             size: None,
             jfr: false,
         }
+    }
+
+    #[test]
+    fn the_disk_warns_under_its_threshold_and_only_then() {
+        assert!(low_disk(14, 15).unwrap().contains("14 GiB free"));
+        assert!(low_disk(15, 15).is_none());
+    }
+
+    #[test]
+    fn free_space_is_read_from_the_system() {
+        assert!(free_gib(Path::new("/")).is_some());
+        assert!(free_gib(Path::new("/no/such/folder")).is_none());
     }
 
     #[test]

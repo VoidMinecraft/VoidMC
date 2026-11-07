@@ -1,10 +1,11 @@
 # One table for the conditions of the bot (condition.rs) and of the probe (Condition.java).
 # fields	<level>	name	value ...: a text is quoted, a number or true/false is not.
-# <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>
+# <assert|wait>	<level>	<condition>	<true|false|error, or the limit and the result for a wait>	[a piece of the message of an error, never empty]
 # split	<level>	<verb line>	<name>|<rest>: how the bot, the probe and voidc cut a verb.
 # The logic level has no camera yet, so only the camera rule can refuse camera>=1 there.
+# mood is text that no list knows, so that only the value read can refuse an order on it.
 # A cell may hold \t, \\ and \uXXXX.
-fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5	action_bar	"Tour 1"
+fields	render	chunks	1000	state	"connected"	chat	"a>=b"	camera	"player"	passenger	false	x	1.5	action_bar	"Tour 1"	mood	"calm"
 fields	logic	chunks	1000	state	"connected"	chat	"a\tb"
 fields	bot	chunks	1000	state	"connected"	chat	"a>=b"	camera	3	x	1.5	action_bar	"Tour 1"
 assert	render	chunks>=800	true
@@ -20,21 +21,23 @@ assert	render	x==1.50	true
 assert	render	passenger==false	true
 assert	render	nope>=1	false
 assert	render	chunks_2>=1	false
-assert	render	chunks>=200 30000	error
+assert	render	chunks>=200 30000	error	a value is one word
 assert	render	chunks >= 200 30000	error
-assert	render	chunks>=abc	error
-assert	render	chunks >=	error
+assert	render	chunks>=abc	error	needs a number
+assert	render	chunks >=	error	compares with nothing
 assert	render	chunks	error
 assert	render	>= 3	error
 assert	render	chunks==1e3	false
-assert	render	chunks>=1e3	error
+assert	render	chunks>=1e3	error	needs a number
 assert	render	chunks>=inf	error
 assert	render	chunks>=NaN	error
-assert	render	chunks<=5.	error
+assert	render	chunks<=5.	error	needs a number
 assert	render	chunks>=.5	error
 assert	render	chunks>=-1	true
-assert	render	state>=1	error
-assert	render	chat<=3	error
+assert	render	state>=1	error	not a number
+assert	render	chat<=3	error	not a number
+assert	render	mood>=1	error	mood is calm, not a number
+wait	render	5000 mood<=1	error	mood is calm, not a number
 assert	render	camera>=1	error
 assert	bot	camera>=1	true
 assert	render	été>=1	error
@@ -49,10 +52,10 @@ wait	render	123456789 chat~x	123456789 false
 wait	render	2 action_bar~Tour 2	error
 wait	render	2 action_bar~"Tour 1"	2 true
 wait	render	chunks >= 100 5000	error
-wait	render	30s chunks >= 200	error
+wait	render	30s chunks >= 200	error	bad condition
 wait	render	3000 chunks >= abc	error
 wait	render	+5 chunks>=1	error
-wait	render	1234567890 chunks>=1	error
+wait	render	1234567890 chunks>=1	error	bad limit
 wait	render	5000	error
 assert	render	2chunks>=1	error
 assert	render	_chunks>=1	error
@@ -65,14 +68,14 @@ wait	render	state==connected 5000	error
 assert	render	chat~"a>=b"	true
 assert	render	chat~"a b"	false
 assert	render	chat~	error
-assert	render	chat==	error
+assert	render	chat==	error	compares with nothing
 assert	render	chat!=	error
 assert	render	chat~""	error
 assert	render	chat~"a	error
-assert	render	chat~a"b	error
+assert	render	chat~a"b	error	a quote goes around the whole value
 assert	render	chunks>=+5	error
 assert	render	  chunks>=1  	true
-assert	render	chunks>=1\u0001	error
+assert	render	chunks>=1\u0001	error	visible characters
 assert	render	chunks\u00a0>=1	error
 assert	render	state==connected\u00a0	error
 assert	render	version>=1	error

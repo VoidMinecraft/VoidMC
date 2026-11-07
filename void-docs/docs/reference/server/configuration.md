@@ -49,8 +49,76 @@ let config = ServerConfigBuilder::new()
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
+| `step_socket` | `Option<PathBuf>` | `None` | Unix socket that drives the server tick by tick. See [Stepped server](#stepped-server) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
+
+## Stepped server
+
+`ServerConfigBuilder::step_socket(path)` replaces the tick loop. The server starts locked, runs no
+tick by itself, and takes one order per line on the socket. Each order gets one JSON line back with
+`tick`, `sent` and `received`:
+
+| Order | Effect |
+|---|---|
+| `step <count> [received]` | Waits until `received` packets have arrived, then runs `count` ticks. After 10 s it answers `"ok":false` and runs nothing |
+| `status` | Reports the counters |
+| `stop` | Writes `AppExit`, runs one last tick so that systems see it, and ends the server |
+
+`sent` and `received` count packets to and from all clients, so the barrier holds for one client.
+Without the option the server keeps its normal loop, and the only addition is one relaxed load per
+packet sent.
+
+### Time and chance
+
+What is guaranteed on a stepped server: nothing the engine, `void-ui` or `void-map` sends reads the
+wall clock or fresh entropy. Their time comes from the ticks, their chance and their UUIDs from
+generators with a fixed seed, and every schedule runs its systems one at a time, in the same order
+on every run. Bevy already does so unless its `multi_threaded` feature is on. The stepped mode sets
+it anyway on every schedule that exists once the app is finished, so a crate that turns the feature
+on does not change their order; a schedule created later keeps Bevy's default. The one exception is
+the world border, whose transitions still run on the wall clock. Clippy holds this rule, as
+described at the end of this section.
+
+What is not guaranteed in general: the same packets in the same order on every run. Some hashed
+collections still decide an order: a hashed set or map iterated before sending can order packets
+differently from one process to the next. The sets of chunks a player holds (`ChunkSet`) and the
+block entities of a chunk are fixed for that. On `/map` and on `void-example`, two stepped runs
+that receive the same packets at the same ticks give an empty `voidc trace diff`.
+
+`SteppedPacePlugin`, added by the stepped runner, is the one thing that switches them. It sets two
+resources that only it can build:
+
+- `voidmc::pace::Pace`, the time. Read it with the `Clock` system parameter, or with
+  `pace::of(world)`. Without it, the time is the wall clock.
+- `voidmc::pace::Dice`, the generator, with a fixed seed. Draw from it with the `Chance` system
+  parameter, or with `pace::roll(world, ..)`. Without it, the draw uses the thread's generator.
+
+Like any resource, both can still be removed, or replaced by a copy taken from another world. A
+plugin that does so runs on the wall clock or on fresh entropy again, and gives up the guarantee.
+
+| Reading | Without the plugin | Stepped |
+|---------|--------------------|---------|
+| `now_millis()` | Milliseconds since the Unix epoch, for dates | Ticks played × tick length |
+| `elapsed_millis()` | Milliseconds on a monotonic clock, for durations | Ticks played × tick length |
+| `deadline(budget).passed()` | Once `budget` has gone by | Never: work is bounded by counts alone |
+| `roll(..)` | The thread's generator | The generator with the fixed seed |
+
+These go through it: the keep-alive id and the latency in the tab list (`elapsed_millis`), the date
+of a toast (`now_millis`), new entity and boss bar UUIDs, the packet ingest budget, the wander of
+mobs, `summon --wander`, `@r`, and the chunk deadlines of `void-map`. The sets of chunks a player
+holds (`ChunkSet`) iterate in the same order in every process, so the chunks a player leaves are
+unloaded in the same order.
+
+Clippy holds the rule: `clippy.toml` forbids `Instant::now`, `SystemTime::now`, `rand::thread_rng`,
+`rand::random` and `uuid::Uuid::new_v4`. Each use that stays, in logs, measures, tests or the world
+border, carries an `#[expect(clippy::disallowed_methods, reason = "..")]` that says why.
+
+The runner blocks on the socket, so this mode leaves out `TerminalCtrlCHandlerPlugin`: Ctrl-C ends
+the process at once, without `AppExit`. The server refuses a socket that another server answers on,
+and exits with an error when it cannot bind it.
+
+`voidc step` drives this socket together with a real client: see `void-clients/README.md`.
 
 ## Packet limits
 

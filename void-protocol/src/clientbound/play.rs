@@ -115,7 +115,7 @@ pub use update_mob_effect::*;
 use voidmc_codec::{Decode, Encode};
 pub use world_border::*;
 
-#[derive(Debug, Clone, Encode, Decode)]
+#[derive(Debug, Clone, Encode, Decode, voidmc_codec::PacketName)]
 #[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Play)]
 pub enum PlayPacket {
     #[codec(packet_id = 0x01)]
@@ -232,7 +232,7 @@ pub enum PlayPacket {
 
 /// Packets with manual Encode impls that can't be in the tagged enum.
 /// These are encoded directly with their packet ID prepended.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, voidmc_codec::PacketName)]
 pub enum ManualPlayPacket {
     PlayerInfoUpdate(PlayerInfoUpdate),
     PlayerInfoRemove(PlayerInfoRemove),

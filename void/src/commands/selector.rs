@@ -49,10 +49,10 @@ impl PlayerSelector {
                 .ok_or_else(|| format!("player '{name}' not found")),
             PlayerSelector::Executor => Ok(vec![ctx.executor]),
             PlayerSelector::All => Ok(ready.into_iter().map(|(entity, _)| entity).collect()),
-            PlayerSelector::Random => ready
-                .choose(&mut rand::thread_rng())
-                .map(|(entity, _)| vec![*entity])
-                .ok_or_else(|| "no player online".to_string()),
+            PlayerSelector::Random => crate::pace::roll(world, |rng| {
+                ready.choose(rng).map(|(entity, _)| vec![*entity])
+            })
+            .ok_or_else(|| "no player online".to_string()),
             PlayerSelector::Nearest => {
                 let origin = ctx
                     .position()
@@ -258,6 +258,27 @@ mod tests {
             "'@a' selects several players, expected one"
         );
         assert_eq!(many(&world, alice, "@s").unwrap(), vec![alice]);
+    }
+
+    #[test]
+    fn two_stepped_servers_pick_the_same_random_players() {
+        let picks = || {
+            let mut world = World::new();
+            crate::pace::make_stepped(&mut world);
+            let executor = player(&mut world, "P0", 0.0);
+            for i in 1..12 {
+                player(&mut world, &format!("P{i}"), i as f64);
+            }
+            (0..16)
+                .map(|_| {
+                    let picked = single(&world, executor, "@r").unwrap();
+                    world.get::<PlayerName>(picked).unwrap().0.clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        let first = picks();
+        assert_eq!(first, picks());
+        assert!(first.iter().any(|name| name != &first[0]));
     }
 
     #[test]

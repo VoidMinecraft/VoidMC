@@ -766,6 +766,7 @@ pub fn run(name: &str, port: u16, idle: Duration) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hangup::{hang_up, held_by_a_child};
 
     #[test]
     fn leaving_a_level_forgets_what_was_on_it() {
@@ -1075,7 +1076,9 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
-        writer.lock().unwrap().take();
+        let link = writer.lock().unwrap().take().unwrap();
+        let _child = held_by_a_child(&link.stream);
+        hang_up(link.stream);
         assert_eq!(
             receive(&mut server).unwrap_err().kind(),
             std::io::ErrorKind::UnexpectedEof

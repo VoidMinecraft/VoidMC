@@ -418,7 +418,7 @@ mod tests {
     use bevy_ecs::system::RunSystemOnce;
 
     use super::*;
-    use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
+    use crate::components::{ChunkSet, ClientId, LoadedChunks, PlayerDimension, PlayerReady};
     use crate::entity::visibility_index::ChunkViewerIndex;
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
 
@@ -685,7 +685,7 @@ mod tests {
 
         app.world_mut().entity_mut(joiner).insert((
             PlayerReady,
-            LoadedChunks(HashSet::from([ChunkPos::new(-1, 2)])),
+            LoadedChunks(ChunkSet::from([ChunkPos::new(-1, 2)])),
         ));
         app.update();
         assert_eq!(drain(&rx), vec![Sent::Spawn(9, id)]);
@@ -1013,7 +1013,7 @@ mod tests {
         app.update();
         app.world_mut().entity_mut(joiner).insert((
             PlayerReady,
-            LoadedChunks(HashSet::from([ChunkPos::new(0, 0)])),
+            LoadedChunks(ChunkSet::from([ChunkPos::new(0, 0)])),
         ));
         app.update();
         assert!(drain(&rx).is_empty());
@@ -1307,7 +1307,7 @@ mod tests {
 
         app.world_mut()
             .entity_mut(joiner)
-            .insert(LoadedChunks(HashSet::from([ChunkPos::new(0, 0)])));
+            .insert(LoadedChunks(ChunkSet::from([ChunkPos::new(0, 0)])));
         app.update();
         assert_eq!(drain(&rx), vec![Sent::Spawn(1, id)]);
         assert_eq!(

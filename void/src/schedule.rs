@@ -68,6 +68,7 @@ mod tests {
     use bevy_ecs::prelude::*;
     use bevy_ecs::schedule::IntoScheduleConfigs;
     use flume::Receiver;
+    use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
     use crate::components::{ClientId, KeepAliveState, PlayerReady};
@@ -127,5 +128,78 @@ mod tests {
         let seen = app.world().resource::<Seen>();
         assert_eq!(seen.before, Some(0));
         assert_eq!(seen.after, Some(1));
+    }
+
+    fn keep_alive_app(stepped: bool) -> (App, Entity, flume::Receiver<OutgoingPacket>) {
+        let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (_disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
+        let (kick_tx, _kick_rx) = flume::unbounded::<u32>();
+
+        let mut app = App::new();
+        app.insert_resource(NetworkChannels {
+            incoming: incoming_rx,
+            outgoing: outgoing_tx,
+            disconnect: disconnect_rx,
+            kick: kick_tx,
+        })
+        .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
+        .insert_resource(WorldGen(Box::new(DefaultWorldGenerator::default())))
+        .init_resource::<ChunkIndex>()
+        .add_plugins(GameSystemsPlugin)
+        .insert_resource(KeepAliveTicker {
+            ticks_since_last: 0,
+            interval_ticks: 3,
+        });
+        if stepped {
+            app.add_plugins(crate::pace::SteppedPacePlugin::new(
+                std::time::Duration::from_millis(50),
+            ));
+        }
+        let player = app
+            .world_mut()
+            .spawn((ClientId(1), PlayerReady, KeepAliveState::default()))
+            .id();
+
+        (app, player, outgoing_rx)
+    }
+
+    #[test]
+    fn a_stepped_keep_alive_is_named_after_its_tick() {
+        let (mut app, player, outgoing_rx) = keep_alive_app(true);
+        for _ in 0..3 {
+            app.update();
+        }
+
+        let state = app.world().get::<KeepAliveState>(player).unwrap();
+        assert_eq!(state.last_sent_id, 150);
+        let sent: Vec<i64> = outgoing_rx
+            .try_iter()
+            .filter_map(|packet| match packet.packet {
+                ClientboundPacket::Play(PlayPacket::KeepAlive(keep_alive)) => {
+                    Some(keep_alive.keep_alive_id)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, [150]);
+    }
+
+    #[test]
+    fn a_real_keep_alive_is_named_on_the_monotonic_clock() {
+        let (mut app, player, _outgoing_rx) = keep_alive_app(false);
+        for _ in 0..3 {
+            app.update();
+        }
+        let sent = app
+            .world()
+            .get::<KeepAliveState>(player)
+            .unwrap()
+            .last_sent_id;
+        let now = crate::pace::Pace::REAL.elapsed_millis();
+        assert!(
+            (0..60_000).contains(&(now - sent)),
+            "sent {sent}, now {now}"
+        );
     }
 }

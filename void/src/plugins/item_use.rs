@@ -142,11 +142,10 @@ fn handle_creative_slot(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use super::*;
     use crate::ServerConfig;
-    use crate::components::{LoadedChunks, PlayerDimension, PlayerReady};
+    use crate::components::{ChunkSet, LoadedChunks, PlayerDimension, PlayerReady};
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
     use crate::plugins::interaction::InteractionPlugin;
     use crate::world::{ChunkData, ChunkIndex, ChunkPos, DimensionId};
@@ -276,7 +275,7 @@ mod tests {
                 .0
                 .insert((DimensionId::Overworld, chunk_pos), chunk_entity);
 
-            let loaded = LoadedChunks(HashSet::from([chunk_pos]));
+            let loaded = LoadedChunks(ChunkSet::from([chunk_pos]));
             let mut inventory_one = Inventory::new();
             inventory_one.set(
                 Inventory::HOTBAR_START,

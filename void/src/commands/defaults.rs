@@ -478,11 +478,13 @@ fn handle_summon(ctx: &mut CommandContext) {
     ctx.with_world_mut(|world| {
         let mut e = builder.spawn_in(world);
         if wander {
-            let mut rng = rand::thread_rng();
+            let (ticks, yaw) = crate::pace::roll(e.world(), |rng| {
+                (rng.gen_range(40..140), rng.gen_range(0.0..360.0) as f32)
+            });
             e.insert(Wander {
-                ticks: rng.gen_range(40..140),
+                ticks,
                 speed: 0.08,
-                yaw: rng.gen_range(0.0..360.0) as f32,
+                yaw,
             });
         }
     });
@@ -671,6 +673,37 @@ mod tests {
         assert!(movement.block_collision_enabled);
         assert_eq!(*collider, EntityCollider::new(0.9, 0.9, 1.0));
         assert!(wander.is_some());
+    }
+
+    #[test]
+    fn two_stepped_servers_summon_the_same_wanderers() {
+        let walks = || {
+            let (mut world, player, _outgoing_rx) = command_world();
+            crate::pace::make_stepped(&mut world);
+            for _ in 0..8 {
+                dispatch_command(
+                    &mut world,
+                    7,
+                    player,
+                    "summon",
+                    vec!["minecraft:pig".to_string(), "--wander".to_string()],
+                );
+            }
+            let mut walks = world
+                .query::<(Entity, &Wander)>()
+                .iter(&world)
+                .map(|(entity, wander)| (entity, wander.ticks, wander.yaw.to_bits()))
+                .collect::<Vec<_>>();
+            walks.sort();
+            walks
+                .into_iter()
+                .map(|(_, ticks, yaw)| (ticks, yaw))
+                .collect::<Vec<_>>()
+        };
+        let first = walks();
+        assert_eq!(first.len(), 8);
+        assert_eq!(first, walks());
+        assert!(first.iter().any(|walk| walk != &first[0]));
     }
 
     #[test]

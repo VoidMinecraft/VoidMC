@@ -47,11 +47,11 @@ final class ConditionCases {
         levels.put(cells[1], fields);
         continue;
       }
-      if (cells.length != 4) fail("a case has exactly four cells: " + line);
+      if (cells.length != 4 && !(cells.length == 5 && cells[3].equals("error") && !cells[4].isEmpty())) fail("a case has four cells, and an error a fifth, not empty, for a piece of its message: " + line);
       if (!List.of("assert", "wait", "split").contains(cells[0])) fail("a case is an assert, a wait or a split: " + line);
       if (!levels.containsKey(cells[1])) fail("no fields for the level of: " + line);
       cases++;
-      String got = outcome(cells[0], cells[1], cells[2], levels.get(cells[1]));
+      String got = outcome(cells[0], cells[1], cells[2], levels.get(cells[1]), cells.length == 5 ? cells[4] : null);
       if (!got.equals(cells[3])) wrong.add(line + "\tbut the probe says " + got);
     }
     wrong.forEach(System.out::println);
@@ -95,7 +95,7 @@ final class ConditionCases {
     return null;
   }
 
-  private static String outcome(String kind, String level, String text, Map<String, Object> fields) {
+  private static String outcome(String kind, String level, String text, Map<String, Object> fields, String fragment) {
     if (kind.equals("split")) {
       String[] parts = Condition.split(text);
       return parts[0] + "|" + parts[1];
@@ -110,7 +110,8 @@ final class ConditionCases {
       Condition.validate(wait.parsed(), level);
       return wait.limit() + " " + Condition.holds(wait.parsed(), fields);
     } catch (IllegalArgumentException refused) {
-      return "error";
+      String message = String.valueOf(refused.getMessage());
+      return fragment == null || message.contains(fragment) ? "error" : "an error without \"" + fragment + "\": " + message;
     }
   }
 }
