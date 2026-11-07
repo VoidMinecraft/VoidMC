@@ -80,11 +80,11 @@ impl Probe {
     /// late answer, which would read as the answer to the next verb: drop it.
     pub fn ask(&mut self, verb: &str, timeout: Duration) -> Result<String, String> {
         one_verb(verb)?;
+        let closed = |e| format!("client {} closed the connection: {e}", self.name);
         self.stream
             .set_read_timeout(Some(timeout))
-            .map_err(|e| e.to_string())?;
-        writeln!(self.stream, "{verb}")
-            .map_err(|e| format!("client {} closed the connection: {e}", self.name))?;
+            .map_err(closed)?;
+        writeln!(self.stream, "{verb}").map_err(closed)?;
         let mut line = String::new();
         self.reader
             .read_line(&mut line)
@@ -293,6 +293,8 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -317,6 +319,24 @@ mod tests {
     fn a_state_outlives_what_the_probe_gives_the_game_thread() {
         assert!(include_str!("../probe/Probe.java").contains("onGame(task, 10_000)"));
         assert!(STATE_LIMIT > Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_connection_the_client_hung_up_says_so() {
+        use std::os::unix::net::UnixListener;
+        let home = std::env::temp_dir().join(format!("vh{}", std::process::id()));
+        fs::create_dir_all(home.join("run")).unwrap();
+        registry::set_test_home(Some(home.clone()));
+        let listener = UnixListener::bind(registry::socket("gone").unwrap()).unwrap();
+        let mut probe = Probe::connect("gone").unwrap();
+        drop(listener.accept().unwrap());
+        let error = probe.ask("act map", Duration::from_secs(1)).unwrap_err();
+        registry::set_test_home(None);
+        fs::remove_dir_all(home).unwrap();
+        assert!(
+            error.contains("client gone closed the connection"),
+            "{error}"
+        );
     }
 
     #[test]
