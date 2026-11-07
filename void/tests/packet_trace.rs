@@ -24,7 +24,7 @@ fn a_packet_sent_by_a_system_lands_in_the_trace_with_its_tick_and_system() {
     unsafe { std::env::set_var("VOID_TRACE", &path) };
 
     let subscriber = tracing_subscriber::registry().with(trace_layer());
-    tracing::subscriber::with_default(subscriber, || {
+    let ticks = tracing::subscriber::with_default(subscriber, || {
         let (_incoming_tx, incoming_rx) = flume::unbounded();
         let (outgoing_tx, outgoing_rx) = flume::unbounded();
         let (_disconnect_tx, disconnect_rx) = flume::unbounded();
@@ -64,6 +64,7 @@ fn a_packet_sent_by_a_system_lands_in_the_trace_with_its_tick_and_system() {
         for _ in 0..3 {
             app.update();
         }
+        voidmc::pace::of(app.world()).ticks_started()
     });
 
     let text = std::fs::read_to_string(&path).unwrap();
@@ -80,7 +81,7 @@ fn a_packet_sent_by_a_system_lands_in_the_trace_with_its_tick_and_system() {
         let fates = of(client).into_iter().map(|line| line["dropped"].as_str());
         fates.collect::<Vec<_>>()
     };
-    let first = voidmc::server_tick::current() - 4;
+    let first = ticks - 4;
     assert_eq!(of(3)[0]["tick"], first);
     assert_eq!(of(3)[1]["tick"], first + 1);
     assert_eq!(fates(3), [None, None, None, None, None]);

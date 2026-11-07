@@ -20,10 +20,10 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use bevy_app::{App, AppExit, Plugin, PluginsState};
+use bevy_ecs::world::World;
 use flume::Sender;
 
 use crate::network::IncomingPacket;
-use crate::server_tick;
 
 const FENCE_LIMIT: Duration = Duration::from_secs(10);
 const FENCE_POLL: Duration = Duration::from_micros(50);
@@ -100,7 +100,6 @@ impl StepPlugin {
 
 impl Plugin for StepPlugin {
     fn build(&self, app: &mut App) {
-        server_tick::install(app);
         app.add_plugins(crate::pace::SteppedPacePlugin::new(self.tick));
         let socket = self.socket.clone();
         app.set_runner(move |app| run(app, &socket, &COUNTERS));
@@ -151,7 +150,7 @@ fn serve(stream: UnixStream, app: &mut App, counters: &Counters) -> Option<AppEx
         let line = line.ok()?;
         let (reply, exit) = match Order::parse(&line) {
             Ok(order) => order.carry_out(app, counters),
-            Err(error) => (failure(&error, counters), None),
+            Err(error) => (failure(&error, app.world(), counters), None),
         };
         if writeln!(replies, "{reply}").is_err() || exit.is_some() {
             return exit;
@@ -191,26 +190,26 @@ impl Order {
 
     fn carry_out(self, app: &mut App, counters: &Counters) -> (String, Option<AppExit>) {
         match self {
-            Self::Status => (report(counters), None),
+            Self::Status => (report(app.world(), counters), None),
             Self::Stop => {
                 app.world_mut().write_message(AppExit::Success);
                 app.update();
                 let exit = app.should_exit().unwrap_or(AppExit::Success);
-                (report(counters), Some(exit))
+                (report(app.world(), counters), Some(exit))
             }
             Self::Step { ticks, received } => {
                 if !fence(counters, received, FENCE_LIMIT) {
                     let have = counters.received.load(Ordering::SeqCst);
                     let error = format!("fence expired: received {have} of {received}");
-                    return (failure(&error, counters), None);
+                    return (failure(&error, app.world(), counters), None);
                 }
                 for _ in 0..ticks {
                     app.update();
                     if let Some(exit) = app.should_exit() {
-                        return (report(counters), Some(exit));
+                        return (report(app.world(), counters), Some(exit));
                     }
                 }
-                (report(counters), None)
+                (report(app.world(), counters), None)
             }
         }
     }
@@ -231,24 +230,24 @@ fn fence(counters: &Counters, received: u64, limit: Duration) -> bool {
     true
 }
 
-fn fields(counters: &Counters) -> String {
+fn fields(world: &World, counters: &Counters) -> String {
     format!(
         "\"tick\":{},\"sent\":{},\"received\":{}",
-        server_tick::current(),
+        crate::pace::of(world).ticks_started(),
         counters.sent.load(Ordering::SeqCst),
         counters.received.load(Ordering::SeqCst)
     )
 }
 
-fn report(counters: &Counters) -> String {
-    format!("{{\"ok\":true,{}}}", fields(counters))
+fn report(world: &World, counters: &Counters) -> String {
+    format!("{{\"ok\":true,{}}}", fields(world, counters))
 }
 
-fn failure(error: &str, counters: &Counters) -> String {
+fn failure(error: &str, world: &World, counters: &Counters) -> String {
     format!(
         "{{\"ok\":false,\"error\":{},{}}}",
         json_string(error),
-        fields(counters)
+        fields(world, counters)
     )
 }
 

@@ -90,7 +90,9 @@ that receive the same packets at the same ticks give an empty `voidc trace diff`
 resources that only it can build:
 
 - `voidmc::pace::Pace`, the time. Read it with the `Clock` system parameter, or with
-  `pace::of(world)`. Without it, the time is the wall clock.
+  `pace::of(world)`. Without it, the time is the wall clock. It also holds the one count of
+  ticks, `ticks_started()`, which the step socket and the packet trace report as `tick`; a server
+  with neither reads 0.
 - `voidmc::pace::Dice`, the generator, with a fixed seed. Draw from it with the `Chance` system
   parameter, or with `pace::roll(world, ..)`. Without it, the draw uses the thread's generator.
 

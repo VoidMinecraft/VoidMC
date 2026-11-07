@@ -38,7 +38,7 @@ then have no `system`. The server warns when the layer is missing, but not in th
 
 | Field | Meaning |
 |---|---|
-| `tick` | `voidmc::server_tick::current()`: the number of updates started. |
+| `tick` | `voidmc::pace::of(world).ticks_started()`: the number of ticks started, 1 during the first. |
 | `dir` | `out` or `in`. |
 | `client` | The connection id. It changes with whatever connected first. |
 | `player` | The name given at login. Absent before it. |

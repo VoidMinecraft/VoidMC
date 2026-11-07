@@ -23,10 +23,11 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, TryLockError};
 
-use bevy_app::{App, Last, Plugin};
+use bevy_app::{App, First, Last, Plugin};
+use bevy_ecs::prelude::*;
 use serde::Serialize;
 use tracing::span::{Attributes, Id};
 use tracing::{Subscriber, field};
@@ -36,7 +37,7 @@ use tracing_subscriber::registry::LookupSpan;
 use voidmc_codec::{Encode, PacketName};
 use voidmc_protocol::clientbound::ClientboundPacket;
 
-use crate::server_tick;
+use crate::pace::{self, Pace};
 
 const PATH_VARIABLE: &str = "VOID_TRACE";
 const B64_VARIABLE: &str = "VOID_TRACE_B64";
@@ -138,7 +139,6 @@ impl Sink {
             self.stopped = true;
             tracing::error!(
                 %error,
-                tick = server_tick::current(),
                 "Packet trace stopped: the file ends here and its last line may be cut"
             );
         }
@@ -148,6 +148,7 @@ impl Sink {
 struct Tracer {
     sink: Mutex<Sink>,
     with_bytes: bool,
+    tick: AtomicU64,
 }
 
 impl Tracer {
@@ -160,12 +161,13 @@ impl Tracer {
                 stopped: false,
             }),
             with_bytes,
+            tick: AtomicU64::new(0),
         }
     }
 
     fn prepare(&self, dir: Direction, client: u32, packet: String, body: &[u8]) -> Pending {
         Pending {
-            tick: server_tick::current(),
+            tick: self.tick.load(Ordering::Relaxed),
             dir,
             client,
             packet,
@@ -299,8 +301,9 @@ impl Plugin for PacketTracePlugin {
             );
         }
         flush_on_panic();
-        server_tick::install(app);
-        app.add_systems(Last, flush_trace);
+        pace::count_ticks(app);
+        app.add_systems(First, note_tick.after(pace::advance))
+            .add_systems(Last, flush_trace);
     }
 }
 
@@ -317,6 +320,13 @@ fn flush_on_panic() {
         }
         previous(info);
     }));
+}
+
+/// The lines are written where no world is at hand: the tracer keeps the tick of [`Pace`].
+fn note_tick(pace: Res<Pace>) {
+    if let Some(tracer) = TRACER.get() {
+        tracer.tick.store(pace.ticks_started(), Ordering::Relaxed);
+    }
 }
 
 fn flush_trace() {
