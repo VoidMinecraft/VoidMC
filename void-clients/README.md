@@ -72,7 +72,9 @@ and answers one JSON line.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.
 - `voidc cmd` refuses a client started by another version of the probe or the bot, and says to
-  restart it. The version comes from their sources, so a change cannot be forgotten.
+  restart it. The version is a hash of their sources outside tests (the probe, the bot,
+  conditions, framing, launch), not of the protocol crates. A client still loading is not checked.
+- The bot renders translated chat from the game's `en_us.json`, read from the jar with `unzip`.
 
 Limits and levels live in `clients.toml`, built into the binary. Runtime state lives in
 `~/.voidc`, `VOIDC_HOME` moves it.
