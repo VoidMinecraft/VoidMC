@@ -14,6 +14,10 @@ How was this tested?
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `cargo test --workspace`
 
+## Screenshots
+
+If the change is visible in game, add captures. Otherwise remove this section.
+
 ## Breaking changes
 
 - [ ] No
