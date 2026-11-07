@@ -195,11 +195,13 @@ struct Outbox<'a> {
 }
 
 impl Outbox<'_> {
-    #[cfg_attr(not(feature = "packet-trace"), allow(unused_variables))]
     fn deliver(&self, entity: Entity, client_id: u32, packet: ClientboundPacket) {
         #[cfg(feature = "packet-trace")]
         let traced = crate::packet_trace::packet_out(client_id, &packet);
         let dropped = self.queue(entity, client_id, packet);
+        if dropped.is_none() {
+            crate::step::count_sent();
+        }
         #[cfg(feature = "packet-trace")]
         crate::packet_trace::packet_out_done(traced, dropped);
     }
@@ -450,6 +452,7 @@ impl<'w> WorldPlayers<'w> {
 #[cfg(test)]
 mod tests {
     use bevy_app::{App, Update};
+    use bevy_ecs::system::SystemState;
     use flume::Receiver;
     use voidmc_protocol::clientbound::{self, KeepAlive};
 
@@ -492,6 +495,34 @@ mod tests {
 
     fn loaded(chunks: &[(i32, i32)]) -> LoadedChunks {
         LoadedChunks(chunks.iter().map(|&(x, z)| ChunkPos::new(x, z)).collect())
+    }
+
+    #[test]
+    fn a_stepped_server_counts_what_players_send() {
+        let (mut app, _rx) = test_app();
+        let player = app.world_mut().spawn(ClientId(9)).id();
+        crate::step::start_counting();
+        let before = crate::step::sent_on_this_thread();
+        let mut state = SystemState::<Players>::new(app.world_mut());
+        state.get_mut(app.world_mut()).send(player, keep_alive(1));
+        assert_eq!(crate::step::sent_on_this_thread(), before + 1);
+    }
+
+    #[test]
+    fn a_lost_packet_does_not_count_for_the_barrier() {
+        let (mut app, _rx) = test_app();
+        let (gone_tx, gone_rx) = flume::bounded(1);
+        drop(gone_rx);
+        let player = app.world_mut().spawn(ClientId(9)).id();
+        let (_connected_tx, connected_rx) = flume::unbounded();
+        let mut senders = ClientSenders::new(connected_rx);
+        senders.register(player, gone_tx);
+        app.insert_resource(senders);
+        crate::step::start_counting();
+        let before = crate::step::sent_on_this_thread();
+        let mut state = SystemState::<Players>::new(app.world_mut());
+        state.get_mut(app.world_mut()).send(player, keep_alive(1));
+        assert_eq!(crate::step::sent_on_this_thread(), before);
     }
 
     #[test]

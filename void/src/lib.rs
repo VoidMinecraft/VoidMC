@@ -30,6 +30,7 @@ mod server;
 mod server_status;
 pub mod server_tick;
 pub mod sounds;
+mod step;
 pub mod systems;
 pub mod titles;
 pub mod toasts;

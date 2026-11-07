@@ -49,8 +49,31 @@ let config = ServerConfigBuilder::new()
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
+| `step_socket` | `Option<PathBuf>` | `None` | Unix socket that drives the server tick by tick. See [Stepped server](#stepped-server) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
+
+## Stepped server
+
+`ServerConfigBuilder::step_socket(path)` replaces the tick loop. The server starts locked, runs no
+tick by itself, and takes one order per line on the socket. Each order gets one JSON line back with
+`tick`, `sent` and `received`:
+
+| Order | Effect |
+|---|---|
+| `step <count> [received]` | Waits until `received` packets have arrived, then runs `count` ticks. After 10 s it answers `"ok":false` and runs nothing |
+| `status` | Reports the counters |
+| `stop` | Writes `AppExit`, runs one last tick so that systems see it, and ends the server |
+
+`sent` and `received` count packets to and from all clients, so the barrier holds for one client.
+The packet ingest budget is off in this mode, since it depends on the clock. Without the option the
+server keeps its normal loop, and the only addition is one relaxed load per packet sent.
+
+The runner blocks on the socket, so this mode leaves out `TerminalCtrlCHandlerPlugin`: Ctrl-C ends
+the process at once, without `AppExit`. The server refuses a socket that another server answers on,
+and exits with an error when it cannot bind it.
+
+`voidc step` drives this socket together with a real client: see `void-clients/README.md`.
 
 ## Packet limits
 

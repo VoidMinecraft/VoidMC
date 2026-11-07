@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use bevy_ecs::prelude::*;
 use voidmc_net::socket::FrameLimits;
 
@@ -42,6 +44,8 @@ pub struct ServerConfig {
     pub max_chunk_generations_per_tick: usize,
     pub slow_tick_ms: u64,
     pub frame_limits: FrameLimits,
+    /// When set, the server stands still and runs a tick only when this unix socket says so.
+    pub step_socket: Option<PathBuf>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
 }
@@ -67,6 +71,7 @@ impl Default for ServerConfig {
             max_chunk_generations_per_tick: 8,
             slow_tick_ms: 200,
             frame_limits: FrameLimits::default(),
+            step_socket: None,
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
         }
@@ -172,6 +177,11 @@ impl ServerConfigBuilder {
 
     pub fn frame_limits(mut self, limits: FrameLimits) -> Self {
         self.config.frame_limits = limits;
+        self
+    }
+
+    pub fn step_socket(mut self, socket: impl Into<PathBuf>) -> Self {
+        self.config.step_socket = Some(socket.into());
         self
     }
 

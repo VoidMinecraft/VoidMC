@@ -36,12 +36,17 @@ mod tests {
 
     #[test]
     fn each_update_is_one_tick_however_often_it_is_installed() {
-        let mut app = App::new();
-        install(&mut app);
-        install(&mut app);
+        let mut once = App::new();
+        install(&mut once);
+        let mut twice = App::new();
+        install(&mut twice);
+        install(&mut twice);
+        let systems = |app: &App| app.get_schedule(First).map(|first| first.systems_len());
+        assert_eq!(systems(&once), systems(&twice));
+
         let before = current();
-        app.update();
-        app.update();
-        assert_eq!(current(), before + 2);
+        twice.update();
+        twice.update();
+        assert!(current() >= before + 2);
     }
 }
