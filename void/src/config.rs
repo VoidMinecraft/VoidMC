@@ -4,10 +4,6 @@ use voidmc_net::socket::FrameLimits;
 use crate::registry::RegistryDataStore;
 use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
 
-fn flag_is_on(value: Option<&str>) -> bool {
-    value.is_some_and(|value| !matches!(value, "" | "0" | "false"))
-}
-
 /// Spawn position in the world.
 pub struct SpawnPosition {
     pub x: f64,
@@ -45,9 +41,6 @@ pub struct ServerConfig {
     pub packet_ingest_budget_ms: u64,
     pub max_chunk_generations_per_tick: usize,
     pub slow_tick_ms: u64,
-    /// A player keeps its entity id across restarts, which is what lets `voidmc-keeper`
-    /// hand a client over without touching its world. On by `VOIDMC_STABLE_PLAYER_IDS`.
-    pub stable_player_ids: bool,
     pub frame_limits: FrameLimits,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
@@ -73,9 +66,6 @@ impl Default for ServerConfig {
             packet_ingest_budget_ms: 4,
             max_chunk_generations_per_tick: 8,
             slow_tick_ms: 200,
-            stable_player_ids: flag_is_on(
-                std::env::var("VOIDMC_STABLE_PLAYER_IDS").ok().as_deref(),
-            ),
             frame_limits: FrameLimits::default(),
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
@@ -180,11 +170,6 @@ impl ServerConfigBuilder {
         self
     }
 
-    pub fn stable_player_ids(mut self, stable: bool) -> Self {
-        self.config.stable_player_ids = stable;
-        self
-    }
-
     pub fn frame_limits(mut self, limits: FrameLimits) -> Self {
         self.config.frame_limits = limits;
         self
@@ -233,7 +218,6 @@ pub struct ServerConfigResource {
     pub packet_ingest_budget_ms: u64,
     pub max_chunk_generations_per_tick: usize,
     pub slow_tick_ms: u64,
-    pub stable_player_ids: bool,
 }
 
 impl From<&ServerConfig> for ServerConfigResource {
@@ -258,22 +242,6 @@ impl From<&ServerConfig> for ServerConfigResource {
             packet_ingest_budget_ms: config.packet_ingest_budget_ms,
             max_chunk_generations_per_tick: config.max_chunk_generations_per_tick,
             slow_tick_ms: config.slow_tick_ms,
-            stable_player_ids: config.stable_player_ids,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_flag_set_to_nothing_or_to_no_is_off() {
-        for value in [None, Some(""), Some("0"), Some("false")] {
-            assert!(!flag_is_on(value), "{value:?}");
-        }
-        for value in [Some("1"), Some("true")] {
-            assert!(flag_is_on(value), "{value:?}");
         }
     }
 }
