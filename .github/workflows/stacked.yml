@@ -1,0 +1,32 @@
+name: Stacked
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: stacked-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stacked:
+    name: stacked on its base
+    if: github.base_ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: The pull request contains the head of its base
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+          if ! git merge-base --is-ancestor "origin/$BASE" HEAD; then
+            echo "::error::origin/$BASE has commits this branch lacks: rebase it on $BASE"
+            exit 1
+          fi
