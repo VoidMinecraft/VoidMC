@@ -1,3 +1,4 @@
+mod args;
 mod bot;
 mod check;
 mod compare;
@@ -11,13 +12,13 @@ mod hangup;
 mod held;
 mod launch;
 mod lifecycle;
-mod perf;
 mod registry;
 mod scenario;
 mod step;
 mod trace;
 mod version;
 
+use std::io::Write;
 use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -43,8 +44,6 @@ const USAGE: &str = "voidc: the clients of the agents
                                             compares two pictures by zones, writes the difference
   voidc check <frames> [cut=T] [jump=N] [turn=N] [flash=N] [images=dir]
                                             looks for jumps, half turns and flashes in a recording
-  voidc perf <name> [all|metrics|gpu|jfr|ab clouds|ab particles]
-                                            what a frame costs, on the CPU and on the GPU
   voidc down <name>                         stops a client
   voidc forget <name>                       stops it and deletes its folder
   voidc list                                every client and its state
@@ -52,13 +51,6 @@ const USAGE: &str = "voidc: the clients of the agents
   voidc trace <file> | diff <a> <b>         reads a packet trace, see trace --help";
 
 const JOIN_LIMIT: Duration = Duration::from_secs(90);
-
-fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter()
-        .position(|arg| arg == name)
-        .and_then(|at| args.get(at + 1))
-        .cloned()
-}
 
 fn parse_size(text: &str) -> Result<(u32, u32), String> {
     let (width, height) = text.split_once('x').ok_or("--size is WxH")?;
@@ -79,8 +71,9 @@ fn wait_in_game(name: &str) -> Result<(), String> {
                 log.display()
             ));
         }
-        if let Ok(line) = control::chore(name, Chore::State, Duration::from_secs(5)) {
-            let reply: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+        if let Ok(line) = control::chore_line(name, Chore::State, Duration::from_secs(5)) {
+            let reply: Value = serde_json::from_str(&line)
+                .map_err(|e| format!("{name} answered state with no JSON: {e}"))?;
             if reply["state"] == "connected" {
                 println!(
                     "{name}: in game after {:.1} s",
@@ -101,7 +94,7 @@ fn wait_in_game(name: &str) -> Result<(), String> {
 fn client_of(args: &[String], level: Level) -> Result<Client, String> {
     let feature = args.first().ok_or("which feature?")?.clone();
     let name = registry::slug(&feature)?;
-    let port = match flag(args, "--port") {
+    let port = match args::flag(args, "--port") {
         Some(port) => port.parse().map_err(|_| "bad port")?,
         None => registry::lease_of(&feature)?
             .ok_or("no port: pass --port, or take one with voidc port")?,
@@ -112,14 +105,14 @@ fn client_of(args: &[String], level: Level) -> Result<Client, String> {
         port,
         level,
         pid: 0,
-        fps: flag(args, "--fps")
+        fps: args::flag(args, "--fps")
             .map(|fps| fps.parse().map_err(|_| "bad fps"))
             .transpose()?,
-        size: flag(args, "--size")
+        size: args::flag(args, "--size")
             .as_deref()
             .map(parse_size)
             .transpose()?,
-        jfr: args.iter().any(|arg| arg == "--jfr"),
+        jfr: args::has(args, "--jfr"),
     })
 }
 
@@ -156,11 +149,14 @@ fn line_of(client: &Client) -> String {
     } else if client.level == Level::Play {
         "playing".to_string()
     } else {
-        control::chore(&client.name, Chore::State, Duration::from_secs(3))
-            .ok()
-            .and_then(|line| serde_json::from_str::<Value>(&line).ok())
-            .and_then(|reply| reply["state"].as_str().map(str::to_string))
-            .unwrap_or_else(|| "starting".to_string())
+        control::answered(control::chore(
+            &client.name,
+            Chore::State,
+            Duration::from_secs(3),
+        ))
+        .ok()
+        .and_then(|reply| reply["state"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "starting".to_string())
     };
     format!(
         "{:<24} {:<7} {:<6} {state}",
@@ -176,7 +172,8 @@ fn list() {
     }
 }
 
-fn cmd(args: &[String]) -> Result<(), String> {
+/// Shows the reply as the probe wrote it: its keys in their order, its numbers as they are.
+fn cmd(args: &[String], out: &mut impl Write) -> Result<(), String> {
     let name = args.first().ok_or("which client?")?;
     let client = registry::load(name).ok_or_else(|| format!("unknown client {name}"))?;
     if client.level == Level::Play {
@@ -184,10 +181,11 @@ fn cmd(args: &[String]) -> Result<(), String> {
     }
     let verb = args[1..].join(" ");
     condition::check(&verb, client.level)?;
-    let reply = control::ask(name, &verb, control::timeout_of(&verb))?;
-    println!("{reply}");
-    let parsed: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
-    if parsed["ok"] == true {
+    let line = control::ask_line(name, &verb)?;
+    writeln!(out, "{line}").map_err(|e| e.to_string())?;
+    let reply: Value = serde_json::from_str(&line)
+        .map_err(|e| format!("client {name} answered {verb} with no JSON: {e}"))?;
+    if reply["ok"] == true {
         Ok(())
     } else {
         Err(String::new())
@@ -205,7 +203,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "up" => {
-            let level = flag(rest, "--level")
+            let level = args::flag(rest, "--level")
                 .as_deref()
                 .map_or(Ok(Level::Render), Level::parse)?;
             if level == Level::Play {
@@ -214,9 +212,9 @@ fn run() -> Result<(), String> {
             up(&registry, rest, level)
         }
         "play" => up(&registry, rest, Level::Play),
-        "cmd" => cmd(rest),
+        "cmd" => cmd(rest, &mut std::io::stdout()),
         "step" => {
-            let level = flag(rest, "--level")
+            let level = args::flag(rest, "--level")
                 .as_deref()
                 .map_or(Ok(Level::Render), Level::parse)?;
             step::run(&registry, client_of(rest, level)?, rest)
@@ -236,7 +234,6 @@ fn run() -> Result<(), String> {
         ),
         "compare" => compare::command(rest),
         "check" => check::command(rest),
-        "perf" => perf::command(rest),
         "down" => lifecycle::down(rest.first().ok_or("which client?")?),
         "forget" => lifecycle::forget(rest.first().ok_or("which client?")?),
         "list" => {
@@ -310,6 +307,64 @@ mod tests {
     fn cmd_refuses_a_probe_of_another_version() {
         let fake = control::fake::FakeClient::stale(Level::Render);
         let args = [control::fake::NAME, "act", "map"].map(String::from);
-        fake.assert_refused(cmd(&args));
+        fake.assert_refused(cmd(&args, &mut Vec::new()));
+    }
+
+    fn answering(line: &'static str) -> control::fake::FakeClient {
+        control::fake::FakeClient::scripted(
+            Level::Render,
+            Box::new(move |verb| match verb {
+                "state" => control::fake::Reply::current(
+                    Duration::ZERO,
+                    serde_json::json!({"ok": true, "state": "connected"}),
+                ),
+                _ => control::fake::Reply {
+                    after: Duration::ZERO,
+                    line: line.to_string(),
+                },
+            }),
+        )
+    }
+
+    fn cmd_shows(line: &'static str) -> (Result<(), String>, String) {
+        let _fake = answering(line);
+        let mut out = Vec::new();
+        let args = [control::fake::NAME, "act", "map"].map(String::from);
+        let result = cmd(&args, &mut out);
+        (result, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn cmd_shows_the_reply_as_the_probe_wrote_it() {
+        let line = r#"{"z":1.0E-5,"ok":true,"big":12345678901234567890123}"#;
+        assert_eq!(cmd_shows(line), (Ok(()), format!("{line}\n")));
+        let refused = r#"{"ok":false,"error":"no"}"#;
+        assert_eq!(
+            cmd_shows(refused),
+            (Err(String::new()), format!("{refused}\n"))
+        );
+    }
+
+    #[test]
+    fn cmd_shows_a_reply_it_cannot_read_and_fails() {
+        let line = r#"{"ok":true,"speed":NaN}"#;
+        let (result, shown) = cmd_shows(line);
+        assert_eq!(shown, format!("{line}\n"));
+        assert!(result.unwrap_err().contains("no JSON"));
+    }
+
+    #[test]
+    fn a_state_that_is_no_json_ends_the_wait_for_the_game() {
+        let _fake = control::fake::FakeClient::scripted(
+            Level::Render,
+            Box::new(|_| control::fake::Reply {
+                after: Duration::ZERO,
+                line: "not json".to_string(),
+            }),
+        );
+        let start = Instant::now();
+        let error = wait_in_game(control::fake::NAME).unwrap_err();
+        assert!(error.contains("no JSON"), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }

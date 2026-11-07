@@ -7,6 +7,8 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.StandardProtocolFamily;
 import java.net.UnixDomainSocketAddress;
 import java.nio.channels.Channels;
@@ -67,6 +69,9 @@ public class Probe {
   private static final String SERVER = System.getProperty("void.server");
   private static final String VERSION = System.getProperty("void.version", "");
   private static final long IDLE_MS = Long.getLong("void.idle.minutes", 30) * 60_000;
+  private static final long LOOK_MS = 100;
+  private static final int PORT_CHECK_MS = 200;
+  private static final Watch WATCH = new Watch(new Retry(500, 2_000), Throwable::printStackTrace);
   private static volatile long lastVerb = System.currentTimeMillis();
   private static volatile boolean shown;
   private static volatile int reconnects;
@@ -144,16 +149,24 @@ public class Probe {
 
   private static void watch() throws Exception {
     while (true) {
-      Thread.sleep(2000);
+      Thread.sleep(LOOK_MS);
       Minecraft mc = Minecraft.getInstance();
       if (mc == null) continue;
       if (!shown && System.currentTimeMillis() - lastVerb > IDLE_MS) {
         mc.execute(mc::stop);
         return;
       }
-      if (!Stepping.virtual() && mc.screen != null && mc.screen.getClass().getSimpleName().equals("DisconnectedScreen")) {
-        mc.execute(() -> reconnect(mc));
-      }
+      WATCH.look(System.nanoTime() / 1_000_000, mc.level != null, Stepping.virtual() ? null : mc.screen, Probe::portOpen, mc::execute, () -> reconnect(mc));
+    }
+  }
+
+  private static boolean portOpen() {
+    ServerAddress address = ServerAddress.parseString(SERVER);
+    try (Socket socket = new Socket()) {
+      socket.connect(new InetSocketAddress(address.getHost(), address.getPort()), PORT_CHECK_MS);
+      return true;
+    } catch (IOException closed) {
+      return false;
     }
   }
 
@@ -288,7 +301,6 @@ public class Probe {
       case "step" -> reply.putAll(Stepping.step(mc, Double.parseDouble(w[1]), w.length > 2 ? Integer.parseInt(w[2]) : 1));
       case "fence" -> reply.put("in", Stepping.fence(Long.parseLong(w[1])));
       case "sent" -> reply.putAll(Stepping.counters());
-      case "perf" -> reply.putAll(Perf.run(mc, w));
       case "quit" -> mc.execute(mc::stop);
       default -> throw new IllegalArgumentException("unknown verb " + verb);
     }

@@ -431,7 +431,8 @@ fn test_with_setup() {
 
 `voidc` starts Minecraft clients that open no window, so that tests never take the focus. It
 offers three levels, from a bot of a few megabytes to a client that renders and takes captures,
-and a page that shows them all. See [void-clients/README.md](https://github.com/VoidMinecraft/VoidMC/blob/main/void-clients/README.md).
+and a page that shows them all. See [void-clients/README.md](https://github.com/VoidMinecraft/VoidMC/blob/main/void-clients/README.md)
+for the commands and [Test clients](./voidc.md) for the rules behind them.
 
 ```sh
 cargo install --path void-clients

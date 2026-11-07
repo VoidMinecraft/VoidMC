@@ -1,14 +1,10 @@
 use serde_json::Value;
 
-const SOURCES: [&str; 8] = [
-    include_str!("../probe/Probe.java"),
-    include_str!("../probe/Perf.java"),
-    include_str!("../probe/HideAgent.java"),
-    include_str!("../probe/Condition.java"),
-    include_str!("bot.rs"),
-    include_str!("condition.rs"),
-    include_str!("frame.rs"),
-    include_str!("launch.rs"),
+const RUST: [(&str, &str); 4] = [
+    ("bot.rs", include_str!("bot.rs")),
+    ("condition.rs", include_str!("condition.rs")),
+    ("frame.rs", include_str!("frame.rs")),
+    ("launch.rs", include_str!("launch.rs")),
 ];
 
 fn without_tests(source: &str) -> &str {
@@ -18,8 +14,25 @@ fn without_tests(source: &str) -> &str {
 }
 
 pub fn current() -> String {
-    let code: Vec<&str> = SOURCES.iter().map(|source| without_tests(source)).collect();
-    format!("{:016x}", of(&code))
+    format!("{:016x}", of_probe(&crate::launch::PROBE_SOURCES, &RUST))
+}
+
+pub fn probe_build() -> String {
+    format!("{:016x}", of_build(&crate::launch::PROBE_SOURCES))
+}
+
+fn of_probe(probe: &[(&str, &str)], rust: &[(&str, &str)]) -> u64 {
+    let code: Vec<&str> = probe
+        .iter()
+        .map(|(_, source)| *source)
+        .chain(rust.iter().map(|(_, source)| without_tests(source)))
+        .collect();
+    of(&code)
+}
+
+fn of_build(probe: &[(&str, &str)]) -> u64 {
+    let code: Vec<&str> = probe.iter().map(|(_, source)| *source).collect();
+    of(&code)
 }
 
 fn of(sources: &[&str]) -> u64 {
@@ -62,9 +75,8 @@ mod tests {
         let retested = format!("{code}\n#[cfg(test)]\nmod tests {{ fn u() {{}} }}");
         assert_eq!(without_tests(&tested), without_tests(&retested));
         assert!(
-            SOURCES[4..]
-                .iter()
-                .all(|source| source.contains("\n#[cfg(test)]\nmod tests"))
+            RUST.iter()
+                .all(|(_, source)| source.contains("\n#[cfg(test)]\nmod tests"))
         );
     }
 
@@ -72,5 +84,39 @@ mod tests {
     fn any_change_to_a_source_is_a_new_version() {
         assert_ne!(of(&["a", "b"]), of(&["a", "c"]));
         assert_ne!(of(&["ab", ""]), of(&["a", "b"]));
+        let probe = crate::launch::PROBE_SOURCES;
+        assert_eq!(current(), format!("{:016x}", of_probe(&probe, &RUST)));
+        assert_eq!(probe_build(), format!("{:016x}", of_build(&probe)));
+        let sources: Vec<&str> = probe.iter().map(|(_, source)| *source).collect();
+        assert_eq!(of_build(&probe), of(&sources));
+        for changed in 0..probe.len() {
+            let mut edited = probe;
+            edited[changed].1 = "";
+            let name = probe[changed].0;
+            assert_ne!(of_probe(&edited, &RUST), of_probe(&probe, &RUST), "{name}");
+            assert_ne!(of_build(&edited), of_build(&probe), "{name}");
+        }
+        let names: Vec<&str> = RUST.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["bot.rs", "condition.rs", "frame.rs", "launch.rs"]);
+        for changed in 0..RUST.len() {
+            let mut edited = RUST;
+            edited[changed].1 = "";
+            assert_ne!(
+                of_probe(&probe, &edited),
+                of_probe(&probe, &RUST),
+                "{changed}"
+            );
+            let retested = format!(
+                "{}\n#[cfg(test)]\nmod tests {{ fn other() {{}} }}",
+                without_tests(RUST[changed].1)
+            );
+            let mut tests_only = RUST;
+            tests_only[changed].1 = &retested;
+            assert_eq!(
+                of_probe(&probe, &tests_only),
+                of_probe(&probe, &RUST),
+                "{changed}"
+            );
+        }
     }
 }

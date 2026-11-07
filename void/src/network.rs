@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bevy_app::{App, Plugin, PreUpdate};
@@ -127,6 +128,7 @@ pub struct ClientSenders {
     connected: Receiver<ClientConnected>,
     pending: HashMap<u32, Sender<OutgoingPacket>>,
     active: HashMap<Entity, ClientSender>,
+    sent: Option<Arc<AtomicU64>>,
 }
 
 impl ClientSenders {
@@ -135,7 +137,18 @@ impl ClientSenders {
             connected,
             pending: HashMap::new(),
             active: HashMap::new(),
+            sent: None,
         }
+    }
+
+    /// Counts the packets queued from now on, for the barrier of a stepped server.
+    #[cfg(unix)]
+    pub(crate) fn count_sent(&mut self, sent: Arc<AtomicU64>) {
+        self.sent = Some(sent);
+    }
+
+    pub(crate) fn sent(&self) -> Option<&AtomicU64> {
+        self.sent.as_deref()
     }
 
     pub fn get(&self, entity: Entity) -> Option<&ClientSender> {

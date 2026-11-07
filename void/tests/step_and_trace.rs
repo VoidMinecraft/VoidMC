@@ -1,4 +1,4 @@
-#![cfg(feature = "packet-trace")]
+#![cfg(all(unix, feature = "packet-trace"))]
 
 //! The stepped runner and the packet trace in one server: one tick number, one packet count.
 

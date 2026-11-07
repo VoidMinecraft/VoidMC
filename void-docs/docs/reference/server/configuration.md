@@ -49,7 +49,7 @@ let config = ServerConfigBuilder::new()
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
-| `step_socket` | `Option<PathBuf>` | `None` | Unix socket that drives the server tick by tick. See [Stepped server](#stepped-server) |
+| `step_socket` | `Option<PathBuf>` | `None` | Unix socket that drives the server tick by tick, on Unix only: the field and its builder method do not exist elsewhere. See [Stepped server](#stepped-server) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
 
@@ -66,8 +66,8 @@ tick by itself, and takes one order per line on the socket. Each order gets one 
 | `stop` | Writes `AppExit`, runs one last tick so that systems see it, and ends the server |
 
 `sent` and `received` count packets to and from all clients, so the barrier holds for one client.
-Without the option the server keeps its normal loop, and the only addition is one relaxed load per
-packet sent.
+Without the option the server keeps its normal loop, and the only addition is the check of an empty
+counter per packet sent.
 
 ### Time and chance
 
@@ -90,7 +90,9 @@ that receive the same packets at the same ticks give an empty `voidc trace diff`
 resources that only it can build:
 
 - `voidmc::pace::Pace`, the time. Read it with the `Clock` system parameter, or with
-  `pace::of(world)`. Without it, the time is the wall clock.
+  `pace::of(world)`. Without it, the time is the wall clock. It also holds the one count of
+  ticks, `ticks_started()`, which the step socket and the packet trace report as `tick`; a server
+  with neither reads 0.
 - `voidmc::pace::Dice`, the generator, with a fixed seed. Draw from it with the `Chance` system
   parameter, or with `pace::roll(world, ..)`. Without it, the draw uses the thread's generator.
 

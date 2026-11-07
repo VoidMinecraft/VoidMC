@@ -24,9 +24,43 @@ const LOGIN: &str = "login";
 const CONFIGURATION: &str = "configuration";
 const PLAY: &str = "play";
 const PACK_ACCEPTED_DOWNLOADED_LOADED: [i32; 3] = [3, 4, 0];
-const RECONNECT_PAUSE: Duration = Duration::from_secs(1);
+const FIRST_PAUSE: Duration = Duration::from_millis(100);
+const LONGEST_PAUSE: Duration = Duration::from_secs(1);
+const STEADY_PLAY: Duration = Duration::from_secs(1);
+const CONNECT_LIMIT: Duration = Duration::from_secs(2);
 const SILENCE_LIMIT: Duration = Duration::from_secs(30);
 const IDLE_CHECK: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+struct Backoff {
+    failures: u32,
+}
+
+#[derive(Debug, PartialEq)]
+enum Ending {
+    PortClosed,
+    Ended(Option<Duration>),
+}
+
+impl Backoff {
+    fn after(&mut self, ending: Ending) -> Duration {
+        let played = match ending {
+            Ending::PortClosed => {
+                self.failures = 0;
+                return FIRST_PAUSE;
+            }
+            Ending::Ended(played) => played,
+        };
+        if played.is_some_and(|played| played >= STEADY_PLAY) {
+            self.failures = 0;
+        }
+        let pause = FIRST_PAUSE
+            .saturating_mul(1 << self.failures.min(4))
+            .min(LONGEST_PAUSE);
+        self.failures = self.failures.saturating_add(1);
+        pause
+    }
+}
 
 macro_rules! packets {
     ($($constant:ident: $state:ident $direction:literal $name:literal,)*) => {
@@ -92,10 +126,42 @@ struct World {
     bytes: u64,
     reconnects: u64,
     joined_ms: Option<u128>,
+    playing_since: Option<Instant>,
     last_error: Option<String>,
 }
 
 impl World {
+    fn enter_play(&mut self, started: Instant) -> bool {
+        if self.in_play {
+            return false;
+        }
+        self.in_play = true;
+        self.playing_since = Some(Instant::now());
+        self.joined_ms = Some(started.elapsed().as_millis());
+        true
+    }
+
+    fn end_session(&mut self, error: Option<std::io::Error>) -> Ending {
+        let port_closed = error
+            .as_ref()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::ConnectionRefused);
+        let played = self.playing_since.take().map(|since| since.elapsed());
+        if self.in_play {
+            self.reconnects += 1;
+        }
+        self.in_play = false;
+        self.connected = false;
+        self.forget_level();
+        if let Some(error) = error {
+            self.last_error = Some(error.to_string());
+        }
+        if port_closed {
+            Ending::PortClosed
+        } else {
+            Ending::Ended(played)
+        }
+    }
+
     fn forget_level(&mut self) {
         self.entities.clear();
         self.chunks.clear();
@@ -539,9 +605,7 @@ fn handle(
                     flags: 0,
                 }),
             )?;
-            if !w.in_play {
-                w.in_play = true;
-                w.joined_ms = Some(started.elapsed().as_millis());
+            if w.enter_play(started) {
                 send(writer, &sb::PlayPacket::PlayerLoaded(sb::PlayerLoaded {}))?;
             }
         }
@@ -606,7 +670,16 @@ fn handle(
 
 fn session(name: &str, port: u16, writer: &Writer, world: &Shared) -> std::io::Result<()> {
     let started = Instant::now();
-    let stream = TcpStream::connect(("127.0.0.1", port))?;
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let stream = TcpStream::connect_timeout(&address, CONNECT_LIMIT).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "the bot waited up to {} s for {address} to accept: {error}",
+                CONNECT_LIMIT.as_secs()
+            ),
+        )
+    })?;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(SILENCE_LIMIT))?;
     stream.set_write_timeout(Some(SILENCE_LIMIT))?;
@@ -625,25 +698,21 @@ fn session(name: &str, port: u16, writer: &Writer, world: &Shared) -> std::io::R
 
 /// Stays on its server: a restart only costs it a reconnection.
 fn stay_connected(name: String, port: u16, writer: Writer, world: Shared) {
+    let mut backoff = Backoff::default();
     loop {
-        let result = session(&name, port, &writer, &world);
-        let was_in_play = {
-            let mut w = world.lock().unwrap();
-            let was = w.in_play;
-            w.in_play = false;
-            w.connected = false;
-            w.forget_level();
-            if let Err(error) = result {
-                w.last_error = Some(error.to_string());
-            }
-            was
-        };
-        *writer.lock().unwrap() = None;
-        if was_in_play {
-            world.lock().unwrap().reconnects += 1;
-        }
-        thread::sleep(RECONNECT_PAUSE);
+        thread::sleep(step(&name, port, &writer, &world, &mut backoff));
     }
+}
+
+fn step(name: &str, port: u16, writer: &Writer, world: &Shared, backoff: &mut Backoff) -> Duration {
+    let result = session(name, port, writer, world);
+    *writer.lock().unwrap() = None;
+    pause_after(backoff, world, result)
+}
+
+fn pause_after(backoff: &mut Backoff, world: &Shared, result: std::io::Result<()>) -> Duration {
+    let ending = world.lock().unwrap().end_session(result.err());
+    backoff.after(ending)
 }
 
 fn answer(line: &str, writer: &Writer, world: &Shared) -> Result<Value, String> {
@@ -767,6 +836,166 @@ pub fn run(name: &str, port: u16, idle: Duration) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::hangup::{hang_up, held_by_a_child};
+
+    #[test]
+    fn a_reconnection_starts_quick_and_slows_to_one_second() {
+        let mut backoff = Backoff::default();
+        let pauses: Vec<u128> = (0..7)
+            .map(|_| backoff.after(Ending::Ended(None)).as_millis())
+            .collect();
+        assert_eq!(pauses, [100, 200, 400, 800, 1000, 1000, 1000]);
+        backoff.failures = u32::MAX;
+        assert_eq!(backoff.after(Ending::Ended(None)), LONGEST_PAUSE);
+    }
+
+    #[test]
+    fn a_session_tells_how_it_ended_once() {
+        let mut world = World::default();
+        assert_eq!(world.end_session(None), Ending::Ended(None));
+        assert!(world.enter_play(Instant::now()));
+        assert!(!world.enter_play(Instant::now()));
+        thread::sleep(Duration::from_millis(20));
+        let Ending::Ended(Some(played)) = world.end_session(None) else {
+            panic!("a game that was played tells how long");
+        };
+        assert!(played >= Duration::from_millis(20));
+        assert_eq!(world.reconnects, 1);
+        assert!(!world.in_play);
+        assert_eq!(world.end_session(None), Ending::Ended(None));
+        assert_eq!(world.reconnects, 1);
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert_eq!(world.end_session(Some(refused)), Ending::PortClosed);
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        assert_eq!(world.end_session(Some(reset)), Ending::Ended(None));
+    }
+
+    #[test]
+    fn a_closed_port_is_tried_again_soon_and_starts_the_pauses_over() {
+        let mut backoff = Backoff::default();
+        for _ in 0..5 {
+            backoff.after(Ending::Ended(None));
+        }
+        assert_eq!(backoff.after(Ending::PortClosed), FIRST_PAUSE);
+        assert_eq!(backoff.after(Ending::PortClosed), FIRST_PAUSE);
+        assert_eq!(backoff.after(Ending::Ended(None)), FIRST_PAUSE);
+        assert_eq!(backoff.after(Ending::Ended(None)), FIRST_PAUSE * 2);
+    }
+
+    #[test]
+    fn a_closed_port_is_told_by_the_bot_with_what_it_waited_for() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let world: Shared = Default::default();
+        let writer: Writer = Default::default();
+        let error = session("bot", port, &writer, &world).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("127.0.0.1:{port} to accept")),
+            "{error}"
+        );
+        let mut backoff = Backoff::default();
+        for _ in 0..5 {
+            backoff.after(Ending::Ended(None));
+        }
+        assert_eq!(pause_after(&mut backoff, &world, Err(error)), FIRST_PAUSE);
+        assert_eq!(pause_after(&mut backoff, &world, Ok(())), FIRST_PAUSE);
+    }
+
+    #[test]
+    fn a_step_clears_its_link_and_returns_the_pause_it_computed() {
+        let world: Shared = Default::default();
+        let writer: Writer = Default::default();
+        let mut backoff = Backoff::default();
+        for _ in 0..5 {
+            backoff.after(Ending::Ended(None));
+        }
+        let closing = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        closing.set_nonblocking(true).unwrap();
+        let open_port = closing.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok((stream, _)) = closing.accept() {
+                    drop(stream);
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            false
+        });
+        assert_eq!(
+            step("bot", open_port, &writer, &world, &mut backoff),
+            LONGEST_PAUSE
+        );
+        assert!(server.join().unwrap(), "the bot never reached the server");
+        assert!(writer.lock().unwrap().is_none());
+        let freed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed_port = freed.local_addr().unwrap().port();
+        drop(freed);
+        assert_eq!(
+            step("bot", closed_port, &writer, &world, &mut backoff),
+            FIRST_PAUSE
+        );
+        assert!(writer.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_server_that_never_accepts_is_waited_for_two_seconds() {
+        let listener =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        listener
+            .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        listener.listen(1).unwrap();
+        let address = listener.local_addr().unwrap().as_socket().unwrap();
+        let mut full = Vec::new();
+        while full.len() < 64 {
+            match TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
+                Ok(stream) => full.push(stream),
+                Err(_) => break,
+            }
+        }
+        assert!(full.len() < 64, "the listen queue never filled");
+        let started = Instant::now();
+        let error = session(
+            "bot",
+            address.port(),
+            &Writer::default(),
+            &Shared::default(),
+        )
+        .unwrap_err();
+        let waited = started.elapsed();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut,
+            "the queue held {} connections: {error}",
+            full.len()
+        );
+        assert!(
+            (CONNECT_LIMIT..CONNECT_LIMIT + Duration::from_secs(1)).contains(&waited),
+            "{waited:?} {error}"
+        );
+        assert!(error.to_string().contains("waited up to 2 s"), "{error}");
+    }
+
+    #[test]
+    fn only_a_game_of_a_second_starts_the_pauses_over() {
+        let mut backoff = Backoff::default();
+        for _ in 0..5 {
+            backoff.after(Ending::Ended(None));
+        }
+        let cut_on_arrival = Some(STEADY_PLAY - Duration::from_millis(1));
+        assert_eq!(backoff.after(Ending::Ended(cut_on_arrival)), LONGEST_PAUSE);
+        assert_eq!(backoff.after(Ending::Ended(Some(STEADY_PLAY))), FIRST_PAUSE);
+        assert_eq!(
+            backoff.after(Ending::Ended(Some(Duration::from_millis(10)))),
+            FIRST_PAUSE * 2
+        );
+        assert_eq!(backoff.after(Ending::Ended(None)), FIRST_PAUSE * 4);
+    }
 
     #[test]
     fn leaving_a_level_forgets_what_was_on_it() {

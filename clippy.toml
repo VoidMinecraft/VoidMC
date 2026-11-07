@@ -3,5 +3,5 @@ disallowed-methods = [
     { path = "std::time::SystemTime::now", reason = "read the time through voidmc::pace (Clock::now_millis): a stepped server must not read the wall clock" },
     { path = "rand::thread_rng", allow-invalid = true, reason = "draw through voidmc::pace (Chance, pace::roll): a stepped server draws from a seeded generator" },
     { path = "rand::random", allow-invalid = true, reason = "draw through voidmc::pace (Chance, pace::roll): a stepped server draws from a seeded generator" },
-    { path = "uuid::Uuid::new_v4", allow-invalid = true, reason = "make UUIDs through voidmc::uuids::random_uuid: a stepped server derives them from a seed" },
+    { path = "uuid::Uuid::new_v4", allow-invalid = true, reason = "make UUIDs through voidmc::uuids::next: a stepped server derives them from a seed" },
 ]

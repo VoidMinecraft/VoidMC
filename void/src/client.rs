@@ -210,18 +210,7 @@ impl Client {
     ) -> Result<(), SocketError> {
         match outbound {
             Outbound::Status(packet) => writer.send(&packet).await?,
-            Outbound::Game(outgoing_packet) => match outgoing_packet.packet {
-                clientbound::ClientboundPacket::Status(packet) => writer.send(&packet).await?,
-                clientbound::ClientboundPacket::Login(packet) => writer.send(&packet).await?,
-                clientbound::ClientboundPacket::Configuration(packet) => {
-                    writer.send(&packet).await?
-                }
-                clientbound::ClientboundPacket::ManualConfiguration(packet) => {
-                    writer.send(&packet).await?
-                }
-                clientbound::ClientboundPacket::Play(packet) => writer.send(&packet).await?,
-                clientbound::ClientboundPacket::ManualPlay(packet) => writer.send(&packet).await?,
-            },
+            Outbound::Game(outgoing_packet) => writer.send(&outgoing_packet.packet).await?,
         }
         Ok(())
     }

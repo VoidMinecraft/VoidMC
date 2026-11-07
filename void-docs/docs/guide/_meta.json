@@ -16,6 +16,11 @@
   },
   {
     "type": "file",
+    "name": "voidc",
+    "label": "Test clients"
+  },
+  {
+    "type": "file",
     "name": "development",
     "label": "Development"
   }

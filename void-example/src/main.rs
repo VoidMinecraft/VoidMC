@@ -84,6 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(address) = env_string("VOID_EXAMPLE_ADDRESS") {
         config_builder = config_builder.address(address);
     }
+    #[cfg(unix)]
     if let Some(socket) = env::var_os("VOID_EXAMPLE_STEP_SOCKET") {
         config_builder = config_builder.step_socket(socket);
     }

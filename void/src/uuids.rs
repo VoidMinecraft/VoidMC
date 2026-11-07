@@ -1,8 +1,7 @@
-//! Where the UUIDs the server makes up come from: random, unless a test run asks otherwise.
+//! Where the UUIDs the server makes up come from: random, unless the server is stepped.
 //!
-//! A stepped server makes the n-th UUID of the process a function of a fixed seed and n.
-//! With the `seeded-uuids` feature, `VOID_UUID_SEED=<u64>` does the same on a normal server.
-//! Two runs get the same UUIDs as long as they ask in the same order.
+//! A stepped server makes the n-th UUID of the process a function of a fixed seed and n, so two
+//! stepped runs get the same UUIDs as long as they ask in the same order.
 
 use std::sync::OnceLock;
 
@@ -16,30 +15,9 @@ pub(crate) fn seed_for_steps(seed: u64) {
     let _ = STEPPED.set(SeededUuids::new(seed));
 }
 
-pub fn random_uuid() -> Uuid {
-    if let Some(stepped) = STEPPED.get() {
-        return stepped.next();
-    }
-    configured().map_or_else(fresh, SeededUuids::next)
-}
-
-#[cfg(not(feature = "seeded-uuids"))]
-fn configured() -> Option<&'static SeededUuids> {
-    None
-}
-
-#[cfg(feature = "seeded-uuids")]
-fn configured() -> Option<&'static SeededUuids> {
-    use std::sync::LazyLock;
-
-    static SOURCE: LazyLock<Option<SeededUuids>> = LazyLock::new(|| {
-        let seed = std::env::var("VOID_UUID_SEED").ok()?;
-        match seed.parse() {
-            Ok(seed) => Some(SeededUuids::new(seed)),
-            Err(_) => panic!("VOID_UUID_SEED is not a number: {seed}"),
-        }
-    });
-    SOURCE.as_ref()
+/// A fresh UUID, or the next of the seeded stream on a stepped server.
+pub fn next() -> Uuid {
+    STEPPED.get().map_or_else(fresh, SeededUuids::next)
 }
 
 #[expect(
@@ -113,7 +91,7 @@ mod tests {
     #[test]
     fn a_stepped_server_draws_its_uuids_from_the_stepped_seed() {
         crate::pace::make_stepped(&mut bevy_ecs::world::World::new());
-        let drawn = random_uuid();
+        let drawn = next();
         let stream = SeededUuids::new(crate::pace::STEPPED_SEED);
         assert!((0..100_000).any(|_| stream.next() == drawn));
     }

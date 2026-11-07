@@ -9,18 +9,23 @@ use serde_json::Value;
 use crate::registry::{self, Client, Level, Registry, Settings};
 
 const VERSION: &str = "26.1.2";
-const PROBE: &str = include_str!("../probe/Probe.java");
-const PERF: &str = include_str!("../probe/Perf.java");
-const AGENT: &str = include_str!("../probe/HideAgent.java");
-const CONDITION: &str = include_str!("../probe/Condition.java");
+pub const PROBE_SOURCES: [(&str, &str); 6] = [
+    ("Probe.java", include_str!("../probe/Probe.java")),
+    ("HideAgent.java", include_str!("../probe/HideAgent.java")),
+    ("Condition.java", include_str!("../probe/Condition.java")),
+    ("Retry.java", include_str!("../probe/Retry.java")),
+    ("Guard.java", include_str!("../probe/Guard.java")),
+    ("Watch.java", include_str!("../probe/Watch.java")),
+];
 const NO_RENDER_URL: &str = "https://github.com/headlesshq/headlessmc/releases/download/3.0.0-RC8/headlessmc-lwjgl-3.0.0-RC8-all.jar";
 const NO_RENDER_SHA256: &str = "45c7a0041d580e7c80a190c49140e65c521e992af13229ca71795f3414146009";
 
 /// Whether the probe of this build answers a verb.
 #[cfg(test)]
 pub fn probe_answers(verb: &str) -> bool {
-    PROBE.contains(&format!("case \"{verb}\""))
-        || PROBE.contains(&format!("verb.equals(\"{verb}\")"))
+    let probe = PROBE_SOURCES[0].1;
+    probe.contains(&format!("case \"{verb}\""))
+        || probe.contains(&format!("verb.equals(\"{verb}\")"))
 }
 
 fn minecraft() -> PathBuf {
@@ -89,32 +94,28 @@ fn run(command: &mut Command, what: &str) -> Result<(), String> {
     ))
 }
 
+fn build_dir() -> PathBuf {
+    registry::home()
+        .join("build")
+        .join(format!("{VERSION}-{}", crate::version::probe_build()))
+}
+
 /// Compiled once for each version of the sources, against the game jar itself.
 fn build(classes: &[String]) -> Result<PathBuf, String> {
-    let mut hasher = DefaultHasher::new();
-    (PROBE, PERF, AGENT, CONDITION, VERSION).hash(&mut hasher);
-    let dir = registry::home()
-        .join("build")
-        .join(format!("{:x}", hasher.finish()));
+    let dir = build_dir();
     if dir.join("hide.jar").exists() {
         return Ok(dir);
     }
     let staging = dir.with_extension(format!("tmp{}", std::process::id()));
     fs::create_dir_all(staging.join("src")).map_err(|e| e.to_string())?;
-    fs::write(staging.join("src/Probe.java"), PROBE).map_err(|e| e.to_string())?;
-    fs::write(staging.join("src/Perf.java"), PERF).map_err(|e| e.to_string())?;
-    fs::write(staging.join("src/HideAgent.java"), AGENT).map_err(|e| e.to_string())?;
-    fs::write(staging.join("src/Condition.java"), CONDITION).map_err(|e| e.to_string())?;
+    for (name, source) in PROBE_SOURCES {
+        fs::write(staging.join("src").join(name), source).map_err(|e| e.to_string())?;
+    }
     let bin = java_home().join("bin");
     run(
         Command::new(bin.join("javac"))
             .args(["-nowarn", "-d", "classes", "-cp", &classes.join(":")])
-            .args([
-                "src/Probe.java",
-                "src/Perf.java",
-                "src/HideAgent.java",
-                "src/Condition.java",
-            ])
+            .args(PROBE_SOURCES.map(|(name, _)| format!("src/{name}")))
             .current_dir(&staging),
         "javac",
     )?;
@@ -383,6 +384,29 @@ mod tests {
         );
         fs::remove_dir_all(dir).unwrap();
         result.unwrap();
+    }
+
+    #[test]
+    fn every_probe_source_is_built_hashed_and_versioned() {
+        let probe = Path::new(env!("CARGO_MANIFEST_DIR")).join("probe");
+        let mut on_disk: Vec<String> = fs::read_dir(&probe)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".java"))
+            .filter(|name| !matches!(name.as_str(), "ConditionCases.java" | "SteppingTest.java"))
+            .collect();
+        on_disk.sort();
+        let mut listed: Vec<String> = PROBE_SOURCES
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        listed.sort();
+        assert_eq!(on_disk, listed);
+        for (name, source) in PROBE_SOURCES {
+            assert_eq!(fs::read_to_string(probe.join(name)).unwrap(), source);
+        }
+        let built = build_dir();
+        assert!(built.ends_with(format!("{VERSION}-{}", crate::version::probe_build())));
     }
 
     #[test]

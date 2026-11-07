@@ -491,6 +491,9 @@ mod tests {
             .arg(out)
             .arg(crate_dir.join("probe/Condition.java"))
             .arg(crate_dir.join("probe/ConditionCases.java"))
+            .arg(crate_dir.join("probe/Retry.java"))
+            .arg(crate_dir.join("probe/Guard.java"))
+            .arg(crate_dir.join("probe/Watch.java"))
             .output()
             .expect("javac runs");
         assert!(
@@ -520,6 +523,66 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&run.stdout),
             "ready after 4 tries, within true\ntimed out on chunks>=1\n"
+        );
+    }
+
+    #[test]
+    fn the_probe_watch_outlives_a_broken_look_and_tries_again() {
+        let out = std::env::temp_dir().join(format!("voidc-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let run = probe_runner(&out)
+            .arg("--watch")
+            .output()
+            .expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            "survived errors with 0 reconnects, reported [render thread gone, port check]\ntried again 1\nnot before 2 s 1 then 2\nanother screen 2\nin game with a menu 2\n"
+        );
+    }
+
+    #[test]
+    fn the_probe_watch_survives_any_error_and_tells_a_bounded_few_once() {
+        let out = std::env::temp_dir().join(format!("voidc-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let run = probe_runner(&out)
+            .arg("--guard")
+            .output()
+            .expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            "error told true\nsame error told false\nruntime told true\ncalm told false\nchanging errors told 30\n"
+        );
+    }
+
+    #[test]
+    fn the_probe_retries_every_half_second_and_slower_when_kicked_on_arrival() {
+        let out = std::env::temp_dir().join(format!("voidc-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let run = probe_runner(&out)
+            .arg("--retry")
+            .output()
+            .expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            "away false false back true\nqueued false\nsoon false later true\nnever ran false false stale true\nafter a failure true\nkicked false false true asked 1\nsteady true true\nkicked after a steady game false false true\nkicked again false false true\nlongest false false true\nserver away false false back true\nbrief game true false true\novertaken task ran 0 still queued true then 1\n"
         );
     }
 

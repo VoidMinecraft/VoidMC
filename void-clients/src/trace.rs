@@ -6,6 +6,8 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::args::Arguments;
+
 const USAGE: &str =
     "voidc trace <file> [filters] [--lines] [--json]   totals, or the lines themselves
 voidc trace diff <a> <b> [filters] [--json]      what differs tick by tick, exits 1 if anything does
@@ -29,58 +31,11 @@ pub struct Line {
     pub system: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dropped: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub b64: Option<String>,
 }
 
 const VALUE_FLAGS: [&str; 8] = [
     "--client", "--player", "--packet", "--system", "--dir", "--from", "--to", "--align",
 ];
-
-/// What a command line holds, refused as a whole if any of it is not understood.
-#[derive(Debug, Default)]
-struct Arguments {
-    files: Vec<String>,
-    values: HashMap<String, String>,
-    switches: BTreeSet<String>,
-}
-
-impl Arguments {
-    fn parse(args: &[String], switches: &[&str]) -> Result<Self, String> {
-        let mut parsed = Self::default();
-        let mut args = args.iter();
-        while let Some(arg) = args.next() {
-            if VALUE_FLAGS.contains(&arg.as_str()) {
-                let value = args
-                    .next()
-                    .filter(|value| !value.starts_with("--"))
-                    .ok_or_else(|| format!("{arg} takes a value"))?;
-                parsed.values.insert(arg.clone(), value.clone());
-            } else if switches.contains(&arg.as_str()) {
-                parsed.switches.insert(arg.clone());
-            } else if arg.starts_with("--") {
-                return Err(format!("unknown option {arg}\n{USAGE}"));
-            } else {
-                parsed.files.push(arg.clone());
-            }
-        }
-        Ok(parsed)
-    }
-
-    fn value(&self, name: &str) -> Option<String> {
-        self.values.get(name).cloned()
-    }
-
-    fn number<T: std::str::FromStr>(&self, name: &str) -> Result<Option<T>, String> {
-        self.value(name)
-            .map(|value| value.parse().map_err(|_| format!("{name} takes a number")))
-            .transpose()
-    }
-
-    fn has(&self, name: &str) -> bool {
-        self.switches.contains(name)
-    }
-}
 
 #[derive(Debug, Default)]
 struct Filter {
@@ -475,7 +430,7 @@ fn pretty(value: &Value) -> Result<String, String> {
 }
 
 fn diff(args: &[String]) -> Result<(), String> {
-    let args = Arguments::parse(args, &["--json"])?;
+    let args = Arguments::parse(args, &VALUE_FLAGS, &["--json"], USAGE)?;
     let [a, b] = args.files.as_slice() else {
         return Err(USAGE.to_string());
     };
@@ -500,7 +455,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some("--help") | None => return Err(USAGE.to_string()),
         _ => {}
     }
-    let args = Arguments::parse(args, &["--json", "--lines"])?;
+    let args = Arguments::parse(args, &VALUE_FLAGS, &["--json", "--lines"], USAGE)?;
     let [file] = args.files.as_slice() else {
         return Err(USAGE.to_string());
     };
@@ -538,7 +493,6 @@ mod tests {
             hash,
             system: system.map(str::to_string),
             dropped: None,
-            b64: None,
         }
     }
 
@@ -547,7 +501,12 @@ mod tests {
     }
 
     fn filter_of(text: &str) -> Result<Filter, String> {
-        Filter::parse(&Arguments::parse(&args(text), &["--json", "--lines"])?)
+        Filter::parse(&Arguments::parse(
+            &args(text),
+            &VALUE_FLAGS,
+            &["--json", "--lines"],
+            USAGE,
+        )?)
     }
 
     #[test]
@@ -566,7 +525,7 @@ mod tests {
     #[test]
     fn reads_the_format_written_by_the_server() {
         let text = r#"{"tick":661,"dir":"out","client":1,"packet":"Play/UpdateEntityPosition","bytes":9,"hash":18446744073709551615,"system":"a::b"}
-{"tick":662,"dir":"in","client":1,"player":"sonde","packet":"Play/?","bytes":2,"hash":1,"b64":"AAA="}
+{"tick":662,"dir":"in","client":1,"player":"sonde","packet":"Play/?","bytes":2,"hash":1}
 "#;
         let lines = parse(text).unwrap();
         assert_eq!(lines[0].hash, u64::MAX);

@@ -14,6 +14,7 @@ use crate::network::{ClientConnected, IncomingPacket, NetworkPlugin, OutgoingPac
 use crate::plugins::DefaultPlugins;
 use crate::registry::RegistryDataStore;
 use crate::server_status::ServerStatusSnapshot;
+#[cfg(unix)]
 use crate::step;
 use crate::systems::GameSystemsPlugin;
 use crate::world::{
@@ -54,8 +55,14 @@ impl VoidServer {
     /// This function blocks until the server shuts down.
     pub fn run(self) {
         let config_resource = ServerConfigResource::from(&self.config);
-        let step_socket = self.config.step_socket.clone();
-        let stepped = step_socket.is_some();
+        #[cfg(unix)]
+        let stepping = self.config.step_socket.clone().map(|socket| {
+            let counters = std::sync::Arc::new(step::Counters::default());
+            (socket, counters)
+        });
+        #[cfg(not(unix))]
+        let stepping: Option<std::convert::Infallible> = None;
+        let stepped = stepping.is_some();
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
         let address = self.config.address.clone();
@@ -64,9 +71,10 @@ impl VoidServer {
         let world_gen = WorldGen(self.config.world_generator);
 
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
-        let incoming_tx = match step_socket {
-            Some(_) => step::counted(incoming_tx),
-            None => incoming_tx,
+        let incoming_tx = match &stepping {
+            #[cfg(unix)]
+            Some((_, counters)) => step::counted(incoming_tx, counters.clone()),
+            _ => incoming_tx,
         };
         let (outgoing_tx, _) = flume::unbounded::<OutgoingPacket>();
         let (disconnect_tx, disconnect_rx) = flume::unbounded::<u32>();
@@ -100,11 +108,12 @@ impl VoidServer {
         let mut app = App::new();
 
         app.add_plugins(TaskPoolPlugin::default());
-        match step_socket {
-            Some(socket) => {
-                app.add_plugins(step::StepPlugin::new(socket, tick_duration));
+        match stepping {
+            #[cfg(unix)]
+            Some((socket, counters)) => {
+                app.add_plugins(step::StepPlugin::new(socket, tick_duration, counters));
             }
-            None => {
+            _ => {
                 app.add_plugins((
                     ScheduleRunnerPlugin::run_loop(tick_duration),
                     // Ctrl-C / SIGTERM emits AppExit so the server stops gracefully

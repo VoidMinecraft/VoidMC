@@ -23,24 +23,40 @@ use rand::{RngCore, SeedableRng};
 /// The seed of every stepped run, so that two runs draw the same numbers.
 pub(crate) const STEPPED_SEED: u64 = 0x5EED;
 
-/// The time of a stepped server. Only [`SteppedPacePlugin`] builds a stepped one; without
-/// it, or once it is removed, the server runs on the wall clock.
+/// The time of the server, and the one count of its ticks. Only [`SteppedPacePlugin`] builds a
+/// stepped one; without it, or once it is removed, the server runs on the wall clock.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pace(Mode);
+pub struct Pace {
+    mode: Mode,
+    ticks_started: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Real,
-    Stepped { tick: Duration, elapsed: Duration },
+    Stepped { tick: Duration },
 }
 
 impl Pace {
-    pub(crate) const REAL: Pace = Pace(Mode::Real);
+    pub(crate) const REAL: Pace = Pace {
+        mode: Mode::Real,
+        ticks_started: 0,
+    };
+
+    /// How many ticks have started: 1 during the first. Only a server with a tool that reads it,
+    /// the stepped runner or the packet trace, counts them; any other reads 0.
+    pub fn ticks_started(&self) -> u64 {
+        self.ticks_started
+    }
+
+    fn stepped_millis(&self, tick: Duration) -> i64 {
+        (tick.as_nanos() * u128::from(self.ticks_started) / 1_000_000) as i64
+    }
 
     /// Milliseconds since the Unix epoch, for dates, or since the first tick of a stepped run.
     /// The wall clock can go back: measure durations with [`Pace::elapsed_millis`].
     pub fn now_millis(&self) -> i64 {
-        match self.0 {
+        match self.mode {
             Mode::Real => {
                 #[expect(
                     clippy::disallowed_methods,
@@ -50,14 +66,14 @@ impl Pace {
                 now.duration_since(UNIX_EPOCH)
                     .map_or(0, |since| since.as_millis() as i64)
             }
-            Mode::Stepped { elapsed, .. } => elapsed.as_millis() as i64,
+            Mode::Stepped { tick } => self.stepped_millis(tick),
         }
     }
 
     /// Milliseconds on a clock that never goes back, for durations: since the first reading
     /// of the process, or since the first tick of a stepped run.
     pub fn elapsed_millis(&self) -> i64 {
-        match self.0 {
+        match self.mode {
             Mode::Real => {
                 static ORIGIN: OnceLock<Instant> = OnceLock::new();
                 #[expect(
@@ -67,13 +83,13 @@ impl Pace {
                 let now = Instant::now();
                 now.duration_since(*ORIGIN.get_or_init(|| now)).as_millis() as i64
             }
-            Mode::Stepped { elapsed, .. } => elapsed.as_millis() as i64,
+            Mode::Stepped { tick } => self.stepped_millis(tick),
         }
     }
 
     /// A limit of `budget` from now, which never passes on a stepped server.
     pub fn deadline(&self, budget: Duration) -> Deadline {
-        match self.0 {
+        match self.mode {
             Mode::Real => {
                 #[expect(
                     clippy::disallowed_methods,
@@ -184,12 +200,12 @@ impl SteppedPacePlugin {
 impl Plugin for SteppedPacePlugin {
     fn build(&self, app: &mut App) {
         crate::uuids::seed_for_steps(STEPPED_SEED);
-        app.insert_resource(Pace(Mode::Stepped {
-            tick: self.tick,
-            elapsed: Duration::ZERO,
-        }))
-        .insert_resource(Dice(Mutex::new(StdRng::seed_from_u64(STEPPED_SEED))))
-        .add_systems(First, advance);
+        app.insert_resource(Pace {
+            mode: Mode::Stepped { tick: self.tick },
+            ticks_started: 0,
+        })
+        .insert_resource(Dice(Mutex::new(StdRng::seed_from_u64(STEPPED_SEED))));
+        count_ticks(app);
     }
 
     fn finish(&self, app: &mut App) {
@@ -209,10 +225,27 @@ pub(crate) fn make_stepped(world: &mut World) {
     world.insert_resource(from.remove_resource::<Dice>().unwrap());
 }
 
-fn advance(mut pace: ResMut<Pace>) {
-    if let Mode::Stepped { tick, elapsed } = &mut pace.0 {
-        *elapsed += *tick;
+struct TickCountPlugin;
+
+impl Plugin for TickCountPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(First, advance);
     }
+}
+
+/// Counts the ticks in [`Pace`], on the wall clock unless the server is stepped. A server
+/// without a tool that reads the count pays nothing.
+pub(crate) fn count_ticks(app: &mut App) {
+    if !app.world().contains_resource::<Pace>() {
+        app.insert_resource(Pace::REAL);
+    }
+    if !app.is_plugin_added::<TickCountPlugin>() {
+        app.add_plugins(TickCountPlugin);
+    }
+}
+
+pub(crate) fn advance(mut pace: ResMut<Pace>) {
+    pace.ticks_started += 1;
 }
 
 #[cfg(test)]
@@ -239,6 +272,24 @@ mod tests {
         assert_eq!(pace.now_millis(), 150);
         assert_eq!(pace.elapsed_millis(), 150);
         assert!(!pace.deadline(Duration::ZERO).passed());
+    }
+
+    #[test]
+    fn each_update_is_one_tick_however_often_the_count_is_asked_for() {
+        let mut once = App::new();
+        count_ticks(&mut once);
+        let mut twice = stepped();
+        count_ticks(&mut twice);
+        let systems = |app: &App| app.get_schedule(First).map(|first| first.systems_len());
+        assert_eq!(systems(&once), systems(&twice));
+        for _ in 0..2 {
+            once.update();
+            twice.update();
+        }
+        assert_eq!(of(once.world()).ticks_started(), 2);
+        assert!(of(once.world()).now_millis() > 1_700_000_000_000);
+        assert_eq!(of(twice.world()).ticks_started(), 2);
+        assert_eq!(of(twice.world()).now_millis(), 100);
     }
 
     #[test]
