@@ -1,8 +1,9 @@
-//! What a configuration looks like, so that a new server can be told from the last one.
+//! What a client in the middle of a configuration already received, so that a new server can
+//! be held to it.
 //!
 //! The script is a fingerprint of each clientbound frame, in order, plus the reply only a
-//! client can give. As long as a backend follows it frame by frame, the proxy can stand in
-//! for the client and the client's registries stay valid.
+//! client can give. As long as a backend follows it frame by frame, the proxy keeps from the
+//! client what it holds already and answers in its name.
 
 use std::hash::{DefaultHasher, Hasher};
 

@@ -2,7 +2,6 @@
 //!
 //! [`session`] is the whole logic and does no I/O, [`proxy`] runs it on sockets.
 
-pub mod ledger;
 pub mod packs;
 pub mod proxy;
 pub mod script;

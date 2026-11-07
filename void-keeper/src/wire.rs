@@ -10,6 +10,7 @@ use bytes::{Buf, Bytes, BytesMut};
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
+use ussr_nbt::owned::{Nbt, Tag};
 use voidmc_codec::{Decode, Encode, VarI32};
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -150,6 +151,14 @@ pub fn tagged(packet: &impl Encode) -> Bytes {
     let mut buffer = Vec::new();
     packet.encode(&mut buffer);
     buffer.into()
+}
+
+/// A plain text component, the way the client reads it from a play packet.
+pub fn text(content: &str) -> Nbt {
+    Nbt {
+        name: "".into(),
+        compound: vec![("text".into(), Tag::String(content.into()))].into(),
+    }
 }
 
 #[cfg(test)]

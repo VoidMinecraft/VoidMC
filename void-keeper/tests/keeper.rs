@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, sleep, timeout};
 use uuid::Uuid;
@@ -84,11 +84,8 @@ fn add_entity(id: i32) -> Bytes {
     frame(play_cb::ADD_ENTITY, |body| VarI32(id).encode(body))
 }
 
-fn boss_bar(id: Uuid) -> Bytes {
-    frame(play_cb::BOSS_EVENT, |body| {
-        id.encode(body);
-        VarI32(0).encode(body);
-    })
+fn chat(content: u8) -> Bytes {
+    frame(play_cb::SYSTEM_CHAT, |body| body.push(content))
 }
 
 struct Peer {
@@ -152,6 +149,7 @@ struct FakeServer {
     logins: Arc<AtomicUsize>,
     received: mpsc::UnboundedReceiver<Bytes>,
     broadcast: broadcast::Sender<Bytes>,
+    stop: watch::Sender<bool>,
 }
 
 impl FakeServer {
@@ -161,20 +159,31 @@ impl FakeServer {
         let logins = Arc::new(AtomicUsize::new(0));
         let (received_tx, received) = mpsc::unbounded_channel();
         let (broadcast, _) = broadcast::channel(64);
+        let (stop, stopping) = watch::channel(false);
         let task = tokio::spawn({
             let logins = logins.clone();
             let broadcast = broadcast.clone();
+            let mut stopping = stopping.clone();
             async move {
                 let mut connections = JoinSet::new();
                 loop {
-                    let (stream, _) = listener.accept().await.unwrap();
-                    connections.spawn(serve_fake(
-                        Peer::new(stream),
-                        plan.clone(),
-                        logins.clone(),
-                        received_tx.clone(),
-                        broadcast.subscribe(),
-                    ));
+                    tokio::select! {
+                        accepted = listener.accept() => {
+                            let (stream, _) = accepted.unwrap();
+                            connections.spawn(serve_fake(
+                                Peer::new(stream),
+                                plan.clone(),
+                                logins.clone(),
+                                received_tx.clone(),
+                                (broadcast.subscribe(), stopping.clone()),
+                            ));
+                        }
+                        _ = stopping.changed() => {
+                            drop(listener);
+                            while connections.join_next().await.is_some() {}
+                            return;
+                        }
+                    }
                 }
             }
         });
@@ -184,6 +193,7 @@ impl FakeServer {
             logins,
             received,
             broadcast,
+            stop,
         }
     }
 
@@ -198,6 +208,14 @@ impl FakeServer {
     async fn crash(self) -> SocketAddr {
         self.task.abort();
         let _ = self.task.await;
+        self.address
+    }
+
+    /// What the engine does on a clean stop: a last word in the chat, then every connection
+    /// closes without a disconnect.
+    async fn stop(self) -> SocketAddr {
+        self.stop.send(true).unwrap();
+        self.task.await.unwrap();
         self.address
     }
 
@@ -220,7 +238,7 @@ async fn serve_fake(
     plan: Plan,
     logins: Arc<AtomicUsize>,
     received: mpsc::UnboundedSender<Bytes>,
-    mut broadcast: broadcast::Receiver<Bytes>,
+    (mut broadcast, mut stopping): (broadcast::Receiver<Bytes>, watch::Receiver<bool>),
 ) {
     let Some(handshake) = peer.next().await else {
         return;
@@ -282,6 +300,11 @@ async fn serve_fake(
                 Ok(frame_out) => peer.send(&frame_out).await,
                 Err(_) => return,
             },
+            _ = stopping.changed() => {
+                peer.send(&chat(0)).await;
+                let _ = peer.write.shutdown().await;
+                return;
+            }
         }
     }
 }
@@ -351,6 +374,17 @@ impl FakeClient {
                 _ => {}
             }
         }
+    }
+
+    /// Goes through the configuration the keeper starts once a server is back, up to its `login`.
+    async fn come_back(&mut self) -> Bytes {
+        self.expect(play_cb::START_CONFIGURATION).await;
+        self.peer
+            .send(&empty(play_sb::CONFIGURATION_ACKNOWLEDGED))
+            .await;
+        let login = self.configure().await;
+        self.peer.send(&empty(play_sb::PLAYER_LOADED)).await;
+        login
     }
 
     async fn next(&mut self) -> Bytes {
@@ -447,33 +481,25 @@ async fn rig_with(plan: Plan) -> (Rig, FakeServer) {
 }
 
 #[tokio::test]
-async fn a_client_survives_a_crash_without_a_screen() {
-    let bar = Uuid::from_u128(77);
+async fn a_client_survives_a_crash_through_a_configuration() {
     let mut plan = Plan::player(1);
-    plan.after_login = vec![add_entity(50), boss_bar(bar)];
+    plan.after_login = vec![add_entity(50)];
     let (mut rig, mut server) = rig_with(plan).await;
     let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
-    client.expect(play_cb::BOSS_EVENT).await;
+    client.expect(play_cb::ADD_ENTITY).await;
     server.expect(play_sb::PLAYER_LOADED).await;
 
     let address = server.crash().await;
     client.expect(play_cb::KEEP_ALIVE).await;
     client.expect(play_cb::SET_ACTION_BAR_TEXT).await;
-    let lost = rig.expect_event("backend_lost").await;
-    assert_eq!(lost["entities"], 1);
-    assert_eq!(lost["boss_bars"], 1);
+    rig.expect_event("backend_lost").await;
 
-    let mut server = FakeServer::start(address, Plan::player(1)).await;
+    let mut plan = Plan::player(9);
+    plan.registry = 2;
+    let mut server = FakeServer::start(address, plan).await;
+    assert_eq!(client.come_back().await, login_packet(9));
     let resumed = rig.expect_event("resumed").await;
-    assert_eq!(resumed["path"], "seamless");
     assert!(resumed["outage_ms"].as_u64().is_some());
-
-    let seen = client.collect_until(play_cb::SET_HELD_SLOT).await;
-    let ids: Vec<i32> = seen.iter().map(|frame| id_of(frame)).collect();
-    assert!(ids.contains(&play_cb::REMOVE_ENTITIES));
-    assert!(ids.contains(&play_cb::BOSS_EVENT));
-    assert!(!ids.contains(&play_cb::LOGIN));
-    assert!(!ids.contains(&play_cb::START_CONFIGURATION));
 
     server.expect(play_sb::PLAYER_LOADED).await;
     server.send(add_entity(60));
@@ -483,7 +509,29 @@ async fn a_client_survives_a_crash_without_a_screen() {
 }
 
 #[tokio::test]
-async fn three_restarts_in_a_row_stay_seamless() {
+async fn a_server_that_stops_cleanly_keeps_the_client_as_a_crash_does() {
+    let (mut rig, mut server) = rig_with(Plan::player(1)).await;
+    let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
+    server.expect(play_sb::PLAYER_LOADED).await;
+
+    let address = server.stop().await;
+    assert_eq!(client.expect(play_cb::SYSTEM_CHAT).await, chat(0));
+    rig.expect_event("backend_lost").await;
+    let kept_alive = client.collect_until(play_cb::KEEP_ALIVE).await;
+    assert!(
+        kept_alive
+            .iter()
+            .all(|frame| id_of(frame) != play_cb::DISCONNECT)
+    );
+
+    let mut server = FakeServer::start(address, Plan::player(1)).await;
+    assert_eq!(client.come_back().await, login_packet(1));
+    rig.expect_event("resumed").await;
+    server.expect(play_sb::PLAYER_LOADED).await;
+}
+
+#[tokio::test]
+async fn three_restarts_in_a_row_each_go_through_a_configuration() {
     let (mut rig, server) = rig_with(Plan::player(1)).await;
     let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
     let mut server = server;
@@ -492,59 +540,9 @@ async fn three_restarts_in_a_row_stay_seamless() {
         let address = server.crash().await;
         rig.expect_event("backend_lost").await;
         server = FakeServer::start(address, Plan::player(1)).await;
-        let resumed = rig.expect_event("resumed").await;
-        assert_eq!(resumed["path"], "seamless");
-        client.expect(play_cb::SET_HELD_SLOT).await;
+        assert_eq!(client.come_back().await, login_packet(1));
+        rig.expect_event("resumed").await;
     }
-}
-
-#[tokio::test]
-async fn changed_registries_go_through_a_reconfiguration_and_say_so() {
-    let (mut rig, server) = rig_with(Plan::player(1)).await;
-    let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
-    let address = server.crash().await;
-
-    let mut plan = Plan::player(9);
-    plan.registry = 2;
-    let _server = FakeServer::start(address, plan).await;
-    client.expect(play_cb::START_CONFIGURATION).await;
-    client
-        .peer
-        .send(&empty(play_sb::CONFIGURATION_ACKNOWLEDGED))
-        .await;
-    let login = client.configure().await;
-    assert_eq!(login, login_packet(9));
-    let resumed = rig.expect_event("resumed").await;
-    assert_eq!(resumed["path"], "reconfigured");
-    assert!(
-        resumed["reason"]
-            .as_str()
-            .unwrap()
-            .contains("configuration changed")
-    );
-}
-
-#[tokio::test]
-async fn another_player_id_goes_through_a_reconfiguration_and_tells_the_fix() {
-    let (mut rig, server) = rig_with(Plan::player(1)).await;
-    let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
-    let address = server.crash().await;
-
-    let _server = FakeServer::start(address, Plan::player(2)).await;
-    client.expect(play_cb::START_CONFIGURATION).await;
-    client
-        .peer
-        .send(&empty(play_sb::CONFIGURATION_ACKNOWLEDGED))
-        .await;
-    assert_eq!(client.configure().await, login_packet(2));
-    let resumed = rig.expect_event("resumed").await;
-    assert_eq!(resumed["path"], "reconfigured");
-    assert!(
-        resumed["reason"]
-            .as_str()
-            .unwrap()
-            .contains("VOIDMC_STABLE_PLAYER_IDS")
-    );
 }
 
 #[tokio::test]
@@ -558,11 +556,11 @@ async fn two_clients_come_back_on_their_own() {
     first.expect(play_cb::KEEP_ALIVE).await;
     second.expect(play_cb::KEEP_ALIVE).await;
     let server = FakeServer::start(address, Plan::player(1)).await;
+    first.come_back().await;
+    second.come_back().await;
     for _ in 0..2 {
-        assert_eq!(rig.expect_event("resumed").await["path"], "seamless");
+        rig.expect_event("resumed").await;
     }
-    first.expect(play_cb::SET_HELD_SLOT).await;
-    second.expect(play_cb::SET_HELD_SLOT).await;
     assert_eq!(server.logins(), 2);
     server.send(add_entity(5));
     assert_eq!(first.expect(play_cb::ADD_ENTITY).await, add_entity(5));
@@ -581,8 +579,8 @@ async fn a_client_that_leaves_while_the_server_is_away_is_forgotten() {
     rig.expect_event("client_left").await;
 
     let server = FakeServer::start(address, Plan::player(1)).await;
+    staying.come_back().await;
     assert_eq!(rig.expect_event("resumed").await["session"], 2);
-    staying.expect(play_cb::SET_HELD_SLOT).await;
     sleep(Duration::from_millis(100)).await;
     assert_eq!(server.logins(), 1);
 }
@@ -607,29 +605,12 @@ async fn a_server_that_never_returns_ends_with_a_clear_message() {
 }
 
 #[tokio::test]
-async fn a_packet_the_proxy_cannot_read_still_reaches_the_client_and_costs_the_seamless_path() {
-    let (mut rig, server) = rig_with(Plan::player(1)).await;
+async fn a_packet_the_proxy_cannot_read_still_reaches_the_client() {
+    let (rig, server) = rig_with(Plan::player(1)).await;
     let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
-    let broken = frame(play_cb::BOSS_EVENT, |body| body.push(1));
+    let broken = frame(play_cb::RESOURCE_PACK_PUSH, |body| body.push(1));
     server.send(broken.clone());
-    assert_eq!(client.expect(play_cb::BOSS_EVENT).await, broken);
-
-    let address = server.crash().await;
-    let _server = FakeServer::start(address, Plan::player(1)).await;
-    client.expect(play_cb::START_CONFIGURATION).await;
-    client
-        .peer
-        .send(&empty(play_sb::CONFIGURATION_ACKNOWLEDGED))
-        .await;
-    client.configure().await;
-    let resumed = rig.expect_event("resumed").await;
-    assert_eq!(resumed["path"], "reconfigured");
-    assert!(
-        resumed["reason"]
-            .as_str()
-            .unwrap()
-            .contains("could not be read")
-    );
+    assert_eq!(client.expect(play_cb::RESOURCE_PACK_PUSH).await, broken);
 }
 
 #[tokio::test]
@@ -707,8 +688,7 @@ async fn a_server_lost_after_a_registry_does_not_hand_it_to_the_client_twice() {
     let _server = FakeServer::start(address, Plan::player(1)).await;
     let (_client, login) = joining.await.unwrap();
     assert_eq!(login, login_packet(1));
-    let resumed = rig.expect_event("resumed").await;
-    assert_eq!(resumed["path"], "reconfigured");
+    rig.expect_event("resumed").await;
 }
 
 #[tokio::test]
@@ -730,7 +710,8 @@ async fn a_compressing_server_stays_invisible_to_the_client() {
 
     let address = server.crash().await;
     let mut server = FakeServer::start(address, plan).await;
-    assert_eq!(rig.expect_event("resumed").await["path"], "seamless");
+    client.come_back().await;
+    rig.expect_event("resumed").await;
     server.expect(play_sb::PLAYER_LOADED).await;
     client.peer.send(&vec![0u8; 5000]).await;
     server.expect(0).await;
@@ -744,7 +725,8 @@ async fn a_change_of_compression_between_two_runs_is_followed() {
     let mut plan = Plan::player(1);
     plan.compression = Some(64);
     let server = FakeServer::start(address, plan).await;
-    assert_eq!(rig.expect_event("resumed").await["path"], "seamless");
+    client.come_back().await;
+    rig.expect_event("resumed").await;
     let large = frame(play_cb::SYSTEM_CHAT, |body| {
         body.extend_from_slice(&[9; 5000])
     });

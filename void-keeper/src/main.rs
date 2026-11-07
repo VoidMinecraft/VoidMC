@@ -20,7 +20,7 @@ voidmc-keeper: keeps a client in game while the server restarts or crashes
   --backend          the server, as [::1]:25671
   --listen           where clients connect (default 127.0.0.1:25565)
   --return-timeout   how long a client waits for a lost server (default 120)
-  --settle           how long a new server has before old chunks and packs go (default 3)
+  --settle           how long a new server has to offer its packs before the others go (default 3)
   --backend-silence  how long a server may stay silent before it counts as lost (default 20,
                      from 15 to 25: the engine sends a keep-alive every 200 ticks, 10 seconds
                      at 20 TPS, and a client hangs up after 30 seconds without a packet)

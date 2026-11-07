@@ -19,7 +19,6 @@ use voidmc_data::v26_1_2::packets::status::serverbound as status_sb;
 use voidmc_protocol::serverbound::Handshake;
 use voidmc_protocol::{MINECRAFT_VERSION, PROTOCOL_VERSION, State};
 
-use crate::ledger::Tally;
 use crate::session::{Action, Event, Session, Settings};
 use crate::wire::{Framing, WireError, frame, split};
 
@@ -259,40 +258,17 @@ struct Keeper {
 
 impl Keeper {
     fn emit(&self, event: Event) {
-        let tallied = |mut fields: Value, tally: Tally| {
-            fields["session"] = json!(self.id);
-            fields["ledger_bytes"] = json!(tally.bytes);
-            fields["entities"] = json!(tally.entities);
-            fields["chunks"] = json!(tally.chunks);
-            fields["boss_bars"] = json!(tally.boss_bars);
-            fields["objectives"] = json!(tally.objectives);
-            fields["teams"] = json!(tally.teams);
-            fields["tab_entries"] = json!(tally.tab_entries);
-            fields["effects"] = json!(tally.effects);
-            fields
-        };
         match event {
             Event::Joined { name } => self
                 .events
                 .emit("client_joined", json!({ "session": self.id, "name": name })),
-            Event::BackendLost { tally } => {
-                self.events.emit("backend_lost", tallied(json!({}), tally));
+            Event::BackendLost => {
+                self.events
+                    .emit("backend_lost", json!({ "session": self.id }));
             }
-            Event::Resumed {
-                path,
-                reason,
-                outage,
-                tally,
-            } => self.events.emit(
+            Event::Resumed { outage } => self.events.emit(
                 "resumed",
-                tallied(
-                    json!({
-                        "path": path.to_string(),
-                        "reason": reason,
-                        "outage_ms": outage.as_millis() as u64,
-                    }),
-                    tally,
-                ),
+                json!({ "session": self.id, "outage_ms": outage.as_millis() as u64 }),
             ),
             Event::GaveUp { reason } => self
                 .events

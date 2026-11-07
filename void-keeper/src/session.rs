@@ -1,20 +1,15 @@
 //! One client and whichever server is there for it: the whole logic of the proxy, without I/O.
 //!
 //! A session is fed what happens (`on_*`) with the current time, and answers with [`Action`]s.
-//! Between two servers the client stays in play with its world on screen. The proxy logs in
-//! on its behalf and follows the [`Script`] of the last configuration; when the new server
-//! does exactly what the last one did, the [`Ledger`] undoes what the client still shows and
-//! the relay resumes. This is the seamless path.
-//!
-//! When anything differs, a client in play goes through a real configuration: it is told
+//! Between two servers the client stays in play with its world on screen. When a new server
+//! answers, a client in play goes through a real configuration: it is told
 //! `start_configuration`, and what the server said so far reaches it as if it had just been
-//! sent. This is the reconfigured path, and what every doubt falls back to.
+//! sent.
 //!
 //! A client lost in the middle of a configuration has no such way back: it adds up what it
 //! receives and cannot start over. The new server must repeat what the client already holds,
 //! which the session keeps from it; a server that says anything else ends the session.
 
-use std::fmt;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -25,12 +20,11 @@ use voidmc_data::v26_1_2::packets::configuration::{
 };
 use voidmc_data::v26_1_2::packets::login::{clientbound as login_cb, serverbound as login_sb};
 use voidmc_data::v26_1_2::packets::play::{clientbound as play_cb, serverbound as play_sb};
-use voidmc_protocol::clientbound::{Disconnect, KeepAlive, Login, ResourcePackPush};
+use voidmc_protocol::clientbound::{Disconnect, KeepAlive, ResourcePackPush};
 
-use crate::ledger::{Ledger, Tally, text};
 use crate::packs::PackBook;
 use crate::script::{Script, needs_a_client};
-use crate::wire::{MAX_PLAIN_FRAME_BYTES, frame, split};
+use crate::wire::{MAX_PLAIN_FRAME_BYTES, frame, split, text};
 
 const OWN_KEEP_ALIVE: i64 = 0x4B45_4550_0000_0000;
 const OWN_KEEP_ALIVE_MASK: i64 = 0x7FFF_FFFF_0000_0000;
@@ -42,7 +36,7 @@ pub struct Settings {
     pub return_timeout: Duration,
     pub retry_every: Duration,
     pub keep_alive_every: Duration,
-    /// How long a new server has to send its chunks and packs before the old ones go.
+    /// How long a new server has to offer its packs before the client lets go of the others.
     pub settle: Duration,
     /// How long a backend may stay silent before it counts as lost. Below the 30 seconds after
     /// which a client gives up by itself, above the interval of the keep-alives of a server:
@@ -62,38 +56,12 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Path {
-    Seamless,
-    Reconfigured,
-}
-
-impl fmt::Display for Path {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Seamless => "seamless",
-            Self::Reconfigured => "reconfigured",
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    Joined {
-        name: String,
-    },
-    BackendLost {
-        tally: Tally,
-    },
-    Resumed {
-        path: Path,
-        reason: Option<String>,
-        outage: Duration,
-        tally: Tally,
-    },
-    GaveUp {
-        reason: String,
-    },
+    Joined { name: String },
+    BackendLost,
+    Resumed { outage: Duration },
+    GaveUp { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,16 +112,9 @@ enum Stage {
         step: usize,
         question_open: bool,
     },
-    Scripted {
-        step: usize,
-        held: Vec<Bytes>,
-        answered_known_packs: bool,
-    },
     Reconfiguring {
         held: Vec<Bytes>,
-        answered_known_packs: bool,
     },
-    AwaitingLogin,
 }
 
 pub struct Session {
@@ -161,22 +122,17 @@ pub struct Session {
     handshake: Bytes,
     hello: Option<Bytes>,
     client_information: Option<Bytes>,
-    player_loaded: Option<Bytes>,
-    profile: Option<Uuid>,
     phase: Phase,
     stage: Stage,
-    ledger: Ledger,
+    bundle_open: bool,
     packs: PackBook,
     script: Script,
-    reconfigure_because: Option<String>,
-    drop_known_packs_reply: bool,
     lost_at: Option<Instant>,
     deadline: Option<Instant>,
     next_keep_alive: Instant,
     keep_alive_count: i64,
     settle_at: Option<Instant>,
     backend_heard_at: Instant,
-    handed_over: Tally,
     closed: bool,
     actions: Vec<Action>,
 }
@@ -189,25 +145,20 @@ impl Session {
             handshake,
             hello: None,
             client_information: None,
-            player_loaded: None,
-            profile: None,
             phase: Phase::Login,
             stage: Stage::Waiting {
                 connecting: false,
                 next_attempt: now,
             },
-            ledger: Ledger::default(),
+            bundle_open: false,
             packs: PackBook::default(),
             script: Script::default(),
-            reconfigure_because: None,
-            drop_known_packs_reply: false,
             lost_at: None,
             deadline: Some(now + settings.return_timeout.min(LOGIN_PATIENCE)),
             next_keep_alive: now,
             keep_alive_count: 0,
             settle_at: None,
             backend_heard_at: now,
-            handed_over: Tally::default(),
             closed: false,
             actions: Vec::new(),
         }
@@ -305,12 +256,7 @@ impl Session {
             return;
         }
         if self.phase == Phase::Play {
-            if self.reconfigure_because.is_none() {
-                self.reconfigure_because = self.ledger.unfit().map(str::to_string);
-            }
-            if self.reconfigure_because.is_some() {
-                self.start_configuration();
-            }
+            self.start_configuration();
         }
         self.stage = Stage::LoggingIn;
     }
@@ -322,23 +268,18 @@ impl Session {
         if self.phase == Phase::LeavingPlay {
             self.phase = Phase::AwaitingAck;
         }
-        if self.phase == Phase::Play
-            && let Some(closing) = self.ledger.close_bundle()
-        {
-            self.send_to_client(closing);
+        if self.phase == Phase::Play {
+            self.close_bundle();
         }
         if self.lost_at.is_none() {
             self.lost_at = Some(now);
             self.packs.outage();
             self.settle_at = None;
             self.next_keep_alive = now;
-            self.actions.push(Action::Event(Event::BackendLost {
-                tally: self.ledger.tally(),
-            }));
+            self.actions.push(Action::Event(Event::BackendLost));
         }
         let patience = self.patience();
         self.deadline.get_or_insert(now + patience);
-        self.drop_known_packs_reply = false;
         self.wait_for_backend(now + self.settings.retry_every);
     }
 
@@ -385,9 +326,7 @@ impl Session {
                     .lost_at
                     .map_or(0, |lost_at| now.duration_since(lost_at).as_secs());
                 let message = format!("Server away for {away}s, hold on");
-                self.send_to_client(frame(play_cb::SET_ACTION_BAR_TEXT, |body| {
-                    text(&message).encode(body);
-                }));
+                self.send_to_client(action_bar(&message));
             }
             Phase::Configuration => {
                 self.send_to_client(frame(config_cb::KEEP_ALIVE, |body| keep_alive.encode(body)));
@@ -412,9 +351,7 @@ impl Session {
             }),
             Reads::Configuration => frame(config_cb::DISCONNECT, |body| disconnect.encode(body)),
             Reads::Play => {
-                if let Some(closing) = self.ledger.close_bundle() {
-                    self.send_to_client(closing);
-                }
+                self.close_bundle();
                 frame(play_cb::DISCONNECT, |body| disconnect.encode(body))
             }
         };
@@ -429,9 +366,6 @@ impl Session {
             return;
         }
         self.settle_at = None;
-        for forgotten in self.ledger.take_stale_chunks() {
-            self.send_to_client(forgotten);
-        }
         for pack in self.packs.take_forsaken() {
             self.send_to_client(frame(play_cb::RESOURCE_PACK_POP, |body| {
                 Some(pack).encode(body);
@@ -448,7 +382,7 @@ impl Session {
             Phase::Configuration | Phase::LeavingConfiguration => {
                 self.client_in_configuration(id, body, &frame, now)
             }
-            Phase::Play | Phase::LeavingPlay => self.client_in_play(id, body, &frame),
+            Phase::Play | Phase::LeavingPlay => self.client_in_play(id, body),
             Phase::AwaitingAck => {
                 if id == play_sb::CONFIGURATION_ACKNOWLEDGED {
                     self.client_acknowledged();
@@ -493,9 +427,6 @@ impl Session {
             }
             config_sb::SELECT_KNOWN_PACKS => {
                 self.script.set_known_packs_reply(frame.clone());
-                if std::mem::take(&mut self.drop_known_packs_reply) {
-                    return false;
-                }
                 if let Stage::Replaying { question_open, .. } = &mut self.stage
                     && std::mem::take(question_open)
                 {
@@ -525,18 +456,15 @@ impl Session {
         true
     }
 
-    fn client_in_play(&mut self, id: i32, body: &[u8], frame: &Bytes) -> bool {
+    fn client_in_play(&mut self, id: i32, body: &[u8]) -> bool {
         match id {
             play_sb::KEEP_ALIVE if is_own_keep_alive(body) => return false,
-            play_sb::PLAYER_LOADED => self.player_loaded = Some(frame.clone()),
             play_sb::CLIENT_INFORMATION => {
                 self.client_information = Some(Bytes::copy_from_slice(body));
             }
             play_sb::RESOURCE_PACK => self.note_pack_status(body),
-            play_sb::CONTAINER_CLOSE => self.ledger.menu_closed(),
             play_sb::CONFIGURATION_ACKNOWLEDGED => {
                 self.phase = Phase::Configuration;
-                self.ledger.forget();
                 self.script = Script::default();
             }
             _ => {}
@@ -554,25 +482,16 @@ impl Session {
     }
 
     fn start_configuration(&mut self) {
-        tracing::info!(
-            reason = self.reconfigure_because.as_deref().unwrap_or_default(),
-            "client goes through a reconfiguration"
-        );
+        tracing::info!("client goes through a reconfiguration");
         self.send_to_client(frame(play_cb::START_CONFIGURATION, |_| {}));
         self.phase = Phase::AwaitingAck;
     }
 
     fn client_acknowledged(&mut self) {
         self.phase = Phase::Configuration;
-        self.handed_over = self.ledger.tally();
-        self.ledger.forget();
         self.script = Script::default();
         match std::mem::replace(&mut self.stage, Stage::Relaying) {
-            Stage::Reconfiguring {
-                held,
-                answered_known_packs,
-            } => {
-                self.drop_known_packs_reply = answered_known_packs;
+            Stage::Reconfiguring { held } => {
                 self.deadline = None;
                 for frame in held {
                     self.relay_from_backend(frame);
@@ -583,31 +502,20 @@ impl Session {
     }
 
     fn finish_reconfiguration(&mut self, now: Instant) {
-        if self.lost_at.is_none() && self.reconfigure_because.is_none() {
+        let Some(lost_at) = self.lost_at.take() else {
             return;
-        }
-        let reason = self
-            .reconfigure_because
-            .take()
-            .unwrap_or_else(|| "the server went away during a configuration".to_string());
-        let tally = std::mem::take(&mut self.handed_over);
-        self.resumed(Path::Reconfigured, Some(reason), tally, now);
-    }
-
-    fn resumed(&mut self, path: Path, reason: Option<String>, tally: Tally, now: Instant) {
-        let outage = self
-            .lost_at
-            .take()
-            .map_or(Duration::ZERO, |lost_at| now.duration_since(lost_at));
+        };
+        let outage = now.duration_since(lost_at);
         self.deadline = None;
         self.settle_at = Some(now + self.settings.settle);
-        tracing::info!(%path, ?reason, ?outage, digest = self.script.digest(), "client resumed");
-        self.actions.push(Action::Event(Event::Resumed {
-            path,
-            reason,
-            outage,
-            tally,
-        }));
+        tracing::info!(?outage, digest = self.script.digest(), "client resumed");
+        self.actions.push(Action::Event(Event::Resumed { outage }));
+    }
+
+    fn close_bundle(&mut self) {
+        if std::mem::take(&mut self.bundle_open) {
+            self.send_to_client(frame(play_cb::BUNDLE_DELIMITER, |_| {}));
+        }
     }
 
     pub fn on_backend(&mut self, frame: Bytes, now: Instant) {
@@ -620,9 +528,7 @@ impl Session {
             Stage::Relaying => self.relay_from_backend(frame),
             Stage::LoggingIn => self.log_in(frame, now),
             Stage::Replaying { .. } => self.replay(frame, now),
-            Stage::Scripted { .. } => self.follow_script(frame, now),
             Stage::Reconfiguring { .. } => self.hold_for_client(frame, now),
-            Stage::AwaitingLogin => self.take_over(frame, now),
             Stage::Waiting { .. } => {}
         }
     }
@@ -645,11 +551,7 @@ impl Session {
                     self.refuse_online_mode();
                     return;
                 }
-                login_cb::LOGIN_FINISHED => {
-                    let mut body = body;
-                    self.profile = Uuid::decode(&mut body).ok();
-                    self.phase = Phase::Joining;
-                }
+                login_cb::LOGIN_FINISHED => self.phase = Phase::Joining,
                 _ => {}
             },
             Phase::Joining | Phase::AwaitingAck => return,
@@ -675,7 +577,8 @@ impl Session {
                 }
                 play_cb::RESOURCE_PACK_POP => self.note_pack_pop(body),
                 play_cb::START_CONFIGURATION => self.phase = Phase::LeavingPlay,
-                _ => self.ledger.observe(&frame),
+                play_cb::BUNDLE_DELIMITER => self.bundle_open = !self.bundle_open,
+                _ => {}
             },
         }
         self.send_to_client(frame);
@@ -762,15 +665,9 @@ impl Session {
             }));
         }
         self.stage = match self.phase {
-            Phase::Play => Stage::Scripted {
-                step: 0,
-                held: Vec::new(),
-                answered_known_packs: false,
-            },
-            Phase::AwaitingAck | Phase::LeavingPlay => Stage::Reconfiguring {
-                held: Vec::new(),
-                answered_known_packs: false,
-            },
+            Phase::Play | Phase::AwaitingAck | Phase::LeavingPlay => {
+                Stage::Reconfiguring { held: Vec::new() }
+            }
             Phase::Configuration | Phase::LeavingConfiguration
                 if !self.script.is_finished_at(0) =>
             {
@@ -877,113 +774,12 @@ impl Session {
         }
     }
 
-    fn follow_script(&mut self, frame: Bytes, now: Instant) {
-        if self.answer_for_client(&frame, now) {
-            return;
-        }
-        let Stage::Scripted {
-            step,
-            mut held,
-            mut answered_known_packs,
-        } = std::mem::replace(&mut self.stage, Stage::LoggingIn)
-        else {
-            return;
-        };
-        let id = split(&frame).map_or(-1, |(id, _)| id);
-        let verdict = if let Some(reason) = needs_a_client(&frame) {
-            Err(reason.to_string())
-        } else if id == config_cb::RESOURCE_PACK_PUSH {
-            Err("the server pushes a pack the client does not hold".to_string())
-        } else if !self.script.follows(step, &frame) {
-            Err(format!(
-                "the configuration changed at packet {step} (id {id:#x})"
-            ))
-        } else {
-            Ok(())
-        };
-        held.push(frame);
-        if let Err(reason) = verdict {
-            self.reconfigure_because = Some(reason);
-            self.start_configuration();
-            self.stage = Stage::Reconfiguring {
-                held,
-                answered_known_packs,
-            };
-            return;
-        }
-        let step = step + 1;
-        if id == config_cb::SELECT_KNOWN_PACKS {
-            match self.script.known_packs_reply().cloned() {
-                Some(reply) => {
-                    self.send_to_backend(reply);
-                    answered_known_packs = true;
-                }
-                None => {
-                    self.reconfigure_because = Some("no known packs to answer with".to_string());
-                    self.start_configuration();
-                    self.stage = Stage::Reconfiguring {
-                        held,
-                        answered_known_packs,
-                    };
-                    return;
-                }
-            }
-        }
-        if id == config_cb::FINISH_CONFIGURATION && self.script.is_finished_at(step) {
-            self.send_to_backend(empty_frame(config_sb::FINISH_CONFIGURATION));
-            self.stage = Stage::AwaitingLogin;
-            return;
-        }
-        self.stage = Stage::Scripted {
-            step,
-            held,
-            answered_known_packs,
-        };
-    }
-
     fn hold_for_client(&mut self, frame: Bytes, now: Instant) {
         if self.answer_for_client(&frame, now) {
             return;
         }
-        if let Stage::Reconfiguring { held, .. } = &mut self.stage {
+        if let Stage::Reconfiguring { held } = &mut self.stage {
             held.push(frame);
-        }
-    }
-
-    fn take_over(&mut self, frame: Bytes, now: Instant) {
-        let Some((id, mut body)) = split(&frame) else {
-            return;
-        };
-        if id != play_cb::LOGIN {
-            tracing::warn!(id, "packet before the login, dropped");
-            return;
-        }
-        let verdict = Login::decode(&mut body)
-            .map_err(|error| format!("the login could not be read: {error}"))
-            .and_then(|login| self.ledger.fits(&login).map(|()| login))
-            .and_then(|login| {
-                let profile = self
-                    .profile
-                    .ok_or("the profile of the player was never read")?;
-                Ok((login, profile))
-            });
-        match verdict {
-            Ok((login, profile)) => {
-                let tally = self.ledger.tally();
-                for undone in self.ledger.teardown(&login, profile) {
-                    self.send_to_client(undone);
-                }
-                if let Some(player_loaded) = self.player_loaded.clone() {
-                    self.send_to_backend(player_loaded);
-                }
-                self.stage = Stage::Relaying;
-                self.resumed(Path::Seamless, None, tally, now);
-            }
-            Err(reason) => {
-                self.reconfigure_because = Some(reason);
-                self.actions.push(Action::DropBackend);
-                self.wait_for_backend(now);
-            }
         }
     }
 }
@@ -997,8 +793,10 @@ fn is_sent_away(reads: Reads, id: i32) -> bool {
     }
 }
 
-fn empty_frame(id: i32) -> Bytes {
-    frame(id, |_| {})
+fn action_bar(message: &str) -> Bytes {
+    frame(play_cb::SET_ACTION_BAR_TEXT, |body| {
+        text(message).encode(body)
+    })
 }
 
 fn is_own_keep_alive(mut body: &[u8]) -> bool {
@@ -1011,8 +809,6 @@ mod tests {
 
     use super::*;
     use crate::wire::tagged;
-
-    const PLAYER: i32 = 7;
 
     fn settings() -> Settings {
         Settings {
@@ -1030,29 +826,8 @@ mod tests {
         })
     }
 
-    fn login(entity_id: i32) -> Bytes {
-        tagged(&PlayPacket::Login(Login {
-            entity_id,
-            is_hardcore: false,
-            dimension_names: vec!["minecraft:overworld".to_string()],
-            max_players: 10,
-            view_distance: 10,
-            simulation_distance: 10,
-            reduced_debug_info: false,
-            enable_respawn_screen: true,
-            do_limited_crafting: false,
-            dimension_type: 0,
-            dimension_name: "minecraft:overworld".to_string(),
-            hashed_seed: 0,
-            game_mode: 1,
-            previous_game_mode: -1,
-            is_debug: false,
-            is_flat: false,
-            last_death_location: None,
-            portal_cooldown: 0,
-            sea_level: 63,
-            enforces_secure_chat: false,
-        }))
+    fn login() -> Bytes {
+        frame(play_cb::LOGIN, |body| body.push(7))
     }
 
     fn empty(id: i32) -> Bytes {
@@ -1092,8 +867,23 @@ mod tests {
         }))
     }
 
+    fn config_push(id: Uuid) -> Bytes {
+        let pushed = push(id, "abc");
+        let (_, body) = split(&pushed).unwrap();
+        frame(config_cb::RESOURCE_PACK_PUSH, |out| {
+            out.extend_from_slice(body);
+        })
+    }
+
     fn pack_answer(id: Uuid, status: i32) -> Bytes {
         frame(play_sb::RESOURCE_PACK, |body| {
+            id.encode(body);
+            VarI32(status).encode(body);
+        })
+    }
+
+    fn config_pack_answer(id: Uuid, status: i32) -> Bytes {
+        frame(config_sb::RESOURCE_PACK, |body| {
             id.encode(body);
             VarI32(status).encode(body);
         })
@@ -1125,7 +915,7 @@ mod tests {
 
         fn in_play() -> Self {
             let mut rig = Self::fresh();
-            rig.join(PLAYER);
+            rig.join();
             rig
         }
 
@@ -1172,7 +962,7 @@ mod tests {
             self.drain();
         }
 
-        fn join(&mut self, player: i32) {
+        fn join(&mut self) {
             self.tick(Duration::ZERO);
             self.connected();
             self.receive_from_client(hello());
@@ -1184,7 +974,7 @@ mod tests {
             self.receive_from_backend(registry(1));
             self.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
             self.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-            self.receive_from_backend(login(player));
+            self.receive_from_backend(login());
             self.receive_from_client(empty(play_sb::PLAYER_LOADED));
             self.clear();
         }
@@ -1210,6 +1000,18 @@ mod tests {
             self.receive_from_backend(login_finished());
         }
 
+        /// A client in play taken through the configuration of a new server, up to its `login`.
+        fn come_back(&mut self) {
+            self.log_back_in();
+            self.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+            self.receive_from_backend(known_packs_question());
+            self.receive_from_client(known_packs_reply());
+            self.receive_from_backend(registry(1));
+            self.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
+            self.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
+            self.receive_from_backend(login());
+        }
+
         fn events(&self) -> Vec<&Event> {
             self.rest
                 .iter()
@@ -1220,11 +1022,11 @@ mod tests {
                 .collect()
         }
 
-        fn resumed(&self) -> Option<(Path, Option<String>)> {
-            self.events().into_iter().find_map(|event| match event {
-                Event::Resumed { path, reason, .. } => Some((*path, reason.clone())),
-                _ => None,
-            })
+        fn resumed(&self) -> usize {
+            self.events()
+                .into_iter()
+                .filter(|event| matches!(event, Event::Resumed { .. }))
+                .count()
         }
 
         fn sent_to_client(&self, id: i32) -> usize {
@@ -1258,7 +1060,7 @@ mod tests {
     fn a_client_is_kept_alive_while_the_server_is_away() {
         let mut rig = Rig::in_play();
         rig.lose_backend();
-        assert!(matches!(rig.events()[..], [Event::BackendLost { .. }]));
+        assert_eq!(rig.events(), vec![&Event::BackendLost]);
         rig.tick(Duration::ZERO);
         assert_eq!(rig.sent_to_client(play_cb::KEEP_ALIVE), 1);
         assert_eq!(rig.sent_to_client(play_cb::SET_ACTION_BAR_TEXT), 1);
@@ -1313,171 +1115,69 @@ mod tests {
     }
 
     #[test]
-    fn a_new_server_that_says_the_same_is_taken_over_without_a_screen() {
+    fn a_new_server_takes_the_client_through_a_configuration() {
         let mut rig = Rig::in_play();
-        rig.receive_from_backend(frame(play_cb::ADD_ENTITY, |body| VarI32(50).encode(body)));
-        rig.clear();
         rig.lose_backend();
-        rig.log_back_in();
-
+        rig.tick(settings().retry_every);
+        rig.clear();
+        rig.connected();
+        assert_eq!(rig.client, vec![empty(play_cb::START_CONFIGURATION)]);
+        rig.receive_from_backend(login_finished());
         assert!(rig.backend.contains(&empty(login_sb::LOGIN_ACKNOWLEDGED)));
         assert!(rig.backend.contains(&information()));
-        rig.backend.clear();
+        rig.clear();
 
         rig.receive_from_backend(known_packs_question());
-        assert_eq!(rig.sent_to_backend(config_sb::SELECT_KNOWN_PACKS), 1);
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        assert_eq!(rig.sent_to_backend(config_sb::FINISH_CONFIGURATION), 1);
-        rig.client.clear();
-
-        rig.receive_from_backend(login(PLAYER));
-        assert_eq!(rig.resumed(), Some((Path::Seamless, None)));
-        assert_eq!(rig.sent_to_client(play_cb::LOGIN), 0);
-        assert_eq!(rig.sent_to_client(play_cb::REMOVE_ENTITIES), 1);
-        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 0);
-        assert_eq!(rig.sent_to_backend(play_sb::PLAYER_LOADED), 1);
-
-        let chunk = frame(play_cb::COMMANDS, |_| {});
-        rig.receive_from_backend(chunk.clone());
-        assert_eq!(rig.client.last(), Some(&chunk));
-    }
-
-    #[test]
-    fn the_configuration_of_a_new_server_is_kept_from_the_client_on_the_seamless_path() {
-        let mut rig = Rig::in_play();
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.client.clear();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
+        rig.receive_from_backend(registry(2));
         assert!(rig.client.is_empty());
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        assert!(rig.backend.is_empty());
+        assert_eq!(rig.client, vec![known_packs_question(), registry(2)]);
+        rig.receive_from_client(known_packs_reply());
+        assert_eq!(rig.backend, vec![known_packs_reply()]);
+
+        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
+        assert_eq!(rig.resumed(), 0);
+        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
+        assert_eq!(rig.resumed(), 1);
+        rig.receive_from_backend(login());
+        rig.receive_from_client(empty(play_sb::PLAYER_LOADED));
+        assert_eq!(rig.sent_to_backend(play_sb::PLAYER_LOADED), 1);
+        let commands = frame(play_cb::COMMANDS, |_| {});
+        rig.receive_from_backend(commands.clone());
+        assert_eq!(rig.client.last(), Some(&commands));
     }
 
     #[test]
-    fn keep_alives_of_a_configuration_are_answered_and_are_not_part_of_it() {
+    fn keep_alives_of_a_configuration_are_answered_and_do_not_wait_for_the_client() {
         let mut rig = Rig::in_play();
         rig.lose_backend();
         rig.log_back_in();
+        rig.clear();
         rig.receive_from_backend(frame(config_cb::KEEP_ALIVE, |body| 9i64.encode(body)));
         rig.receive_from_backend(frame(config_cb::PING, |body| 4i32.encode(body)));
         assert_eq!(rig.sent_to_backend(config_sb::KEEP_ALIVE), 1);
         assert_eq!(rig.sent_to_backend(config_sb::PONG), 1);
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        assert_eq!(rig.resumed(), Some((Path::Seamless, None)));
-    }
-
-    #[test]
-    fn changed_registries_send_the_client_through_a_configuration() {
-        let mut rig = Rig::in_play();
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.client.clear();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(2));
-        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
-
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        assert_eq!(rig.sent_to_client(config_cb::REGISTRY_DATA), 0);
         rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
-        assert_eq!(rig.sent_to_client(config_cb::SELECT_KNOWN_PACKS), 1);
-        assert_eq!(rig.sent_to_client(config_cb::REGISTRY_DATA), 1);
-        assert_eq!(rig.sent_to_client(config_cb::FINISH_CONFIGURATION), 1);
-
-        let answered = rig.sent_to_backend(config_sb::SELECT_KNOWN_PACKS);
-        rig.receive_from_client(known_packs_reply());
-        assert_eq!(rig.sent_to_backend(config_sb::SELECT_KNOWN_PACKS), answered);
-
-        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        let (path, reason) = rig.resumed().unwrap();
-        assert_eq!(path, Path::Reconfigured);
-        assert!(reason.unwrap().contains("configuration changed"));
-        rig.receive_from_backend(login(PLAYER + 1));
-        assert_eq!(rig.client.last(), Some(&login(PLAYER + 1)));
+        assert!(rig.client.is_empty());
     }
 
     #[test]
-    fn a_configuration_shorter_than_the_last_one_is_a_change() {
+    fn every_return_goes_through_a_configuration() {
         let mut rig = Rig::in_play();
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
-    }
-
-    #[test]
-    fn after_a_reconfiguration_the_new_configuration_is_the_script() {
-        let mut rig = Rig::in_play();
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(2));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
-        rig.receive_from_client(known_packs_reply());
-        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        rig.clear();
-
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(2));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        assert_eq!(rig.resumed(), Some((Path::Seamless, None)));
-    }
-
-    #[test]
-    fn another_player_id_sends_the_client_through_a_configuration_on_a_fresh_login() {
-        let mut rig = Rig::in_play();
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.clear();
-
-        rig.receive_from_backend(login(PLAYER + 1));
-        assert!(rig.rest.contains(&Action::DropBackend));
-        assert_eq!(rig.sent_to_client(play_cb::REMOVE_ENTITIES), 0);
-        rig.clear();
-
-        rig.tick(Duration::ZERO);
-        rig.connected();
-        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
-        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
-        rig.receive_from_backend(login_finished());
-        rig.receive_from_backend(known_packs_question());
-        assert_eq!(rig.sent_to_client(config_cb::SELECT_KNOWN_PACKS), 1);
-        rig.receive_from_client(known_packs_reply());
-        assert_eq!(rig.sent_to_backend(config_sb::SELECT_KNOWN_PACKS), 1);
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        let (path, reason) = rig.resumed().unwrap();
-        assert_eq!(path, Path::Reconfigured);
-        assert!(reason.unwrap().contains("player id changed"));
-    }
-
-    #[test]
-    fn a_tainted_ledger_goes_straight_to_a_reconfiguration() {
-        let mut rig = Rig::in_play();
-        rig.receive_from_backend(frame(play_cb::WAYPOINT, |_| {}));
-        rig.clear();
-        rig.lose_backend();
-        rig.tick(settings().retry_every);
-        rig.connected();
-        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
+        for _ in 0..3 {
+            rig.lose_backend();
+            rig.come_back();
+            assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
+            assert_eq!(rig.resumed(), 1);
+            rig.receive_from_client(empty(play_sb::PLAYER_LOADED));
+            rig.clear();
+        }
     }
 
     #[test]
     fn frames_held_for_a_slow_client_arrive_once_it_acknowledges_after_the_login() {
         let mut rig = Rig::in_play();
-        rig.receive_from_backend(frame(play_cb::WAYPOINT, |_| {}));
         rig.lose_backend();
         rig.log_back_in();
         rig.receive_from_backend(known_packs_question());
@@ -1486,6 +1186,21 @@ mod tests {
         assert_eq!(rig.sent_to_client(config_cb::SELECT_KNOWN_PACKS), 1);
         rig.receive_from_client(known_packs_reply());
         assert_eq!(rig.sent_to_backend(config_sb::SELECT_KNOWN_PACKS), 1);
+    }
+
+    #[test]
+    fn a_client_that_acknowledges_before_the_login_is_relayed_live() {
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.tick(settings().retry_every);
+        rig.connected();
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        rig.receive_from_backend(login_finished());
+        rig.clear();
+        rig.receive_from_backend(known_packs_question());
+        assert_eq!(rig.client, vec![known_packs_question()]);
+        rig.receive_from_client(known_packs_reply());
+        assert_eq!(rig.backend, vec![known_packs_reply()]);
     }
 
     #[test]
@@ -1512,12 +1227,17 @@ mod tests {
         rig.clear();
         rig.lose_backend();
         assert!(rig.events().is_empty());
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        assert!(rig.client.is_empty());
         rig.log_back_in();
+        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 0);
+        rig.client.clear();
         rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
+        assert_eq!(rig.client, vec![known_packs_question()]);
+        rig.receive_from_client(known_packs_reply());
         rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        assert_eq!(rig.resumed(), Some((Path::Seamless, None)));
+        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
+        assert_eq!(rig.resumed(), 1);
     }
 
     #[test]
@@ -1629,7 +1349,6 @@ mod tests {
     #[test]
     fn a_client_told_to_reconfigure_is_disconnected_in_configuration() {
         let mut rig = Rig::in_play();
-        rig.receive_from_backend(frame(play_cb::WAYPOINT, |_| {}));
         rig.lose_backend();
         rig.tick(settings().retry_every);
         rig.connected();
@@ -1663,16 +1382,41 @@ mod tests {
 
         rig.receive_from_backend(config_push(pack));
         assert_eq!(rig.sent_to_client(config_cb::RESOURCE_PACK_PUSH), 1);
-        rig.receive_from_client(frame(config_sb::RESOURCE_PACK, |body| {
-            pack.encode(body);
-            VarI32(0).encode(body);
-        }));
+        rig.receive_from_client(config_pack_answer(pack, 0));
         assert_eq!(rig.sent_to_backend(config_sb::RESOURCE_PACK), 1);
 
         rig.receive_from_backend(known_packs_question());
         rig.receive_from_backend(registry(1));
         assert_eq!(rig.sent_to_client(config_cb::REGISTRY_DATA), 0);
         assert_eq!(rig.sent_to_client(config_cb::DISCONNECT), 0);
+    }
+
+    #[test]
+    fn a_pack_the_client_took_stays_out_of_what_a_replay_follows() {
+        let pack = Uuid::from_u128(5);
+        let mut rig = Rig::fresh();
+        rig.tick(Duration::ZERO);
+        rig.connected();
+        rig.receive_from_client(hello());
+        rig.receive_from_backend(login_finished());
+        rig.receive_from_client(empty(login_sb::LOGIN_ACKNOWLEDGED));
+        rig.receive_from_backend(config_push(pack));
+        rig.receive_from_client(config_pack_answer(pack, 0));
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_client(known_packs_reply());
+        rig.receive_from_backend(registry(1));
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.clear();
+
+        rig.receive_from_backend(known_packs_question());
+        rig.receive_from_backend(config_push(pack));
+        rig.receive_from_backend(registry(1));
+        assert_eq!(
+            rig.backend,
+            vec![known_packs_reply(), config_pack_answer(pack, 0)]
+        );
+        assert!(rig.client.is_empty());
     }
 
     #[test]
@@ -1707,9 +1451,7 @@ mod tests {
         rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
         rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
         assert_eq!(rig.sent_to_backend(config_sb::FINISH_CONFIGURATION), 1);
-        let (path, reason) = rig.resumed().unwrap();
-        assert_eq!(path, Path::Reconfigured);
-        assert!(reason.unwrap().contains("during a configuration"));
+        assert_eq!(rig.resumed(), 1);
     }
 
     #[test]
@@ -1750,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn a_client_that_ends_its_configuration_during_a_replay_goes_through_the_script() {
+    fn a_client_that_ends_its_configuration_during_a_replay_goes_through_a_new_one() {
         let mut rig = Rig::in_configuration();
         rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
         rig.lose_backend();
@@ -1760,6 +1502,9 @@ mod tests {
         rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
         assert!(rig.rest.contains(&Action::DropBackend));
         assert_eq!(rig.sent_to_backend(config_sb::FINISH_CONFIGURATION), 0);
+        rig.tick(Duration::ZERO);
+        rig.connected();
+        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
     }
 
     #[test]
@@ -1777,12 +1522,12 @@ mod tests {
         rig.receive_from_client(known_packs_reply());
         rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
         rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        assert_eq!(rig.resumed().unwrap().0, Path::Reconfigured);
-        rig.receive_from_backend(login(PLAYER));
+        assert_eq!(rig.resumed(), 1);
+        rig.receive_from_backend(login());
         rig.clear();
 
         rig.lose_backend();
-        assert!(matches!(rig.events()[..], [Event::BackendLost { .. }]));
+        assert_eq!(rig.events(), vec![&Event::BackendLost]);
     }
 
     #[test]
@@ -1792,7 +1537,7 @@ mod tests {
         assert!(rig.rest.is_empty());
         rig.tick(Duration::from_secs(1));
         assert!(rig.rest.contains(&Action::DropBackend));
-        assert!(matches!(rig.events()[..], [Event::BackendLost { .. }]));
+        assert_eq!(rig.events(), vec![&Event::BackendLost]);
     }
 
     #[test]
@@ -1911,48 +1656,18 @@ mod tests {
     }
 
     #[test]
-    fn a_reconfiguration_reports_what_the_client_held() {
-        let mut rig = Rig::in_play();
-        rig.receive_from_backend(frame(play_cb::ADD_ENTITY, |body| VarI32(50).encode(body)));
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(2));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
-        rig.receive_from_client(known_packs_reply());
-        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        let tally = rig
-            .events()
-            .into_iter()
-            .find_map(|event| match event {
-                Event::Resumed { tally, .. } => Some(*tally),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(tally.entities, 1);
-        assert!(tally.bytes > 0);
-    }
-
-    #[test]
     fn nothing_of_play_reaches_a_client_on_its_way_to_a_configuration() {
-        let chunk = frame(play_cb::LEVEL_CHUNK_WITH_LIGHT, |body| {
-            1i32.encode(body);
-            2i32.encode(body);
-        });
+        let pack = Uuid::from_u128(5);
         let mut rig = Rig::in_play();
-        rig.receive_from_backend(chunk);
+        rig.receive_from_backend(push(pack, "abc"));
+        rig.receive_from_client(pack_answer(pack, 0));
         rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
+        rig.come_back();
         rig.receive_from_backend(empty(play_cb::START_CONFIGURATION));
         rig.clear();
 
         rig.tick(settings().settle);
-        assert_eq!(rig.sent_to_client(play_cb::FORGET_LEVEL_CHUNK), 0);
+        assert_eq!(rig.sent_to_client(play_cb::RESOURCE_PACK_POP), 0);
         rig.lose_backend();
         rig.tick(Duration::ZERO);
         assert_eq!(rig.sent_to_client(play_cb::KEEP_ALIVE), 0);
@@ -1984,9 +1699,7 @@ mod tests {
         assert_eq!(rig.sent_to_client(config_cb::FINISH_CONFIGURATION), 1);
         rig.receive_from_client(known_packs_reply());
         rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        let (path, reason) = rig.resumed().unwrap();
-        assert_eq!(path, Path::Reconfigured);
-        assert!(reason.unwrap().contains("never received a login"));
+        assert_eq!(rig.resumed(), 1);
     }
 
     #[test]
@@ -2000,11 +1713,7 @@ mod tests {
         }
         rig.clear();
         rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
+        rig.come_back();
         rig.clear();
 
         rig.receive_from_backend(push(pack, "abc"));
@@ -2020,52 +1729,51 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_the_client_holds_is_answered_in_its_name_before_it_acknowledges() {
+        let pack = Uuid::from_u128(5);
+        let mut rig = Rig::in_play();
+        rig.receive_from_backend(push(pack, "abc"));
+        rig.receive_from_client(pack_answer(pack, 0));
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.clear();
+
+        rig.receive_from_backend(config_push(pack));
+        assert_eq!(rig.backend, vec![config_pack_answer(pack, 0)]);
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        assert_eq!(rig.sent_to_client(config_cb::RESOURCE_PACK_PUSH), 0);
+    }
+
+    #[test]
     fn a_new_pack_reaches_the_client_and_the_old_one_goes_when_things_settle() {
         let (old, new) = (Uuid::from_u128(5), Uuid::from_u128(6));
         let mut rig = Rig::in_play();
         rig.receive_from_backend(push(old, "abc"));
         rig.receive_from_client(pack_answer(old, 0));
         rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
+        rig.come_back();
         rig.clear();
         rig.receive_from_backend(push(new, "def"));
         assert_eq!(rig.sent_to_client(play_cb::RESOURCE_PACK_PUSH), 1);
         rig.tick(Duration::from_secs(2));
         assert_eq!(rig.sent_to_client(play_cb::RESOURCE_PACK_POP), 0);
         rig.tick(Duration::from_secs(2));
-        assert_eq!(rig.sent_to_client(play_cb::RESOURCE_PACK_POP), 1);
+        assert_eq!(
+            rig.client.last(),
+            Some(&frame(play_cb::RESOURCE_PACK_POP, |body| Some(old).encode(body)))
+        );
     }
 
     #[test]
-    fn a_new_pack_during_a_configuration_needs_the_client() {
+    fn a_new_pack_during_a_configuration_waits_for_the_client() {
         let mut rig = Rig::in_play();
         rig.lose_backend();
         rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        let pack = tagged(&PlayPacket::ResourcePackPush(ResourcePackPush {
-            id: Uuid::from_u128(9),
-            url: String::new(),
-            hash: "abc".to_string(),
-            required: false,
-            prompt: None,
-        }));
-        let (_, body) = split(&pack).unwrap();
-        rig.receive_from_backend(frame(config_cb::RESOURCE_PACK_PUSH, |out| {
-            out.extend_from_slice(body);
-        }));
-        assert_eq!(rig.sent_to_client(play_cb::START_CONFIGURATION), 1);
-    }
-
-    fn config_push(id: Uuid) -> Bytes {
-        let pushed = push(id, "abc");
-        let (_, body) = split(&pushed).unwrap();
-        frame(config_cb::RESOURCE_PACK_PUSH, |out| {
-            out.extend_from_slice(body);
-        })
+        rig.clear();
+        rig.receive_from_backend(config_push(Uuid::from_u128(9)));
+        assert!(rig.backend.is_empty());
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        assert_eq!(rig.client, vec![config_push(Uuid::from_u128(9))]);
     }
 
     #[test]
@@ -2084,64 +1792,11 @@ mod tests {
         rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
         rig.receive_from_client(known_packs_reply());
         rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
+        rig.receive_from_backend(login());
         rig.clear();
 
         rig.receive_from_backend(push(pack, "abc"));
         assert_eq!(rig.sent_to_client(play_cb::RESOURCE_PACK_PUSH), 1);
-    }
-
-    #[test]
-    fn a_pack_pushed_during_a_reconfiguration_stays_out_of_the_script() {
-        let pack = Uuid::from_u128(5);
-        let mut rig = Rig::in_play();
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(config_push(pack));
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
-        rig.receive_from_client(known_packs_reply());
-        rig.receive_from_client(frame(config_sb::RESOURCE_PACK, |body| {
-            pack.encode(body);
-            VarI32(0).encode(body);
-        }));
-        rig.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        rig.clear();
-
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(config_push(pack));
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        assert_eq!(rig.resumed(), Some((Path::Seamless, None)));
-    }
-
-    #[test]
-    fn chunks_the_new_server_did_not_send_are_forgotten_once_it_settled() {
-        let chunk = |x: i32, z: i32| {
-            frame(play_cb::LEVEL_CHUNK_WITH_LIGHT, |body| {
-                x.encode(body);
-                z.encode(body);
-            })
-        };
-        let mut rig = Rig::in_play();
-        rig.receive_from_backend(chunk(0, 0));
-        rig.receive_from_backend(chunk(9, 9));
-        rig.lose_backend();
-        rig.log_back_in();
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_backend(registry(1));
-        rig.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
-        rig.receive_from_backend(login(PLAYER));
-        rig.receive_from_backend(chunk(0, 0));
-        rig.clear();
-        rig.tick(Duration::from_secs(4));
-        assert_eq!(rig.sent_to_client(play_cb::FORGET_LEVEL_CHUNK), 1);
     }
 
     #[test]
@@ -2151,6 +1806,16 @@ mod tests {
         rig.clear();
         rig.lose_backend();
         assert_eq!(rig.client, vec![empty(play_cb::BUNDLE_DELIMITER)]);
+    }
+
+    #[test]
+    fn a_closed_bundle_is_left_alone() {
+        let mut rig = Rig::in_play();
+        rig.receive_from_backend(empty(play_cb::BUNDLE_DELIMITER));
+        rig.receive_from_backend(empty(play_cb::BUNDLE_DELIMITER));
+        rig.clear();
+        rig.lose_backend();
+        assert!(rig.client.is_empty());
     }
 
     #[test]
