@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 use std::process::{Child, Command};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -38,8 +39,40 @@ pub fn check(registry: &Registry, client: &Client, others: &[Client]) -> Result<
     Ok(())
 }
 
+fn free_gib(path: &Path) -> Option<u64> {
+    let output = Command::new("df").arg("-Pk").arg(path).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let available: u64 = text
+        .lines()
+        .last()?
+        .split_whitespace()
+        .nth(3)?
+        .parse()
+        .ok()?;
+    Some(available / (1024 * 1024))
+}
+
+fn low_disk(free: u64, least: u64) -> Option<String> {
+    (free < least).then(|| {
+        format!(
+            "WARNING: DISK NEARLY FULL, {free} GiB free, under the {least} GiB of clients.toml. Empty a target/ before a build breaks the other sessions."
+        )
+    })
+}
+
+/// Only warns: a client that does not start helps nobody free the disk.
+fn disk_warning(registry: &Registry) -> Option<String> {
+    low_disk(
+        free_gib(&registry::home_or_parent())?,
+        registry.min_free_gib,
+    )
+}
+
 pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     check(registry, &client, &running())?;
+    if let Some(warning) = disk_warning(registry) {
+        eprintln!("{warning}");
+    }
     if client.level != Level::Play {
         registry::socket(&client.name)?;
     }
@@ -160,6 +193,18 @@ mod tests {
             size: None,
             jfr: false,
         }
+    }
+
+    #[test]
+    fn the_disk_warns_under_its_threshold_and_only_then() {
+        assert!(low_disk(14, 15).unwrap().contains("14 GiB free"));
+        assert!(low_disk(15, 15).is_none());
+    }
+
+    #[test]
+    fn free_space_is_read_from_the_system() {
+        assert!(free_gib(Path::new("/")).is_some());
+        assert!(free_gib(Path::new("/no/such/folder")).is_none());
     }
 
     #[test]

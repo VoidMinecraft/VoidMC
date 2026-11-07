@@ -14,6 +14,7 @@ pub struct Registry {
     pub dashboard_port: u16,
     pub lease_from: u16,
     pub lease_to: u16,
+    pub min_free_gib: u64,
     pub reserved: BTreeMap<String, String>,
     pub levels: BTreeMap<String, Settings>,
 }
@@ -127,6 +128,14 @@ fn mosaic_port_in(
         &format!("{MOSAIC} {}", home.display()),
         busy,
     )
+}
+
+/// The nearest folder that exists, for what has to look at the disk before the first client.
+pub fn home_or_parent() -> PathBuf {
+    let home = home();
+    home.ancestors()
+        .find(|path| path.exists())
+        .map_or(home.clone(), PathBuf::from)
 }
 
 pub fn client_dir(name: &str) -> PathBuf {
@@ -274,6 +283,7 @@ fn listening(port: u16) -> bool {
 
 /// The pair of ports of a feature, the same one every time.
 pub fn lease(registry: &Registry, feature: &str) -> Result<u16, String> {
+    slug(feature)?;
     lease_in(registry, &home(), feature, listening)
 }
 
@@ -424,6 +434,12 @@ mod tests {
         let busy = first + 3;
         let port = free_pair(&registry, &taken, |p| p == busy).unwrap();
         assert_eq!(port, registry.lease_from + 6);
+    }
+
+    #[test]
+    fn a_lease_refuses_a_feature_no_client_could_take() {
+        let error = lease(&Registry::load(), "Trois mots ici").unwrap_err();
+        assert!(error.contains("one or two words"), "{error}");
     }
 
     #[test]

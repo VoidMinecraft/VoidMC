@@ -1,0 +1,10 @@
+# Opens the map, and passes on any map: voidc run open-map.scn --feature "Carte" --port 25700
+level render
+wait_until 30000 chunks >= 100
+frames 500
+act map
+wait_until 15000 passenger==true
+wait_until 15000 entities >= 40
+wait_still 800 15000
+shot open
+check frames cut=5-60

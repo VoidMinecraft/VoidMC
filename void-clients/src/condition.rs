@@ -174,7 +174,11 @@ impl Condition {
         Ok(())
     }
 
-    fn orders(&self) -> bool {
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    pub fn orders(&self) -> bool {
         ORDERS.contains(&self.op)
     }
 }

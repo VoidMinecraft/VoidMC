@@ -1,11 +1,17 @@
 mod bot;
+mod check;
+mod compare;
 mod condition;
 mod control;
 mod dash;
 mod frame;
 mod launch;
 mod lifecycle;
+mod perf;
 mod registry;
+mod scenario;
+mod step;
+mod trace;
 mod version;
 
 use std::process::ExitCode;
@@ -22,10 +28,23 @@ const USAGE: &str = "voidc: the clients of the agents
                                             starts a client and waits until it is in game
   voidc play \"Feature\" --port N            a visible client for Léo, never driven
   voidc cmd <name> <verb> [args]            act, wait_until, assert, state, shot, ...
+  voidc step \"Feature\" --server <socket> --out <dir> [--ticks N] [--frames K] [--lock-at T] [--act <command>]...
+             [--every N] [--at i,j] [--min-chunks N] [--size WxH] [--level render|logic] [--port N]
+             [--hold T:S] [--stop-server]
+                                            plays a passage frame by frame on a stepped server
+  voidc run <file> (--on <name> | --feature \"Feature\") [--keep-going] [--keep-up] [--out DIR]
+                                            plays a scenario, refused before it starts if it cannot run
+  voidc compare <a.png> <b.png> [max=N] [tile=N] [ignore=x,y,w,h] [require=x,y,w,h:max:delta]
+                                            compares two pictures by zones, writes the difference
+  voidc check <frames> [cut=T] [jump=N] [turn=N] [flash=N] [images=dir]
+                                            looks for jumps, half turns and flashes in a recording
+  voidc perf <name> [all|metrics|gpu|jfr|ab clouds|ab particles]
+                                            what a frame costs, on the CPU and on the GPU
   voidc down <name>                         stops a client
   voidc forget <name>                       stops it and deletes its folder
   voidc list                                every client and its state
-  voidc dash                                the address of the mosaic";
+  voidc dash                                the address of the mosaic
+  voidc trace <file> | diff <a> <b>         reads a packet trace, see trace --help";
 
 const JOIN_LIMIT: Duration = Duration::from_secs(90);
 
@@ -74,7 +93,7 @@ fn wait_in_game(name: &str) -> Result<(), String> {
     ))
 }
 
-fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> {
+fn client_of(args: &[String], level: Level) -> Result<Client, String> {
     let feature = args.first().ok_or("which feature?")?.clone();
     let name = registry::slug(&feature)?;
     let port = match flag(args, "--port") {
@@ -82,8 +101,8 @@ fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> 
         None => registry::lease_of(&feature)?
             .ok_or("no port: pass --port, or take one with voidc port")?,
     };
-    let client = Client {
-        name: name.clone(),
+    Ok(Client {
+        name,
         feature,
         port,
         level,
@@ -96,7 +115,12 @@ fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> 
             .map(parse_size)
             .transpose()?,
         jfr: args.iter().any(|arg| arg == "--jfr"),
-    };
+    })
+}
+
+fn up(registry: &Registry, args: &[String], level: Level) -> Result<(), String> {
+    let client = client_of(args, level)?;
+    let name = client.name.clone();
     lifecycle::start(registry, client)?;
     let started = || {
         println!("mosaic: {}", dash::ensure(registry)?);
@@ -145,11 +169,11 @@ fn list() {
 
 fn cmd(args: &[String]) -> Result<(), String> {
     let name = args.first().ok_or("which client?")?;
-    let verb = args[1..].join(" ");
     let client = registry::load(name).ok_or_else(|| format!("unknown client {name}"))?;
     if client.level == Level::Play {
         return Err(format!("{name} is played by Léo and takes no command"));
     }
+    let verb = args[1..].join(" ");
     condition::check(&verb, client.level)?;
     let state = control::ask(name, "state", Duration::from_secs(5))?;
     let state: Value = serde_json::from_str(&state).map_err(|e| e.to_string())?;
@@ -185,6 +209,25 @@ fn run() -> Result<(), String> {
         }
         "play" => up(&registry, rest, Level::Play),
         "cmd" => cmd(rest),
+        "step" => {
+            let level = flag(rest, "--level")
+                .as_deref()
+                .map_or(Ok(Level::Render), Level::parse)?;
+            step::run(&registry, client_of(rest, level)?, rest)
+        }
+        "run" => scenario::command(
+            rest,
+            &mut scenario::Live(|feature: &str, level, port: Option<String>| {
+                let mut args = vec![feature.to_string()];
+                if let Some(port) = port {
+                    args.extend(["--port".to_string(), port]);
+                }
+                up(&registry, &args, level)
+            }),
+        ),
+        "compare" => compare::command(rest),
+        "check" => check::command(rest),
+        "perf" => perf::command(rest),
         "down" => lifecycle::down(rest.first().ok_or("which client?")?),
         "forget" => lifecycle::forget(rest.first().ok_or("which client?")?),
         "list" => {
@@ -195,6 +238,7 @@ fn run() -> Result<(), String> {
             println!("{}", dash::ensure(&registry)?);
             Ok(())
         }
+        "trace" => trace::run(rest),
         "dash-run" => dash::run(registry),
         "bot-run" => {
             let name = rest.first().ok_or("name")?;

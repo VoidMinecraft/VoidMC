@@ -3,7 +3,7 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use crate::condition::{self, DEFAULT_WAIT_MS};
-use crate::registry;
+use crate::{perf, registry};
 
 /// Sends one verb to a client and returns its JSON line.
 pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> {
@@ -28,6 +28,10 @@ pub fn ask(name: &str, verb: &str, timeout: Duration) -> Result<String, String> 
 
 /// How long a verb may take: a `wait_until` carries its own limit.
 pub fn timeout_of(verb: &str) -> Duration {
+    let words: Vec<&str> = verb.split_whitespace().collect();
+    if words.first() == Some(&"perf") {
+        return perf::timeout_of(&words);
+    }
     let limit = match condition::split(verb) {
         ("wait_until", rest) => condition::wait(rest).map_or(DEFAULT_WAIT_MS, |(_, ms)| ms),
         _ => return Duration::from_secs(30),
