@@ -46,7 +46,8 @@ with spaces goes between quotes, and the limit of a wait comes first.
 is an error, never a wait. Only spaces and tabs separate words: another space or a control
 character, or an invisible format character like U+200B, in a condition is an error.
 `conditions.tsv` holds the cases, with `\t`, `\\` and `\uXXXX` escapes: `cargo test`, which needs `javac`, runs them through the Rust and Java code that splits a
-verb and reads a condition, the code the bot and the probe use. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
+verb and reads a condition, the code the bot and the probe use. An error case may add a fifth cell, a
+piece of the message both sides must give. `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
 
 Bots add `packets`.
 
