@@ -294,6 +294,24 @@ pub fn run(mut registry: Registry) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::fake::{FakeClient, NAME};
+
+    #[test]
+    fn a_stale_client_stays_visible_and_stoppable() {
+        let fake = FakeClient::stale(Level::Render);
+        let registry = Registry::load();
+        let client = registry::load(NAME).unwrap();
+        assert_eq!(status(&client)["state"], "connected");
+        thumb(NAME);
+        action(&registry, NAME, "take").unwrap();
+        action(&registry, NAME, "give").unwrap();
+        action(&registry, NAME, "stop").unwrap();
+        assert_eq!(
+            fake.heard(),
+            ["state", "thumb", "show focus", "hide", "quit"]
+        );
+        assert!(!registry::alive(&client));
+    }
 
     fn head(method: &str, host: Option<&str>, origin: Option<&str>) -> Head {
         Head {
