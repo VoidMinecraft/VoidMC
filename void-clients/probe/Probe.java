@@ -191,12 +191,12 @@ public class Probe {
   }
 
   private static Map<String, Object> verb(String verb, String[] w, String rest) throws Exception {
+    if (verb.equals("wait_until")) return waitUntil(rest);
     Minecraft mc = ready();
     Map<String, Object> reply = new LinkedHashMap<>();
     switch (verb) {
       case "state" -> reply.putAll(onGame(Probe::fields));
       case "act" -> onGame(() -> { player().connection.sendCommand(rest); return 0; });
-      case "wait_until" -> reply.putAll(waitUntil(rest));
       case "assert" -> {
         Map<String, Object> fields = onGame(Probe::fields);
         Condition.Parsed parsed = Condition.parse(rest);
@@ -291,20 +291,9 @@ public class Probe {
   private static Map<String, Object> waitUntil(String rest) throws Exception {
     Condition.Wait wait = Condition.waitOf(rest);
     Condition.validate(wait.parsed(), LEVEL);
-    long start = System.currentTimeMillis();
-    while (true) {
-      try {
-        Map<String, Object> fields = onGame(Probe::fields);
-        if (Condition.holds(wait.parsed(), fields)) {
-          fields.put("waited_ms", System.currentTimeMillis() - start);
-          return fields;
-        }
-      } catch (IllegalStateException notYet) {
-      }
-      if (System.currentTimeMillis() - start > wait.limit()) throw new AssertionError("timed out on " + rest.trim());
-      Thread.sleep(50);
-    }
+    return Condition.await(wait, rest, () -> onGame(Probe::fields), 50);
   }
+
 
   private static String shot(String name, int downscale) throws Exception {
     if (LEVEL.equals("logic")) throw new IllegalStateException("the logic level has no picture");

@@ -31,6 +31,10 @@ final class Condition {
 
   record Wait(Parsed parsed, long limit) {}
 
+  interface Fields {
+    Map<String, Object> read() throws Exception;
+  }
+
   private Condition() {}
 
   private static boolean blank(char c) {
@@ -109,6 +113,22 @@ final class Condition {
       return new Wait(parse(text.substring(cut + 1)), Long.parseLong(first));
     }
     return new Wait(parse(text), DEFAULT_WAIT_MS);
+  }
+
+  static Map<String, Object> await(Wait wait, String text, Fields source, long pauseMs) throws Exception {
+    long start = System.currentTimeMillis();
+    while (true) {
+      try {
+        Map<String, Object> fields = source.read();
+        if (holds(wait.parsed(), fields)) {
+          fields.put("waited_ms", System.currentTimeMillis() - start);
+          return fields;
+        }
+      } catch (IllegalStateException notYet) {
+      }
+      if (System.currentTimeMillis() - start > wait.limit()) throw new AssertionError("timed out on " + text);
+      Thread.sleep(pauseMs);
+    }
   }
 
   static boolean holds(Parsed parsed, Map<String, Object> fields) {

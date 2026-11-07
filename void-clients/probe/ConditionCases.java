@@ -8,6 +8,22 @@ import java.util.Map;
 
 final class ConditionCases {
   public static void main(String[] args) throws Exception {
+    if (args[0].equals("--await")) {
+      int[] tries = {0};
+      Map<String, Object> loaded = new HashMap<>(Map.of("chunks", 1000L));
+      Condition.Fields loading = () -> {
+        if (++tries[0] <= 3) throw new IllegalStateException("game not ready");
+        return new HashMap<>(loaded);
+      };
+      Condition.await(Condition.waitOf("2000 chunks>=1000"), "chunks>=1000", loading, 1);
+      System.out.println("ready after " + tries[0] + " tries");
+      try {
+        Condition.await(Condition.waitOf("200 chunks>=1"), "chunks>=1", () -> { throw new IllegalStateException("game not ready"); }, 1);
+      } catch (AssertionError timedOut) {
+        System.out.println(timedOut.getMessage());
+      }
+      return;
+    }
     if (args[0].equals("--hidden")) {
       for (int c = 0; c <= Character.MAX_CODE_POINT; c++) {
         if ((c < 0xD800 || c > 0xDFFF) && Condition.hidden(c)) System.out.println(Integer.toHexString(c));

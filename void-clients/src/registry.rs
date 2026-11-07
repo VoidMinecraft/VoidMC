@@ -89,11 +89,30 @@ impl Registry {
 }
 
 /// The folder of the runtime state, shared by every worktree.
+fn default_home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".voidc")
+}
+
 pub fn home() -> PathBuf {
-    match std::env::var_os("VOIDC_HOME") {
-        Some(path) => PathBuf::from(path),
-        None => PathBuf::from(std::env::var_os("HOME").expect("HOME")).join(".voidc"),
+    std::env::var_os("VOIDC_HOME").map_or_else(default_home, PathBuf::from)
+}
+
+const MOSAIC: &str = "(mosaic)";
+
+pub fn mosaic_port(registry: &Registry) -> Result<u16, String> {
+    mosaic_port_in(registry, &home(), &default_home(), listening)
+}
+
+fn mosaic_port_in(
+    registry: &Registry,
+    home: &Path,
+    default: &Path,
+    busy: impl Fn(u16) -> bool,
+) -> Result<u16, String> {
+    if home == default {
+        return Ok(registry.dashboard_port);
     }
+    lease_in(registry, home, MOSAIC, busy)
 }
 
 pub fn client_dir(name: &str) -> PathBuf {
@@ -241,16 +260,26 @@ fn listening(port: u16) -> bool {
 
 /// The pair of ports of a feature, the same one every time.
 pub fn lease(registry: &Registry, feature: &str) -> Result<u16, String> {
-    let _lock = Lock::take().map_err(|e| e.to_string())?;
-    let mut all = leases()?;
+    lease_in(registry, &home(), feature, listening)
+}
+
+fn lease_in(
+    registry: &Registry,
+    home: &Path,
+    feature: &str,
+    busy: impl Fn(u16) -> bool,
+) -> Result<u16, String> {
+    fs::create_dir_all(home).map_err(|e| e.to_string())?;
+    let _lock = Lock::at(&home.join("start.lock")).map_err(|e| e.to_string())?;
+    let mut all = leases_at(&home.join("ports.json"))?;
     if let Some(port) = all.get(feature) {
         return Ok(*port);
     }
     let taken: Vec<u16> = all.values().copied().collect();
-    let port = free_pair(registry, &taken, listening).ok_or("no free ports left")?;
+    let port = free_pair(registry, &taken, busy).ok_or("no free ports left")?;
     all.insert(feature.to_string(), port);
     let bytes = serde_json::to_vec_pretty(&all).map_err(|e| e.to_string())?;
-    write_whole(&home().join("ports.json"), &bytes).map_err(|e| e.to_string())?;
+    write_whole(&home.join("ports.json"), &bytes).map_err(|e| e.to_string())?;
     Ok(port)
 }
 
@@ -273,6 +302,29 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn two_homes_never_share_a_mosaic_and_the_default_keeps_its_own() {
+        let registry = Registry::load();
+        let default = scratch("home-default");
+        let (first, second) = (scratch("home-first"), scratch("home-second"));
+        assert_eq!(
+            mosaic_port_in(&registry, &default, &default, |_| false).unwrap(),
+            registry.dashboard_port
+        );
+        let a = mosaic_port_in(&registry, &first, &default, |_| false).unwrap();
+        let b = mosaic_port_in(&registry, &second, &default, |port| port == a).unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, registry.dashboard_port);
+        assert_eq!(
+            mosaic_port_in(&registry, &first, &default, |_| true).unwrap(),
+            a
+        );
+        assert_eq!(
+            leases_at(&first.join("ports.json")).unwrap().get(MOSAIC),
+            Some(&a)
+        );
     }
 
     #[test]

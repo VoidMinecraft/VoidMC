@@ -101,22 +101,33 @@ enum Served {
     Ours,
     Other,
     Older,
+    Foreign,
+}
+
+fn home_name() -> String {
+    registry::home().display().to_string()
 }
 
 fn served(port: u16) -> Served {
     if TcpStream::connect(("127.0.0.1", port)).is_err() {
         return Served::Nothing;
     }
-    match call(port, "GET", "/api/version") {
-        Some((200, version)) if version == version::current() => Served::Ours,
-        Some((200, _)) => Served::Other,
-        _ => Served::Older,
+    let Some((200, version)) = call(port, "GET", "/api/version") else {
+        return Served::Older;
+    };
+    match call(port, "GET", "/api/home") {
+        Some((200, home)) if home == home_name() && version == version::current() => Served::Ours,
+        Some((200, home)) if home == home_name() => Served::Other,
+        _ => Served::Foreign,
     }
 }
 
 /// Starts the page if nobody serves it yet, and says where it is.
 pub fn ensure(registry: &Registry) -> Result<String, String> {
-    let port = registry.dashboard_port;
+    ensure_on(registry::mosaic_port(registry)?)
+}
+
+fn ensure_on(port: u16) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{port}");
     match served(port) {
         Served::Ours => return Ok(url),
@@ -125,6 +136,12 @@ pub fn ensure(registry: &Registry) -> Result<String, String> {
                 "the mosaic on {port} comes from an older voidc and starts clients this one refuses: stop it, and voidc starts its own"
             );
             return Ok(url);
+        }
+        Served::Foreign => {
+            return Err(format!(
+                "port {port} serves the mosaic of another VOIDC_HOME, left alone: free the port, or lease another one for {}",
+                home_name()
+            ));
         }
         Served::Other => {
             let _ = call(port, "POST", "/api/quit");
@@ -232,6 +249,9 @@ fn request(registry: &Registry, mut stream: TcpStream) -> std::io::Result<()> {
             "text/plain",
             version::current().as_bytes(),
         ),
+        ("GET", ["api", "home"]) => {
+            respond(&mut stream, "200 OK", "text/plain", home_name().as_bytes())
+        }
         ("POST", ["api", "quit"]) => {
             respond(&mut stream, "200 OK", "text/plain", b"")?;
             std::process::exit(0)
@@ -263,7 +283,8 @@ fn request(registry: &Registry, mut stream: TcpStream) -> std::io::Result<()> {
     }
 }
 
-pub fn run(registry: Registry) -> Result<(), String> {
+pub fn run(mut registry: Registry) -> Result<(), String> {
+    registry.dashboard_port = registry::mosaic_port(&registry)?;
     let listener =
         TcpListener::bind(("127.0.0.1", registry.dashboard_port)).map_err(|e| e.to_string())?;
     for stream in listener.incoming().flatten() {
@@ -363,52 +384,65 @@ mod tests {
         assert_eq!(served(old_port), Served::Older);
     }
 
-    #[test]
-    fn a_mosaic_of_another_version_that_stays_is_an_error_not_a_success() {
+    fn fake(answer: impl Fn(&str, bool) -> String + Send + 'static) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         thread::spawn(move || {
+            let mut quit = false;
             for mut stream in listener.incoming().flatten() {
-                let _ = super::head(&stream);
-                let _ = respond(&mut stream, "200 OK", "text/plain", b"0000000000000000");
+                let Ok(head) = super::head(&stream) else {
+                    continue;
+                };
+                quit |= head.target == "/api/quit";
+                let body = answer(&head.target, quit);
+                let _ = respond(&mut stream, "200 OK", "text/plain", body.as_bytes());
             }
         });
-        let registry = Registry {
-            dashboard_port: port,
-            ..crate::registry::Registry::load()
-        };
-        let error = ensure(&registry).unwrap_err();
+        port
+    }
+
+    const OTHER: &str = "0000000000000000";
+
+    #[test]
+    fn a_mosaic_of_another_version_that_stays_is_an_error_not_a_success() {
+        let port = fake(|target, _| match target {
+            "/api/home" => home_name(),
+            _ => OTHER.into(),
+        });
+        let error = ensure_on(port).unwrap_err();
         assert!(error.contains("did not quit"), "{error}");
     }
 
     #[test]
     fn a_mosaic_of_our_version_that_takes_the_port_meanwhile_is_kept() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        thread::spawn(move || {
-            let mut replaced = false;
-            for mut stream in listener.incoming().flatten() {
-                let Ok(head) = super::head(&stream) else {
-                    continue;
-                };
-                replaced |= head.target == "/api/quit";
-                let body = if replaced {
-                    version::current()
-                } else {
-                    "0000000000000000".into()
-                };
-                let _ = respond(&mut stream, "200 OK", "text/plain", body.as_bytes());
+        let port = fake(|target, quit| match target {
+            "/api/home" => home_name(),
+            _ if quit => version::current(),
+            _ => OTHER.into(),
+        });
+        let started = Instant::now();
+        assert_eq!(ensure_on(port).unwrap(), format!("http://127.0.0.1:{port}"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn the_mosaic_of_another_home_is_never_asked_to_quit() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = asked.clone();
+        let port = fake(move |target, quit| {
+            seen.store(quit, std::sync::atomic::Ordering::SeqCst);
+            match target {
+                "/api/home" => "/somewhere/else".into(),
+                _ => OTHER.into(),
             }
         });
-        let registry = Registry {
-            dashboard_port: port,
-            ..crate::registry::Registry::load()
-        };
-        let started = Instant::now();
-        assert_eq!(
-            ensure(&registry).unwrap(),
-            format!("http://127.0.0.1:{port}")
-        );
-        assert!(started.elapsed() < Duration::from_secs(3));
+        let error = ensure_on(port).unwrap_err();
+        assert!(error.contains("another VOIDC_HOME"), "{error}");
+        assert!(!asked.load(std::sync::atomic::Ordering::SeqCst));
+        let ours = fake(|target, _| match target {
+            "/api/home" => "/somewhere/else".into(),
+            _ => version::current(),
+        });
+        assert!(ensure_on(ours).is_err());
     }
 }

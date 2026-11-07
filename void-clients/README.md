@@ -70,8 +70,10 @@ and answers one JSON line.
 - A client or a bot with no verb for `idle_minutes` stops, unless its window is shown. `state` and
   `thumb` do not count as verbs. `VOIDC_IDLE_MINUTES` changes that for one launch.
 - A `voidc up` that fails stops the client it started, even when its record cannot be written.
-- `voidc up` replaces a mosaic of another version, fails if it does not quit, and warns about one
-  from before versions.
+- A `wait_until` sent to a real client still loading waits for the game within its limit.
+- Each `VOIDC_HOME` has its own mosaic: `~/.voidc` on the port of `clients.toml`, any other home on
+  a port it leases. `voidc up` replaces a mosaic of its own home and another version, fails if it
+  does not quit, never touches the mosaic of another home, and warns about one from before versions.
 - A condition that cannot be compared, like `chunks>=abc`, is an error, never true.
 - The mosaic acts only for its own page: a request from another site or another host name is refused.
 - A `VOIDC_HOME` too long for a socket is refused at once.

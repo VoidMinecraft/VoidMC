@@ -478,6 +478,26 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_outlasts_a_game_still_loading_within_its_limit() {
+        let out = std::env::temp_dir().join(format!("voidc-await-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let run = probe_runner(&out)
+            .arg("--await")
+            .output()
+            .expect("java runs");
+        let _ = std::fs::remove_dir_all(&out);
+        assert!(
+            run.status.success(),
+            "{}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            "ready after 4 tries\ntimed out on chunks>=1\n"
+        );
+    }
+
+    #[test]
     fn the_probe_hides_the_same_characters() {
         let out = std::env::temp_dir().join(format!("voidc-hidden-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
