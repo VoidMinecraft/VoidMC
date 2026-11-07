@@ -141,7 +141,8 @@ The map reads `VOID_MAP_STEP_SOCKET`, serves its pack on the second port, and `-
 before the first tick:
 
 ```sh
-VOID_MAP_STEP_SOCKET=$SOCK VOID_MAP_ADDRESS=127.0.0.1:${P[1]} VOID_MAP_PACK_ADDRESS=127.0.0.1:${P[2]} cargo run -p voidmc-map &
+PACK_PORT=${PORTS#* }
+VOID_MAP_STEP_SOCKET=$SOCK VOID_MAP_ADDRESS=127.0.0.1:$PORT VOID_MAP_PACK_ADDRESS=127.0.0.1:$PACK_PORT cargo run -p voidmc-map &
 voidc step "Ouverture" --server $SOCK --out shots --ticks 120 --frames 4 --act map --stop-server
 ```
 
