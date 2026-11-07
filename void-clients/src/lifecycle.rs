@@ -158,10 +158,15 @@ mod tests {
     use crate::held::Held;
 
     #[test]
+    fn a_client_has_ten_seconds_to_stop_for_real() {
+        assert_eq!(STOP_PATIENCE, Duration::from_secs(10));
+    }
+
+    #[test]
     fn a_child_that_ignores_the_signal_is_killed_and_reaped() {
         let mut polite = Held::waiting("polite");
-        stop(&mut polite, Duration::from_secs(5));
-        assert!(polite.try_wait().unwrap().is_some());
+        let ended = polite.ended_by(|child| stop(child, Duration::from_secs(5)));
+        assert!(ended.is_some());
         let mut stubborn = Held::launch(
             Command::new("sh")
                 .args(["-c", "trap '' TERM; echo ready; read line"])
@@ -169,9 +174,9 @@ mod tests {
         );
         assert_eq!(stubborn.first_line(), "ready");
         let started = Instant::now();
-        stop(&mut stubborn, Duration::from_millis(500));
+        let ended = stubborn.ended_by(|child| stop(child, Duration::from_millis(500)));
         assert!(started.elapsed() < Duration::from_secs(5));
-        let status = stubborn.try_wait().unwrap().expect("reaped");
+        let status = ended.expect("reaped");
         assert_eq!(
             std::os::unix::process::ExitStatusExt::signal(&status),
             Some(9)
