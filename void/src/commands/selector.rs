@@ -47,7 +47,11 @@ impl PlayerSelector {
                 .find(|(_, player_name)| player_name.eq_ignore_ascii_case(name))
                 .map(|(entity, _)| vec![entity])
                 .ok_or_else(|| format!("player '{name}' not found")),
-            PlayerSelector::Executor => Ok(vec![ctx.executor]),
+            PlayerSelector::Executor => ready
+                .iter()
+                .any(|(entity, _)| *entity == ctx.executor)
+                .then(|| vec![ctx.executor])
+                .ok_or_else(|| "executor is not a ready player".to_string()),
             PlayerSelector::All => Ok(ready.into_iter().map(|(entity, _)| entity).collect()),
             PlayerSelector::Random => ready
                 .choose(&mut rand::thread_rng())
@@ -266,6 +270,26 @@ mod tests {
         let executor = world.spawn_empty().id();
         assert!(single(&world, executor, "@r").is_err());
         assert_eq!(many(&world, executor, "@a").unwrap(), Vec::<Entity>::new());
+    }
+
+    #[test]
+    fn executor_selector_requires_a_ready_player() {
+        let mut world = World::new();
+        let ready = player(&mut world, "Alice", 0.0);
+        assert_eq!(single(&world, ready, "@s").unwrap(), ready);
+        assert_eq!(many(&world, ready, "@s").unwrap(), vec![ready]);
+
+        let unnamed = world.spawn(PlayerReady).id();
+        let joining = world.spawn(PlayerName("Bob".into())).id();
+        let non_player = world.spawn_empty().id();
+        for executor in [unnamed, joining, non_player] {
+            assert!(single(&world, executor, "@s").is_err());
+            assert!(many(&world, executor, "@s").is_err());
+        }
+
+        world.despawn(ready);
+        assert!(single(&world, ready, "@s").is_err());
+        assert!(many(&world, ready, "@s").is_err());
     }
 
     #[test]
