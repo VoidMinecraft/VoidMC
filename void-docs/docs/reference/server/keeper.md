@@ -16,7 +16,7 @@ cargo run --profile fast -p voidmc-keeper -- --backend 127.0.0.1:25566 --listen 
 | `--listen ADDRESS` | `127.0.0.1:25565` | Where clients connect |
 | `--return-timeout SECONDS` | `120` | How long a client waits for a lost server |
 | `--settle SECONDS` | `3` | How long a new server has before old chunks and packs go |
-| `--backend-silence SECONDS` | `20` | How long a server may stay silent before it counts as lost |
+| `--backend-silence SECONDS` | `20` | How long a server may stay silent before it counts as lost, at least 15: a quiet server only sends a keep-alive every 10 seconds |
 
 ## The two paths
 
@@ -145,25 +145,28 @@ loses events and slows nothing.
 - A server silent for `--backend-silence` counts as lost, in play and during a return,
   and is tried again. A write stuck for 15 seconds does the same. The default stays
   below the 30 seconds after which a client hangs up, and above the 10 seconds between
-  two keep-alives of the engine, so a server paused in a debugger counts as lost too.
+  two keep-alives of the engine; a value under 15 seconds is refused. A server paused
+  in a debugger counts as lost too.
 - A difference only the `login` shows, such as another player id, costs one more login:
   the new server sees the player join, leave, and join again, with the client
   reconfigured the second time. Plugins that react to a join run twice.
 
 ## Measures
 
-`voidmc-map`, profile `fast`, `/map` open, 70 entities and 814 chunks held, server
-killed with `SIGKILL` and restarted at once. Time runs from the kill to `resumed`.
+`voidmc-map`, profile `fast`, server killed with `SIGKILL` and restarted at once. `resumed`
+runs from the kill to the event; in game runs to the player standing at spawn, camera on
+the player, no screen; chunks runs to the 289 chunks around the spawn.
 
-| Case | Client | Time |
-|---|---|---|
-| Seamless | Vanilla 26.1.2 | 0.73 s, 1.19 s |
-| Seamless | `voidc` bot, measured before the last fixes | 0.72 s to 1.44 s |
-| Reconfigured, id changed | Vanilla 26.1.2 | 1.00 s |
-| Reconfigured, `voidmc-map` replaced by `voidmc-checkers` | `voidc` bot, measured before the last fixes | 0.41 s |
+| Case | Client | `resumed` | In game | Chunks |
+|---|---|---|---|---|
+| Seamless, 3 runs | `voidc` | 0.77 s to 0.82 s | 0.78 s to 0.83 s | 0.93 s to 0.95 s |
+| Seamless, 5 runs | `voidc` bot | 0.71 s to 0.90 s | 0.75 s to 0.95 s | |
+| Reconfigured, player id changed | `voidc` | 0.91 s to 0.93 s | 1.12 s to 1.16 s | 1.23 s to 1.42 s |
+| Reconfigured, `voidmc-map` replaced by `voidmc-checkers` | `voidc` bot | 0.23 s to 0.25 s | | |
+| Server killed during a configuration, first join | `voidc` | 0.76 s to 1.12 s | | |
 
-Most of that time is the server starting. The proxy itself used about 4 MB of resident
-memory and 0.27 s of CPU for a whole run with a vanilla client, and the ledger held
+Most of that time is the server starting. The proxy itself used about 7.5 MB of resident
+memory and 0.45 s of CPU for a whole series of these runs, and the ledger held
 17 KB of ids. Per packet, on a loaded machine (`cargo bench -p voidmc-keeper`):
 
 | Operation | Time |

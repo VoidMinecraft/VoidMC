@@ -7,6 +7,8 @@ use tracing_subscriber::EnvFilter;
 use voidmc_keeper::proxy::{Events, run};
 use voidmc_keeper::session::Settings;
 
+const QUIETEST_BACKEND: Duration = Duration::from_secs(15);
+
 const USAGE: &str = "\
 voidmc-keeper: keeps a client in game while the server restarts or crashes
 
@@ -17,7 +19,8 @@ voidmc-keeper: keeps a client in game while the server restarts or crashes
   --listen           where clients connect (default 127.0.0.1:25565)
   --return-timeout   how long a client waits for a lost server (default 120)
   --settle           how long a new server has before old chunks and packs go (default 3)
-  --backend-silence  how long a server may stay silent before it counts as lost (default 20)
+  --backend-silence  how long a server may stay silent before it counts as lost (default 20,
+                     at least 15: the engine sends a keep-alive every 10 seconds)
 
 Events go to stdout, one JSON object per line; logs go to stderr.";
 
@@ -48,7 +51,16 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--backend" => backend = Some(address(value()?)?),
             "--return-timeout" => settings.return_timeout = seconds(value()?)?,
             "--settle" => settings.settle = seconds(value()?)?,
-            "--backend-silence" => settings.backend_silence = seconds(value()?)?,
+            "--backend-silence" => {
+                let silence = seconds(value()?)?;
+                if silence < QUIETEST_BACKEND {
+                    return Err(format!(
+                        "--backend-silence must be at least {} seconds: a quiet server only sends a keep-alive every 10",
+                        QUIETEST_BACKEND.as_secs()
+                    ));
+                }
+                settings.backend_silence = silence;
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -122,5 +134,13 @@ mod tests {
                 .contains("nowhere")
         );
         assert!(parse(args("--listen")).unwrap_err().contains("--listen"));
+    }
+
+    #[test]
+    fn a_silence_shorter_than_a_keep_alive_gap_is_refused() {
+        let error = parse(args("--backend [::1]:25671 --backend-silence 5")).unwrap_err();
+        assert!(error.contains("at least 15"));
+        let options = parse(args("--backend [::1]:25671 --backend-silence 15")).unwrap();
+        assert_eq!(options.settings.backend_silence, QUIETEST_BACKEND);
     }
 }
