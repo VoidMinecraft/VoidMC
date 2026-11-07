@@ -11,11 +11,12 @@ use tracing::warn;
 #[cfg(test)]
 use ussr_nbt::owned::{Compound, List};
 use ussr_nbt::owned::{Nbt, Tag};
+use voidmc_codec::nbt::modified_utf8_width;
 use voidmc_protocol::clientbound::SystemChat;
 
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 
-pub(crate) const MAX_TEXT_BYTES: usize = u16::MAX as usize;
+pub(crate) const MAX_TEXT_BYTES: usize = voidmc_codec::nbt::MAX_STRING_BYTES;
 
 /// Only these names and `#rrggbb` decode on the client; anything else
 /// disconnects the recipient with a `DecoderException`.
@@ -332,7 +333,8 @@ impl WireText {
         let mut text = text.into();
         if let Some(end) = fitting_end(&text) {
             warn!(
-                bytes = text.len(),
+                bytes = text.chars().map(modified_utf8_width).sum::<usize>(),
+                limit = MAX_TEXT_BYTES,
                 kept = end,
                 "text exceeds the NBT string limit, truncating"
             );
@@ -372,14 +374,6 @@ fn component(text: &str, color: Option<TextColor>) -> Nbt {
     Nbt {
         name: "".into(),
         compound: compound.into(),
-    }
-}
-
-fn modified_utf8_width(c: char) -> usize {
-    match c {
-        '\0' => 2,
-        c if c as u32 >= 0x1_0000 => 6,
-        c => c.len_utf8(),
     }
 }
 
@@ -429,21 +423,15 @@ fn collect_strings(compound: &Compound, out: &mut Vec<String>) {
 
 #[cfg(test)]
 pub(crate) fn assert_guarded(nbt: &Nbt, text: &str) {
-    use voidmc_codec::Encode;
-
-    let mut bytes = Vec::new();
-    nbt.encode(&mut bytes);
-    let (decoded, trailing) = decode_wire(&bytes);
-    assert_eq!(trailing, 0);
     let mut strings = Vec::new();
-    collect_strings(&decoded.compound, &mut strings);
-    let sent = strings
+    collect_strings(&nbt.compound, &mut strings);
+    let built = strings
         .into_iter()
         .max_by_key(String::len)
         .expect("a string field");
-    assert!(sent.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
-    assert!(sent.len() < text.len());
-    assert!(text.starts_with(&sent));
+    assert!(built.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
+    assert!(built.len() < text.len());
+    assert!(text.starts_with(&built));
 }
 
 #[cfg(test)]
@@ -554,17 +542,14 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_text_never_reaches_the_wire() {
+    fn a_text_is_cut_before_the_encoder_sees_it() {
         let text = "😀".repeat(11000);
         let error = WireText::new(text.as_str()).unwrap_err();
         assert!(error.to_string().contains("66000"), "{error}");
-        let packet = SystemChat {
-            content: WireText::truncated(text.as_str()).component(TextColor::White),
-            overlay: false,
-        };
-        let (len, decoded) = wire_text_round_trips(&packet);
-        assert!(len <= WireText::MAX_BYTES);
-        assert!(text.starts_with(&decoded));
+        assert_guarded(
+            &WireText::truncated(text.as_str()).component(TextColor::White),
+            &text,
+        );
     }
 
     #[test]

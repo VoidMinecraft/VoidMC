@@ -86,8 +86,8 @@ RGB), for the few places that still take legacy text such as sidebar lines.
 
 A client disconnects on a text longer than the NBT string limit: 65 535
 modified-UTF-8 bytes, where `\0` costs 2 bytes and characters outside the BMP
-cost 6. `WireText` is the only way to put text in a component, and it never
-holds more:
+cost 6. `WireText` builds the text components of the engine and never holds
+more:
 
 - `WireText::new(text)` returns `Err(TextTooLong { bytes })` when the text
   does not fit.
@@ -103,7 +103,10 @@ let lore = WireText::truncated(user_text).plain();
 ```
 
 Messages, menu titles, boss bar titles, scoreboards, the tab list, titles,
-toasts, sign lines, custom names and text displays all go through it.
+toasts, sign lines, custom names and text displays all go through it, and
+their builders, which take a `&str` or a `String`, cut and warn rather than
+refuse. NBT built by hand into a packet does not go through it; the codec cuts
+its strings as a last resort (see the `Nbt` row of the codec reference).
 
 The legacy string entry points `commands::system_chat(text, color)` and
 `commands::text_to_nbt(text, color)` keep their signatures: an invalid colour
