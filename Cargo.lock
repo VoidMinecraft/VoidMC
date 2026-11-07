@@ -2076,6 +2076,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "voidmc-keeper"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "criterion",
+ "flate2",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ussr-nbt",
+ "uuid",
+ "voidmc-codec",
+ "voidmc-data",
+ "voidmc-net",
+ "voidmc-protocol",
+]
+
+[[package]]
 name = "voidmc-net"
 version = "0.1.1"
 dependencies = [

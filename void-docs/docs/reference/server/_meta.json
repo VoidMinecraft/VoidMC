@@ -21,6 +21,11 @@
   },
   {
     "type": "file",
+    "name": "keeper",
+    "label": "Development Proxy"
+  },
+  {
+    "type": "file",
     "name": "sending-packets",
     "label": "Sending Packets & System Sets"
   },

@@ -22,6 +22,7 @@ It starts clients without a window, so they neither take the focus nor cover the
 - `void-example/`: runnable example server and logging setup reference
 - `void-demo/`: Alpine Rush racing demo (lib + bin), a consumer of the public APIs
 - `void-clients/`: `voidc`, the tool for test clients: hidden clients, bots, a mosaic
+- `void-keeper/`: development proxy that keeps a client in game across server restarts (lib + bin)
 - `void-net/`: async networking layer
 - `void-protocol/`: protocol packet types and related tests
 - `void-codec/`: encode/decode primitives and tests

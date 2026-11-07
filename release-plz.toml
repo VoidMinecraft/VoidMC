@@ -55,3 +55,10 @@ publish = false
 release = false
 git_release_enable = false
 git_tag_enable = false
+
+[[package]]
+name = "voidmc-keeper"
+publish = false
+release = false
+git_release_enable = false
+git_tag_enable = false

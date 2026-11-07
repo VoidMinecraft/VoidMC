@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use voidmc_codec::{Decode, DecodeError, DecodeLimits, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, DecodeLimits, Encode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLimits {
@@ -66,6 +66,50 @@ impl std::fmt::Display for FrameError {
 }
 
 impl std::error::Error for FrameError {}
+
+/// Where a frame starts: the bytes of its length prefix, then the bytes of its body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameLength {
+    pub prefix: usize,
+    pub body: usize,
+}
+
+/// Reads the length prefix at the start of `bytes`, `Ok(None)` while it is still incomplete.
+///
+/// A body that is empty, negative or above `limit` is an error, before any of it is read.
+#[inline]
+pub fn frame_length(bytes: &[u8], limit: usize) -> Result<Option<FrameLength>, FrameError> {
+    let mut value = 0u32;
+    let mut prefix = 0;
+    loop {
+        let Some(&byte) = bytes.get(prefix) else {
+            return Ok(None);
+        };
+        if prefix == VARINT_MAX_BYTES - 1 && byte & 0xF0 != 0 {
+            return Err(FrameError::InvalidLengthVarInt);
+        }
+        value |= u32::from(byte & 0x7F) << (7 * prefix);
+        prefix += 1;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if prefix == VARINT_MAX_BYTES {
+            return Err(FrameError::InvalidLengthVarInt);
+        }
+    }
+    let signed_len = value as i32;
+    if signed_len == 0 {
+        return Err(FrameError::EmptyFrame);
+    }
+    let body = usize::try_from(signed_len).map_err(|_| FrameError::NegativeLength(signed_len))?;
+    if body > limit {
+        return Err(FrameError::FrameTooLarge {
+            requested: body,
+            limit,
+        });
+    }
+    Ok(Some(FrameLength { prefix, body }))
+}
 
 #[derive(Debug)]
 pub enum SocketError {
@@ -192,25 +236,9 @@ impl ClientReader {
             }
         }
 
-        let mut prefix = &len_buf[..bytes_read];
-        let signed_len = VarI32::decode(&mut prefix)
-            .map_err(|_| FrameError::InvalidLengthVarInt)?
-            .0;
-        if signed_len < 0 {
-            return Err(FrameError::NegativeLength(signed_len).into());
-        }
-        if signed_len == 0 {
-            return Err(FrameError::EmptyFrame.into());
-        }
-        let len =
-            usize::try_from(signed_len).map_err(|_| FrameError::NegativeLength(signed_len))?;
-        if len > self.limits.max_inbound_frame_bytes {
-            return Err(FrameError::FrameTooLarge {
-                requested: len,
-                limit: self.limits.max_inbound_frame_bytes,
-            }
-            .into());
-        }
+        let len = frame_length(&len_buf[..bytes_read], self.limits.max_inbound_frame_bytes)?
+            .ok_or(FrameError::InvalidLengthVarInt)?
+            .body;
 
         let mut packet_buf = Vec::new();
         packet_buf
@@ -236,7 +264,8 @@ impl ClientReader {
     }
 }
 
-const FRAME_HEADER_BYTES: usize = 5;
+const VARINT_MAX_BYTES: usize = 5;
+const FRAME_HEADER_BYTES: usize = VARINT_MAX_BYTES;
 const FRAME_BUFFER_RETAINED_DIVISOR: usize = 8;
 
 pub struct ClientWriter {
@@ -326,6 +355,8 @@ impl ServerSocket {
 
 #[cfg(test)]
 mod tests {
+    use voidmc_codec::VarI32;
+
     use super::*;
 
     async fn connected(limits: FrameLimits) -> (ClientSocket, TcpStream) {
@@ -446,6 +477,53 @@ mod tests {
                 received: 1
             }))
         ));
+    }
+
+    #[test]
+    fn a_frame_length_waits_for_its_whole_prefix() {
+        let mut prefix = Vec::new();
+        VarI32(300).encode(&mut prefix);
+        prefix.push(9);
+        assert_eq!(frame_length(&prefix[..0], 1024), Ok(None));
+        assert_eq!(frame_length(&prefix[..1], 1024), Ok(None));
+        assert_eq!(
+            frame_length(&prefix, 1024),
+            Ok(Some(FrameLength {
+                prefix: 2,
+                body: 300
+            }))
+        );
+        assert_eq!(frame_length(&[0x80; 4], 1024), Ok(None));
+    }
+
+    #[test]
+    fn a_frame_length_refuses_what_receive_refuses() {
+        assert_eq!(
+            frame_length(&[0x80; 5], usize::MAX),
+            Err(FrameError::InvalidLengthVarInt)
+        );
+        assert_eq!(
+            frame_length(&[0x81, 0x80, 0x80, 0x80, 0x10], usize::MAX),
+            Err(FrameError::InvalidLengthVarInt)
+        );
+        assert_eq!(frame_length(&[0], usize::MAX), Err(FrameError::EmptyFrame));
+        let mut negative = Vec::new();
+        VarI32(-1).encode(&mut negative);
+        assert_eq!(
+            frame_length(&negative, usize::MAX),
+            Err(FrameError::NegativeLength(-1))
+        );
+        assert_eq!(
+            frame_length(&[9], 8),
+            Err(FrameError::FrameTooLarge {
+                requested: 9,
+                limit: 8
+            })
+        );
+        assert_eq!(
+            frame_length(&[8], 8),
+            Ok(Some(FrameLength { prefix: 1, body: 8 }))
+        );
     }
 
     #[test]
