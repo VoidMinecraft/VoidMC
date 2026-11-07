@@ -18,7 +18,7 @@ voidmc-keeper: keeps a client in game while the server restarts or crashes
                [--backend-silence SECONDS]
 
   --backend          the server, as [::1]:25671
-  --listen           where clients connect (default 127.0.0.1:25565)
+  --listen           where clients connect (default 127.0.0.1:25575)
   --return-timeout   how long a client waits for a lost server (default 120)
   --settle           how long a new server has to offer its packs before the others go (default 3)
   --backend-silence  how long a server may stay silent before it counts as lost (default 20,
@@ -35,7 +35,7 @@ struct Options {
 }
 
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
-    let mut listen = SocketAddr::from(([127, 0, 0, 1], 25565));
+    let mut listen = SocketAddr::from(([127, 0, 0, 1], 25575));
     let mut backend = None;
     let mut settings = Settings::default();
     while let Some(flag) = args.next() {
@@ -136,7 +136,7 @@ mod tests {
         let options = parse(args("--backend [::1]:25671 --return-timeout 9")).unwrap();
         assert_eq!(options.backend, "[::1]:25671".parse().unwrap());
         assert_eq!(options.settings.return_timeout, Duration::from_secs(9));
-        assert_eq!(options.listen.port(), 25565);
+        assert_eq!(options.listen.port(), 25575);
     }
 
     #[test]

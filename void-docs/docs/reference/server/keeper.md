@@ -4,17 +4,18 @@
 restarts, crashes or stops, the client stays connected, and goes back in game when the
 server returns. It is a development tool: offline mode, one server, no encryption.
 
-`void-example` takes the default port, 25565, so the client joins the proxy on 25566:
+`void-example` takes the default port, 25565, and `voidmc-map` serves its pack on 25566.
+The proxy listens on 25575 by default, so the client joins `127.0.0.1:25575`:
 
 ```sh
 cargo run -p voidmc-example &
-cargo run -p voidmc-keeper -- --backend 127.0.0.1:25565 --listen 127.0.0.1:25566
+cargo run -p voidmc-keeper -- --backend 127.0.0.1:25565
 ```
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--backend ADDRESS` | required | The server, as `[::1]:25671` |
-| `--listen ADDRESS` | `127.0.0.1:25565` | Where clients connect |
+| `--listen ADDRESS` | `127.0.0.1:25575` | Where clients connect |
 | `--return-timeout SECONDS` | `120` | How long a client waits for a lost server |
 | `--settle SECONDS` | `3` | How long a new server has to offer its packs before the others go |
 | `--backend-silence SECONDS` | `20` | How long a server may stay silent before it counts as lost, from 15 to 25: a quiet server only sends a keep-alive every 200 ticks, 10 seconds at 20 TPS, and a client hangs up after 30 seconds without a packet |
