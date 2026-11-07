@@ -1003,6 +1003,14 @@ fn target(args: &[String], scenario: &Scenario, host: &impl Host) -> Result<Targ
     })
 }
 
+/// An error of the run keeps the error of the stop that follows it: both have something to say.
+fn with_stop(error: String, stopped: Result<(), String>) -> String {
+    match stopped {
+        Ok(()) => error,
+        Err(stuck) => format!("{error}\n{stuck}"),
+    }
+}
+
 /// `voidc run <file> ...`: a failed line, or a refused scenario, exits with 1.
 pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     let path = PathBuf::from(args.first().ok_or(
@@ -1021,10 +1029,7 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     if let Some(feature) = &chosen.feature
         && let Err(error) = host.up(feature, chosen.level, flag(args, "--port"))
     {
-        return match host.down(&chosen.name) {
-            Ok(()) => Err(error),
-            Err(stuck) => Err(format!("{error}\n{stuck}")),
-        };
+        return Err(with_stop(error, host.down(&chosen.name)));
     }
     let out = flag(args, "--out").map_or_else(|| default_out(&chosen.name, &path), PathBuf::from);
     let run = Run::new(
@@ -1036,18 +1041,17 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     );
     let played = host
         .driver(&chosen.name)
-        .and_then(|mut driver| run.play(&scenario, &mut driver));
-    let written = match &played {
-        Ok(report) => report.write(&out),
-        Err(_) => Ok(()),
-    };
+        .and_then(|mut driver| run.play(&scenario, &mut driver))
+        .and_then(|report| report.write(&out).map(|()| report));
     let stopped = if chosen.feature.is_some() && !args.iter().any(|arg| arg == "--keep-up") {
         host.down(&chosen.name)
     } else {
         Ok(())
     };
-    let report = played?;
-    written?;
+    let report = match played {
+        Ok(report) => report,
+        Err(error) => return Err(with_stop(error, stopped)),
+    };
     println!("{}", report.verdict());
     println!("report: {}", out.join("report.txt").display());
     stopped?;
@@ -2510,6 +2514,41 @@ mod tests {
         let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
         assert!(error.contains("did not stop"));
         assert!(dir.join("out/report.txt").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_driver_that_fails_keeps_the_failed_stop_that_follows() {
+        let dir = staged("no-driver-no-stop", "act map\n");
+        let mut stage = Stage::new(&dir);
+        stage.driver = Err("client carte does not answer".into());
+        stage.down = Err("carte did not stop".into());
+        let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
+        assert!(error.contains("does not answer"), "{error}");
+        assert!(error.contains("did not stop"), "{error}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_preflight_that_refuses_keeps_the_failed_stop_that_follows() {
+        let dir = staged("no-preflight-no-stop", "wait_until chunkz>=1\n");
+        let mut stage = Stage::new(&dir);
+        stage.down = Err("carte did not stop".into());
+        let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
+        assert!(error.contains("no field chunkz"), "{error}");
+        assert!(error.contains("did not stop"), "{error}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_report_that_cannot_be_written_keeps_the_failed_stop_that_follows() {
+        let dir = staged("no-report-no-stop", "act map\n");
+        fs::create_dir_all(dir.join("out/report.txt")).unwrap();
+        let mut stage = Stage::new(&dir);
+        stage.down = Err("carte did not stop".into());
+        let error = command(&words(&dir, &["--feature", "Carte"]), &mut stage).unwrap_err();
+        assert!(error.contains("Is a directory"), "{error}");
+        assert!(error.contains("did not stop"), "{error}");
         fs::remove_dir_all(dir).unwrap();
     }
 
