@@ -17,19 +17,112 @@ fn kind(result: Result<impl std::fmt::Debug, DecodeError>) -> Option<LimitKind> 
     }
 }
 
-#[test]
-fn nbt_nested_past_its_depth_is_refused() {
+fn nested_lists(levels: usize) -> Vec<u8> {
+    let mut bytes = vec![0x0A, 0x09, 0x00, 0x00];
+    for _ in 1..levels {
+        bytes.extend_from_slice(&[0x09, 0, 0, 0, 1]);
+    }
+    bytes.extend_from_slice(&[0x00, 0, 0, 0, 0, 0x00]);
+    bytes
+}
+
+fn nbt_depth(bytes: &[u8], limit: usize) -> Result<(), DecodeError> {
     let limits = DecodeLimits {
-        max_nbt_depth: 8,
+        max_nbt_depth: limit,
         ..DecodeLimits::default()
     };
-    let deep = nested_compounds(20);
+    Decoder::new(bytes, limits)
+        .decode_exact::<Nbt>()
+        .map(|_| ())
+}
+
+#[test]
+fn compounds_nested_up_to_the_nbt_depth_are_accepted_and_one_more_is_refused() {
+    assert_eq!(nbt_depth(&nested_compounds(8), 8), Ok(()));
     assert_eq!(
-        kind(Decoder::new(&deep, limits).decode::<Nbt>()),
-        Some(LimitKind::NbtDepth)
+        nbt_depth(&nested_compounds(9), 8),
+        Err(DecodeError::LimitExceeded {
+            kind: LimitKind::NbtDepth,
+            requested: 9,
+            limit: 8,
+        })
     );
-    let shallow = nested_compounds(3);
-    assert!(Decoder::new(&shallow, limits).decode::<Nbt>().is_ok());
+}
+
+#[test]
+fn lists_nested_up_to_the_nbt_depth_are_accepted_and_one_more_is_refused() {
+    assert_eq!(nbt_depth(&nested_lists(8), 8), Ok(()));
+    assert_eq!(
+        nbt_depth(&nested_lists(9), 8),
+        Err(DecodeError::LimitExceeded {
+            kind: LimitKind::NbtDepth,
+            requested: 9,
+            limit: 8,
+        })
+    );
+}
+
+fn payload(kinds: &[u8], bytes: &mut Vec<u8>) {
+    match kinds.split_first() {
+        Some((0x0A, rest)) => {
+            match rest.first() {
+                Some(&next) => bytes.extend_from_slice(&[next, 0, 0]),
+                None => bytes.extend_from_slice(&[0x01, 0, 0]),
+            }
+            if rest.is_empty() {
+                bytes.push(7);
+            } else {
+                payload(rest, bytes);
+            }
+            bytes.push(0x00);
+        }
+        Some((_, rest)) => match rest.first() {
+            Some(&next) => {
+                bytes.extend_from_slice(&[next, 0, 0, 0, 1]);
+                payload(rest, bytes);
+            }
+            None => bytes.extend_from_slice(&[0x01, 0, 0, 0, 1, 7]),
+        },
+        None => {}
+    }
+}
+
+fn nested(kinds: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![0x0A];
+    let mut inner = vec![0x0A];
+    inner.extend_from_slice(kinds);
+    payload(&inner, &mut bytes);
+    bytes
+}
+
+#[test]
+fn mixed_nesting_counts_one_level_per_compound_or_list() {
+    let mixed: Vec<u8> = (0..64)
+        .map(|i| if i % 2 == 0 { 0x09 } else { 0x0A })
+        .collect();
+    let compounds = vec![0x0A; 64];
+    for kinds in [mixed, compounds] {
+        assert_eq!(nbt_depth(&nested(&kinds), 64), Ok(()));
+        let mut deeper = kinds.clone();
+        deeper.push(0x0A);
+        assert_eq!(
+            nbt_depth(&nested(&deeper), 64),
+            Err(DecodeError::LimitExceeded {
+                kind: LimitKind::NbtDepth,
+                requested: 65,
+                limit: 64,
+            })
+        );
+    }
+}
+
+#[test]
+fn the_default_nbt_depth_accepts_sixty_four_levels() {
+    let limit = DecodeLimits::default().max_nbt_depth;
+    assert_eq!(limit, 64);
+    assert_eq!(nbt_depth(&nested_compounds(limit), limit), Ok(()));
+    assert_eq!(nbt_depth(&nested_lists(limit), limit), Ok(()));
+    assert!(nbt_depth(&nested_compounds(limit + 1), limit).is_err());
 }
 
 #[test]

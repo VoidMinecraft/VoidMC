@@ -1,5 +1,5 @@
 use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
-use ussr_nbt::owned::Nbt;
+use ussr_nbt::{owned::Nbt, ReadOpts};
 
 /// Custom reader that prepends the NBT protocol header for the root compound tag
 /// For Minecraft 1.21.4+ (Protocol >= 764): 0x0A (compound) + 0x00 0x00 (empty root name) + payload
@@ -84,7 +84,13 @@ impl Decode for Nbt {
         // Wrap the buffer with the NBT reader that prepends the header
         let mut reader = NbtReader::new(nbt_bytes);
 
-        match Nbt::read(&mut reader) {
+        let ussr_depth = decoder
+            .limits()
+            .max_nbt_depth
+            .saturating_mul(2)
+            .saturating_add(2);
+        let opts = ReadOpts::new().with_depth_limit(u16::try_from(ussr_depth).unwrap_or(u16::MAX));
+        match Nbt::read_with_opts(&mut reader, opts) {
             Ok(nbt) => Ok(nbt),
             Err(_) => Err(DecodeError::InvalidLength),
         }
@@ -157,7 +163,7 @@ fn scan_compound(
         decoder.charge_elements(1)?;
         decoder.charge_allocation(64)?;
         scan_string(decoder, start_len)?;
-        scan_payload(decoder, start_len, tag, deeper(depth)?)?;
+        scan_payload(decoder, start_len, tag, depth)?;
     }
 }
 
@@ -167,7 +173,6 @@ fn scan_payload(
     tag: u8,
     depth: usize,
 ) -> Result<(), DecodeError> {
-    check_nbt_depth(decoder, depth)?;
     match tag {
         1 => {
             nbt_take(decoder, start_len, 1)?;
@@ -184,6 +189,8 @@ fn scan_payload(
         7 => scan_array(decoder, start_len, 1)?,
         8 => scan_string(decoder, start_len)?,
         9 => {
+            let list_depth = deeper(depth)?;
+            check_nbt_depth(decoder, list_depth)?;
             let [element_tag] = nbt_take_array(decoder, start_len)?;
             let raw_count = nbt_i32(decoder, start_len)?;
             let count = checked_nbt_count(decoder, raw_count)?;
@@ -193,7 +200,7 @@ fn scan_payload(
             decoder.charge_elements(count)?;
             decoder.charge_allocation(count.checked_mul(32).ok_or(DecodeError::InvalidLength)?)?;
             for _ in 0..count {
-                scan_payload(decoder, start_len, element_tag, deeper(depth)?)?;
+                scan_payload(decoder, start_len, element_tag, list_depth)?;
             }
         }
         10 => scan_compound(decoder, start_len, deeper(depth)?)?,

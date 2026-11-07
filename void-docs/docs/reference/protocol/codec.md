@@ -30,6 +30,17 @@ allocation bytes, remaining-byte fields, NBT bytes/depth, and general decode
 depth. Length conversions and fixed-length arithmetic are checked before any
 allocation or iteration.
 
+`max_nbt_depth` is the number of compounds and lists that may nest below the
+root compound: each compound or list adds one level, so the default of 64
+accepts 64 nested levels and refuses the 65th with
+`LimitExceeded { kind: NbtDepth, requested: 65, limit: 64 }`. Before this, each
+level was counted twice and only half the configured depth was accepted, so NBT
+nested 33 to 64 levels deep is now accepted by default. `ussr_nbt` receives a
+depth limit of twice `max_nbt_depth` plus two, which covers its own way of
+counting, so it never refuses what the scan accepted as long as `max_nbt_depth`
+stays below 32767. Both the scan and `ussr_nbt` recurse once per level, so a
+very large `max_nbt_depth` can exhaust the thread stack.
+
 The primitives of `void-codec` never panic while decoding: any input ends in a
 value or a `DecodeError`. The crate denies indexing, slicing, `unwrap`,
 `expect`, `panic!`, `unreachable!`, unchecked arithmetic and truncating casts
