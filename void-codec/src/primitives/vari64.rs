@@ -26,9 +26,7 @@ impl Encode for VarI64 {
 impl Decode for VarI64 {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let mut value: u64 = 0;
-        let mut shift = 0;
-
-        for _ in 0..10 {
+        for shift in (0..=63).step_by(7) {
             let byte = decoder.take_u8()?;
 
             if shift == 63 && byte & 0xfe != 0 {
@@ -40,8 +38,6 @@ impl Decode for VarI64 {
             if byte & 0x80 == 0 {
                 return Ok(VarI64(value as i64));
             }
-
-            shift += 7;
         }
 
         Err(DecodeError::InvalidVarintLength)

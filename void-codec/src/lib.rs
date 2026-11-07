@@ -5,7 +5,12 @@
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::string_slice,
-        clippy::panic
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation
     )
 )]
 
@@ -138,9 +143,9 @@ impl<'a> Decoder<'a> {
                 limit: self.limits.max_decode_depth,
             });
         }
-        self.depth += 1;
+        self.depth = self.depth.saturating_add(1);
         let result = T::decode_with(self);
-        self.depth -= 1;
+        self.depth = self.depth.saturating_sub(1);
         result
     }
 

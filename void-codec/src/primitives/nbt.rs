@@ -19,11 +19,6 @@ impl<'a> NbtReader<'a> {
 
 impl<'a> std::io::Read for NbtReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let len = buf.len();
-        if len == 0 {
-            return Ok(0);
-        }
-
         // Send the protocol header bytes: 0x0A (tag) + 0x00 0x00 (empty root name)
         let Some(first) = buf.first_mut() else {
             return Ok(0);
@@ -49,7 +44,7 @@ impl<'a> std::io::Read for NbtReader<'a> {
         // After header, read the payload directly from inner
         match self.inner.read(buf) {
             Ok(n) => {
-                self.read_bytes += n;
+                self.read_bytes = self.read_bytes.saturating_add(n);
                 Ok(n)
             }
             Err(e) => Err(e),
@@ -81,7 +76,9 @@ impl Decode for Nbt {
             return Err(DecodeError::InvalidLength);
         }
         scan_compound(decoder, start_len, 0)?;
-        let consumed = start_len - decoder.remaining_len();
+        let consumed = start_len
+            .checked_sub(decoder.remaining_len())
+            .ok_or(DecodeError::InvalidLength)?;
         let nbt_bytes = original.get(..consumed).ok_or(DecodeError::InvalidLength)?;
 
         // Wrap the buffer with the NBT reader that prepends the header
@@ -160,7 +157,7 @@ fn scan_compound(
         decoder.charge_elements(1)?;
         decoder.charge_allocation(64)?;
         scan_string(decoder, start_len)?;
-        scan_payload(decoder, start_len, tag, depth + 1)?;
+        scan_payload(decoder, start_len, tag, deeper(depth)?)?;
     }
 }
 
@@ -196,10 +193,10 @@ fn scan_payload(
             decoder.charge_elements(count)?;
             decoder.charge_allocation(count.checked_mul(32).ok_or(DecodeError::InvalidLength)?)?;
             for _ in 0..count {
-                scan_payload(decoder, start_len, element_tag, depth + 1)?;
+                scan_payload(decoder, start_len, element_tag, deeper(depth)?)?;
             }
         }
-        10 => scan_compound(decoder, start_len, depth + 1)?,
+        10 => scan_compound(decoder, start_len, deeper(depth)?)?,
         11 => scan_array(decoder, start_len, 4)?,
         12 => scan_array(decoder, start_len, 8)?,
         _ => return Err(DecodeError::InvalidLength),
@@ -227,6 +224,10 @@ fn checked_nbt_count(decoder: &Decoder<'_>, count: i32) -> Result<usize, DecodeE
         LimitKind::CollectionElements,
         decoder.limits().max_collection_elements,
     )
+}
+
+fn deeper(depth: usize) -> Result<usize, DecodeError> {
+    depth.checked_add(1).ok_or(DecodeError::InvalidLength)
 }
 
 fn check_nbt_depth(decoder: &Decoder<'_>, depth: usize) -> Result<(), DecodeError> {
