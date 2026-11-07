@@ -396,8 +396,9 @@ impl Driver for Socket {
             None => control::Probe::open(&self.name)?,
         };
         let line = probe.ask(verb, control::timeout_of(verb))?;
+        let reply = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         self.probe = Some(probe);
-        serde_json::from_str(&line).map_err(|e| e.to_string())
+        Ok(reply)
     }
 
     fn recording(&self, name: &str) -> PathBuf {
@@ -2300,6 +2301,28 @@ mod tests {
                 "act map",
                 "clock real"
             ]
+        );
+    }
+
+    fn garbled() -> Reply {
+        Reply {
+            after: Duration::ZERO,
+            line: "not json".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_answer_that_is_not_json_takes_the_connection_down() {
+        let fake = answering(Level::Render, |verb| (verb == "act a").then(garbled));
+        let dir = registry::home();
+        fs::write(dir.join("s.scn"), "act a\nact b\n").unwrap();
+        assert_eq!(live_run(&dir, &["--keep-going"]), Err(String::new()));
+        let report = fs::read_to_string(dir.join("out/report.txt")).unwrap();
+        assert!(report.contains("FAIL   1"), "{report}");
+        assert!(report.contains("ok     2"), "{report}");
+        assert_eq!(
+            fake.heard(),
+            ["state", "state", "act a", "state", "act b", "clock real"]
         );
     }
 
