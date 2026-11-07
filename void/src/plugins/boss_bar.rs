@@ -270,7 +270,7 @@ mod tests {
     use crate::world::DimensionId;
 
     #[test]
-    fn oversized_title_round_trips_below_the_nbt_limit() {
+    fn an_oversized_title_is_cut_when_built() {
         let text = "😀".repeat(11000);
         crate::messages::assert_guarded(&BossBar::new(text.clone()).title_nbt(), &text);
     }

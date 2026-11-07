@@ -1265,8 +1265,30 @@ mod tests {
 
         let objective = Objective::sidebar("race").title("😀".repeat(11000));
         crate::messages::assert_guarded(&objective.info().display_name, &objective.title);
-        let team = Team::new("t").prefix("😀".repeat(11000));
-        crate::messages::assert_guarded(&team.parameters().prefix, &team.prefix);
+        let long = "😀".repeat(11000);
+        let team = Team::new("t")
+            .prefix(long.as_str())
+            .suffix(long.as_str())
+            .display_name(long.as_str());
+        let parameters = team.parameters();
+        crate::messages::assert_guarded(&parameters.prefix, &long);
+        crate::messages::assert_guarded(&parameters.suffix, &long);
+        crate::messages::assert_guarded(&parameters.display_name, &long);
+
+        let score = Score {
+            value: 1,
+            display: Some(long.clone()),
+            format: Some(ScoreFormat::Fixed(long.clone())),
+        };
+        let packet = objective.set_score("Leo", &score);
+        crate::messages::assert_guarded(
+            packet.display_name.as_ref().expect("a display name"),
+            &long,
+        );
+        let Some(NumberFormat::Fixed(fixed)) = &packet.number_format else {
+            panic!("a fixed number format");
+        };
+        crate::messages::assert_guarded(fixed, &long);
     }
 
     #[test]

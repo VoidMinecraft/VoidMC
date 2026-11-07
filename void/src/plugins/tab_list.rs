@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_texts_round_trip_below_the_nbt_limit() {
+    fn oversized_texts_are_cut_when_built() {
         let text = "😀".repeat(11000);
         let packet = TabList::new()
             .header(text.clone())

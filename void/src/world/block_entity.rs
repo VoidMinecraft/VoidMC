@@ -621,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_sign_line_round_trips_below_the_nbt_limit() {
+    fn an_oversized_sign_line_is_cut_when_built() {
         let text = "😀".repeat(11000);
         let sign: BlockEntity = Sign::new()
             .front(SignSide::lines([text.as_str(), "", "", ""]))

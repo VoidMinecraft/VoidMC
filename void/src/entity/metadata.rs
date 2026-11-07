@@ -687,12 +687,21 @@ mod tests {
     use crate::world::{ChunkPos, DimensionId};
 
     #[test]
-    fn oversized_custom_name_round_trips_below_the_nbt_limit() {
+    fn oversized_custom_name_and_text_display_are_cut_when_written() {
         let text = "😀".repeat(11000);
-        crate::messages::assert_guarded(
-            &crate::messages::WireText::truncated(text.as_str()).plain(),
-            &text,
-        );
+        let mut meta = EntityMetadata::default();
+        CustomName::new(text.as_str()).write(&mut meta);
+        let Some(Value::OptionalComponent(Some(name))) = meta.get(entity_index::CUSTOM_NAME) else {
+            panic!("a custom name");
+        };
+        crate::messages::assert_guarded(name, &text);
+
+        let mut meta = EntityMetadata::default();
+        TextDisplay::new(text.as_str()).write(&mut meta);
+        let Some(Value::Component(shown)) = meta.get(display_index::TEXT) else {
+            panic!("a text display");
+        };
+        crate::messages::assert_guarded(shown, &text);
     }
 
     fn test_app() -> (App, Receiver<OutgoingPacket>) {

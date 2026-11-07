@@ -846,6 +846,24 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_kick_reason_is_cut_before_it_is_sent() {
+        let (mut world, player, outgoing_rx) = command_world();
+        let reason = "😀".repeat(11000);
+        dispatch_command(&mut world, 7, player, "kick", args(&["@p", &reason]));
+        let reasons: Vec<_> = outgoing_rx
+            .try_iter()
+            .filter_map(|packet| match packet.packet {
+                ClientboundPacket::Play(PlayPacket::Disconnect(disconnect)) => {
+                    Some(disconnect.reason)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasons.len(), 1);
+        crate::messages::assert_guarded(&reasons[0], &reason);
+    }
+
+    #[test]
     fn stop_command_requests_app_exit() {
         let (mut world, player, _outgoing_rx) = command_world();
         world.insert_resource(bevy_ecs::message::Messages::<AppExit>::default());

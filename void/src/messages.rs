@@ -11,7 +11,7 @@ use tracing::warn;
 #[cfg(test)]
 use ussr_nbt::owned::{Compound, List};
 use ussr_nbt::owned::{Nbt, Tag};
-use voidmc_codec::nbt::modified_utf8_width;
+use voidmc_codec::nbt::{fitting_len, modified_utf8_width};
 use voidmc_protocol::clientbound::SystemChat;
 
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
@@ -320,22 +320,24 @@ impl WireText {
 
     pub fn new(text: impl Into<String>) -> Result<Self, TextTooLong> {
         let text = text.into();
-        match fitting_end(&text) {
-            None => Ok(Self(text)),
-            Some(_) => Err(TextTooLong {
-                bytes: text.chars().map(modified_utf8_width).sum(),
-            }),
+        if fitting_len(&text) == text.len() {
+            Ok(Self(text))
+        } else {
+            Err(TextTooLong {
+                bytes: modified_utf8_len(&text),
+            })
         }
     }
 
     /// Keeps what fits, cut on a character boundary, and logs what it cut.
     pub fn truncated(text: impl Into<String>) -> Self {
         let mut text = text.into();
-        if let Some(end) = fitting_end(&text) {
+        let end = fitting_len(&text);
+        if end < text.len() {
             warn!(
-                bytes = text.chars().map(modified_utf8_width).sum::<usize>(),
+                bytes = modified_utf8_len(&text),
                 limit = MAX_TEXT_BYTES,
-                kept = end,
+                kept = modified_utf8_len(&text[..end]),
                 "text exceeds the NBT string limit, truncating"
             );
             text.truncate(end);
@@ -377,15 +379,8 @@ fn component(text: &str, color: Option<TextColor>) -> Nbt {
     }
 }
 
-fn fitting_end(text: &str) -> Option<usize> {
-    let mut encoded = 0;
-    for (index, c) in text.char_indices() {
-        encoded += modified_utf8_width(c);
-        if encoded > MAX_TEXT_BYTES {
-            return Some(index);
-        }
-    }
-    None
+fn modified_utf8_len(text: &str) -> usize {
+    text.chars().map(modified_utf8_width).sum()
 }
 
 #[cfg(test)]
@@ -710,10 +705,11 @@ mod tests {
     }
 
     fn system_chat_packet(text: &str, color: TextColor) -> SystemChat {
-        SystemChat {
-            content: WireText::truncated(text).component(color),
-            overlay: false,
-        }
+        let (app, _rx) = test_app();
+        WorldMessages::new(app.world())
+            .broadcast(text)
+            .color(color)
+            .packet()
     }
 
     #[test]
@@ -729,6 +725,10 @@ mod tests {
             "gold"
         );
         assert_eq!(TextColor::parse_or_white("#12345"), TextColor::Rgb(0x12345));
+
+        let long = "😀".repeat(11000);
+        assert_guarded(&crate::commands::text_to_nbt(&long, "gold"), &long);
+        assert_guarded(&crate::commands::system_chat(&long, "gold").content, &long);
     }
 
     fn wire_text_round_trips(packet: &SystemChat) -> (usize, String) {
