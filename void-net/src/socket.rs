@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, DecodeLimits, Encode, VarI32};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLimits {
@@ -122,8 +122,7 @@ pub struct Packet {
 
 impl Packet {
     pub fn decode<T: Decode>(&self) -> Result<T, DecodeError> {
-        let mut decoder = Decoder::new(&self.bytes, self.decode_limits);
-        decoder.decode_exact::<T>()
+        self.decode_limits.decode_exact::<T>(&self.bytes)
     }
 }
 

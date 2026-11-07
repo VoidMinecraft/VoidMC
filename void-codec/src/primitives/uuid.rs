@@ -9,8 +9,7 @@ impl Encode for Uuid {
 
 impl Decode for Uuid {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let uuid_bytes = decoder.take(16)?;
-        Ok(Uuid::from_bytes(uuid_bytes.try_into().unwrap()))
+        Ok(Uuid::from_bytes(decoder.take_array()?))
     }
 }
 

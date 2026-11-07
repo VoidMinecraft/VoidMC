@@ -1,3 +1,19 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::string_slice,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation
+    )
+)]
+
 mod primitives;
 
 pub use primitives::*;
@@ -26,8 +42,110 @@ pub struct DecodeLimits {
     pub max_allocation_bytes: usize,
     pub max_remaining_bytes: usize,
     pub max_nbt_bytes: usize,
-    pub max_nbt_depth: usize,
+    pub max_nbt_depth: NbtDepth,
     pub max_decode_depth: usize,
+}
+
+impl DecodeLimits {
+    pub fn decode_exact<T: Decode>(self, bytes: &[u8]) -> Result<T, DecodeError> {
+        Decoder::new(bytes, self).decode_exact()
+    }
+
+    /// Runs `f` on a decoder over `bytes`, for reads in several steps.
+    /// Hot paths use [`DecodeLimits::decode_exact`]: this scope can cost a
+    /// small value its inlining.
+    ///
+    /// A [`Decoder`] only exists inside such a scope or inside
+    /// [`Decode::decode_with`], so a decoder can never be replaced while it
+    /// is decoding. A scope has its own budgets and depth, so nested values
+    /// go through [`Decoder::decode`], never through a scope. A `Decode` may
+    /// open one to look ahead, not to recurse:
+    ///
+    /// ```
+    /// use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder};
+    ///
+    /// struct Peeks(u8);
+    ///
+    /// impl Decode for Peeks {
+    ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    ///         let limits = decoder.limits();
+    ///         let peeked = limits.with_decoder(decoder.remaining(), |fresh| fresh.take_u8())?;
+    ///         Ok(Peeks(peeked))
+    ///     }
+    /// }
+    ///
+    /// let value = DecodeLimits::default().with_decoder(&[7], |decoder| {
+    ///     let peeked = decoder.decode::<Peeks>()?;
+    ///     assert_eq!(decoder.decode::<u8>()?, peeked.0);
+    ///     Ok::<_, DecodeError>(peeked.0)
+    /// });
+    /// assert_eq!(value, Ok(7));
+    /// ```
+    ///
+    /// But it cannot put that scope's decoder in place of its own:
+    ///
+    /// ```compile_fail
+    /// use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder};
+    ///
+    /// struct Swaps;
+    ///
+    /// impl Decode for Swaps {
+    ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    ///         let limits = decoder.limits();
+    ///         limits.with_decoder(decoder.remaining(), |fresh| std::mem::swap(decoder, fresh));
+    ///         Ok(Swaps)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Nor can it build a new one:
+    ///
+    /// ```compile_fail
+    /// use voidmc_codec::{Decode, DecodeError, Decoder};
+    ///
+    /// struct Resets;
+    ///
+    /// impl Decode for Resets {
+    ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    ///         *decoder = Decoder::new(decoder.remaining(), decoder.limits());
+    ///         Ok(Resets)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Nor copy one to restore it later:
+    ///
+    /// ```compile_fail
+    /// use voidmc_codec::{Decode, DecodeError, Decoder};
+    ///
+    /// struct Restores;
+    ///
+    /// impl Decode for Restores {
+    ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    ///         let saved = decoder.clone();
+    ///         *decoder = saved;
+    ///         Ok(Restores)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Nor take it out:
+    ///
+    /// ```compile_fail
+    /// use voidmc_codec::{Decode, DecodeError, Decoder};
+    ///
+    /// struct Takes;
+    ///
+    /// impl Decode for Takes {
+    ///     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
+    ///         let _ = std::mem::take(decoder);
+    ///         Ok(Takes)
+    ///     }
+    /// }
+    /// ```
+    pub fn with_decoder<R>(self, bytes: &[u8], f: impl for<'d> FnOnce(&mut Decoder<'d>) -> R) -> R {
+        f(&mut Decoder::new(bytes, self))
+    }
 }
 
 impl Default for DecodeLimits {
@@ -39,9 +157,39 @@ impl Default for DecodeLimits {
             max_allocation_bytes: 4 * 1024 * 1024,
             max_remaining_bytes: 2 * 1024 * 1024,
             max_nbt_bytes: 2 * 1024 * 1024,
-            max_nbt_depth: 64,
+            max_nbt_depth: NbtDepth::DEFAULT,
             max_decode_depth: 128,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NbtDepth(u16);
+
+impl NbtDepth {
+    pub const MAX: Self = Self(512);
+    pub const DEFAULT: Self = Self(64);
+
+    pub const fn new(levels: u16) -> Option<Self> {
+        if levels <= Self::MAX.0 {
+            Some(Self(levels))
+        } else {
+            None
+        }
+    }
+
+    pub const fn levels(self) -> usize {
+        self.0 as usize
+    }
+
+    pub(crate) fn ussr_limit(self) -> u16 {
+        self.0.saturating_mul(2).saturating_add(2)
+    }
+}
+
+impl Default for NbtDepth {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 
@@ -66,7 +214,7 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    pub fn new(bytes: &'a [u8], limits: DecodeLimits) -> Self {
+    pub(crate) fn new(bytes: &'a [u8], limits: DecodeLimits) -> Self {
         Self {
             remaining: bytes,
             limits,
@@ -88,7 +236,7 @@ impl<'a> Decoder<'a> {
         self.remaining.len()
     }
 
-    pub fn into_remaining(self) -> &'a [u8] {
+    pub(crate) fn into_remaining(self) -> &'a [u8] {
         self.remaining
     }
 
@@ -101,6 +249,24 @@ impl<'a> Decoder<'a> {
         Ok(value)
     }
 
+    pub fn take_u8(&mut self) -> Result<u8, DecodeError> {
+        let (&first, rest) = self
+            .remaining
+            .split_first()
+            .ok_or(DecodeError::UnexpectedEof)?;
+        self.remaining = rest;
+        Ok(first)
+    }
+
+    pub fn take_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+        let (head, rest) = self
+            .remaining
+            .split_first_chunk::<N>()
+            .ok_or(DecodeError::UnexpectedEof)?;
+        self.remaining = rest;
+        Ok(*head)
+    }
+
     pub fn decode<T: Decode>(&mut self) -> Result<T, DecodeError> {
         if self.depth >= self.limits.max_decode_depth {
             return Err(DecodeError::LimitExceeded {
@@ -109,10 +275,16 @@ impl<'a> Decoder<'a> {
                 limit: self.limits.max_decode_depth,
             });
         }
-        self.depth += 1;
-        let result = T::decode_with(self);
-        self.depth -= 1;
-        result
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "depth is below max_decode_depth here, and no Decode can replace this decoder, so the decrement undoes the increment"
+        )]
+        {
+            self.depth += 1;
+            let result = T::decode_with(self);
+            self.depth -= 1;
+            result
+        }
     }
 
     pub fn decode_exact<T: Decode>(&mut self) -> Result<T, DecodeError> {

@@ -112,13 +112,12 @@ impl Encode for LpVec3 {
 
 impl Decode for LpVec3 {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        let lowest = decoder.take(1)?[0];
+        let lowest = decoder.take_u8()?;
         if lowest == 0 {
             return Ok(Self::ZERO);
         }
-        let middle = decoder.take(1)?[0];
-        let high_bytes: [u8; 4] = decoder.take(4)?.try_into().expect("four bytes");
-        let highest = u32::from_be_bytes(high_bytes);
+        let middle = decoder.take_u8()?;
+        let highest = u32::from_be_bytes(decoder.take_array::<4>()?);
         let buffer: u64 = ((highest as u64) << 16) | ((middle as u64) << 8) | (lowest as u64);
         let mut scale: u64 = (lowest as u64) & 3;
         if (lowest & 4) == 4 {
