@@ -146,8 +146,8 @@ pub fn frame(id: i32, write: impl FnOnce(&mut Vec<u8>)) -> Bytes {
     buffer.into()
 }
 
-/// A frame out of a tagged packet of `voidmc-protocol`, which writes its own id.
-pub fn tagged(packet: &impl Encode) -> Bytes {
+#[cfg(test)]
+pub(crate) fn tagged(packet: &impl Encode) -> Bytes {
     let mut buffer = Vec::new();
     packet.encode(&mut buffer);
     buffer.into()

@@ -24,7 +24,7 @@ use voidmc_data::v26_1_2::packets::play::{clientbound as play_cb, serverbound as
 use voidmc_data::v26_1_2::packets::status::{clientbound as status_cb, serverbound as status_sb};
 use voidmc_keeper::proxy::{Events, run};
 use voidmc_keeper::session::Settings;
-use voidmc_keeper::wire::{Framing, frame, split, tagged};
+use voidmc_keeper::wire::{Framing, frame, split};
 use voidmc_protocol::PROTOCOL_VERSION;
 use voidmc_protocol::clientbound::{Login, PlayPacket};
 
@@ -49,7 +49,8 @@ fn empty(id: i32) -> Bytes {
 }
 
 fn login_packet(entity_id: i32) -> Bytes {
-    tagged(&PlayPacket::Login(Login {
+    let mut frame = Vec::new();
+    PlayPacket::Login(Login {
         entity_id,
         is_hardcore: false,
         dimension_names: vec!["minecraft:overworld".to_string()],
@@ -70,7 +71,9 @@ fn login_packet(entity_id: i32) -> Bytes {
         portal_cooldown: 0,
         sea_level: 63,
         enforces_secure_chat: false,
-    }))
+    })
+    .encode(&mut frame);
+    frame.into()
 }
 
 fn registry(tag: u8) -> Bytes {
