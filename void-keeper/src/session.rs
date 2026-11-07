@@ -86,10 +86,9 @@ enum Phase {
     /// The server's `finish_configuration` is on its way and the client has not answered it.
     LeavingConfiguration,
     Play,
-    /// The server's `start_configuration` is on its way and the client has not acknowledged it.
+    /// A `start_configuration` is on its way and the client has not acknowledged it. The
+    /// acknowledgement goes to the live server while relaying, and is the proxy's otherwise.
     LeavingPlay,
-    /// The proxy's own `start_configuration` is on its way and the client has not acknowledged it.
-    AwaitingAck,
 }
 
 /// The protocol a client decodes what it receives with.
@@ -234,7 +233,7 @@ impl Session {
                 Phase::Configuration | Phase::LeavingConfiguration => {
                     self.lost_at.is_some() && !self.packs.awaits_client()
                 }
-                Phase::Login | Phase::Joining | Phase::AwaitingAck => false,
+                Phase::Login | Phase::Joining => false,
             },
             _ => true,
         };
@@ -273,9 +272,6 @@ impl Session {
     pub fn on_backend_lost(&mut self, now: Instant) {
         if self.closed {
             return;
-        }
-        if self.phase == Phase::LeavingPlay {
-            self.phase = Phase::AwaitingAck;
         }
         if self.phase == Phase::Play {
             self.close_bundle();
@@ -316,9 +312,7 @@ impl Session {
     fn client_reads(&self) -> Reads {
         match self.phase {
             Phase::Login => Reads::Login,
-            Phase::Joining | Phase::Configuration | Phase::LeavingPlay | Phase::AwaitingAck => {
-                Reads::Configuration
-            }
+            Phase::Joining | Phase::Configuration | Phase::LeavingPlay => Reads::Configuration,
             Phase::LeavingConfiguration | Phase::Play => Reads::Play,
         }
     }
@@ -341,11 +335,7 @@ impl Session {
             Phase::Configuration => {
                 self.send_to_client(frame(config_cb::KEEP_ALIVE, |body| keep_alive.encode(body)));
             }
-            Phase::Login
-            | Phase::Joining
-            | Phase::LeavingConfiguration
-            | Phase::LeavingPlay
-            | Phase::AwaitingAck => {}
+            Phase::Login | Phase::Joining | Phase::LeavingConfiguration | Phase::LeavingPlay => {}
         }
     }
 
@@ -392,8 +382,11 @@ impl Session {
             Phase::Configuration | Phase::LeavingConfiguration => {
                 self.client_in_configuration(id, body, &frame, now)
             }
-            Phase::Play | Phase::LeavingPlay => self.client_in_play(id, body),
-            Phase::AwaitingAck => {
+            Phase::Play => self.client_in_play(id, body),
+            Phase::LeavingPlay if matches!(self.stage, Stage::Relaying) => {
+                self.client_in_play(id, body)
+            }
+            Phase::LeavingPlay => {
                 if id == play_sb::CONFIGURATION_ACKNOWLEDGED {
                     self.client_acknowledged();
                 }
@@ -494,7 +487,7 @@ impl Session {
     fn start_configuration(&mut self) {
         tracing::info!("client goes through a reconfiguration");
         self.send_to_client(frame(play_cb::START_CONFIGURATION, |_| {}));
-        self.phase = Phase::AwaitingAck;
+        self.phase = Phase::LeavingPlay;
     }
 
     fn client_acknowledged(&mut self) {
@@ -561,7 +554,7 @@ impl Session {
                 login_cb::LOGIN_FINISHED => self.phase = Phase::Joining,
                 _ => {}
             },
-            Phase::Joining | Phase::AwaitingAck => return,
+            Phase::Joining => return,
             Phase::Configuration | Phase::LeavingConfiguration => match id {
                 config_cb::RESOURCE_PACK_PUSH => {
                     if self.answer_known_pack(body, config_sb::RESOURCE_PACK) {
@@ -675,9 +668,7 @@ impl Session {
             }));
         }
         self.stage = match self.phase {
-            Phase::Play | Phase::AwaitingAck | Phase::LeavingPlay => {
-                Stage::Reconfiguring { held: Vec::new() }
-            }
+            Phase::Play | Phase::LeavingPlay => Stage::Reconfiguring { held: Vec::new() },
             Phase::Configuration | Phase::LeavingConfiguration
                 if !self.script.is_finished_at(0) =>
             {
