@@ -15,7 +15,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -23,58 +24,29 @@ use bevy_app::{App, AppExit, Plugin, PluginsState};
 use bevy_ecs::world::World;
 use flume::Sender;
 
-use crate::network::IncomingPacket;
+use crate::network::{ClientSenders, IncomingPacket};
 
 const FENCE_LIMIT: Duration = Duration::from_secs(10);
 const FENCE_POLL: Duration = Duration::from_micros(50);
 
+/// The packets of the barrier: `sent` counted where they are queued for a client, `received`
+/// once the game can read them.
 #[derive(Default)]
-struct Counters {
-    active: AtomicBool,
-    sent: AtomicU64,
+pub(crate) struct Counters {
+    sent: Arc<AtomicU64>,
     received: AtomicU64,
 }
 
-static COUNTERS: Counters = Counters {
-    active: AtomicBool::new(false),
-    sent: AtomicU64::new(0),
-    received: AtomicU64::new(0),
-};
-
-/// Counts a packet handed to a client. Costs one load while the server runs normally.
-#[inline]
-pub(crate) fn count_sent() {
-    if COUNTERS.active.load(Ordering::Relaxed) {
-        COUNTERS.sent.fetch_add(1, Ordering::SeqCst);
-        #[cfg(test)]
-        SENT_ON_THIS_THREAD.with(|sent| sent.set(sent.get() + 1));
-    }
+/// Puts a counter in front of the game's channel.
+pub(crate) fn counted(
+    game: Sender<IncomingPacket>,
+    counters: Arc<Counters>,
+) -> Sender<IncomingPacket> {
+    relay(game, counters)
 }
 
-#[cfg(test)]
-pub(crate) fn start_counting() {
-    COUNTERS.active.store(true, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-thread_local! {
-    static SENT_ON_THIS_THREAD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// The global counter also moves with the tests running next to the one reading it.
-#[cfg(test)]
-pub(crate) fn sent_on_this_thread() -> u64 {
-    SENT_ON_THIS_THREAD.with(std::cell::Cell::get)
-}
-
-/// Puts a counter in front of the game's channel, and only then starts counting.
-pub(crate) fn counted(game: Sender<IncomingPacket>) -> Sender<IncomingPacket> {
-    relay(game, &COUNTERS)
-}
-
-fn relay<T: Send + 'static>(game: Sender<T>, counters: &'static Counters) -> Sender<T> {
+fn relay<T: Send + 'static>(game: Sender<T>, counters: Arc<Counters>) -> Sender<T> {
     let (network, packets) = flume::unbounded::<T>();
-    counters.active.store(true, Ordering::Relaxed);
     std::thread::spawn(move || {
         for packet in packets.iter() {
             if game.send(packet).is_err() {
@@ -90,11 +62,16 @@ fn relay<T: Send + 'static>(game: Sender<T>, counters: &'static Counters) -> Sen
 pub(crate) struct StepPlugin {
     socket: PathBuf,
     tick: Duration,
+    counters: Arc<Counters>,
 }
 
 impl StepPlugin {
-    pub(crate) fn new(socket: PathBuf, tick: Duration) -> Self {
-        Self { socket, tick }
+    pub(crate) fn new(socket: PathBuf, tick: Duration, counters: Arc<Counters>) -> Self {
+        Self {
+            socket,
+            tick,
+            counters,
+        }
     }
 }
 
@@ -102,7 +79,14 @@ impl Plugin for StepPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(crate::pace::SteppedPacePlugin::new(self.tick));
         let socket = self.socket.clone();
-        app.set_runner(move |app| run(app, &socket, &COUNTERS));
+        let counters = self.counters.clone();
+        app.set_runner(move |app| run(app, &socket, &counters));
+    }
+
+    fn finish(&self, app: &mut App) {
+        if let Some(mut senders) = app.world_mut().get_resource_mut::<ClientSenders>() {
+            senders.count_sent(self.counters.sent.clone());
+        }
     }
 }
 
@@ -267,8 +251,6 @@ fn json_string(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use bevy_app::Update;
     use bevy_ecs::prelude::*;
 
@@ -434,13 +416,12 @@ mod tests {
 
     #[test]
     fn the_relay_counts_a_packet_once_the_game_can_read_it() {
-        let counters: &'static Counters = Box::leak(Box::default());
+        let counters = Arc::new(Counters::default());
         let (game, read) = flume::unbounded();
-        let network = relay(game, counters);
-        assert!(counters.active.load(Ordering::Relaxed));
+        let network = relay(game, counters.clone());
         network.send(7).unwrap();
         assert_eq!(read.recv_timeout(Duration::from_secs(5)), Ok(7));
-        assert!(fence(counters, 1, Duration::from_secs(5)));
+        assert!(fence(&counters, 1, Duration::from_secs(5)));
     }
 
     #[test]
@@ -450,7 +431,11 @@ mod tests {
         let path = socket.clone();
         let runner = std::thread::spawn(move || {
             let mut app = app();
-            app.add_plugins(StepPlugin::new(path, Duration::from_millis(50)));
+            app.add_plugins(StepPlugin::new(
+                path,
+                Duration::from_millis(50),
+                Arc::default(),
+            ));
             app.run()
         });
         let stream = connect(&socket);

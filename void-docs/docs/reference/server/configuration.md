@@ -66,8 +66,8 @@ tick by itself, and takes one order per line on the socket. Each order gets one 
 | `stop` | Writes `AppExit`, runs one last tick so that systems see it, and ends the server |
 
 `sent` and `received` count packets to and from all clients, so the barrier holds for one client.
-Without the option the server keeps its normal loop, and the only addition is one relaxed load per
-packet sent.
+Without the option the server keeps its normal loop, and the only addition is the check of an empty
+counter per packet sent.
 
 ### Time and chance
 

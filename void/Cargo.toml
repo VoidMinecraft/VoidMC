@@ -38,3 +38,7 @@ log = "0.4"
 [[bench]]
 name = "channel_handoff"
 harness = false
+
+[[bench]]
+name = "players_send"
+harness = false

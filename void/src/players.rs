@@ -199,8 +199,10 @@ impl Outbox<'_> {
         #[cfg(feature = "packet-trace")]
         let traced = crate::packet_trace::packet_out(client_id, &packet);
         let dropped = self.queue(entity, client_id, packet);
-        if dropped.is_none() {
-            crate::step::count_sent();
+        if dropped.is_none()
+            && let Some(sent) = self.direct.and_then(ClientSenders::sent)
+        {
+            sent.fetch_add(1, Ordering::SeqCst);
         }
         #[cfg(feature = "packet-trace")]
         crate::packet_trace::packet_out_done(traced, dropped);
@@ -451,6 +453,8 @@ impl<'w> WorldPlayers<'w> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU64;
+
     use bevy_app::{App, Update};
     use bevy_ecs::system::SystemState;
     use flume::Receiver;
@@ -497,32 +501,35 @@ mod tests {
         LoadedChunks(chunks.iter().map(|&(x, z)| ChunkPos::new(x, z)).collect())
     }
 
-    #[test]
-    fn a_stepped_server_counts_what_players_send() {
+    fn counted_app(outgoing: Sender<OutgoingPacket>) -> (App, Entity, Arc<AtomicU64>) {
         let (mut app, _rx) = test_app();
         let player = app.world_mut().spawn(ClientId(9)).id();
-        crate::step::start_counting();
-        let before = crate::step::sent_on_this_thread();
+        let (_connected_tx, connected_rx) = flume::unbounded();
+        let mut senders = ClientSenders::new(connected_rx);
+        senders.register(player, outgoing);
+        let sent = Arc::new(AtomicU64::new(0));
+        senders.count_sent(sent.clone());
+        app.insert_resource(senders);
+        (app, player, sent)
+    }
+
+    #[test]
+    fn a_stepped_server_counts_what_players_send() {
+        let (outgoing, _queue) = flume::bounded(1);
+        let (mut app, player, sent) = counted_app(outgoing);
         let mut state = SystemState::<Players>::new(app.world_mut());
         state.get_mut(app.world_mut()).send(player, keep_alive(1));
-        assert_eq!(crate::step::sent_on_this_thread(), before + 1);
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn a_lost_packet_does_not_count_for_the_barrier() {
-        let (mut app, _rx) = test_app();
         let (gone_tx, gone_rx) = flume::bounded(1);
         drop(gone_rx);
-        let player = app.world_mut().spawn(ClientId(9)).id();
-        let (_connected_tx, connected_rx) = flume::unbounded();
-        let mut senders = ClientSenders::new(connected_rx);
-        senders.register(player, gone_tx);
-        app.insert_resource(senders);
-        crate::step::start_counting();
-        let before = crate::step::sent_on_this_thread();
+        let (mut app, player, sent) = counted_app(gone_tx);
         let mut state = SystemState::<Players>::new(app.world_mut());
         state.get_mut(app.world_mut()).send(player, keep_alive(1));
-        assert_eq!(crate::step::sent_on_this_thread(), before);
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
     }
 
     #[test]

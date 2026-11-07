@@ -64,8 +64,9 @@ impl VoidServer {
         let world_gen = WorldGen(self.config.world_generator);
 
         let (incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
+        let counters = std::sync::Arc::new(step::Counters::default());
         let incoming_tx = match step_socket {
-            Some(_) => step::counted(incoming_tx),
+            Some(_) => step::counted(incoming_tx, counters.clone()),
             None => incoming_tx,
         };
         let (outgoing_tx, _) = flume::unbounded::<OutgoingPacket>();
@@ -102,7 +103,7 @@ impl VoidServer {
         app.add_plugins(TaskPoolPlugin::default());
         match step_socket {
             Some(socket) => {
-                app.add_plugins(step::StepPlugin::new(socket, tick_duration));
+                app.add_plugins(step::StepPlugin::new(socket, tick_duration, counters));
             }
             None => {
                 app.add_plugins((
