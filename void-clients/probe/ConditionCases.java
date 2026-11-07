@@ -27,6 +27,59 @@ final class ConditionCases {
       }
       return;
     }
+    if (args[0].equals("--retry")) {
+      Retry retry = new Retry(500, 2000);
+      Object[] s = new Object[8];
+      for (int i = 0; i < s.length; i++) s[i] = new Object();
+      int[] asks = {0};
+      java.util.function.BooleanSupplier open = () -> { asks[0]++; return true; };
+      java.util.function.BooleanSupplier closed = () -> { asks[0]++; return false; };
+      Runnable done = () -> retry.task(() -> {}).run();
+      List<String> seen = new ArrayList<>();
+      seen.add("away " + retry.look(0, false, s[0], closed) + " " + retry.look(100, false, s[0], closed)
+          + " back " + retry.look(200, false, s[0], open));
+      seen.add("queued " + retry.look(300, false, s[0], open));
+      done.run();
+      seen.add("soon " + retry.look(400, false, s[0], open) + " later " + retry.look(700, false, s[0], open));
+      seen.add("never ran " + retry.look(1300, false, s[0], open) + " " + retry.look(5100, false, s[0], open)
+          + " stale " + retry.look(5700, false, s[0], open));
+      try {
+        retry.task(() -> { throw new IllegalStateException("failed"); }).run();
+      } catch (IllegalStateException failed) {
+        seen.add("after a failure " + retry.look(6200, false, s[0], open));
+      }
+      done.run();
+      asks[0] = 0;
+      seen.add("kicked " + retry.look(6300, false, s[1], open) + " " + retry.look(7100, false, s[1], open)
+          + " " + retry.look(7200, false, s[1], open) + " asked " + asks[0]);
+      done.run();
+      retry.look(7300, true, null, open);
+      retry.look(7800, true, null, open);
+      retry.look(8200, true, null, open);
+      String steady = "steady " + retry.look(8300, false, s[2], open);
+      done.run();
+      seen.add(steady + " " + retry.look(8800, false, s[2], open));
+      done.run();
+      seen.add("kicked after a steady game " + retry.look(8900, false, s[3], open) + " " + retry.look(9700, false, s[3], open)
+          + " " + retry.look(9800, false, s[3], open));
+      done.run();
+      seen.add("kicked again " + retry.look(9900, false, s[4], open) + " " + retry.look(11700, false, s[4], open)
+          + " " + retry.look(11800, false, s[4], open));
+      done.run();
+      seen.add("longest " + retry.look(11900, false, s[5], open) + " " + retry.look(13799, false, s[5], open)
+          + " " + retry.look(13800, false, s[5], open));
+      done.run();
+      seen.add("server away " + retry.look(13900, false, s[6], closed) + " " + retry.look(14000, false, s[6], closed)
+          + " back " + retry.look(14100, false, s[6], open));
+      done.run();
+      retry.look(14200, true, null, open);
+      retry.look(14700, true, null, open);
+      String brief = "brief game " + retry.look(15199, false, s[7], open);
+      done.run();
+      seen.add(brief + " " + retry.look(15799, false, s[7], open) + " " + retry.look(16199, false, s[7], open));
+      System.out.println(String.join("\n", seen));
+      return;
+    }
     if (args[0].equals("--hidden")) {
       for (int c = 0; c <= Character.MAX_CODE_POINT; c++) {
         if ((c < 0xD800 || c > 0xDFFF) && Condition.hidden(c)) System.out.println(Integer.toHexString(c));
