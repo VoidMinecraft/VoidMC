@@ -3,6 +3,7 @@ mod block_entity_data;
 mod block_update;
 mod boss_event;
 pub mod chunk;
+mod clear_dialog;
 mod clear_titles;
 mod close_container;
 mod command_suggestions_response;
@@ -23,6 +24,9 @@ mod player_info_update;
 mod remove_entities;
 mod remove_mob_effect;
 mod reset_score;
+mod resource_pack_push;
+mod respawn;
+mod set_camera;
 mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
@@ -60,6 +64,7 @@ pub use block_entity_data::*;
 pub use block_update::*;
 pub use boss_event::*;
 pub use chunk::*;
+pub use clear_dialog::*;
 pub use clear_titles::*;
 pub use close_container::*;
 pub use command_suggestions_response::*;
@@ -82,6 +87,9 @@ pub use player_info_update::*;
 pub use remove_entities::*;
 pub use remove_mob_effect::*;
 pub use reset_score::*;
+pub use resource_pack_push::*;
+pub use respawn::*;
+pub use set_camera::*;
 pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
@@ -174,6 +182,10 @@ pub enum PlayPacket {
     ResetScore(ResetScore),
     #[codec(packet_id = 0x4E)]
     RemoveMobEffect(RemoveMobEffect),
+    #[codec(packet_id = 0x51)]
+    ResourcePackPush(ResourcePackPush),
+    #[codec(packet_id = 0x52)]
+    Respawn(Respawn),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x58)]
@@ -186,6 +198,8 @@ pub enum PlayPacket {
     SetBorderWarningDelay(SetBorderWarningDelay),
     #[codec(packet_id = 0x5C)]
     SetBorderWarningDistance(SetBorderWarningDistance),
+    #[codec(packet_id = 0x5D)]
+    SetCamera(SetCamera),
     #[codec(packet_id = 0x5E)]
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]
@@ -228,6 +242,8 @@ pub enum PlayPacket {
     UpdateAttributes(UpdateAttributes),
     #[codec(packet_id = 0x84)]
     UpdateMobEffect(UpdateMobEffect),
+    #[codec(packet_id = 0x8B)]
+    ClearDialog(ClearDialog),
 }
 
 /// Packets with manual Encode impls that can't be in the tagged enum.
