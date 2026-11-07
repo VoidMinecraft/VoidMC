@@ -2,6 +2,13 @@ mod configuration;
 mod packs;
 mod returns;
 
+use uuid::Uuid;
+use voidmc_codec::VarI32;
+use voidmc_data::v26_1_2::packets::configuration::serverbound as config_sb;
+use voidmc_data::v26_1_2::packets::login::serverbound as login_sb;
+use voidmc_data::v26_1_2::packets::play::serverbound as play_sb;
+use voidmc_protocol::clientbound::ResourcePackPush;
+
 use super::*;
 
 fn settings() -> Settings {
@@ -15,40 +22,40 @@ fn settings() -> Settings {
 }
 
 fn login_finished() -> Bytes {
-    Frame::encode(login_cb::LOGIN_FINISHED, |body| {
+    frame::encode(login_cb::LOGIN_FINISHED, |body| {
         Uuid::from_u128(77).encode(body);
     })
 }
 
 fn login() -> Bytes {
-    Frame::encode(play_cb::LOGIN, |body| body.push(7))
+    frame::encode(play_cb::LOGIN, |body| body.push(7))
 }
 
 fn empty(id: i32) -> Bytes {
-    Frame::encode(id, |_| {})
+    frame::encode(id, |_| {})
 }
 
 fn hello() -> Bytes {
-    Frame::encode(login_sb::HELLO, |body| {
+    frame::encode(login_sb::HELLO, |body| {
         "Bot".to_string().encode(body);
         Uuid::from_u128(1).encode(body);
     })
 }
 
 fn known_packs_question() -> Bytes {
-    Frame::encode(config_cb::SELECT_KNOWN_PACKS, |body| body.push(0))
+    frame::encode(config_cb::SELECT_KNOWN_PACKS, |body| body.push(0))
 }
 
 fn known_packs_reply() -> Bytes {
-    Frame::encode(config_sb::SELECT_KNOWN_PACKS, |body| body.push(0))
+    frame::encode(config_sb::SELECT_KNOWN_PACKS, |body| body.push(0))
 }
 
 fn registry(tag: u8) -> Bytes {
-    Frame::encode(config_cb::REGISTRY_DATA, |body| body.push(tag))
+    frame::encode(config_cb::REGISTRY_DATA, |body| body.push(tag))
 }
 
 fn information() -> Bytes {
-    Frame::encode(config_sb::CLIENT_INFORMATION, |body| body.push(42))
+    frame::encode(config_sb::CLIENT_INFORMATION, |body| body.push(42))
 }
 
 fn push(id: Uuid, hash: &str) -> Bytes {
@@ -59,29 +66,37 @@ fn push(id: Uuid, hash: &str) -> Bytes {
         required: false,
         prompt: None,
     };
-    Frame::encode(play_cb::RESOURCE_PACK_PUSH, |body| push.encode(body))
+    frame::encode(play_cb::RESOURCE_PACK_PUSH, |body| push.encode(body))
 }
 
 fn config_push(id: Uuid) -> Bytes {
     let pushed = push(id, "abc");
-    let (_, body) = Frame::id_and_body(&pushed).unwrap();
-    Frame::encode(config_cb::RESOURCE_PACK_PUSH, |out| {
+    let (_, body) = frame::id_and_body(&pushed).unwrap();
+    frame::encode(config_cb::RESOURCE_PACK_PUSH, |out| {
         out.extend_from_slice(body);
     })
 }
 
-fn pack_answer(id: Uuid, status: i32) -> Bytes {
-    Frame::encode(play_sb::RESOURCE_PACK, |body| {
+fn pack_status(packet: i32, id: Uuid, status: i32) -> Bytes {
+    frame::encode(packet, |body| {
         id.encode(body);
         VarI32(status).encode(body);
     })
 }
 
+fn pack_answer(id: Uuid, status: i32) -> Bytes {
+    pack_status(play_sb::RESOURCE_PACK, id, status)
+}
+
 fn config_pack_answer(id: Uuid, status: i32) -> Bytes {
-    Frame::encode(config_sb::RESOURCE_PACK, |body| {
-        id.encode(body);
-        VarI32(status).encode(body);
-    })
+    pack_status(config_sb::RESOURCE_PACK, id, status)
+}
+
+fn count(frames: &[Bytes], id: i32) -> usize {
+    frames
+        .iter()
+        .filter(|frame| frame::id_and_body(frame).unwrap().0 == id)
+        .count()
 }
 
 struct Rig {
@@ -157,7 +172,8 @@ impl Rig {
         self.drain();
     }
 
-    fn join(&mut self) {
+    /// A first join, up to the registries of the configuration.
+    fn reach_configuration(&mut self) {
         self.tick(Duration::ZERO);
         self.connected();
         self.receive_from_client(hello());
@@ -167,6 +183,10 @@ impl Rig {
         self.receive_from_backend(known_packs_question());
         self.receive_from_client(known_packs_reply());
         self.receive_from_backend(registry(1));
+    }
+
+    fn join(&mut self) {
+        self.reach_configuration();
         self.receive_from_backend(empty(config_cb::FINISH_CONFIGURATION));
         self.receive_from_client(empty(config_sb::FINISH_CONFIGURATION));
         self.receive_from_backend(login());
@@ -176,15 +196,7 @@ impl Rig {
 
     fn in_configuration() -> Self {
         let mut rig = Self::fresh();
-        rig.tick(Duration::ZERO);
-        rig.connected();
-        rig.receive_from_client(hello());
-        rig.receive_from_backend(login_finished());
-        rig.receive_from_client(empty(login_sb::LOGIN_ACKNOWLEDGED));
-        rig.receive_from_client(information());
-        rig.receive_from_backend(known_packs_question());
-        rig.receive_from_client(known_packs_reply());
-        rig.receive_from_backend(registry(1));
+        rig.reach_configuration();
         rig.clear();
         rig
     }
@@ -225,16 +237,10 @@ impl Rig {
     }
 
     fn sent_to_client(&self, id: i32) -> usize {
-        self.client
-            .iter()
-            .filter(|frame| Frame::id_and_body(frame).unwrap().0 == id)
-            .count()
+        count(&self.client, id)
     }
 
     fn sent_to_backend(&self, id: i32) -> usize {
-        self.backend
-            .iter()
-            .filter(|frame| Frame::id_and_body(frame).unwrap().0 == id)
-            .count()
+        count(&self.backend, id)
     }
 }

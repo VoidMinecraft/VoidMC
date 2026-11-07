@@ -25,7 +25,7 @@ async fn a_server_that_never_returns_ends_with_a_clear_message() {
 async fn a_packet_the_proxy_cannot_read_still_reaches_the_client() {
     let (rig, server) = rig_with(Plan::player(1)).await;
     let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
-    let broken = Frame::encode(play_cb::RESOURCE_PACK_PUSH, |body| body.push(1));
+    let broken = frame::encode(play_cb::RESOURCE_PACK_PUSH, |body| body.push(1));
     server.send(broken.clone());
     assert_eq!(client.expect(play_cb::RESOURCE_PACK_PUSH).await, broken);
 }
@@ -44,7 +44,7 @@ async fn garbage_from_the_server_is_a_lost_server_not_a_crash() {
     let mut client = FakeClient::connect(rig.proxy, 2, PROTOCOL_VERSION).await;
     client
         .peer
-        .send(&Frame::encode(login_sb::HELLO, |body| {
+        .send(&frame::encode(login_sb::HELLO, |body| {
             "Bot".to_string().encode(body);
             Uuid::nil().encode(body);
         }))
@@ -83,7 +83,7 @@ async fn a_server_lost_after_a_registry_does_not_hand_it_to_the_client_twice() {
         peer.send(&login_finished()).await;
         peer.next().await;
         peer.next().await;
-        peer.send(&Frame::encode(config_cb::SELECT_KNOWN_PACKS, |body| {
+        peer.send(&frame::encode(config_cb::SELECT_KNOWN_PACKS, |body| {
             body.push(0)
         }))
         .await;
@@ -142,7 +142,7 @@ async fn a_server_that_stops_reading_counts_as_lost() {
     });
     let (mut client, _) = FakeClient::join(rig.proxy, "Bot").await;
     let (_deaf, _listener) = within(server).await.unwrap();
-    let flood = Frame::encode(play_sb::CLIENT_TICK_END, |body| {
+    let flood = frame::encode(play_sb::CLIENT_TICK_END, |body| {
         body.extend_from_slice(&[0; 4000])
     });
     let flooding = tokio::spawn(async move {

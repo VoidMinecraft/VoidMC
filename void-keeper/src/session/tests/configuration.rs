@@ -30,7 +30,7 @@ fn a_new_server_takes_the_client_through_a_configuration() {
     rig.receive_from_backend(login());
     rig.receive_from_client(empty(play_sb::PLAYER_LOADED));
     assert_eq!(rig.sent_to_backend(play_sb::PLAYER_LOADED), 1);
-    let commands = Frame::encode(play_cb::COMMANDS, |_| {});
+    let commands = frame::encode(play_cb::COMMANDS, |_| {});
     rig.receive_from_backend(commands.clone());
     assert_eq!(rig.client.last(), Some(&commands));
 }
@@ -41,10 +41,10 @@ fn keep_alives_of_a_configuration_are_answered_and_do_not_wait_for_the_client() 
     rig.lose_backend();
     rig.log_back_in();
     rig.clear();
-    rig.receive_from_backend(Frame::encode(config_cb::KEEP_ALIVE, |body| {
+    rig.receive_from_backend(frame::encode(config_cb::KEEP_ALIVE, |body| {
         9i64.encode(body)
     }));
-    rig.receive_from_backend(Frame::encode(config_cb::PING, |body| 4i32.encode(body)));
+    rig.receive_from_backend(frame::encode(config_cb::PING, |body| 4i32.encode(body)));
     assert_eq!(rig.sent_to_backend(config_sb::KEEP_ALIVE), 1);
     assert_eq!(rig.sent_to_backend(config_sb::PONG), 1);
     rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
@@ -153,7 +153,7 @@ fn a_client_on_its_way_to_a_configuration_is_disconnected_in_configuration() {
     let mut rig = Rig::in_play();
     rig.receive_from_backend(empty(play_cb::START_CONFIGURATION));
     rig.clear();
-    rig.receive_from_backend(Frame::encode(play_cb::SYSTEM_CHAT, |body| {
+    rig.receive_from_backend(frame::encode(play_cb::SYSTEM_CHAT, |body| {
         body.resize(MAX_PLAIN_FRAME_BYTES + 1, 0);
     }));
     assert_eq!(rig.sent_to_client(config_cb::DISCONNECT), 1);
@@ -324,7 +324,7 @@ fn a_client_that_reaches_its_configuration_waits_the_whole_return_timeout() {
 
 #[test]
 fn a_question_only_the_client_answers_ends_a_replay_with_a_message() {
-    let cookie = Frame::encode(config_cb::COOKIE_REQUEST, |body| {
+    let cookie = frame::encode(config_cb::COOKIE_REQUEST, |body| {
         "minecraft:token".to_string().encode(body);
     });
     let mut rig = Rig::in_configuration();
@@ -421,7 +421,7 @@ fn a_login_question_only_a_client_could_answer_is_answered_with_nothing() {
     rig.lose_backend();
     rig.tick(settings().retry_every);
     rig.connected();
-    rig.receive_from_backend(Frame::encode(login_cb::CUSTOM_QUERY, |body| {
+    rig.receive_from_backend(frame::encode(login_cb::CUSTOM_QUERY, |body| {
         VarI32(3).encode(body);
     }));
     assert_eq!(rig.sent_to_backend(login_sb::CUSTOM_QUERY_ANSWER), 1);
@@ -444,10 +444,10 @@ fn a_server_lost_after_ending_the_configuration_is_replayed_to_its_end() {
 #[test]
 fn keep_alives_of_a_configuration_stay_out_of_what_a_replay_follows() {
     let mut rig = Rig::in_configuration();
-    rig.receive_from_backend(Frame::encode(config_cb::KEEP_ALIVE, |body| {
+    rig.receive_from_backend(frame::encode(config_cb::KEEP_ALIVE, |body| {
         9i64.encode(body)
     }));
-    rig.receive_from_backend(Frame::encode(config_cb::PING, |body| 4i32.encode(body)));
+    rig.receive_from_backend(frame::encode(config_cb::PING, |body| 4i32.encode(body)));
     rig.lose_backend();
     rig.log_back_in();
     rig.clear();
@@ -494,12 +494,12 @@ fn a_login_cookie_is_answered_with_nothing() {
     rig.tick(settings().retry_every);
     rig.connected();
     rig.clear();
-    rig.receive_from_backend(Frame::encode(login_cb::COOKIE_REQUEST, |body| {
+    rig.receive_from_backend(frame::encode(login_cb::COOKIE_REQUEST, |body| {
         "minecraft:token".to_string().encode(body);
     }));
     assert_eq!(
         rig.backend,
-        vec![Frame::encode(login_sb::COOKIE_RESPONSE, |body| {
+        vec![frame::encode(login_sb::COOKIE_RESPONSE, |body| {
             "minecraft:token".to_string().encode(body);
             false.encode(body);
         })]
