@@ -350,10 +350,12 @@ impl<S> Relay<S> {
     }
 
     /// Handles a frame and every other frame already read, then leaves the rest to `settle`.
+    /// The frames of one read arrived at once, so they share one reading of the clock.
     fn receive_from_backend(&mut self, first: Bytes) {
+        let now = Instant::now();
         let mut next = Some(first);
         while let Some(frame) = next.take() {
-            self.session.on_backend(frame, Instant::now());
+            self.session.on_backend(frame, now);
             self.absorb();
             let Some(backend) = &mut self.backend else {
                 return;
@@ -366,9 +368,10 @@ impl<S> Relay<S> {
     }
 
     fn receive_from_client(&mut self, first: Bytes) -> Result<(), WireError> {
+        let now = Instant::now();
         let mut next = Some(first);
         while let Some(frame) = next.take() {
-            self.session.on_client(frame, Instant::now());
+            self.session.on_client(frame, now);
             self.absorb();
             next = self.client.buffered()?;
         }
