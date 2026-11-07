@@ -122,12 +122,13 @@ reconnected.
 
 | Case | In game | Seen by the client |
 |---|---|---|
-| `SIGKILL` in play, `void-example` | 0.53 s to 0.58 s | A configuration screen for about 0.3 s |
-| Clean stop (`SIGINT`, the server exits in under 0.1 s) | 0.54 s to 0.63 s | The same |
-| `SIGKILL` during the return, before the client ended its configuration | 0.53 s to 0.58 s | The same |
-| `SIGKILL` during the first join, then a restart | 0.53 s to 0.68 s | Its first configuration goes on |
-| `SIGSTOP` for 18 s, then `SIGCONT`, with `--backend-silence 15` | 0.40 s to 0.46 s | A configuration screen during the freeze |
-| `SIGKILL` in play, `voidmc-map` and its pack | 0.93 s to 0.99 s | No pack reload: the proxy answers for the pack |
+| `SIGKILL` in play, `void-example` | 0.47 s to 0.51 s | A configuration screen for about 0.3 s |
+| Clean stop (`SIGINT`, the server exits in under 0.1 s) | 0.50 s to 0.59 s | The same |
+| `SIGKILL` during the return, before the client ended its configuration | 0.36 s to 0.56 s | The same |
+| `SIGKILL` during the first join, then a restart | 0.48 s to 0.70 s | Its first configuration goes on |
+| `SIGSTOP` in play for 25 s, then `SIGCONT`, default `--backend-silence` | 0.40 s to 0.47 s after `SIGCONT` | Its world for the whole freeze |
+| `SIGSTOP` during the return for 18 s, then `SIGCONT`, with `--backend-silence 15` | 0.41 s to 0.47 s after `SIGCONT` | A configuration screen during the freeze |
+| `SIGKILL` in play, `voidmc-map` and its pack | 0.95 s to 0.96 s | No pack reload: the proxy answers for the pack |
 
 Most of that time is the server starting.
 
