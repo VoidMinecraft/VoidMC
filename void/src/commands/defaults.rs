@@ -252,7 +252,7 @@ fn handle_kick(ctx: &mut CommandContext) {
         .cloned()
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
-    let reason_nbt = crate::messages::text_component(&reason, TextColor::Red);
+    let reason_nbt = crate::messages::Text::truncated(&reason).component(TextColor::Red);
     ctx.players().send(
         target,
         voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
@@ -843,6 +843,24 @@ mod tests {
             .collect();
         assert_eq!(kicked, vec![7]);
         assert!(world.entities().contains(bob));
+    }
+
+    #[test]
+    fn an_oversized_kick_reason_is_cut_before_it_is_sent() {
+        let (mut world, player, outgoing_rx) = command_world();
+        let reason = "😀".repeat(11000);
+        dispatch_command(&mut world, 7, player, "kick", args(&["@p", &reason]));
+        let reasons: Vec<_> = outgoing_rx
+            .try_iter()
+            .filter_map(|packet| match packet.packet {
+                ClientboundPacket::Play(PlayPacket::Disconnect(disconnect)) => {
+                    Some(disconnect.reason)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasons.len(), 1);
+        crate::messages::assert_guarded(&reasons[0], &reason);
     }
 
     #[test]

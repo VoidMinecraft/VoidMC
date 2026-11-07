@@ -84,13 +84,29 @@ RGB), for the few places that still take legacy text such as sidebar lines.
 
 ## Text length
 
-Text longer than the NBT string limit (65 535 modified-UTF-8 bytes, where
-`\0` costs 2 bytes and characters outside the BMP cost 6) is cut on a
-character boundary and a warning is logged, rather than sent truncated
-mid-character. `messages::text_component(text, color)` and
-`messages::plain_text_component(text)` build a guarded component for any
-other packet; menu titles, boss bar titles, custom names and text displays go
-through the same guard.
+A client disconnects on a text longer than the NBT string limit: 65 535
+modified-UTF-8 bytes, where `\0` costs 2 bytes and characters outside the BMP
+cost 6. `Text` builds the text components of the engine and never holds
+more:
+
+- `Text::new(text)` returns `Err(TextTooLong { bytes })` when the text
+  does not fit.
+- `Text::truncated(text)` keeps what fits, cut on a character boundary,
+  and logs a warning.
+- `.component(color)` and `.plain()` build the NBT component for any packet.
+
+```rust
+use voidmc::{Text, TextColor};
+
+let title = Text::new("Welcome")?.component(TextColor::Gold);
+let lore = Text::truncated(user_text).plain();
+```
+
+Messages, menu titles, boss bar titles, scoreboards, the tab list, titles,
+toasts, sign lines, custom names and text displays all go through it, and
+their builders, which take a `&str` or a `String`, cut and warn rather than
+refuse. NBT built by hand into a packet does not go through it; the codec cuts
+its strings as a last resort (see the `Nbt` row of the codec reference).
 
 The legacy string entry points `commands::system_chat(text, color)` and
 `commands::text_to_nbt(text, color)` keep their signatures: an invalid colour
