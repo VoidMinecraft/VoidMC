@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, Encode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLimits {
@@ -77,13 +77,27 @@ pub struct FrameLength {
 /// Reads the length prefix at the start of `bytes`, `Ok(None)` while it is still incomplete.
 ///
 /// A body that is empty, negative or above `limit` is an error, before any of it is read.
+#[inline]
 pub fn frame_length(bytes: &[u8], limit: usize) -> Result<Option<FrameLength>, FrameError> {
-    let mut rest = bytes;
-    let signed_len = match VarI32::decode(&mut rest) {
-        Ok(value) => value.0,
-        Err(DecodeError::UnexpectedEof) => return Ok(None),
-        Err(_) => return Err(FrameError::InvalidLengthVarInt),
-    };
+    let mut value = 0u32;
+    let mut prefix = 0;
+    loop {
+        let Some(&byte) = bytes.get(prefix) else {
+            return Ok(None);
+        };
+        if prefix == VARINT_MAX_BYTES - 1 && byte & 0xF0 != 0 {
+            return Err(FrameError::InvalidLengthVarInt);
+        }
+        value |= u32::from(byte & 0x7F) << (7 * prefix);
+        prefix += 1;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if prefix == VARINT_MAX_BYTES {
+            return Err(FrameError::InvalidLengthVarInt);
+        }
+    }
+    let signed_len = value as i32;
     if signed_len == 0 {
         return Err(FrameError::EmptyFrame);
     }
@@ -94,10 +108,7 @@ pub fn frame_length(bytes: &[u8], limit: usize) -> Result<Option<FrameLength>, F
             limit,
         });
     }
-    Ok(Some(FrameLength {
-        prefix: bytes.len() - rest.len(),
-        body,
-    }))
+    Ok(Some(FrameLength { prefix, body }))
 }
 
 #[derive(Debug)]
@@ -249,7 +260,8 @@ impl ClientReader {
     }
 }
 
-const FRAME_HEADER_BYTES: usize = 5;
+const VARINT_MAX_BYTES: usize = 5;
+const FRAME_HEADER_BYTES: usize = VARINT_MAX_BYTES;
 const FRAME_BUFFER_RETAINED_DIVISOR: usize = 8;
 
 pub struct ClientWriter {
@@ -339,6 +351,8 @@ impl ServerSocket {
 
 #[cfg(test)]
 mod tests {
+    use voidmc_codec::VarI32;
+
     use super::*;
 
     async fn connected(limits: FrameLimits) -> (ClientSocket, TcpStream) {
