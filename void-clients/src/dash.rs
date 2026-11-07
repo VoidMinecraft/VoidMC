@@ -404,9 +404,11 @@ mod tests {
             dashboard_port: port,
             ..crate::registry::Registry::load()
         };
+        let started = Instant::now();
         assert_eq!(
             ensure(&registry).unwrap(),
             format!("http://127.0.0.1:{port}")
         );
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }
