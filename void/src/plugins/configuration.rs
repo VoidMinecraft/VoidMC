@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use bevy_app::{App, Plugin};
 use bevy_ecs::{
     entity::Entity,
@@ -14,9 +12,9 @@ use voidmc_protocol::{
 use crate::{
     CommandRegistry, RegistryDataStore, ServerConfigResource, WorldGen,
     components::{
-        ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance, KeepAliveState,
-        LoadedChunks, MinecraftEntityId, PlayerDimension, Position, PreviousPosition, Rotation,
-        TeleportState,
+        ChunkSet, ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance,
+        KeepAliveState, LoadedChunks, MinecraftEntityId, PlayerDimension, Position,
+        PreviousPosition, Rotation, TeleportState,
     },
     events::PlayerJoinEvent,
     network::PacketEvent,
@@ -145,7 +143,7 @@ fn handle_finish_configuration(
         KeepAliveState::default(),
         CurrentChunkPos(spawn_chunk),
         EffectiveViewDistance(config.initial_chunk_radius),
-        LoadedChunks(HashSet::new()),
+        LoadedChunks(ChunkSet::new()),
         PlayerDimension(DimensionId::Overworld),
         crate::inventory::Inventory::new(),
     ));
@@ -204,7 +202,7 @@ fn handle_finish_configuration(
 
     // Send initial chunks around spawn
     let early_teleport_threshold = 9;
-    let mut loaded = HashSet::new();
+    let mut loaded = ChunkSet::new();
     let mut teleport_sent = false;
 
     for pos in spawn_chunk.chunks_in_radius(config.initial_chunk_radius) {

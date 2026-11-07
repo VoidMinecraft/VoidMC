@@ -1,7 +1,8 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bevy_ecs::prelude::{Component, Local, Query, With};
 use voidmc::components::{PlayerName, PlayerReady, Position};
+use voidmc::pace::Clock;
 use voidmc::{Ornament, Sidebar, TextColor, Widget, WidgetId};
 
 #[derive(Component)]
@@ -33,16 +34,18 @@ pub(super) fn altitude_board() -> impl bevy_ecs::bundle::Bundle {
 pub(super) fn altitude_system(
     players: Query<(&PlayerName, &Position), With<PlayerReady>>,
     mut boards: Query<(&mut Sidebar, &AltitudeBoard)>,
-    mut started: Local<Option<Instant>>,
+    clock: Clock,
+    mut started: Local<Option<i64>>,
     mut last: Local<(Vec<(String, i32)>, u64)>,
 ) {
-    let started = *started.get_or_insert_with(Instant::now);
+    let now = clock.elapsed_millis();
+    let started = *started.get_or_insert(now);
     let mut altitudes: Vec<(String, i32)> = players
         .iter()
         .map(|(name, position)| (name.0.clone(), position.y.floor() as i32))
         .collect();
     altitudes.sort();
-    let uptime = started.elapsed().as_secs();
+    let uptime = (now - started).max(0) as u64 / 1000;
     if (altitudes.as_slice(), uptime) == (last.0.as_slice(), last.1) {
         return;
     }

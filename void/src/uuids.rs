@@ -1,18 +1,35 @@
 //! Where the UUIDs the server makes up come from: random, unless a test run asks otherwise.
 //!
-//! With the `seeded-uuids` feature, `VOID_UUID_SEED=<u64>` makes the n-th UUID of a run a
-//! function of the seed and n. Two runs get the same UUIDs as long as they ask in the same
-//! order, which systems running in parallel do not promise.
+//! A stepped server makes the n-th UUID of the process a function of a fixed seed and n.
+//! With the `seeded-uuids` feature, `VOID_UUID_SEED=<u64>` does the same on a normal server.
+//! Two runs get the same UUIDs as long as they ask in the same order.
+
+use std::sync::OnceLock;
 
 use uuid::Uuid;
 
-#[cfg(not(feature = "seeded-uuids"))]
+static STEPPED: OnceLock<SeededUuids> = OnceLock::new();
+
+/// Makes every UUID of the process drawn after the call follow `seed`. Each build of
+/// [`crate::pace::SteppedPacePlugin`] calls it; the first seed stays and later ones are ignored.
+pub(crate) fn seed_for_steps(seed: u64) {
+    let _ = STEPPED.set(SeededUuids::new(seed));
+}
+
 pub fn random_uuid() -> Uuid {
-    Uuid::new_v4()
+    if let Some(stepped) = STEPPED.get() {
+        return stepped.next();
+    }
+    configured().map_or_else(fresh, SeededUuids::next)
+}
+
+#[cfg(not(feature = "seeded-uuids"))]
+fn configured() -> Option<&'static SeededUuids> {
+    None
 }
 
 #[cfg(feature = "seeded-uuids")]
-pub fn random_uuid() -> Uuid {
+fn configured() -> Option<&'static SeededUuids> {
     use std::sync::LazyLock;
 
     static SOURCE: LazyLock<Option<SeededUuids>> = LazyLock::new(|| {
@@ -22,16 +39,22 @@ pub fn random_uuid() -> Uuid {
             Err(_) => panic!("VOID_UUID_SEED is not a number: {seed}"),
         }
     });
-    SOURCE.as_ref().map_or_else(Uuid::new_v4, SeededUuids::next)
+    SOURCE.as_ref()
 }
 
-#[cfg(any(test, feature = "seeded-uuids"))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the one source of fresh UUIDs, which a stepped run replaces"
+)]
+fn fresh() -> Uuid {
+    Uuid::new_v4()
+}
+
 struct SeededUuids {
     seed: u64,
     drawn: std::sync::atomic::AtomicU64,
 }
 
-#[cfg(any(test, feature = "seeded-uuids"))]
 impl SeededUuids {
     fn new(seed: u64) -> Self {
         Self {
@@ -54,7 +77,6 @@ impl SeededUuids {
 }
 
 /// The output function of SplitMix64.
-#[cfg(any(test, feature = "seeded-uuids"))]
 fn mix(value: u64) -> u64 {
     let mut z = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -89,7 +111,15 @@ mod tests {
     }
 
     #[test]
-    fn without_a_seed_uuids_stay_random() {
-        assert_ne!(random_uuid(), random_uuid());
+    fn a_stepped_server_draws_its_uuids_from_the_stepped_seed() {
+        crate::pace::make_stepped(&mut bevy_ecs::world::World::new());
+        let drawn = random_uuid();
+        let stream = SeededUuids::new(crate::pace::STEPPED_SEED);
+        assert!((0..100_000).any(|_| stream.next() == drawn));
+    }
+
+    #[test]
+    fn fresh_uuids_are_random() {
+        assert_ne!(fresh(), fresh());
     }
 }

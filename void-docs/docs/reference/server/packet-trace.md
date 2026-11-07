@@ -74,7 +74,11 @@ see `void-clients/README.md`.
 
 ## Reproducible UUIDs
 
-With the `seeded-uuids` feature, `VOID_UUID_SEED=<u64>` makes the UUIDs of entities and boss
-bars a function of the seed and of how many were drawn before. Without the variable, or without
-the feature, they are random. Two runs get the same UUIDs as long as they draw them in the same
-order, which parallel systems do not promise.
+A stepped server draws the UUIDs of entities and boss bars from a fixed seed and runs its
+systems one at a time, so two stepped runs that receive the same packets at the same ticks send
+the same UUIDs, with no feature.
+
+On a normal server, the `seeded-uuids` feature with `VOID_UUID_SEED=<u64>` makes those UUIDs a
+function of the seed and of how many were drawn before. Without the variable, or without the
+feature, they are random. Two normal runs get the same UUIDs only if they draw them in the same
+order, which real time and real chance do not promise.

@@ -14,7 +14,7 @@ use bevy_ecs::system::SystemParam;
 use flume::{Sender, TrySendError};
 use voidmc_protocol::clientbound::ClientboundPacket;
 
-use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
+use crate::components::{ChunkSet, ClientId, LoadedChunks, PlayerDimension, PlayerReady};
 use crate::network::{ClientSenders, NetworkChannels, OUTBOUND_QUEUE_CAPACITY, OutgoingPacket};
 use crate::world::{ChunkPos, DimensionId};
 
@@ -25,7 +25,7 @@ pub struct Recipient<'a> {
     entity: Entity,
     client_id: u32,
     dimension: Option<DimensionId>,
-    loaded_chunks: Option<&'a HashSet<ChunkPos>>,
+    loaded_chunks: Option<&'a ChunkSet>,
 }
 
 impl Recipient<'_> {

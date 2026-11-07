@@ -1,10 +1,9 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bevy_ecs::prelude::*;
 use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{ClientId, KeepAliveState, PlayerReady};
+use crate::pace::Clock;
 use crate::players::Players;
 
 #[derive(Resource)]
@@ -22,8 +21,9 @@ impl Default for KeepAliveTicker {
     }
 }
 
-#[instrument(level = "info", skip(ticker, players, query))]
+#[instrument(level = "info", skip(ticker, players, query, clock))]
 pub fn send_keep_alive(
+    clock: Clock,
     mut ticker: ResMut<KeepAliveTicker>,
     players: Players,
     mut query: Query<(Entity, &ClientId, &mut KeepAliveState), With<PlayerReady>>,
@@ -36,10 +36,7 @@ pub fn send_keep_alive(
 
     ticker.ticks_since_last = 0;
 
-    let keep_alive_id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
+    let keep_alive_id = clock.elapsed_millis();
 
     for (entity, client_id, mut keep_alive_state) in query.iter_mut() {
         if keep_alive_state.awaiting_response {

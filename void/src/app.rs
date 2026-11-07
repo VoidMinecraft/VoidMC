@@ -53,12 +53,9 @@ impl VoidServer {
     /// Starts the server — spawns the network thread and runs the Bevy app.
     /// This function blocks until the server shuts down.
     pub fn run(self) {
-        let mut config_resource = ServerConfigResource::from(&self.config);
+        let config_resource = ServerConfigResource::from(&self.config);
         let step_socket = self.config.step_socket.clone();
         let stepped = step_socket.is_some();
-        if stepped {
-            config_resource.packet_ingest_budget_ms = 0;
-        }
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
         let address = self.config.address.clone();
@@ -105,7 +102,7 @@ impl VoidServer {
         app.add_plugins(TaskPoolPlugin::default());
         match step_socket {
             Some(socket) => {
-                app.add_plugins(step::StepPlugin::new(socket));
+                app.add_plugins(step::StepPlugin::new(socket, tick_duration));
             }
             None => {
                 app.add_plugins((

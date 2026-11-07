@@ -42,6 +42,10 @@ pub struct TpsMetrics {
 
 impl TpsMetrics {
     fn new(tps_output: Option<String>) -> Self {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the TPS metrics measure the wall clock and only reach the logs"
+        )]
         let now = Instant::now();
         let path = resolve_tps_path(tps_output);
         let writer = path.as_deref().and_then(open_tps_writer);
@@ -87,6 +91,10 @@ impl TpsMetrics {
 }
 
 pub fn track_tps(mut metrics: ResMut<TpsMetrics>, config: Res<ServerConfigResource>) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the TPS metrics measure the wall clock and only reach the logs"
+    )]
     let now = Instant::now();
     let tick_delta = now.duration_since(metrics.last_tick);
     metrics.last_tick = now;
@@ -162,6 +170,10 @@ fn open_tps_writer(path: &Path) -> Option<BufWriter<File>> {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a timestamp of the TPS file, not of a packet"
+)]
 fn unix_timestamp_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

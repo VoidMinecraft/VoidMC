@@ -81,6 +81,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_players(100)
         .configure_registries(biome::register_crimson_sky);
 
+    if let Some(address) = env_string("VOID_EXAMPLE_ADDRESS") {
+        config_builder = config_builder.address(address);
+    }
+    if let Some(socket) = env::var_os("VOID_EXAMPLE_STEP_SOCKET") {
+        config_builder = config_builder.step_socket(socket);
+    }
+
     if metrics_env.enabled() {
         config_builder = config_builder.metrics_debug(true);
     }
@@ -162,6 +169,10 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
     // Create logs directory if it doesn't exist
     std::fs::create_dir_all("logs")?;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the name of a log file, not a packet"
+    )]
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis();
@@ -217,6 +228,8 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
         .with(env_filter)
         .with(console_layer)
         .with(file_layer);
+    #[cfg(feature = "packet-trace")]
+    let registry = registry.with(voidmc::packet_trace::trace_layer());
 
     let flame_guard = if let Some((flame_layer, flame_guard)) = flame_setup {
         registry.with(flame_layer).init();

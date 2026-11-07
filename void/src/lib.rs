@@ -19,6 +19,7 @@ pub mod menu;
 pub mod messages;
 mod metrics;
 pub mod network;
+pub mod pace;
 #[cfg(feature = "packet-trace")]
 pub mod packet_trace;
 pub mod particles;

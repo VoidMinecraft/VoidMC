@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands, world::World};
 use voidmc_protocol::serverbound::{ClientInformation, KeepAlive, PlayerLoaded, Pong, TickEnd};
@@ -8,6 +6,7 @@ use crate::{
     components::{ClientSettings, KeepAliveState, PlayerReady},
     events::PlayerReadyEvent,
     network::PacketEvent,
+    pace::Pace,
 };
 
 pub struct PlayPlugin;
@@ -41,19 +40,15 @@ fn handle_keep_alive(event: On<PacketEvent<KeepAlive>>, world: &World, mut comma
         {
             commands.entity(event.entity).insert(KeepAliveState {
                 awaiting_response: false,
-                latency: round_trip_millis(keep_alive_state.last_sent_id),
+                latency: round_trip_millis(keep_alive_state.last_sent_id, crate::pace::of(world)),
                 ..*keep_alive_state
             });
         }
     }
 }
 
-fn round_trip_millis(sent_at: i64) -> i32 {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    (now - sent_at).clamp(0, i32::MAX as i64) as i32
+fn round_trip_millis(sent_at: i64, pace: Pace) -> i32 {
+    (pace.elapsed_millis() - sent_at).clamp(0, i32::MAX as i64) as i32
 }
 
 fn handle_client_information(event: On<PacketEvent<ClientInformation>>, mut commands: Commands) {
@@ -65,6 +60,7 @@ fn handle_client_information(event: On<PacketEvent<ClientInformation>>, mut comm
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
@@ -98,11 +94,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(PlayPlugin);
 
-        let sent_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64
-            - 250;
+        let sent_at = Pace::REAL.elapsed_millis() - 250;
         let entity = app
             .world_mut()
             .spawn(KeepAliveState {
@@ -123,8 +115,11 @@ mod tests {
 
         let latency = app.world().get::<KeepAliveState>(entity).unwrap().latency;
         assert!((250..1250).contains(&latency), "latency {latency}");
-        assert_eq!(round_trip_millis(i64::MAX), 0);
-        assert_eq!(round_trip_millis(0), i32::MAX);
+        assert_eq!(round_trip_millis(i64::MAX, Pace::REAL), 0);
+        assert_eq!(
+            round_trip_millis(-2 * i64::from(i32::MAX), Pace::REAL),
+            i32::MAX
+        );
     }
 
     #[test]
@@ -151,5 +146,37 @@ mod tests {
         let state = app.world().get::<KeepAliveState>(entity).unwrap();
         assert_eq!(state.latency, 17);
         assert!(!state.awaiting_response);
+    }
+
+    #[test]
+    fn a_stepped_round_trip_is_counted_in_ticks() {
+        let mut app = App::new();
+        app.add_plugins(PlayPlugin);
+        app.add_plugins(crate::pace::SteppedPacePlugin::new(
+            std::time::Duration::from_millis(50),
+        ));
+        for _ in 0..203 {
+            app.update();
+        }
+        let entity = app
+            .world_mut()
+            .spawn(KeepAliveState {
+                last_sent_id: 10_000,
+                awaiting_response: true,
+                latency: 0,
+            })
+            .id();
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 7,
+            entity,
+            packet: KeepAlive {
+                keep_alive_id: 10_000,
+            },
+        });
+        app.update();
+
+        let latency = app.world().get::<KeepAliveState>(entity).unwrap().latency;
+        assert_eq!(latency, 150);
     }
 }

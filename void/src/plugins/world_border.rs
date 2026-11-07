@@ -157,6 +157,10 @@ impl WorldBorder {
             self.size = Size::Fixed(to);
             return;
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the world border still runs on the wall clock: its API takes no Pace yet"
+        )]
         let now = Instant::now();
         let from = self.size.at(now);
         if from == to {
@@ -172,6 +176,10 @@ impl WorldBorder {
     }
 
     /// The diameter as viewers see it right now, interpolated during a transition.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the world border still runs on the wall clock: its API takes no Pace yet"
+    )]
     pub fn current_diameter(&self) -> f64 {
         self.size.at(Instant::now())
     }
@@ -180,6 +188,10 @@ impl WorldBorder {
         self.size.target()
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the world border still runs on the wall clock: its API takes no Pace yet"
+    )]
     pub fn is_transitioning(&self) -> bool {
         !self.size.remaining(Instant::now()).is_zero()
     }
@@ -293,6 +305,10 @@ fn varint_u32(value: u32) -> i32 {
     value.min(i32::MAX as u32) as i32
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the world border still runs on the wall clock: its API takes no Pace yet"
+)]
 fn reset_packet() -> ClientboundPacket {
     WorldBorder::new().initialize(Instant::now())
 }
@@ -335,6 +351,10 @@ fn sync_world_borders(players: Players, mut borders: Query<(&WorldBorder, &mut W
         return;
     }
     let ready = players.ready();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the world border still runs on the wall clock: its API takes no Pace yet"
+    )]
     let now = Instant::now();
     for (border, mut state) in borders.iter_mut() {
         let members = || {
@@ -480,6 +500,10 @@ mod tests {
     #[test]
     fn builder_produces_initialize_packet_in_ticks() {
         let border = demo_border();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a test sets a real time on purpose"
+        )]
         let init = border.initialize(Instant::now());
         let ClientboundPacket::Play(PlayPacket::InitializeBorder(init)) = init else {
             panic!("expected initialize");
@@ -579,6 +603,10 @@ mod tests {
 
     #[test]
     fn lerp_interpolates_linearly_and_settles_on_target() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a test sets a real time on purpose"
+        )]
         let started = Instant::now();
         let size = Size::Lerp {
             from: 512.0,

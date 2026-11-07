@@ -20,6 +20,10 @@ mod tests {
 
     #[test]
     fn test_uuid_encode_decode() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a round trip needs any UUID, and the codec sends nothing"
+        )]
         let uuid = Uuid::new_v4();
         let mut buf = Vec::new();
         uuid.encode(&mut buf);
@@ -71,6 +75,10 @@ mod tests {
     #[test]
     fn test_uuid_roundtrip_multiple() {
         for _ in 0..100 {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a round trip needs any UUID, and the codec sends nothing"
+            )]
             let uuid = Uuid::new_v4();
             let mut buf = Vec::new();
             uuid.encode(&mut buf);

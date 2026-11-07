@@ -27,6 +27,10 @@ impl Seed {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the demo draws its own seed only when none is configured"
+)]
 pub fn seed(configured: Option<&str>) -> Result<Seed, std::num::ParseIntError> {
     match configured {
         Some(value) => value.trim().parse().map(Seed::Configured),

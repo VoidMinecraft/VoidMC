@@ -220,7 +220,9 @@ pub fn stream_chunks(
 #[cfg(test)]
 mod tests {
     use bevy_app::{App, PostUpdate};
-    use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, ClientboundPacket, ManualPlayPacket};
+    use voidmc_protocol::clientbound::{
+        Chunk, ChunkBuilder, ClientboundPacket, ManualPlayPacket, PlayPacket,
+    };
 
     use super::*;
     use crate::WorldGenerator;
@@ -364,6 +366,35 @@ mod tests {
         assert!(app.world().get::<ChunkStreamBacklog>(entity).is_none());
         app.update();
         assert!(chunk_positions(&receiver, 1).is_empty());
+    }
+
+    #[test]
+    fn two_servers_unload_the_chunks_left_behind_in_the_same_order() {
+        let unloaded = || {
+            let (mut app, receiver) = test_app(ServerConfig {
+                view_distance: 3,
+                max_chunk_generations_per_tick: 0,
+                ..Default::default()
+            });
+            let entity = player(&mut app, 1);
+            app.update();
+            assert_eq!(app.world().get::<LoadedChunks>(entity).unwrap().0.len(), 49);
+            receiver.drain().count();
+            app.world_mut().get_mut::<Position>(entity).unwrap().x = 160.0;
+            app.update();
+            receiver
+                .drain()
+                .filter_map(|p| match p.packet {
+                    ClientboundPacket::Play(PlayPacket::UnloadChunk(unload)) => {
+                        Some((unload.chunk_x, unload.chunk_z))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let first = unloaded();
+        assert_eq!(first.len(), 49);
+        assert_eq!(first, unloaded());
     }
 
     #[test]

@@ -89,17 +89,19 @@ fn relay<T: Send + 'static>(game: Sender<T>, counters: &'static Counters) -> Sen
 /// Replaces the tick loop: the server stands still until a pilot asks for a tick.
 pub(crate) struct StepPlugin {
     socket: PathBuf,
+    tick: Duration,
 }
 
 impl StepPlugin {
-    pub(crate) fn new(socket: PathBuf) -> Self {
-        Self { socket }
+    pub(crate) fn new(socket: PathBuf, tick: Duration) -> Self {
+        Self { socket, tick }
     }
 }
 
 impl Plugin for StepPlugin {
     fn build(&self, app: &mut App) {
         server_tick::install(app);
+        app.add_plugins(crate::pace::SteppedPacePlugin::new(self.tick));
         let socket = self.socket.clone();
         app.set_runner(move |app| run(app, &socket, &COUNTERS));
     }
@@ -215,6 +217,10 @@ impl Order {
 }
 
 fn fence(counters: &Counters, received: u64, limit: Duration) -> bool {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the fence of the stepped runner waits on the wall clock, outside the game"
+    )]
     let start = Instant::now();
     while counters.received.load(Ordering::SeqCst) < received {
         if start.elapsed() > limit {
@@ -333,6 +339,10 @@ mod tests {
             sleep(Duration::from_millis(30));
             late.received.store(2, Ordering::SeqCst);
         });
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test waits on the wall clock"
+        )]
         let start = Instant::now();
         assert!(fence(&counters, 2, Duration::from_secs(5)));
         assert!(start.elapsed() >= Duration::from_millis(25));
@@ -353,6 +363,10 @@ mod tests {
     }
 
     fn connect(socket: &Path) -> UnixStream {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the test waits on the wall clock"
+        )]
         let start = Instant::now();
         loop {
             if let Ok(stream) = UnixStream::connect(socket) {
@@ -437,7 +451,7 @@ mod tests {
         let path = socket.clone();
         let runner = std::thread::spawn(move || {
             let mut app = app();
-            app.add_plugins(StepPlugin::new(path));
+            app.add_plugins(StepPlugin::new(path, Duration::from_millis(50)));
             app.run()
         });
         let stream = connect(&socket);
