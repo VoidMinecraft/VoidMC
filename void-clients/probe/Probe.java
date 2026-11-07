@@ -288,7 +288,6 @@ public class Probe {
       case "step" -> reply.putAll(Stepping.step(mc, Double.parseDouble(w[1]), w.length > 2 ? Integer.parseInt(w[2]) : 1));
       case "fence" -> reply.put("in", Stepping.fence(Long.parseLong(w[1])));
       case "sent" -> reply.putAll(Stepping.counters());
-      case "perf" -> reply.putAll(Perf.run(mc, w));
       case "quit" -> mc.execute(mc::stop);
       default -> throw new IllegalArgumentException("unknown verb " + verb);
     }

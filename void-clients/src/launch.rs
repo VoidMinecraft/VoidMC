@@ -10,7 +10,6 @@ use crate::registry::{self, Client, Level, Registry, Settings};
 
 const VERSION: &str = "26.1.2";
 const PROBE: &str = include_str!("../probe/Probe.java");
-const PERF: &str = include_str!("../probe/Perf.java");
 const AGENT: &str = include_str!("../probe/HideAgent.java");
 const CONDITION: &str = include_str!("../probe/Condition.java");
 const NO_RENDER_URL: &str = "https://github.com/headlesshq/headlessmc/releases/download/3.0.0-RC8/headlessmc-lwjgl-3.0.0-RC8-all.jar";
@@ -92,7 +91,7 @@ fn run(command: &mut Command, what: &str) -> Result<(), String> {
 /// Compiled once for each version of the sources, against the game jar itself.
 fn build(classes: &[String]) -> Result<PathBuf, String> {
     let mut hasher = DefaultHasher::new();
-    (PROBE, PERF, AGENT, CONDITION, VERSION).hash(&mut hasher);
+    (PROBE, AGENT, CONDITION, VERSION).hash(&mut hasher);
     let dir = registry::home()
         .join("build")
         .join(format!("{:x}", hasher.finish()));
@@ -102,19 +101,13 @@ fn build(classes: &[String]) -> Result<PathBuf, String> {
     let staging = dir.with_extension(format!("tmp{}", std::process::id()));
     fs::create_dir_all(staging.join("src")).map_err(|e| e.to_string())?;
     fs::write(staging.join("src/Probe.java"), PROBE).map_err(|e| e.to_string())?;
-    fs::write(staging.join("src/Perf.java"), PERF).map_err(|e| e.to_string())?;
     fs::write(staging.join("src/HideAgent.java"), AGENT).map_err(|e| e.to_string())?;
     fs::write(staging.join("src/Condition.java"), CONDITION).map_err(|e| e.to_string())?;
     let bin = java_home().join("bin");
     run(
         Command::new(bin.join("javac"))
             .args(["-nowarn", "-d", "classes", "-cp", &classes.join(":")])
-            .args([
-                "src/Probe.java",
-                "src/Perf.java",
-                "src/HideAgent.java",
-                "src/Condition.java",
-            ])
+            .args(["src/Probe.java", "src/HideAgent.java", "src/Condition.java"])
             .current_dir(&staging),
         "javac",
     )?;

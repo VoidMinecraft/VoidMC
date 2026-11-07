@@ -1,8 +1,7 @@
 use serde_json::Value;
 
-const SOURCES: [&str; 8] = [
+const SOURCES: [&str; 7] = [
     include_str!("../probe/Probe.java"),
-    include_str!("../probe/Perf.java"),
     include_str!("../probe/HideAgent.java"),
     include_str!("../probe/Condition.java"),
     include_str!("bot.rs"),

@@ -11,7 +11,6 @@ mod hangup;
 mod held;
 mod launch;
 mod lifecycle;
-mod perf;
 mod registry;
 mod scenario;
 mod step;
@@ -43,8 +42,6 @@ const USAGE: &str = "voidc: the clients of the agents
                                             compares two pictures by zones, writes the difference
   voidc check <frames> [cut=T] [jump=N] [turn=N] [flash=N] [images=dir]
                                             looks for jumps, half turns and flashes in a recording
-  voidc perf <name> [all|metrics|gpu|jfr|ab clouds|ab particles]
-                                            what a frame costs, on the CPU and on the GPU
   voidc down <name>                         stops a client
   voidc forget <name>                       stops it and deletes its folder
   voidc list                                every client and its state
@@ -236,7 +233,6 @@ fn run() -> Result<(), String> {
         ),
         "compare" => compare::command(rest),
         "check" => check::command(rest),
-        "perf" => perf::command(rest),
         "down" => lifecycle::down(rest.first().ok_or("which client?")?),
         "forget" => lifecycle::forget(rest.first().ok_or("which client?")?),
         "list" => {
