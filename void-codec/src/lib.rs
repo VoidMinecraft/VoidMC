@@ -173,10 +173,16 @@ impl<'a> Decoder<'a> {
                 limit: self.limits.max_decode_depth,
             });
         }
-        self.depth = self.depth.saturating_add(1);
-        let result = T::decode_with(self);
-        self.depth = self.depth.saturating_sub(1);
-        result
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "depth is below max_decode_depth here, and the decrement undoes the increment"
+        )]
+        {
+            self.depth += 1;
+            let result = T::decode_with(self);
+            self.depth -= 1;
+            result
+        }
     }
 
     pub fn decode_exact<T: Decode>(&mut self) -> Result<T, DecodeError> {

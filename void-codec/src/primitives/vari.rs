@@ -26,7 +26,7 @@ impl Encode for VarI32 {
 impl Decode for VarI32 {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let mut value: u32 = 0;
-        for shift in (0..=28).step_by(7) {
+        for shift in [0, 7, 14, 21, 28] {
             let byte = decoder.take_u8()?;
 
             if shift == 28 && byte & 0xf0 != 0 {

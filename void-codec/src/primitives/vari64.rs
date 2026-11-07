@@ -26,7 +26,7 @@ impl Encode for VarI64 {
 impl Decode for VarI64 {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let mut value: u64 = 0;
-        for shift in (0..=63).step_by(7) {
+        for shift in [0, 7, 14, 21, 28, 35, 42, 49, 56, 63] {
             let byte = decoder.take_u8()?;
 
             if shift == 63 && byte & 0xfe != 0 {
