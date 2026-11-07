@@ -410,6 +410,28 @@ fn write(name: &str, report: &str, json: &Value) -> Result<PathBuf, String> {
 
 const USAGE: &str = "voidc perf <name> [all|metrics|gpu|jfr|ab clouds|ab particles] [--seconds N] [--frames N] [--rounds N] [--count N]";
 
+/// What `voidc perf` was asked for, known before anything reaches the client.
+enum Measure<'a> {
+    All,
+    Metrics,
+    Gpu,
+    Jfr,
+    Ab(&'a str),
+}
+
+impl<'a> Measure<'a> {
+    fn parse(words: &[&'a str]) -> Result<Self, String> {
+        match words {
+            [] | ["all", ..] => Ok(Self::All),
+            ["metrics", ..] => Ok(Self::Metrics),
+            ["gpu", ..] => Ok(Self::Gpu),
+            ["jfr", ..] => Ok(Self::Jfr),
+            ["ab", setting, ..] => Ok(Self::Ab(setting)),
+            _ => Err(USAGE.to_string()),
+        }
+    }
+}
+
 /// `voidc perf <name> ...`: runs in turn what was asked and writes one report.
 pub fn command(args: &[String]) -> Result<(), String> {
     let (name, rest) = args.split_first().ok_or(USAGE)?;
@@ -427,7 +449,7 @@ pub fn command(args: &[String]) -> Result<(), String> {
         count: number(rest, "--count", 2000)?,
     };
     let words = positional(rest);
-    let what = words.first().copied().unwrap_or("all");
+    let measure = Measure::parse(&words)?;
     let others = other_clients(name);
     let mut report = String::new();
     let mut json = BTreeMap::new();
@@ -462,12 +484,11 @@ pub fn command(args: &[String]) -> Result<(), String> {
         Ok(())
     };
     let mut socket = Socket::open(name)?;
-    match what {
-        "gpu" => gpu(&mut socket, &mut report, &mut json)?,
-        "metrics" => metrics(&mut socket, &mut report, &mut json)?,
-        "jfr" => jfr(&mut socket, &mut report, &mut json)?,
-        "ab" => {
-            let setting = words.get(1).ok_or(USAGE)?;
+    match measure {
+        Measure::Gpu => gpu(&mut socket, &mut report, &mut json)?,
+        Measure::Metrics => metrics(&mut socket, &mut report, &mut json)?,
+        Measure::Jfr => jfr(&mut socket, &mut report, &mut json)?,
+        Measure::Ab(setting) => {
             let reply = ask(
                 &mut socket,
                 &format!(
@@ -479,16 +500,15 @@ pub fn command(args: &[String]) -> Result<(), String> {
             report.push_str(&text);
             json.insert("ab", value);
         }
-        "all" if client.level == Level::Logic => {
+        Measure::All if client.level == Level::Logic => {
             metrics(&mut socket, &mut report, &mut json)?;
             jfr(&mut socket, &mut report, &mut json)?;
         }
-        "all" => {
+        Measure::All => {
             metrics(&mut socket, &mut report, &mut json)?;
             gpu(&mut socket, &mut report, &mut json)?;
             jfr(&mut socket, &mut report, &mut json)?;
         }
-        _ => return Err(USAGE.to_string()),
     }
     let invalid = json.values().any(|part| part["valid"] == false);
     let dir = write(name, &report, &json!(json))?;
@@ -522,6 +542,16 @@ mod tests {
         let fake = FakeClient::stale(Level::Render);
         let args = [NAME, "gpu"].map(String::from);
         fake.assert_refused(command(&args));
+    }
+
+    #[test]
+    fn a_bad_measure_gets_the_usage_before_the_client_is_opened() {
+        let fake = FakeClient::stale(Level::Render);
+        for wrong in [&[NAME, "bogus"][..], &[NAME, "ab"]] {
+            let args = wrong.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert_eq!(command(&args), Err(USAGE.to_string()));
+        }
+        assert!(fake.heard().is_empty(), "{:?}", fake.heard());
     }
 
     fn profiling_archive(dir: &Path) -> PathBuf {
