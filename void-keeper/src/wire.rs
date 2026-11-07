@@ -178,13 +178,6 @@ pub fn frame(id: i32, write: impl FnOnce(&mut Vec<u8>)) -> Bytes {
     buffer.into()
 }
 
-#[cfg(test)]
-pub(crate) fn tagged(packet: &impl Encode) -> Bytes {
-    let mut buffer = Vec::new();
-    packet.encode(&mut buffer);
-    buffer.into()
-}
-
 /// A plain text component, the way the client reads it from a play packet.
 pub fn text(content: &str) -> Nbt {
     Nbt {

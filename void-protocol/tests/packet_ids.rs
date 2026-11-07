@@ -93,7 +93,6 @@ const SPECS: &[EnumSpec] = &[
         direction: "clientbound",
         names: &[
             ("SpawnEntity", "minecraft:add_entity"),
-            ("ResourcePackPush", "minecraft:resource_pack_push"),
             ("BlockChangedAck", "minecraft:block_changed_ack"),
             ("BlockEntityData", "minecraft:block_entity_data"),
             ("BlockUpdate", "minecraft:block_update"),

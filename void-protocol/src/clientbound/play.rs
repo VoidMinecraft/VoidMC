@@ -176,8 +176,6 @@ pub enum PlayPacket {
     ResetScore(ResetScore),
     #[codec(packet_id = 0x4E)]
     RemoveMobEffect(RemoveMobEffect),
-    #[codec(packet_id = 0x51)]
-    ResourcePackPush(ResourcePackPush),
     #[codec(packet_id = 0x53)]
     SetHeadRotation(SetHeadRotation),
     #[codec(packet_id = 0x58)]

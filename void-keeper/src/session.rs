@@ -808,10 +808,7 @@ fn is_own_keep_alive(mut body: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use voidmc_protocol::clientbound::PlayPacket;
-
     use super::*;
-    use crate::wire::tagged;
 
     fn settings() -> Settings {
         Settings {
@@ -861,13 +858,14 @@ mod tests {
     }
 
     fn push(id: Uuid, hash: &str) -> Bytes {
-        tagged(&PlayPacket::ResourcePackPush(ResourcePackPush {
+        let push = ResourcePackPush {
             id,
             url: "http://x".to_string(),
             hash: hash.to_string(),
             required: false,
             prompt: None,
-        }))
+        };
+        frame(play_cb::RESOURCE_PACK_PUSH, |body| push.encode(body))
     }
 
     fn config_push(id: Uuid) -> Bytes {
