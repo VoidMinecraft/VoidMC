@@ -329,6 +329,12 @@ mod tests {
             mosaic_port_in(&registry, Path::new(&slashed), &default, |_| false).unwrap(),
             registry.dashboard_port
         );
+        let link = scratch("home-link").join("voidc");
+        std::os::unix::fs::symlink(&default, &link).unwrap();
+        assert_eq!(
+            mosaic_port_in(&registry, &link, &default, |_| false).unwrap(),
+            registry.dashboard_port
+        );
         let a = mosaic_port_in(&registry, &first, &default, |_| false).unwrap();
         let b = mosaic_port_in(&registry, &second, &default, |_| false).unwrap();
         let feature = lease_in(&registry, &default, "Hot reload", |_| false).unwrap();
