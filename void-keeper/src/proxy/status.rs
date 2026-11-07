@@ -48,10 +48,10 @@ pub(super) async fn relay_status(mut client: Peer, handshake: Bytes, backend_add
     while let Ok(Ok(Some(request))) = timeout(STATUS_TIMEOUT, client.next()).await {
         match frame::id_and_body(&request) {
             Some((status_sb::STATUS_REQUEST, _)) => {
-                client.queue(&frame::encode(status_cb::STATUS_RESPONSE, status_response));
+                client.queue(&frame::build(status_cb::STATUS_RESPONSE, status_response));
             }
             Some((status_sb::PING_REQUEST, body)) => {
-                client.queue(&frame::encode(status_cb::PONG_RESPONSE, |out| {
+                client.queue(&frame::build(status_cb::PONG_RESPONSE, |out| {
                     out.extend_from_slice(body);
                 }));
             }
@@ -68,13 +68,13 @@ pub async fn probe(address: SocketAddr) -> bool {
     let attempt = async {
         let mut peer = Peer::new(connect(address).await?);
         let port = address.port();
-        peer.queue(&frame::encode(0, |body| {
+        peer.queue(&frame::build(0, |body| {
             VarI32(PROTOCOL_VERSION).encode(body);
             address.ip().to_string().encode(body);
             port.encode(body);
             VarI32(1).encode(body);
         }));
-        peer.queue(&frame::encode(status_sb::STATUS_REQUEST, |_| {}));
+        peer.queue(&frame::build(status_sb::STATUS_REQUEST, |_| {}));
         peer.flush().await.ok()?;
         peer.next().await.ok()?
     };

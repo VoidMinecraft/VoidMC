@@ -13,12 +13,12 @@ use voidmc_data::v26_1_2::packets::play::{clientbound as play_cb, serverbound as
 use voidmc_protocol::clientbound::ResourcePackPush;
 
 use super::{Action, Phase, Reads, Session, Stage, action_bar};
-use crate::frame::{self, Frame};
+use crate::frame::{self, Packet};
 use crate::script::needs_a_client;
 
 impl Session {
     pub fn on_backend(&mut self, frame: Bytes, now: Instant) {
-        let Some(packet) = Frame::read(frame) else {
+        let Some(packet) = Packet::read(frame) else {
             tracing::warn!("backend frame without an id");
             return;
         };
@@ -32,7 +32,7 @@ impl Session {
         }
     }
 
-    pub(super) fn relay_from_backend(&mut self, packet: Frame) {
+    pub(super) fn relay_from_backend(&mut self, packet: Packet) {
         let (id, body) = (packet.id(), packet.body());
         let sent_away = is_sent_away(self.client_reads(), id);
         match self.phase {
@@ -113,7 +113,7 @@ impl Session {
             return false;
         };
         for status in statuses {
-            self.send_to_backend(frame::encode(response_id, |body| {
+            self.send_to_backend(frame::build(response_id, |body| {
                 push.id.encode(body);
                 VarI32(status).encode(body);
             }));
@@ -121,7 +121,7 @@ impl Session {
         true
     }
 
-    fn log_in(&mut self, packet: &Frame, now: Instant) {
+    fn log_in(&mut self, packet: &Packet, now: Instant) {
         let mut body = packet.body();
         match packet.id() {
             login_cb::LOGIN_COMPRESSION => {
@@ -136,7 +136,7 @@ impl Session {
             }
             login_cb::CUSTOM_QUERY => {
                 if let Ok(transaction) = VarI32::decode(&mut body) {
-                    self.send_to_backend(frame::encode(login_sb::CUSTOM_QUERY_ANSWER, |answer| {
+                    self.send_to_backend(frame::build(login_sb::CUSTOM_QUERY_ANSWER, |answer| {
                         transaction.encode(answer);
                         false.encode(answer);
                     }));
@@ -144,7 +144,7 @@ impl Session {
             }
             login_cb::COOKIE_REQUEST => {
                 if let Ok(key) = String::decode(&mut body) {
-                    self.send_to_backend(frame::encode(login_sb::COOKIE_RESPONSE, |answer| {
+                    self.send_to_backend(frame::build(login_sb::COOKIE_RESPONSE, |answer| {
                         key.encode(answer);
                         false.encode(answer);
                     }));
@@ -157,7 +157,7 @@ impl Session {
 
     fn start_configuration(&mut self) {
         tracing::info!("client goes through a reconfiguration");
-        self.send_to_client(frame::encode(play_cb::START_CONFIGURATION, |_| {}));
+        self.send_to_client(frame::build(play_cb::START_CONFIGURATION, |_| {}));
         self.phase = Phase::LeavingPlay;
     }
 
@@ -167,10 +167,10 @@ impl Session {
         if self.phase == Phase::Play {
             self.start_configuration();
         }
-        self.send_to_backend(frame::encode(login_sb::LOGIN_ACKNOWLEDGED, |_| {}));
+        self.send_to_backend(frame::build(login_sb::LOGIN_ACKNOWLEDGED, |_| {}));
         if let Some(information) = &self.client_information {
             let information = information.clone();
-            self.send_to_backend(frame::encode(config_sb::CLIENT_INFORMATION, |body| {
+            self.send_to_backend(frame::build(config_sb::CLIENT_INFORMATION, |body| {
                 body.extend_from_slice(&information);
             }));
         }
@@ -193,7 +193,7 @@ impl Session {
 
     /// Keeps from the client what it holds already: it would add it up, and fail on the double
     /// when the configuration ends.
-    fn replay(&mut self, packet: Frame, now: Instant) {
+    fn replay(&mut self, packet: Packet, now: Instant) {
         if self.answer_for_client(&packet, now) {
             return;
         }
@@ -253,17 +253,17 @@ impl Session {
 
     /// Answers what a backend asks during a configuration no client is listening to.
     /// `true` when that took care of `frame`.
-    fn answer_for_client(&mut self, packet: &Frame, now: Instant) -> bool {
+    fn answer_for_client(&mut self, packet: &Packet, now: Instant) -> bool {
         let body = packet.body();
         match packet.id() {
             config_cb::KEEP_ALIVE => {
-                self.send_to_backend(frame::encode(config_sb::KEEP_ALIVE, |out| {
+                self.send_to_backend(frame::build(config_sb::KEEP_ALIVE, |out| {
                     out.extend_from_slice(body);
                 }));
                 true
             }
             config_cb::PING => {
-                self.send_to_backend(frame::encode(config_sb::PONG, |out| {
+                self.send_to_backend(frame::build(config_sb::PONG, |out| {
                     out.extend_from_slice(body)
                 }));
                 true
@@ -277,7 +277,7 @@ impl Session {
         }
     }
 
-    fn hold_for_client(&mut self, packet: Frame, now: Instant) {
+    fn hold_for_client(&mut self, packet: Packet, now: Instant) {
         if self.answer_for_client(&packet, now) {
             return;
         }

@@ -22,40 +22,40 @@ fn settings() -> Settings {
 }
 
 fn login_finished() -> Bytes {
-    frame::encode(login_cb::LOGIN_FINISHED, |body| {
+    frame::build(login_cb::LOGIN_FINISHED, |body| {
         Uuid::from_u128(77).encode(body);
     })
 }
 
 fn login() -> Bytes {
-    frame::encode(play_cb::LOGIN, |body| body.push(7))
+    frame::build(play_cb::LOGIN, |body| body.push(7))
 }
 
 fn empty(id: i32) -> Bytes {
-    frame::encode(id, |_| {})
+    frame::build(id, |_| {})
 }
 
 fn hello() -> Bytes {
-    frame::encode(login_sb::HELLO, |body| {
+    frame::build(login_sb::HELLO, |body| {
         "Bot".to_string().encode(body);
         Uuid::from_u128(1).encode(body);
     })
 }
 
 fn known_packs_question() -> Bytes {
-    frame::encode(config_cb::SELECT_KNOWN_PACKS, |body| body.push(0))
+    frame::build(config_cb::SELECT_KNOWN_PACKS, |body| body.push(0))
 }
 
 fn known_packs_reply() -> Bytes {
-    frame::encode(config_sb::SELECT_KNOWN_PACKS, |body| body.push(0))
+    frame::build(config_sb::SELECT_KNOWN_PACKS, |body| body.push(0))
 }
 
 fn registry(tag: u8) -> Bytes {
-    frame::encode(config_cb::REGISTRY_DATA, |body| body.push(tag))
+    frame::build(config_cb::REGISTRY_DATA, |body| body.push(tag))
 }
 
 fn information() -> Bytes {
-    frame::encode(config_sb::CLIENT_INFORMATION, |body| body.push(42))
+    frame::build(config_sb::CLIENT_INFORMATION, |body| body.push(42))
 }
 
 fn push(id: Uuid, hash: &str) -> Bytes {
@@ -66,19 +66,19 @@ fn push(id: Uuid, hash: &str) -> Bytes {
         required: false,
         prompt: None,
     };
-    frame::encode(play_cb::RESOURCE_PACK_PUSH, |body| push.encode(body))
+    frame::build(play_cb::RESOURCE_PACK_PUSH, |body| push.encode(body))
 }
 
 fn config_push(id: Uuid) -> Bytes {
     let pushed = push(id, "abc");
     let (_, body) = frame::id_and_body(&pushed).unwrap();
-    frame::encode(config_cb::RESOURCE_PACK_PUSH, |out| {
+    frame::build(config_cb::RESOURCE_PACK_PUSH, |out| {
         out.extend_from_slice(body);
     })
 }
 
 fn pack_status(packet: i32, id: Uuid, status: i32) -> Bytes {
-    frame::encode(packet, |body| {
+    frame::build(packet, |body| {
         id.encode(body);
         VarI32(status).encode(body);
     })

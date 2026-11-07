@@ -123,22 +123,22 @@ pub fn id_and_body(frame: &[u8]) -> Option<(i32, &[u8])> {
 }
 
 /// A frame whose body is written by hand, for the packets `voidmc-protocol` has no type for.
-pub fn encode(id: i32, write: impl FnOnce(&mut Vec<u8>)) -> Bytes {
+pub fn build(id: i32, write: impl FnOnce(&mut Vec<u8>)) -> Bytes {
     let mut buffer = Vec::new();
     VarI32(id).encode(&mut buffer);
     write(&mut buffer);
     buffer.into()
 }
 
-/// A frame whose packet id was read once.
+/// A packet read from a frame once: its id, then its body.
 #[derive(Debug, Clone)]
-pub(crate) struct Frame {
+pub(crate) struct Packet {
     bytes: Bytes,
     id: i32,
     body_at: usize,
 }
 
-impl Frame {
+impl Packet {
     pub(crate) fn read(bytes: Bytes) -> Option<Self> {
         let (id, body) = id_and_body(&bytes)?;
         let body_at = bytes.len() - body.len();

@@ -133,7 +133,7 @@ impl<S> Relay<S> {
         self.absorb();
     }
 
-    /// Handles a frame and every other frame already read, then leaves the rest to `settle`.
+    /// Handles a frame and every other frame already read, then leaves the rest to `write_out`.
     /// The frames of one read arrived at once, so they share one reading of the clock.
     fn handle_backend_frames(&mut self, first: Bytes) {
         let now = Instant::now();
@@ -168,11 +168,6 @@ impl<S> Relay<S> {
     }
 }
 
-struct Keeper {
-    relay: Relay<TcpStream>,
-    backend_address: SocketAddr,
-}
-
 impl Relay<TcpStream> {
     /// Writes what is queued for the backend. `false` when that lost it.
     async fn flush_backend(&mut self) -> bool {
@@ -189,10 +184,15 @@ impl Relay<TcpStream> {
     }
 }
 
+struct Keeper {
+    relay: Relay<TcpStream>,
+    backend_address: SocketAddr,
+}
+
 impl Keeper {
     /// Writes what is queued and opens a backend if one is wanted. `false` once the client
     /// is gone, or was sent away.
-    async fn settle(&mut self) -> bool {
+    async fn write_out(&mut self) -> bool {
         let relay = &mut self.relay;
         if relay.client.flush().await.is_err() || relay.closing {
             return false;
@@ -218,7 +218,7 @@ impl Keeper {
         let mut tick = interval(TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
-            if !self.settle().await {
+            if !self.write_out().await {
                 break;
             }
             let relay = &mut self.relay;
@@ -253,7 +253,7 @@ impl Keeper {
 }
 
 async fn refuse_login(mut client: Peer, message: &str) {
-    client.queue(&frame::encode(login_cb::LOGIN_DISCONNECT, |body| {
+    client.queue(&frame::build(login_cb::LOGIN_DISCONNECT, |body| {
         let json = json!({ "text": format!("[keeper] {message}") });
         json.to_string().encode(body);
     }));

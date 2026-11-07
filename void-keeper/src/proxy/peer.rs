@@ -133,7 +133,7 @@ impl<S: TryWrite> Peer<S> {
                     let Some(wait) = Wait::after(&error) else {
                         return Err(error);
                     };
-                    self.wait(wait, limit).await?;
+                    self.wait_out(wait, limit).await?;
                     waited = true;
                 }
             }
@@ -147,7 +147,7 @@ impl<S: TryWrite> Peer<S> {
         Ok(())
     }
 
-    async fn wait(&mut self, wait: Wait, limit: Duration) -> io::Result<()> {
+    async fn wait_out(&mut self, wait: Wait, limit: Duration) -> io::Result<()> {
         let started = Instant::now();
         let stream = &self.stream;
         let ready = timeout(limit.saturating_sub(self.stalled_for), async {

@@ -22,7 +22,7 @@ use voidmc_data::v26_1_2::packets::login::clientbound as login_cb;
 use voidmc_data::v26_1_2::packets::play::clientbound as play_cb;
 use voidmc_protocol::clientbound::{Disconnect, KeepAlive};
 
-use crate::frame::{self, Frame, MAX_PLAIN_FRAME_BYTES, text};
+use crate::frame::{self, MAX_PLAIN_FRAME_BYTES, Packet, text};
 use crate::packs::PackBook;
 use crate::script::Script;
 
@@ -112,7 +112,7 @@ enum Stage {
         question_open: bool,
     },
     Reconfiguring {
-        held: Vec<Frame>,
+        held: Vec<Packet>,
     },
 }
 
@@ -320,7 +320,7 @@ impl Session {
         };
         match self.phase {
             Phase::Play => {
-                self.send_to_client(frame::encode(play_cb::KEEP_ALIVE, |body| {
+                self.send_to_client(frame::build(play_cb::KEEP_ALIVE, |body| {
                     keep_alive.encode(body)
                 }));
                 let away = self
@@ -331,7 +331,7 @@ impl Session {
                 self.away_shown = true;
             }
             Phase::Configuration => {
-                self.send_to_client(frame::encode(config_cb::KEEP_ALIVE, |body| {
+                self.send_to_client(frame::build(config_cb::KEEP_ALIVE, |body| {
                     keep_alive.encode(body)
                 }));
             }
@@ -351,16 +351,16 @@ impl Session {
             reason: text(&message),
         };
         let goodbye = match self.client_reads() {
-            Reads::Login => frame::encode(login_cb::LOGIN_DISCONNECT, |body| {
+            Reads::Login => frame::build(login_cb::LOGIN_DISCONNECT, |body| {
                 let json = serde_json::json!({ "text": message });
                 json.to_string().encode(body);
             }),
             Reads::Configuration => {
-                frame::encode(config_cb::DISCONNECT, |body| disconnect.encode(body))
+                frame::build(config_cb::DISCONNECT, |body| disconnect.encode(body))
             }
             Reads::Play => {
                 self.close_bundle();
-                frame::encode(play_cb::DISCONNECT, |body| disconnect.encode(body))
+                frame::build(play_cb::DISCONNECT, |body| disconnect.encode(body))
             }
         };
         self.send_to_client(goodbye);
@@ -375,7 +375,7 @@ impl Session {
         }
         self.settle_at = None;
         for pack in self.packs.take_forsaken() {
-            self.send_to_client(frame::encode(play_cb::RESOURCE_PACK_POP, |body| {
+            self.send_to_client(frame::build(play_cb::RESOURCE_PACK_POP, |body| {
                 Some(pack).encode(body);
             }));
         }
@@ -383,13 +383,13 @@ impl Session {
 
     fn close_bundle(&mut self) {
         if std::mem::take(&mut self.bundle_open) {
-            self.send_to_client(frame::encode(play_cb::BUNDLE_DELIMITER, |_| {}));
+            self.send_to_client(frame::build(play_cb::BUNDLE_DELIMITER, |_| {}));
         }
     }
 }
 
 fn action_bar(message: &str) -> Bytes {
-    frame::encode(play_cb::SET_ACTION_BAR_TEXT, |body| {
+    frame::build(play_cb::SET_ACTION_BAR_TEXT, |body| {
         text(message).encode(body)
     })
 }

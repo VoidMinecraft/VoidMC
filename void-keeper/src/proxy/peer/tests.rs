@@ -154,29 +154,30 @@ impl TryWrite for Starved {
     }
 
     async fn writable(&self) -> io::Result<()> {
+        tokio::task::yield_now().await;
         Ok(())
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_kernel_out_of_buffers_is_waited_for_not_a_lost_peer() {
     let mut peer = Peer::new(Starved::refusing(3));
     peer.outbound = vec![7; 100];
+    let started = Instant::now();
     peer.flush_within(Duration::from_secs(5)).await.unwrap();
     assert_eq!(peer.stream.taken.get(), 100);
     assert!(peer.outbound.is_empty());
-    assert!(!peer.stalled_for.is_zero());
+    assert_eq!(peer.stalled_for, NO_BUFFER_PAUSE * 3);
+    assert_eq!(started.elapsed(), NO_BUFFER_PAUSE * 3);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_kernel_out_of_buffers_for_too_long_counts_as_a_stuck_peer() {
-    let mut peer = Peer::new(Starved::refusing(u32::MAX));
+    let mut peer = Peer::new(Starved::refusing(1000));
     peer.outbound = vec![7; 100];
-    let limit = Duration::from_millis(50);
-    let error = timeout(Duration::from_secs(5), peer.flush_within(limit))
-        .await
-        .expect("the flush never gave up")
-        .unwrap_err();
+    let limit = NO_BUFFER_PAUSE * 50;
+    let error = peer.flush_within(limit).await.unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(peer.stalled_for >= limit);
+    assert_eq!(peer.stalled_for, limit);
+    assert_eq!(peer.stream.taken.get(), 0);
 }

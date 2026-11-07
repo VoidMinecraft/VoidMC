@@ -18,7 +18,7 @@ const READ_CHUNK: usize = 64 * 1024;
 const PAPER_THRESHOLD: i32 = 256;
 
 fn empty(id: i32) -> Bytes {
-    frame::encode(id, |_| {})
+    frame::build(id, |_| {})
 }
 
 fn wire(codec: FrameCodec, frames: &[Bytes]) -> Vec<u8> {
@@ -36,19 +36,19 @@ fn in_play(threshold: Option<i32>) -> (Relay<()>, FrameCodec) {
     relay.backend_connected(());
     let plain = FrameCodec::default();
     let mut backend = FrameCodec::default();
-    let hello = frame::encode(login_sb::HELLO, |body| {
+    let hello = frame::build(login_sb::HELLO, |body| {
         "Bot".to_string().encode(body);
         Uuid::from_u128(1).encode(body);
     });
     relay.received_from_client(&wire(plain, &[hello])).unwrap();
     if let Some(threshold) = threshold {
-        let compression = frame::encode(login_cb::LOGIN_COMPRESSION, |body| {
+        let compression = frame::build(login_cb::LOGIN_COMPRESSION, |body| {
             VarI32(threshold).encode(body)
         });
         relay.received_from_backend(&wire(plain, &[compression]));
         backend.set_threshold(threshold);
     }
-    let finished = frame::encode(login_cb::LOGIN_FINISHED, |body| {
+    let finished = frame::build(login_cb::LOGIN_FINISHED, |body| {
         Uuid::from_u128(1).encode(body)
     });
     relay.received_from_backend(&wire(backend, &[finished]));
@@ -65,11 +65,11 @@ fn in_play(threshold: Option<i32>) -> (Relay<()>, FrameCodec) {
 
 /// Nine small movements for one chunk of 10 KB, as a server streams play.
 fn play_frames() -> Vec<Bytes> {
-    let small = frame::encode(play_cb::MOVE_ENTITY_POS, |body| {
+    let small = frame::build(play_cb::MOVE_ENTITY_POS, |body| {
         VarI32(42).encode(body);
         body.extend_from_slice(&[0; 7]);
     });
-    let chunk = frame::encode(play_cb::LEVEL_CHUNK_WITH_LIGHT, |body| {
+    let chunk = frame::build(play_cb::LEVEL_CHUNK_WITH_LIGHT, |body| {
         3i32.encode(body);
         4i32.encode(body);
         body.extend((0..10_000u32).map(|i| (i * 31 % 251 % 16) as u8));
