@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::control::{self, Ask, Chore, Limits, Probe};
-use crate::lifecycle;
 use crate::registry::{self, Client, Level, Registry};
+use crate::{args, lifecycle};
 
 const TICK_MS: f64 = 50.0;
 const TICKS_PER_SECOND: u64 = 20;
@@ -108,16 +108,9 @@ struct Plan {
     stop_server: bool,
 }
 
-fn value<T: std::str::FromStr>(args: &[String], name: &str, default: T) -> Result<T, String> {
-    match crate::flag(args, name) {
-        Some(text) => text.parse().map_err(|_| format!("bad {name}")),
-        None => Ok(default),
-    }
-}
-
 impl Plan {
     fn parse(args: &[String], level: Level) -> Result<Self, String> {
-        let at = crate::flag(args, "--at")
+        let at = args::flag(args, "--at")
             .map(|list| {
                 list.split(',')
                     .map(|index| index.parse().map_err(|_| "bad --at".to_string()))
@@ -125,8 +118,8 @@ impl Plan {
             })
             .transpose()?
             .unwrap_or_default();
-        let every = value(args, "--every", if at.is_empty() { 1 } else { 0 })?;
-        let hold = crate::flag(args, "--hold")
+        let every = args::value(args, "--every", if at.is_empty() { 1 } else { 0 })?;
+        let hold = args::flag(args, "--hold")
             .map(|text| {
                 let (tick, seconds) = text.split_once(':').ok_or("--hold is tick:seconds")?;
                 Ok::<_, String>((
@@ -136,25 +129,21 @@ impl Plan {
             })
             .transpose()?;
         let plan = Self {
-            server: crate::flag(args, "--server")
+            server: args::flag(args, "--server")
                 .ok_or("--server: the step socket of the server")?
                 .into(),
-            out: crate::flag(args, "--out")
+            out: args::flag(args, "--out")
                 .ok_or("--out: where to write")?
                 .into(),
-            ticks: value(args, "--ticks", 120)?,
-            frames: value(args, "--frames", 4)?,
-            lock_at: value(args, "--lock-at", 600)?,
-            min_chunks: value(args, "--min-chunks", MIN_CHUNKS)?,
-            acts: args
-                .windows(2)
-                .filter(|pair| pair[0] == "--act")
-                .map(|pair| pair[1].clone())
-                .collect(),
+            ticks: args::value(args, "--ticks", 120)?,
+            frames: args::value(args, "--frames", 4)?,
+            lock_at: args::value(args, "--lock-at", 600)?,
+            min_chunks: args::value(args, "--min-chunks", MIN_CHUNKS)?,
+            acts: args::all(args, "--act"),
             every,
             at,
             hold,
-            stop_server: args.iter().any(|arg| arg == "--stop-server"),
+            stop_server: args::has(args, "--stop-server"),
         };
         if plan.frames == 0 {
             return Err("--frames is at least 1".into());

@@ -1,3 +1,4 @@
+mod args;
 mod bot;
 mod check;
 mod compare;
@@ -49,13 +50,6 @@ const USAGE: &str = "voidc: the clients of the agents
 
 const JOIN_LIMIT: Duration = Duration::from_secs(90);
 
-fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter()
-        .position(|arg| arg == name)
-        .and_then(|at| args.get(at + 1))
-        .cloned()
-}
-
 fn parse_size(text: &str) -> Result<(u32, u32), String> {
     let (width, height) = text.split_once('x').ok_or("--size is WxH")?;
     Ok((
@@ -95,7 +89,7 @@ fn wait_in_game(name: &str) -> Result<(), String> {
 fn client_of(args: &[String], level: Level) -> Result<Client, String> {
     let feature = args.first().ok_or("which feature?")?.clone();
     let name = registry::slug(&feature)?;
-    let port = match flag(args, "--port") {
+    let port = match args::flag(args, "--port") {
         Some(port) => port.parse().map_err(|_| "bad port")?,
         None => registry::lease_of(&feature)?
             .ok_or("no port: pass --port, or take one with voidc port")?,
@@ -106,14 +100,14 @@ fn client_of(args: &[String], level: Level) -> Result<Client, String> {
         port,
         level,
         pid: 0,
-        fps: flag(args, "--fps")
+        fps: args::flag(args, "--fps")
             .map(|fps| fps.parse().map_err(|_| "bad fps"))
             .transpose()?,
-        size: flag(args, "--size")
+        size: args::flag(args, "--size")
             .as_deref()
             .map(parse_size)
             .transpose()?,
-        jfr: args.iter().any(|arg| arg == "--jfr"),
+        jfr: args::has(args, "--jfr"),
     })
 }
 
@@ -205,7 +199,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         "up" => {
-            let level = flag(rest, "--level")
+            let level = args::flag(rest, "--level")
                 .as_deref()
                 .map_or(Ok(Level::Render), Level::parse)?;
             if level == Level::Play {
@@ -216,7 +210,7 @@ fn run() -> Result<(), String> {
         "play" => up(&registry, rest, Level::Play),
         "cmd" => cmd(rest),
         "step" => {
-            let level = flag(rest, "--level")
+            let level = args::flag(rest, "--level")
                 .as_deref()
                 .map_or(Ok(Level::Render), Level::parse)?;
             step::run(&registry, client_of(rest, level)?, rest)

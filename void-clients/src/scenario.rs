@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::condition::{self, Condition, DEFAULT_WAIT_MS};
 use crate::control::{self, Ask, Chore, Failure, Limits, Probe};
 use crate::registry::{self, Level};
-use crate::{check, compare, lifecycle, version};
+use crate::{args, check, compare, lifecycle, version};
 
 const ALL: &[Level] = &[Level::Bot, Level::Logic, Level::Render];
 const GAME: &[Level] = &[Level::Logic, Level::Render];
@@ -900,13 +900,6 @@ impl Report {
     }
 }
 
-fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter()
-        .position(|arg| arg == name)
-        .and_then(|at| args.get(at + 1))
-        .cloned()
-}
-
 fn default_out(client: &str, path: &Path) -> PathBuf {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let seconds = SystemTime::now()
@@ -960,11 +953,11 @@ struct Target {
 }
 
 fn target(args: &[String], scenario: &Scenario, host: &impl Host) -> Result<Target, String> {
-    let wanted = match flag(args, "--level") {
+    let wanted = match args::flag(args, "--level") {
         Some(level) => Some(Level::parse(&level)?),
         None => scenario.level,
     };
-    if let Some(name) = flag(args, "--on") {
+    if let Some(name) = args::flag(args, "--on") {
         let (level, running) = host
             .find(&name)
             .ok_or_else(|| format!("unknown client {name}"))?;
@@ -987,8 +980,8 @@ fn target(args: &[String], scenario: &Scenario, host: &impl Host) -> Result<Targ
             feature: None,
         });
     }
-    let feature =
-        flag(args, "--feature").ok_or("which client? --on <name> or --feature \"Feature\"")?;
+    let feature = args::flag(args, "--feature")
+        .ok_or("which client? --on <name> or --feature \"Feature\"")?;
     let level = wanted.unwrap_or(Level::Render);
     if level == Level::Play {
         return Err("a client to play takes no scenario".into());
@@ -1028,23 +1021,24 @@ pub fn command(args: &[String], host: &mut impl Host) -> Result<(), String> {
     };
     scenario.validate(chosen.level, &base)?;
     if let Some(feature) = &chosen.feature
-        && let Err(error) = host.up(feature, chosen.level, flag(args, "--port"))
+        && let Err(error) = host.up(feature, chosen.level, args::flag(args, "--port"))
     {
         return Err(with_stop(error, host.down(&chosen.name)));
     }
-    let out = flag(args, "--out").map_or_else(|| default_out(&chosen.name, &path), PathBuf::from);
+    let out =
+        args::flag(args, "--out").map_or_else(|| default_out(&chosen.name, &path), PathBuf::from);
     let run = Run::new(
         &chosen.name,
         chosen.level,
         base,
         out.clone(),
-        args.iter().any(|arg| arg == "--keep-going"),
+        args::has(args, "--keep-going"),
     );
     let played = host
         .driver(&chosen.name)
         .and_then(|mut driver| run.play(&scenario, &mut driver))
         .and_then(|report| report.write(&out).map(|()| report));
-    let stopped = if chosen.feature.is_some() && !args.iter().any(|arg| arg == "--keep-up") {
+    let stopped = if chosen.feature.is_some() && !args::has(args, "--keep-up") {
         host.down(&chosen.name)
     } else {
         Ok(())

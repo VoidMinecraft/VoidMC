@@ -1,6 +1,8 @@
 //! Reads a packet trace written by `void` with its `packet-trace` feature.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use crate::args::Arguments;
 use std::fs;
 
 use serde::{Deserialize, Serialize};
@@ -36,51 +38,6 @@ pub struct Line {
 const VALUE_FLAGS: [&str; 8] = [
     "--client", "--player", "--packet", "--system", "--dir", "--from", "--to", "--align",
 ];
-
-/// What a command line holds, refused as a whole if any of it is not understood.
-#[derive(Debug, Default)]
-struct Arguments {
-    files: Vec<String>,
-    values: HashMap<String, String>,
-    switches: BTreeSet<String>,
-}
-
-impl Arguments {
-    fn parse(args: &[String], switches: &[&str]) -> Result<Self, String> {
-        let mut parsed = Self::default();
-        let mut args = args.iter();
-        while let Some(arg) = args.next() {
-            if VALUE_FLAGS.contains(&arg.as_str()) {
-                let value = args
-                    .next()
-                    .filter(|value| !value.starts_with("--"))
-                    .ok_or_else(|| format!("{arg} takes a value"))?;
-                parsed.values.insert(arg.clone(), value.clone());
-            } else if switches.contains(&arg.as_str()) {
-                parsed.switches.insert(arg.clone());
-            } else if arg.starts_with("--") {
-                return Err(format!("unknown option {arg}\n{USAGE}"));
-            } else {
-                parsed.files.push(arg.clone());
-            }
-        }
-        Ok(parsed)
-    }
-
-    fn value(&self, name: &str) -> Option<String> {
-        self.values.get(name).cloned()
-    }
-
-    fn number<T: std::str::FromStr>(&self, name: &str) -> Result<Option<T>, String> {
-        self.value(name)
-            .map(|value| value.parse().map_err(|_| format!("{name} takes a number")))
-            .transpose()
-    }
-
-    fn has(&self, name: &str) -> bool {
-        self.switches.contains(name)
-    }
-}
 
 #[derive(Debug, Default)]
 struct Filter {
@@ -475,7 +432,7 @@ fn pretty(value: &Value) -> Result<String, String> {
 }
 
 fn diff(args: &[String]) -> Result<(), String> {
-    let args = Arguments::parse(args, &["--json"])?;
+    let args = Arguments::parse(args, &VALUE_FLAGS, &["--json"], USAGE)?;
     let [a, b] = args.files.as_slice() else {
         return Err(USAGE.to_string());
     };
@@ -500,7 +457,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some("--help") | None => return Err(USAGE.to_string()),
         _ => {}
     }
-    let args = Arguments::parse(args, &["--json", "--lines"])?;
+    let args = Arguments::parse(args, &VALUE_FLAGS, &["--json", "--lines"], USAGE)?;
     let [file] = args.files.as_slice() else {
         return Err(USAGE.to_string());
     };
@@ -547,7 +504,12 @@ mod tests {
     }
 
     fn filter_of(text: &str) -> Result<Filter, String> {
-        Filter::parse(&Arguments::parse(&args(text), &["--json", "--lines"])?)
+        Filter::parse(&Arguments::parse(
+            &args(text),
+            &VALUE_FLAGS,
+            &["--json", "--lines"],
+            USAGE,
+        )?)
     }
 
     #[test]
