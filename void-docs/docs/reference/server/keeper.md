@@ -99,7 +99,8 @@ proxy writes what is queued, for at most 2 seconds, before it exits.
   packets until it ends.
 - A frame cut by the crash never reaches the client.
 - A server silent for `--backend-silence` counts as lost, in play and during a return,
-  and is tried again. A write stuck for 15 seconds does the same. The default stays
+  even once the client acknowledged `start_configuration`, and is tried again. A client
+  still downloading a pack holds the server back, so that wait does not count. A write stuck for 15 seconds does the same. The default stays
   below the 30 seconds after which a client hangs up, and above the 10 seconds between
   two keep-alives of the engine, which it counts in ticks: 200 of them, 10 seconds at 20 TPS,
   more on a server that lags. A value under 15 or over 25 seconds is refused. A server paused

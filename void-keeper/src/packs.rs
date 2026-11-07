@@ -62,6 +62,11 @@ impl PackBook {
         }
     }
 
+    /// Whether the client is still downloading or applying a pack it was offered.
+    pub fn awaits_client(&self) -> bool {
+        self.packs.values().any(|pack| !pack.settled)
+    }
+
     pub fn outage(&mut self) {
         for pack in self.packs.values_mut() {
             pack.offered_since_outage = false;
@@ -131,6 +136,17 @@ mod tests {
         book.offer(id(), "");
         book.answered(id(), LOADED);
         assert_eq!(book.offer(id(), ""), None);
+    }
+
+    #[test]
+    fn a_pack_is_awaited_until_the_client_settles_it() {
+        let mut book = PackBook::default();
+        assert!(!book.awaits_client());
+        book.offer(id(), "abc");
+        book.answered(id(), ACCEPTED);
+        assert!(book.awaits_client());
+        book.answered(id(), LOADED);
+        assert!(!book.awaits_client());
     }
 
     #[test]

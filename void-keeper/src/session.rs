@@ -228,7 +228,13 @@ impl Session {
     fn backend_is_silent(&self, now: Instant) -> bool {
         let watched = match self.stage {
             Stage::Waiting { .. } => false,
-            Stage::Relaying => matches!(self.phase, Phase::Play | Phase::LeavingPlay),
+            Stage::Relaying => match self.phase {
+                Phase::Play | Phase::LeavingPlay => true,
+                Phase::Configuration | Phase::LeavingConfiguration => {
+                    self.lost_at.is_some() && !self.packs.awaits_client()
+                }
+                Phase::Login | Phase::Joining | Phase::AwaitingAck => false,
+            },
             _ => true,
         };
         watched && now.duration_since(self.backend_heard_at) >= self.settings.backend_silence
@@ -1568,6 +1574,41 @@ mod tests {
         rig.clear();
         rig.tick(settings().backend_silence);
         assert!(rig.rest.is_empty());
+    }
+
+    #[test]
+    fn a_server_that_freezes_once_the_client_acknowledged_is_tried_again() {
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        rig.receive_from_backend(known_packs_question());
+        rig.clear();
+        rig.tick(settings().backend_silence - Duration::from_secs(1));
+        assert!(!rig.rest.contains(&Action::DropBackend));
+        rig.tick(Duration::from_secs(1));
+        assert!(rig.rest.contains(&Action::DropBackend));
+        assert!(rig.events().is_empty());
+        rig.tick(settings().retry_every);
+        assert!(rig.rest.contains(&Action::Connect));
+        assert_eq!(rig.sent_to_client(config_cb::KEEP_ALIVE), 1);
+    }
+
+    #[test]
+    fn a_client_downloading_a_pack_during_a_return_does_not_make_a_server_silent() {
+        let pack = Uuid::from_u128(9);
+        let mut rig = Rig::in_play();
+        rig.lose_backend();
+        rig.log_back_in();
+        rig.receive_from_client(empty(play_sb::CONFIGURATION_ACKNOWLEDGED));
+        rig.receive_from_backend(config_push(pack));
+        rig.receive_from_client(config_pack_answer(pack, 3));
+        rig.clear();
+        rig.tick(settings().backend_silence);
+        assert!(rig.rest.is_empty());
+        rig.receive_from_client(config_pack_answer(pack, 0));
+        rig.tick(Duration::ZERO);
+        assert!(rig.rest.contains(&Action::DropBackend));
     }
 
     #[test]
