@@ -52,6 +52,7 @@ mod tests {
     use super::*;
 
     const SILENCE: Duration = Duration::from_millis(50);
+    const PATIENCE: Duration = Duration::from_secs(10);
 
     fn ended(reader: &mut impl Read) -> bool {
         matches!(reader.read(&mut [0; 1]), Ok(0))
@@ -66,6 +67,7 @@ mod tests {
         drop(ours);
         assert!(!ended(&mut theirs));
         hang_up(second);
+        theirs.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(ended(&mut theirs));
         drop(child);
     }
@@ -81,6 +83,7 @@ mod tests {
         drop(ours);
         assert!(!ended(&mut theirs));
         hang_up(second);
+        theirs.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(ended(&mut theirs));
         drop(child);
     }

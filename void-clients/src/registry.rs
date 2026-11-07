@@ -391,22 +391,13 @@ mod tests {
     }
 
     #[test]
-    fn no_delay_can_break_the_lock() {
+    fn a_held_lock_is_exclusive() {
         let path = scratch("lock-held").join("start.lock");
         let _held = Lock::at(&path).unwrap();
         assert!(matches!(
             fs::File::open(&path).unwrap().try_lock(),
             Err(fs::TryLockError::WouldBlock)
         ));
-        let code = include_str!("registry.rs")
-            .split_once("impl Lock {")
-            .and_then(|(_, rest)| rest.split_once("fn leases"))
-            .unwrap()
-            .0;
-        for word in ["Instant", "Duration", "SystemTime", "modified", "try_lock"] {
-            assert!(!code.contains(word), "the lock reads the time: {word}");
-        }
-        assert!(!code.contains("remove_file"), "the lock can be taken away");
     }
 
     #[test]

@@ -90,7 +90,7 @@ pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     let mut child = launch::spawn(command, &registry::client_dir(&client.name))?;
     client.pid = child.id();
     registry::save(&client).map_err(|error| {
-        stop(&mut child, STOP_PATIENCE);
+        stop(&mut child);
         format!(
             "{} could not be recorded, so it is stopped: {error}",
             client.name
@@ -98,7 +98,11 @@ pub fn start(registry: &Registry, mut client: Client) -> Result<(), String> {
     })
 }
 
-fn stop(child: &mut Child, patience: Duration) {
+fn stop(child: &mut Child) {
+    stop_within(child, STOP_PATIENCE);
+}
+
+fn stop_within(child: &mut Child, patience: Duration) {
     let _ = Command::new("kill").arg(child.id().to_string()).status();
     let deadline = Instant::now() + patience;
     while Instant::now() < deadline {
@@ -165,7 +169,7 @@ mod tests {
     #[test]
     fn a_child_that_ignores_the_signal_is_killed_and_reaped() {
         let mut polite = Held::waiting("polite");
-        let ended = polite.ended_by(|child| stop(child, Duration::from_secs(5)));
+        let ended = polite.ended_by(|child| stop_within(child, Duration::from_secs(5)));
         assert!(ended.is_some());
         let mut stubborn = Held::launch(
             Command::new("sh")
@@ -174,7 +178,7 @@ mod tests {
         );
         assert_eq!(stubborn.first_line(), "ready");
         let started = Instant::now();
-        let ended = stubborn.ended_by(|child| stop(child, Duration::from_millis(500)));
+        let ended = stubborn.ended_by(|child| stop_within(child, Duration::from_millis(500)));
         assert!(started.elapsed() < Duration::from_secs(5));
         let status = ended.expect("reaped");
         assert_eq!(
