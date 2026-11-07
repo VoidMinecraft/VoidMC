@@ -13,7 +13,7 @@ cargo install --path void-clients
 voidc port "Hot reload"              # 25700 25701, the same pair every time
 VOID_DEMO_ADDRESS=127.0.0.1:25700 cargo run -p voidmc-demo &
 voidc up "Hot reload"                # returns once the client is in game
-voidc cmd hot-reload wait_until "chunks>=100" 15000
+voidc cmd hot-reload wait_until 15000 "chunks>=100"
 voidc cmd hot-reload shot before     # prints the path of the PNG
 voidc cmd hot-reload assert "chunks>=100"
 voidc down hot-reload
@@ -38,9 +38,11 @@ Measuring frames? Start with `--fps 120`, or send `fps 120`. Add `--jfr` for a r
 
 ## Verbs
 
-All levels: `state`, `act <command>`, `wait_until <condition> [ms]`, `assert <condition>`,
+All levels: `state`, `act <command>`, `wait_until [ms] <condition>`, `assert <condition>`,
 `entities`, `quit`. A condition is `field op value`, with `>=`, `<=`, `==`, `!=`, and `~` for
-"contains". `state` lists the fields.
+"contains". `state` lists the fields. A field starts with a letter, so the limit of a wait comes
+first and is never taken from the value: `wait_until 5000 action_bar~Tour 2` waits 5 s for
+"Tour 2". `>=` and `<=` need a number, written `-?\d+(\.\d+)?`.
 
 Bots add `packets`.
 

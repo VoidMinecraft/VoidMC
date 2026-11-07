@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn a_wait_outlives_its_own_limit() {
         assert_eq!(
-            timeout_of("wait_until chunks>=1 60000"),
+            timeout_of("wait_until 60000 chunks>=1"),
             Duration::from_secs(65)
         );
         assert_eq!(timeout_of("wait_until chunks>=1"), Duration::from_secs(25));

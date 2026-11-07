@@ -7,7 +7,8 @@ final class Condition {
   static final long DEFAULT_WAIT_MS = 20_000;
   private static final Pattern NUMBER = Pattern.compile("-?\\d+(\\.\\d+)?");
   private static final Pattern LIMIT = Pattern.compile("\\d{1,9}");
-  private static final Pattern PARTS = Pattern.compile("^([A-Za-z0-9_]+)\\s*(>=|<=|==|!=|~)\\s*(.*)$");
+  private static final Pattern DIGITS = Pattern.compile("\\d+");
+  private static final Pattern PARTS = Pattern.compile("^([A-Za-z][A-Za-z0-9_]*)\\s*(>=|<=|==|!=|~)\\s*(.*)$");
 
   record Wait(Matcher parts, long limit) {}
 
@@ -30,12 +31,15 @@ final class Condition {
   }
 
   static Wait waitOf(String rest) {
-    String condition = rest.trim();
-    int cut = Math.max(condition.lastIndexOf(' '), condition.lastIndexOf('\t'));
-    if (cut > 0 && LIMIT.matcher(condition.substring(cut + 1)).matches() && parse(condition.substring(0, cut)) != null) {
-      return new Wait(require(condition.substring(0, cut)), Long.parseLong(condition.substring(cut + 1)));
+    String text = rest.trim();
+    int space = text.indexOf(' '), tab = text.indexOf('\t');
+    int cut = space < 0 ? tab : tab < 0 ? space : Math.min(space, tab);
+    if (cut > 0 && DIGITS.matcher(text.substring(0, cut)).matches()) {
+      String first = text.substring(0, cut);
+      if (!LIMIT.matcher(first).matches()) throw new IllegalArgumentException("bad limit " + first + ": 1 to 9 digits of milliseconds");
+      return new Wait(require(text.substring(cut + 1)), Long.parseLong(first));
     }
-    return new Wait(require(condition), DEFAULT_WAIT_MS);
+    return new Wait(require(text), DEFAULT_WAIT_MS);
   }
 
   static boolean holds(String condition, Map<String, Object> fields) {

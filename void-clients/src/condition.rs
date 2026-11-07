@@ -46,7 +46,9 @@ impl Condition {
             .min_by_key(|(at, _)| *at)
             .ok_or_else(bad)?;
         let (field, expected) = (text[..at].trim(), text[at + op.len()..].trim());
-        if field.is_empty() || !field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        let mut letters = field.chars();
+        let starts = letters.next().is_some_and(|c| c.is_ascii_alphabetic());
+        if !starts || !letters.all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(bad());
         }
         if expected.is_empty() {
@@ -107,17 +109,18 @@ impl Condition {
     }
 }
 
-/// `condition [ms]`: a last word is a limit only when what comes before is a whole condition.
+/// `[ms] condition`: a field starts with a letter, so a first word of digits is the limit and
+/// nothing else, and the whole rest is the condition.
 pub fn wait(rest: &str) -> Result<(Condition, u64), String> {
-    if let Some((before, last)) = rest.trim().rsplit_once([' ', '\t'])
-        && (1..=9).contains(&last.len())
-        && last.bytes().all(|byte| byte.is_ascii_digit())
-        && let Ok(condition) = Condition::parse(before)
+    let rest = rest.trim();
+    if let Some((first, condition)) = rest.split_once([' ', '\t'])
+        && first.bytes().all(|byte| byte.is_ascii_digit())
     {
-        return Ok((
-            condition,
-            last.parse().map_err(|_| format!("bad limit {last}"))?,
-        ));
+        if !(1..=9).contains(&first.len()) {
+            return Err(format!("bad limit {first}: 1 to 9 digits of milliseconds"));
+        }
+        let ms = first.parse().map_err(|_| format!("bad limit {first}"))?;
+        return Ok((Condition::parse(condition)?, ms));
     }
     Ok((Condition::parse(rest)?, DEFAULT_WAIT_MS))
 }
@@ -201,10 +204,14 @@ mod tests {
             (Condition::parse("chunks>=100").unwrap(), DEFAULT_WAIT_MS)
         );
         assert_eq!(
-            wait("chunks >= 100 5000").unwrap(),
+            wait("5000 chunks >= 100").unwrap(),
             (Condition::parse("chunks>=100").unwrap(), 5000)
         );
-        assert_eq!(wait("chat~a b 12").unwrap().1, 12);
+        assert_eq!(
+            wait("chat~a b 12").unwrap(),
+            (Condition::parse("chat~a b 12").unwrap(), DEFAULT_WAIT_MS)
+        );
+        assert!(wait("chunks >= 100 5000").is_err());
         assert!(wait("chunks >=").is_err());
     }
 
