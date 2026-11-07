@@ -336,6 +336,7 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::hangup::{hang_up, held_by_a_child};
 
     #[test]
     fn a_wait_outlives_its_own_limit() {
@@ -379,11 +380,10 @@ mod tests {
         let (home, socket) = fake::test_socket("gone");
         let listener = UnixListener::bind(socket).unwrap();
         let mut probe = Probe::connect("gone").unwrap();
-        let (hung_up, _) = listener.accept().unwrap();
-        let held_by_a_child = hung_up.try_clone().unwrap();
-        hung_up.shutdown(std::net::Shutdown::Both).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let _child = held_by_a_child(&accepted);
+        hang_up(accepted);
         let error = probe.ask("act map", Duration::from_secs(1)).unwrap_err();
-        drop(held_by_a_child);
         registry::set_test_home(None);
         fs::remove_dir_all(home).unwrap();
         assert!(
