@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
-use tokio::time::{MissedTickBehavior, interval, sleep, timeout, timeout_at};
+use tokio::time::{MissedTickBehavior, interval, sleep, timeout};
 use voidmc_codec::{Decode, Encode, VarI32};
 use voidmc_data::v26_1_2::packets::login::clientbound as login_cb;
 use voidmc_data::v26_1_2::packets::status::clientbound as status_cb;
@@ -176,7 +176,7 @@ struct Peer<S = TcpStream> {
     codec: FrameCodec,
     inbound: BytesMut,
     outbound: Vec<u8>,
-    stalled_since: Option<tokio::time::Instant>,
+    stalled_for: Duration,
 }
 
 impl<S> Peer<S> {
@@ -186,7 +186,7 @@ impl<S> Peer<S> {
             codec: FrameCodec::default(),
             inbound: BytesMut::with_capacity(READ_CHUNK),
             outbound: Vec::new(),
-            stalled_since: None,
+            stalled_for: Duration::ZERO,
         }
     }
 
@@ -222,9 +222,9 @@ impl Peer {
         self.flush_within(WRITE_TIMEOUT).await
     }
 
-    /// Fails once the peer's socket has stayed full for `limit`, counted from the first write
-    /// that had to wait: a peer that takes a few bytes now and then is still stuck. Only a
-    /// queue written whole without waiting ends the stall.
+    /// Fails once the writes to the peer have waited `limit` in all: a peer that takes a few
+    /// bytes now and then is still stuck. Only a queue written whole without waiting starts
+    /// the count again.
     async fn flush_within(&mut self, limit: Duration) -> io::Result<()> {
         let mut written = 0;
         while written < self.outbound.len() {
@@ -232,15 +232,14 @@ impl Peer {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
                 Ok(count) => written += count,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    let since = *self
-                        .stalled_since
-                        .get_or_insert_with(tokio::time::Instant::now);
-                    timeout_at(
-                        since + limit,
+                    let started = tokio::time::Instant::now();
+                    let result = timeout(
+                        limit.saturating_sub(self.stalled_for),
                         self.stream.write_all(&self.outbound[written..]),
                     )
-                    .await
-                    .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
+                    .await;
+                    self.stalled_for += started.elapsed();
+                    result.map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
                     self.outbound.clear();
                     return Ok(());
                 }
@@ -249,7 +248,7 @@ impl Peer {
         }
         if written > 0 {
             self.outbound.clear();
-            self.stalled_since = None;
+            self.stalled_for = Duration::ZERO;
         }
         Ok(())
     }
@@ -701,6 +700,9 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    use tokio::net::TcpSocket;
+    use tokio::sync::mpsc;
+
     use super::*;
 
     struct Broken;
@@ -732,6 +734,21 @@ mod tests {
     async fn pair() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind("[::1]:0").await.unwrap();
         let near = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (far, _) = listener.accept().await.unwrap();
+        (near, far)
+    }
+
+    async fn narrow_pair() -> (TcpStream, TcpStream) {
+        let listening = TcpSocket::new_v6().unwrap();
+        listening.set_recv_buffer_size(64 * 1024).unwrap();
+        listening.bind("[::1]:0".parse().unwrap()).unwrap();
+        let listener = listening.listen(1).unwrap();
+        let connecting = TcpSocket::new_v6().unwrap();
+        connecting.set_send_buffer_size(64 * 1024).unwrap();
+        let near = connecting
+            .connect(listener.local_addr().unwrap())
             .await
             .unwrap();
         let (far, _) = listener.accept().await.unwrap();
@@ -805,8 +822,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_peer_that_swallows_a_little_now_and_then_is_lost_from_its_first_stall() {
-        let (near, mut far) = pair().await;
+    async fn a_peer_that_swallows_a_little_now_and_then_is_lost_once_its_waits_add_up() {
+        let (near, mut far) = narrow_pair().await;
         let swallowing = tokio::spawn(async move {
             let mut buffer = vec![0; 64 * 1024];
             loop {
@@ -830,9 +847,72 @@ mod tests {
             );
         };
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        let stalled_for = peer.stalled_since.expect("the peer stalled").elapsed();
-        assert!(stalled_for >= limit && stalled_for < limit * 3);
+        assert!(peer.stalled_for >= limit && peer.stalled_for < limit * 3);
         swallowing.abort();
+    }
+
+    fn reader_with_pauses(mut far: TcpStream) -> (mpsc::UnboundedSender<Duration>, Arc<AtomicU64>) {
+        let (pause, mut pauses) = mpsc::unbounded_channel::<Duration>();
+        let read = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&read);
+        tokio::spawn(async move {
+            let mut buffer = vec![0; 1 << 20];
+            loop {
+                while let Ok(pause) = pauses.try_recv() {
+                    sleep(pause).await;
+                }
+                match timeout(Duration::from_millis(5), far.read(&mut buffer)).await {
+                    Ok(Ok(0) | Err(_)) => break,
+                    Ok(Ok(count)) => {
+                        counted.fetch_add(count as u64, Ordering::Relaxed);
+                    }
+                    Err(_) => {}
+                }
+            }
+        });
+        (pause, read)
+    }
+
+    const PATIENT: Duration = Duration::from_secs(3);
+
+    async fn burst(peer: &mut Peer, reader: &mpsc::UnboundedSender<Duration>, pause: Duration) {
+        reader.send(pause).unwrap();
+        peer.outbound.resize(1 << 20, 0);
+        peer.flush_within(PATIENT).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stall_long_past_does_not_count_against_the_next_burst() {
+        let (near, far) = narrow_pair().await;
+        let (reader, _) = reader_with_pauses(far);
+        let mut peer = Peer::new(near);
+        burst(&mut peer, &reader, Duration::from_millis(400)).await;
+        assert!(!peer.stalled_for.is_zero(), "the first burst never waited");
+        sleep(PATIENT + Duration::from_secs(1)).await;
+        burst(&mut peer, &reader, Duration::ZERO).await;
+    }
+
+    #[tokio::test]
+    async fn a_queue_written_without_waiting_starts_the_count_again() {
+        let (near, far) = narrow_pair().await;
+        let (reader, read) = reader_with_pauses(far);
+        let mut peer = Peer::new(near);
+        let mut sent = 0;
+        for _ in 0..4 {
+            burst(&mut peer, &reader, Duration::from_secs(1)).await;
+            sent += 1 << 20;
+            timeout(Duration::from_secs(10), async {
+                while read.load(Ordering::Relaxed) < sent {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the reader never caught up");
+            sent += 1;
+            peer.outbound.push(0);
+            peer.flush_within(PATIENT).await.unwrap();
+            assert!(peer.stalled_for.is_zero());
+        }
     }
 
     #[tokio::test]
