@@ -29,7 +29,7 @@ impl Decode for VarI32 {
         let mut shift = 0;
 
         for _ in 0..5 {
-            let byte = decoder.take(1)?[0];
+            let byte = decoder.take_u8()?;
 
             if shift == 28 && byte & 0xf0 != 0 {
                 return Err(DecodeError::InvalidVarintLength);

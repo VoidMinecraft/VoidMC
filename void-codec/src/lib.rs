@@ -1,3 +1,14 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::string_slice,
+        clippy::panic
+    )
+)]
+
 mod primitives;
 
 pub use primitives::*;
@@ -99,6 +110,24 @@ impl<'a> Decoder<'a> {
         let (value, rest) = self.remaining.split_at(len);
         self.remaining = rest;
         Ok(value)
+    }
+
+    pub fn take_u8(&mut self) -> Result<u8, DecodeError> {
+        let (&first, rest) = self
+            .remaining
+            .split_first()
+            .ok_or(DecodeError::UnexpectedEof)?;
+        self.remaining = rest;
+        Ok(first)
+    }
+
+    pub fn take_array<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+        let (head, rest) = self
+            .remaining
+            .split_first_chunk::<N>()
+            .ok_or(DecodeError::UnexpectedEof)?;
+        self.remaining = rest;
+        Ok(*head)
     }
 
     pub fn decode<T: Decode>(&mut self) -> Result<T, DecodeError> {

@@ -8,7 +8,7 @@ impl Encode for bool {
 
 impl Decode for bool {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(decoder.take(1)?[0] != 0)
+        Ok(decoder.take_u8()? != 0)
     }
 }
 

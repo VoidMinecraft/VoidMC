@@ -25,18 +25,21 @@ impl<'a> std::io::Read for NbtReader<'a> {
         }
 
         // Send the protocol header bytes: 0x0A (tag) + 0x00 0x00 (empty root name)
+        let Some(first) = buf.first_mut() else {
+            return Ok(0);
+        };
         if self.read_bytes == 0 {
-            buf[0] = 0x0A; // Compound tag
+            *first = 0x0A; // Compound tag
             self.read_bytes = 1;
             return Ok(1);
         }
         if self.read_bytes == 1 {
-            buf[0] = 0x00; // Name length high byte
+            *first = 0x00; // Name length high byte
             self.read_bytes = 2;
             return Ok(1);
         }
         if self.read_bytes == 2 {
-            buf[0] = 0x00; // Name length low byte
+            *first = 0x00; // Name length low byte
             self.read_bytes = 3;
             // Also consume one dummy byte from inner since NBT expects to read the name
             let _ = self.inner.read(&mut [0])?;
@@ -62,8 +65,8 @@ impl Encode for Nbt {
             buf.push(0x0A);
             // NBT library includes: tag (1) + name_len (2) + name (0 for empty root) + payload
             // We skip 3 bytes for the tag + empty name_len, then write the rest
-            if temp_buf.len() > 3 {
-                buf.extend_from_slice(&temp_buf[3..]);
+            if let Some(payload) = temp_buf.get(3..) {
+                buf.extend_from_slice(payload);
             }
         }
     }
@@ -73,13 +76,13 @@ impl Decode for Nbt {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let original = decoder.remaining();
         let start_len = original.len();
-        let root_tag = nbt_take(decoder, start_len, 1)?[0];
+        let [root_tag] = nbt_take_array(decoder, start_len)?;
         if root_tag != 0x0A {
             return Err(DecodeError::InvalidLength);
         }
         scan_compound(decoder, start_len, 0)?;
         let consumed = start_len - decoder.remaining_len();
-        let nbt_bytes = &original[..consumed];
+        let nbt_bytes = original.get(..consumed).ok_or(DecodeError::InvalidLength)?;
 
         // Wrap the buffer with the NBT reader that prepends the header
         let mut reader = NbtReader::new(nbt_bytes);
@@ -96,6 +99,11 @@ fn nbt_take<'a>(
     start_len: usize,
     len: usize,
 ) -> Result<&'a [u8], DecodeError> {
+    nbt_charge(decoder, start_len, len)?;
+    decoder.take(len)
+}
+
+fn nbt_charge(decoder: &Decoder<'_>, start_len: usize, len: usize) -> Result<(), DecodeError> {
     let consumed = start_len
         .checked_sub(decoder.remaining_len())
         .and_then(|value| value.checked_add(len))
@@ -107,21 +115,23 @@ fn nbt_take<'a>(
             limit: decoder.limits().max_nbt_bytes,
         });
     }
-    decoder.take(len)
+    Ok(())
+}
+
+fn nbt_take_array<const N: usize>(
+    decoder: &mut Decoder<'_>,
+    start_len: usize,
+) -> Result<[u8; N], DecodeError> {
+    nbt_charge(decoder, start_len, N)?;
+    decoder.take_array()
 }
 
 fn nbt_i32(decoder: &mut Decoder<'_>, start_len: usize) -> Result<i32, DecodeError> {
-    let bytes: [u8; 4] = nbt_take(decoder, start_len, 4)?
-        .try_into()
-        .expect("four bytes");
-    Ok(i32::from_be_bytes(bytes))
+    Ok(i32::from_be_bytes(nbt_take_array(decoder, start_len)?))
 }
 
 fn scan_string(decoder: &mut Decoder<'_>, start_len: usize) -> Result<(), DecodeError> {
-    let bytes: [u8; 2] = nbt_take(decoder, start_len, 2)?
-        .try_into()
-        .expect("two bytes");
-    let len = usize::from(u16::from_be_bytes(bytes));
+    let len = usize::from(u16::from_be_bytes(nbt_take_array(decoder, start_len)?));
     decoder.charge_allocation(len)?;
     nbt_take(decoder, start_len, len)?;
     Ok(())
@@ -135,7 +145,7 @@ fn scan_compound(
     check_nbt_depth(decoder, depth)?;
     let mut entries = 0usize;
     loop {
-        let tag = nbt_take(decoder, start_len, 1)?[0];
+        let [tag] = nbt_take_array(decoder, start_len)?;
         if tag == 0 {
             return Ok(());
         }
@@ -177,7 +187,7 @@ fn scan_payload(
         7 => scan_array(decoder, start_len, 1)?,
         8 => scan_string(decoder, start_len)?,
         9 => {
-            let element_tag = nbt_take(decoder, start_len, 1)?[0];
+            let [element_tag] = nbt_take_array(decoder, start_len)?;
             let raw_count = nbt_i32(decoder, start_len)?;
             let count = checked_nbt_count(decoder, raw_count)?;
             if element_tag == 0 && count != 0 {
