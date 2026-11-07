@@ -169,7 +169,7 @@ impl ArgParser for MessageArg {
 }
 
 macro_rules! bounded_number_arg {
-    ($name:ident, $ty:ty, $parser:ident, $type_name:literal, $label:literal) => {
+    ($name:ident, $ty:ty, $parser:ident, $type_name:literal, $label:literal $(, $finite:ident)?) => {
         pub struct $name {
             pub min: Option<$ty>,
             pub max: Option<$ty>,
@@ -207,6 +207,11 @@ macro_rules! bounded_number_arg {
                 let value: $ty = input
                     .parse()
                     .map_err(|_| format!("'{}' is not a valid {}", input, $label))?;
+                $(
+                    if !value.$finite() {
+                        return Err(format!("'{}' is not a finite {}", input, $label));
+                    }
+                )?
                 Ok(Box::new(check_bounds(value, self.min, self.max)?))
             }
 
@@ -222,8 +227,8 @@ macro_rules! bounded_number_arg {
 
 bounded_number_arg!(IntegerArg, i32, Integer, "integer", "integer");
 bounded_number_arg!(LongArg, i64, Long, "long", "long integer");
-bounded_number_arg!(FloatArg, f32, Float, "float", "float");
-bounded_number_arg!(DoubleArg, f64, Double, "double", "double");
+bounded_number_arg!(FloatArg, f32, Float, "float", "float", is_finite);
+bounded_number_arg!(DoubleArg, f64, Double, "double", "double", is_finite);
 
 /// Parses `bool` — accepts true/false/yes/no/1/0.
 pub struct BoolArg;
@@ -764,6 +769,36 @@ mod tests {
                 min: None,
                 max: None
             })
+        );
+    }
+
+    #[test]
+    fn floating_point_arguments_reject_non_finite_values() {
+        let floats = [
+            FloatArg::new(0.0, 1.0),
+            FloatArg::min(0.0),
+            FloatArg::unbounded(),
+        ];
+        let doubles = [
+            DoubleArg::new(0.0, 1.0),
+            DoubleArg::min(0.0),
+            DoubleArg::unbounded(),
+        ];
+        for input in ["NaN", "inf", "-inf", "Infinity", "-Infinity", "1e999"] {
+            for parser in &floats {
+                assert!(parser.parse(input).is_err(), "float accepted {input}");
+            }
+            for parser in &doubles {
+                assert!(parser.parse(input).is_err(), "double accepted {input}");
+            }
+        }
+        assert_eq!(
+            parse_as::<f32>(&*FloatArg::unbounded(), "-1.25").unwrap(),
+            -1.25
+        );
+        assert_eq!(
+            parse_as::<f64>(&*DoubleArg::unbounded(), "1e100").unwrap(),
+            1e100
         );
     }
 
