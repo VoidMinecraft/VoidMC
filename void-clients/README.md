@@ -237,7 +237,7 @@ and the `frames.txt` and `track.txt` of the verbs, whose ticks come from their c
 
 | Error | When | Option |
 |---|---|---|
-| `jump past 64 blocks` | more than 64 blocks a tick: what a client's glide survives, see `void-map/src/players.rs` | none |
+| `jump past 64 blocks` | more than 64 blocks a tick: what a client's glide survives | none |
 | `camera jump` | more than 24 blocks in a tick. The fastest real flight of `/map` makes 6 | `jump=` |
 | `half turn` | 120 degrees or more between two frames, the short way round | `turn=` |
 | `flash` | the brightness moves by 30 levels of 255 between two pictures | `flash=` |

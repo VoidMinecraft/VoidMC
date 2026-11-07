@@ -8,7 +8,7 @@ use crate::compare::Picture;
 
 const TICK_MICROS: u64 = 50_000;
 const TICK_MILLIS: u64 = 50;
-/// Past this a client's glide outlives the jump and pulls back: see `void-map/src/players.rs`.
+/// Past this a client's glide outlives the jump and pulls back.
 const FAR_BLOCKS: f64 = 64.0;
 const BACKWARDS: &str = "the time went back, as a probe older than this voidc lets a clock verb move it during a recording";
 /// `voidc step` leaves its contact sheet among the frames.
