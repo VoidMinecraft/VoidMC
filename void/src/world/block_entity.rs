@@ -12,7 +12,7 @@ use voidmc_protocol::types::BlockPosition;
 pub use voidmc_protocol::BlockEntityKind;
 
 use super::{ChunkData, ChunkIndex, ChunkPos, DimensionId};
-use crate::messages::WireText;
+use crate::messages::Text;
 
 const VERSION: Version = Version::V26_1_2;
 
@@ -116,7 +116,7 @@ impl SignSide {
                     Tag::List(List::String(
                         self.lines
                             .iter()
-                            .map(|line| WireText::truncated(line.as_str()).into_string().into())
+                            .map(|line| Text::truncated(line.as_str()).into_string().into())
                             .collect(),
                     )),
                 ),

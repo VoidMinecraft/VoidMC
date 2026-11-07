@@ -195,7 +195,7 @@ the rule:
 
 - `MAX_STRING_BYTES` (65 535) and `modified_utf8_width(c)`;
 - `fitting_len(text)`, the byte length of the longest prefix of `text`, cut
-  on a character, that fits; `WireText` and the encoder both cut there;
+  on a character, that fits; `Text` and the encoder both cut there;
 - `check(&nbt)` returns `Err(NbtStringTooLong { bytes })` when a name or a
   value, at any depth, is longer, for callers who refuse such a text upstream.
 

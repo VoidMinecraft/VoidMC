@@ -111,7 +111,7 @@ impl MetadataSource for CustomName {
         meta.set(
             entity_index::CUSTOM_NAME,
             Value::OptionalComponent(Some(
-                crate::messages::WireText::truncated(self.text.as_str()).plain(),
+                crate::messages::Text::truncated(self.text.as_str()).plain(),
             )),
         );
         meta.set(
@@ -476,7 +476,7 @@ impl MetadataSource for TextDisplay {
     fn write(&self, meta: &mut EntityMetadata) {
         meta.set(
             display_index::TEXT,
-            Value::Component(crate::messages::WireText::truncated(self.text.as_str()).plain()),
+            Value::Component(crate::messages::Text::truncated(self.text.as_str()).plain()),
         );
         meta.set(display_index::TEXT_LINE_WIDTH, Value::Int(self.line_width));
         meta.set(

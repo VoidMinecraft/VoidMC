@@ -86,20 +86,20 @@ RGB), for the few places that still take legacy text such as sidebar lines.
 
 A client disconnects on a text longer than the NBT string limit: 65 535
 modified-UTF-8 bytes, where `\0` costs 2 bytes and characters outside the BMP
-cost 6. `WireText` builds the text components of the engine and never holds
+cost 6. `Text` builds the text components of the engine and never holds
 more:
 
-- `WireText::new(text)` returns `Err(TextTooLong { bytes })` when the text
+- `Text::new(text)` returns `Err(TextTooLong { bytes })` when the text
   does not fit.
-- `WireText::truncated(text)` keeps what fits, cut on a character boundary,
+- `Text::truncated(text)` keeps what fits, cut on a character boundary,
   and logs a warning.
 - `.component(color)` and `.plain()` build the NBT component for any packet.
 
 ```rust
-use voidmc::{TextColor, WireText};
+use voidmc::{Text, TextColor};
 
-let title = WireText::new("Welcome")?.component(TextColor::Gold);
-let lore = WireText::truncated(user_text).plain();
+let title = Text::new("Welcome")?.component(TextColor::Gold);
+let lore = Text::truncated(user_text).plain();
 ```
 
 Messages, menu titles, boss bar titles, scoreboards, the tab list, titles,

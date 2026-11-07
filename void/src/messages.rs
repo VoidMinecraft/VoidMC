@@ -273,7 +273,7 @@ impl<'a> MessageRequest<'a> {
 
     pub fn packet(&self) -> SystemChat {
         SystemChat {
-            content: WireText::truncated(self.text.as_str()).component(self.color),
+            content: Text::truncated(self.text.as_str()).component(self.color),
             overlay: self.overlay,
         }
     }
@@ -287,15 +287,15 @@ impl<'a> MessageRequest<'a> {
     }
 }
 
-/// A text the client decodes: at most [`WireText::MAX_BYTES`] in modified UTF-8, the NBT string
-/// limit. Longer, the client drops the connection. Only [`WireText::new`] and
-/// [`WireText::truncated`] make one:
+/// A text the client decodes: at most [`Text::MAX_BYTES`] in modified UTF-8, the NBT string
+/// limit. Longer, the client drops the connection. Only [`Text::new`] and
+/// [`Text::truncated`] make one:
 ///
 /// ```compile_fail
-/// let text = voidmc::WireText(String::from("built around the check"));
+/// let text = voidmc::Text(String::from("built around the check"));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub struct WireText(String);
+pub struct Text(String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextTooLong {
@@ -308,14 +308,14 @@ impl fmt::Display for TextTooLong {
             f,
             "text takes {} modified UTF-8 bytes, the client decodes at most {}",
             self.bytes,
-            WireText::MAX_BYTES
+            Text::MAX_BYTES
         )
     }
 }
 
 impl std::error::Error for TextTooLong {}
 
-impl WireText {
+impl Text {
     pub const MAX_BYTES: usize = MAX_TEXT_BYTES;
 
     pub fn new(text: impl Into<String>) -> Result<Self, TextTooLong> {
@@ -362,7 +362,7 @@ impl WireText {
     }
 }
 
-impl fmt::Display for WireText {
+impl fmt::Display for Text {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
@@ -430,7 +430,7 @@ pub(crate) fn assert_guarded(nbt: &Nbt, text: &str) {
 }
 
 #[cfg(test)]
-fn decode_wire_text(bytes: &[u8]) -> (usize, String) {
+fn decode_text(bytes: &[u8]) -> (usize, String) {
     let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
     let (decoded, _) = decode_wire(bytes);
     let text = decoded
@@ -526,23 +526,23 @@ mod tests {
                 (MAX_TEXT_BYTES / 2 + 1) * 2,
             ),
         ] {
-            assert_eq!(WireText::new(text.as_str()), Err(TextTooLong { bytes }));
-            let cut = WireText::truncated(text.as_str());
+            assert_eq!(Text::new(text.as_str()), Err(TextTooLong { bytes }));
+            let cut = Text::truncated(text.as_str());
             assert!(text.starts_with(cut.as_str()));
             assert!(cut.as_str().chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
         }
         let fits = "a".repeat(MAX_TEXT_BYTES);
-        assert_eq!(WireText::new(fits.as_str()).unwrap().as_str(), fits);
-        assert_eq!(WireText::truncated(fits.as_str()).into_string(), fits);
+        assert_eq!(Text::new(fits.as_str()).unwrap().as_str(), fits);
+        assert_eq!(Text::truncated(fits.as_str()).into_string(), fits);
     }
 
     #[test]
     fn a_text_is_cut_before_the_encoder_sees_it() {
         let text = "😀".repeat(11000);
-        let error = WireText::new(text.as_str()).unwrap_err();
+        let error = Text::new(text.as_str()).unwrap_err();
         assert!(error.to_string().contains("66000"), "{error}");
         assert_guarded(
-            &WireText::truncated(text.as_str()).component(TextColor::White),
+            &Text::truncated(text.as_str()).component(TextColor::White),
             &text,
         );
     }
@@ -731,10 +731,10 @@ mod tests {
         assert_guarded(&crate::commands::system_chat(&long, "gold").content, &long);
     }
 
-    fn wire_text_round_trips(packet: &SystemChat) -> (usize, String) {
+    fn text_round_trips(packet: &SystemChat) -> (usize, String) {
         let mut bytes = Vec::new();
         packet.encode(&mut bytes);
-        decode_wire_text(&bytes)
+        decode_text(&bytes)
     }
 
     #[test]
@@ -745,7 +745,7 @@ mod tests {
         assert_eq!(sent.len(), MAX_TEXT_BYTES - 1);
         assert!(sent.chars().all(|c| c == 'é'));
 
-        let (len, decoded) = wire_text_round_trips(&packet);
+        let (len, decoded) = text_round_trips(&packet);
         assert_eq!(len, MAX_TEXT_BYTES - 1);
         assert_eq!(decoded, sent);
 
@@ -765,7 +765,7 @@ mod tests {
             assert!(text.starts_with(&sent));
             assert!(sent.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
 
-            let (len, decoded) = wire_text_round_trips(&packet);
+            let (len, decoded) = text_round_trips(&packet);
             assert!(len <= MAX_TEXT_BYTES);
             assert_eq!(decoded, sent);
         }
@@ -775,14 +775,14 @@ mod tests {
             field(&system_chat_packet(&emoji, TextColor::White), "text").len(),
             emoji.len()
         );
-        let (len, decoded) = wire_text_round_trips(&system_chat_packet(&emoji, TextColor::White));
+        let (len, decoded) = text_round_trips(&system_chat_packet(&emoji, TextColor::White));
         assert_eq!(len, MAX_TEXT_BYTES / 6 * 6);
         assert_eq!(decoded, emoji);
     }
 
     #[test]
     fn plain_component_has_no_color_and_is_truncated() {
-        let nbt = WireText::truncated("hi").plain();
+        let nbt = Text::truncated("hi").plain();
         assert_eq!(nbt.compound.tags.len(), 1);
         let mut bytes = Vec::new();
         nbt.encode(&mut bytes);
@@ -799,7 +799,7 @@ mod tests {
         );
 
         let text = "😀".repeat(11000);
-        assert_guarded(&WireText::truncated(text.as_str()).plain(), &text);
+        assert_guarded(&Text::truncated(text.as_str()).plain(), &text);
     }
 
     #[test]
@@ -824,7 +824,7 @@ mod tests {
 
         let mut overlay = Vec::new();
         SystemChat {
-            content: WireText::default().component(TextColor::rgb(0xff8800)),
+            content: Text::default().component(TextColor::rgb(0xff8800)),
             overlay: true,
         }
         .encode(&mut overlay);

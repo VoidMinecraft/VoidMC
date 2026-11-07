@@ -68,7 +68,7 @@ pub use menu::{
     ContainerIds, ContainerInput, Menu, MenuClickContext, MenuClickEvent, MenuCloseReason,
     MenuClosedEvent, MenuSlot, MenuType, Menus, OpenMenu, WorldMenus,
 };
-pub use messages::{MessageRequest, Messages, TextColor, TextTooLong, WireText, WorldMessages};
+pub use messages::{MessageRequest, Messages, Text, TextColor, TextTooLong, WorldMessages};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
@@ -79,7 +79,7 @@ pub use plugins::scoreboard::{
 };
 pub use plugins::sidebar::{
     Labeled, MAX_LINE_CHARS, MAX_SIDEBAR_LINES, Ornament, Progress, Ranking, Sidebar, SidebarState,
-    Text, Timer, Widget, WidgetId,
+    Span, Timer, Widget, WidgetId,
 };
 pub use plugins::tab_list::{TabEntry, TabEntryState, TabList, TabListState};
 pub use plugins::teleport::{Teleport, TeleportOutcome};

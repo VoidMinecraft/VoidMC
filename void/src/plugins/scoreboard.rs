@@ -23,7 +23,7 @@ pub use voidmc_protocol::clientbound::{
 };
 
 use crate::components::PlayerName;
-use crate::messages::{TextColor, WireText};
+use crate::messages::{Text, TextColor};
 use crate::players::{Audience, Players, Recipients};
 use crate::schedule::VoidSystems;
 
@@ -42,7 +42,7 @@ impl ScoreFormat {
                 name: "".into(),
                 compound: vec![("color".into(), Tag::String(color.to_string().into()))].into(),
             }),
-            ScoreFormat::Fixed(text) => NumberFormat::Fixed(WireText::truncated(text).plain()),
+            ScoreFormat::Fixed(text) => NumberFormat::Fixed(Text::truncated(text).plain()),
         }
     }
 }
@@ -165,7 +165,7 @@ impl Objective {
 
     fn info(&self) -> ObjectiveInfo {
         ObjectiveInfo {
-            display_name: WireText::truncated(&self.title).component(self.color),
+            display_name: Text::truncated(&self.title).component(self.color),
             render_type: self.render,
             number_format: self.format.as_ref().map(ScoreFormat::wire),
         }
@@ -197,7 +197,7 @@ impl Objective {
             display_name: score
                 .display
                 .as_deref()
-                .map(|text| WireText::truncated(text).plain()),
+                .map(|text| Text::truncated(text).plain()),
             number_format: score.format.as_ref().map(ScoreFormat::wire),
         }
     }
@@ -417,13 +417,13 @@ impl Team {
         flags.set(TeamFlags::FRIENDLY_FIRE, self.friendly_fire);
         flags.set(TeamFlags::SEE_INVISIBLE_FRIENDS, self.see_invisible_friends);
         TeamParameters {
-            display_name: WireText::truncated(&self.display_name).plain(),
+            display_name: Text::truncated(&self.display_name).plain(),
             flags,
             name_tag_visibility: self.name_tags,
             collision_rule: self.collision,
             color: self.color,
-            prefix: WireText::truncated(&self.prefix).plain(),
-            suffix: WireText::truncated(&self.suffix).plain(),
+            prefix: Text::truncated(&self.prefix).plain(),
+            suffix: Text::truncated(&self.suffix).plain(),
         }
     }
 
@@ -1254,7 +1254,7 @@ mod tests {
         assert_eq!(ScoreFormat::Blank.wire(), NumberFormat::Blank);
         assert_eq!(
             ScoreFormat::Fixed("★".into()).wire(),
-            NumberFormat::Fixed(WireText::truncated("★").plain())
+            NumberFormat::Fixed(Text::truncated("★").plain())
         );
         let NumberFormat::Styled(style) = ScoreFormat::Styled(TextColor::Red).wire() else {
             panic!("styled");

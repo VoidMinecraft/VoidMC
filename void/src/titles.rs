@@ -10,7 +10,7 @@ use voidmc_protocol::clientbound::{
     ClearTitles, ClientboundPacket, SetSubtitleText, SetTitleText, SetTitlesAnimation,
 };
 
-use crate::messages::{Target, TextColor, WireText};
+use crate::messages::{Target, Text, TextColor};
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 
 #[derive(SystemParam)]
@@ -200,7 +200,7 @@ impl<'a> TitleRequest<'a> {
         if let Some(text) = &self.subtitle {
             packets.push(
                 SetSubtitleText {
-                    text: WireText::truncated(text).component(self.subtitle_color),
+                    text: Text::truncated(text).component(self.subtitle_color),
                 }
                 .into(),
             );
@@ -208,7 +208,7 @@ impl<'a> TitleRequest<'a> {
         if let Some(text) = &self.title {
             packets.push(
                 SetTitleText {
-                    text: WireText::truncated(text).component(self.title_color),
+                    text: Text::truncated(text).component(self.title_color),
                 }
                 .into(),
             );

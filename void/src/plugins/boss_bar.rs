@@ -97,7 +97,7 @@ impl BossBar {
     }
 
     fn title_nbt(&self) -> Nbt {
-        crate::messages::WireText::truncated(&self.title).plain()
+        crate::messages::Text::truncated(&self.title).plain()
     }
 
     fn snapshot(&self) -> Snapshot {

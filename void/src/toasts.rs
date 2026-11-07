@@ -20,7 +20,7 @@ pub use voidmc_protocol::clientbound::AdvancementFrame as ToastFrame;
 
 use crate::components::Position;
 use crate::item::{ItemId, ItemStack};
-use crate::messages::{Target, TextColor, WireText};
+use crate::messages::{Target, Text, TextColor};
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 use crate::sounds::{Sound, SoundPosition};
 
@@ -227,8 +227,8 @@ impl<'a> ToastRequest<'a> {
                 advancement: Advancement {
                     parent: None,
                     display: Some(DisplayInfo {
-                        title: WireText::truncated(&self.title).component(self.title_color),
-                        description: WireText::truncated(&self.description)
+                        title: Text::truncated(&self.title).component(self.title_color),
+                        description: Text::truncated(&self.description)
                             .component(self.description_color),
                         icon: ItemStackTemplate {
                             item_id: icon.item.0,

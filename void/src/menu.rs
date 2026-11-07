@@ -288,7 +288,7 @@ impl Menu {
     }
 
     pub(crate) fn title_nbt(&self) -> Nbt {
-        crate::messages::WireText::truncated(&self.title).plain()
+        crate::messages::Text::truncated(&self.title).plain()
     }
 
     pub(crate) fn layout(&self) -> Layout {

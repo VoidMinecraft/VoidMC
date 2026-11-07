@@ -252,7 +252,7 @@ fn handle_kick(ctx: &mut CommandContext) {
         .cloned()
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
-    let reason_nbt = crate::messages::WireText::truncated(&reason).component(TextColor::Red);
+    let reason_nbt = crate::messages::Text::truncated(&reason).component(TextColor::Red);
     ctx.players().send(
         target,
         voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
