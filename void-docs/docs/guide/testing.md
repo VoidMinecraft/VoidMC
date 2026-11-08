@@ -67,8 +67,8 @@ pub fn add(a: i32, b: i32) -> i32 {
 # Run all tests
 cargo test
 
-# Run tests for specific crate
-cargo test -p void-codec
+# Run tests for a specific crate (package names start with `voidmc-`)
+cargo test -p voidmc-codec
 
 # Run specific test by name
 cargo test test_varint
@@ -95,8 +95,8 @@ cargo test --list
 # Run with environment variables
 RUST_BACKTRACE=full cargo test
 
-# Generate coverage
-cargo tarpaulin --out Html
+# Generate coverage (the CI tool)
+cargo llvm-cov --workspace --all-features
 
 # Benchmark
 cargo bench
@@ -326,8 +326,8 @@ Aim for coverage on:
 - **Utilities**: 70%+ (helpers, formatting)
 
 ```bash
-# Generate coverage report
-cargo tarpaulin --out Html
+# Generate coverage report (the CI tool)
+cargo llvm-cov --workspace --all-features --html
 ```
 
 ## Debugging Tests
