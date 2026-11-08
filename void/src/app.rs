@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin, TerminalCtrlCHandlerPlugin};
 use bevy_ecs::prelude::*;
 
@@ -52,7 +50,7 @@ impl VoidServer {
     pub fn run(self) {
         let config_resource = ServerConfigResource::from(&self.config);
         let server_status = ServerStatusSnapshot::new(&self.config);
-        let tick_duration = Duration::from_millis(1000 / self.config.tick_rate);
+        let tick_duration = self.config.tick_duration();
         let address = self.config.address.clone();
         let frame_limits = self.config.frame_limits;
 
