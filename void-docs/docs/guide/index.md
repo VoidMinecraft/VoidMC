@@ -92,13 +92,13 @@ git push origin feature/your-feature
 
 ```bash
 # Development (debug build)
-cargo run
+cargo run -p voidmc-example
 
 # Release (optimized)
-cargo run --release
+cargo run --release -p voidmc-example
 
-# With custom settings
-RUST_LOG=debug cargo run --release
+# With custom log filters
+RUST_LOG=debug cargo run --release -p voidmc-example
 ```
 
 Server starts at `127.0.0.1:25565`
@@ -107,7 +107,7 @@ Server starts at `127.0.0.1:25565`
 
 ```bash
 # All tests
-cargo test
+cargo test --workspace --all-features
 
 # Specific test
 cargo test test_name
@@ -123,10 +123,10 @@ cargo test -- --test-threads=1
 
 ```bash
 # Format
-cargo fmt
+cargo fmt --all
 
-# Lint
-cargo clippy -- -D warnings
+# Lint (the CI command)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # Documentation
 cargo doc --no-deps --open
@@ -136,43 +136,41 @@ cargo doc --no-deps --open
 
 ```bash
 # Benchmarks
-cargo bench
+cargo bench --workspace --all-features
 
-# Flame graph
-cargo flamegraph
-open flamegraph.svg
+# Flame graph of the example server (needs `cargo install inferno`)
+make flame
+open logs/void-flame-active.svg
 
-# Memory profiling
-cargo tarpaulin --out Html
+# Code coverage (the CI tool)
+cargo llvm-cov --workspace --all-features
 ```
 
 ## Project Structure
 
 ```
-void/                           # Main server
+void/                 # voidmc: core framework (ECS app, plugins, systems, commands, world)
   src/
-    main.rs                    # Entry point
-    server.rs                  # Server implementation
-    client.rs                  # Client handler
-    game.rs                    # Game state
+    app.rs            # VoidServer entry point
+    server.rs         # Tokio accept loop
+    client.rs         # Per-connection task
+    network.rs        # Packet ingest and dispatch
+    plugins/          # Connection lifecycle and gameplay plugins
+    systems/          # Tick systems (keep-alive, chunks, physics, ...)
+    world/            # Chunks, generation, block entities
 
-void-protocol/                 # Protocol definitions
+void-protocol/        # voidmc-protocol: packet definitions
   src/
-    clientbound/               # Server → Client
-      status/, login/, play/
-    serverbound/               # Client → Server
+    clientbound/      # Server → Client (status/, login/, configuration/, play/)
+    serverbound/      # Client → Server
 
-void-codec/                    # Encoding/Decoding
-  src/
-    primitives/                # Basic types
-
-void-codec-macros/            # Procedural macros
-  src/
-    encode.rs, decode.rs
-
-void-net/                      # Async networking
-  src/
-    socket.rs
+void-codec/           # voidmc-codec: Encode/Decode traits and primitives
+void-codec-macros/    # voidmc-codec-macros: derive macros
+void-net/             # voidmc-net: TCP socket and framing
+void-data/            # voidmc-data: vanilla registry data baked at build time
+void-world-io/        # voidmc-world-io: chunk persistence plugin
+void-example/         # voidmc-example: runnable example server
+void-demo/            # voidmc-demo: Alpine Rush racing demo
 ```
 
 ## Key Concepts

@@ -55,11 +55,11 @@ cargo build
 # Release build (slow compile, fast runtime)
 cargo build --release
 
-# Run directly
-cargo run --release
+# Run the example server
+cargo run --release -p voidmc-example
 
-# Run with arguments
-cargo run --release -- --help
+# Run the Alpine Rush demo
+cargo run --release -p voidmc-demo
 
 # Watch mode (requires cargo-watch)
 cargo install cargo-watch
@@ -71,21 +71,23 @@ cargo watch -x build
 ### Crate Structure
 
 ```
-void/                      # Main server
+void/                      # voidmc: core framework
   src/
-    lib.rs                # Library exports
-    main.rs               # Binary entry point
-    server.rs             # Server implementation
-    client.rs             # Client handler
-    game.rs               # Game state
+    lib.rs                # Public API re-exports
+    app.rs                # VoidServer entry point
+    server.rs             # Tokio accept loop
+    client.rs             # Per-connection task
+    network.rs            # Packet ingest and dispatch
+    plugins/              # Connection lifecycle and gameplay plugins
+    systems/              # Tick systems
+    world/                # Chunks, generation, block entities
 
-void-codec/                # Codec traits
+void-codec/                # voidmc-codec: codec traits
   src/
-    lib.rs
-    primitives/           # Basic types (VarI32, UUID, etc.)
-    error.rs              # Error types
+    lib.rs                # Encode, Decode, Decoder, DecodeLimits
+    primitives/           # Basic types (VarI32, UUID, NBT, ...)
 
-void-protocol/             # Protocol definitions
+void-protocol/             # voidmc-protocol: protocol definitions
   src/
     lib.rs
     clientbound.rs
@@ -93,11 +95,13 @@ void-protocol/             # Protocol definitions
     clientbound/
       status/
       login/
+      configuration/
       play/
 
-void-codec-macros/         # Macro implementations
+void-codec-macros/         # voidmc-codec-macros: derive macros
   src/
     lib.rs
+    attrs.rs
     encode.rs
     decode.rs
 ```
@@ -128,7 +132,7 @@ pub fn derive_encode(input: TokenStream) -> TokenStream {
 **Testing macros:**
 
 ```bash
-cargo test -p void-codec-macros
+cargo test -p voidmc-codec-macros
 ```
 
 **Debugging expansion:**
@@ -474,8 +478,8 @@ cargo clean
 # Check for errors without building
 cargo check
 
-# Run all tests with coverage
-cargo tarpaulin --out Html
+# Run all tests with coverage (the CI tool)
+cargo llvm-cov --workspace --all-features
 
 # Generate dependency graph
 cargo tree
