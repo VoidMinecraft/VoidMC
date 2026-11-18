@@ -172,7 +172,7 @@ impl WorldGenerator for Alpine {
     }
 
     fn surface_height_at(&self, x: i32, z: i32) -> i32 {
-        self.height(x, z).max(WATER_LEVEL)
+        self.height(x, z).max(WATER_LEVEL + 1)
     }
 
     fn cell_biome(&self, _x: i32, _y: i32, _z: i32) -> BiomeId {
@@ -183,6 +183,8 @@ impl WorldGenerator for Alpine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voidmc::ChunkData;
+    use voidmc_protocol::clientbound::chunk::blocks::{AIR, WATER};
 
     fn encode(chunk: &Chunk) -> Vec<Vec<u8>> {
         chunk.sections.iter().map(|s| s.encode_to_bytes()).collect()
@@ -207,16 +209,45 @@ mod tests {
     }
 
     #[test]
-    fn surface_never_drops_below_water_and_peaks_carry_snow() {
+    fn surface_stays_above_water_and_peaks_carry_snow() {
         let map = Alpine { seed: 42 };
         let mut snow = false;
         for z in -256..256 {
             for x in (-256..256).step_by(8) {
-                assert!(map.surface_height_at(x, z) >= WATER_LEVEL);
+                assert!(map.surface_height_at(x, z) > WATER_LEVEL);
                 snow |= map.height(x, z) > 141;
             }
         }
         assert!(snow);
         assert_eq!(biome(), BiomeId::named("minecraft:taiga").unwrap());
+    }
+
+    #[test]
+    fn surface_height_is_above_terrain_and_water() {
+        let map = Alpine { seed: 42 };
+        let mut underwater = 0;
+        // The island, open water around it, and the mountains.
+        for pos in [
+            ChunkPos::new(0, 0),
+            ChunkPos::new(0, 6),
+            ChunkPos::new(-12, 0),
+        ] {
+            let chunk = ChunkData::from_protocol_chunk(&map.generate_chunk(&pos));
+            for z in 0..16u8 {
+                for x in 0..16u8 {
+                    let (wx, wz) = (pos.x * 16 + i32::from(x), pos.z * 16 + i32::from(z));
+                    let y = map.surface_height_at(wx, wz);
+                    let below = chunk.get_block(x, y - 1, z);
+                    // Plants and tree trunks may stand on the surface, but never water.
+                    assert_ne!(chunk.get_block(x, y, z), Some(WATER), "({wx}, {y}, {wz})");
+                    assert_ne!(below, Some(AIR), "({wx}, {}, {wz})", y - 1);
+                    underwater += usize::from(below == Some(WATER));
+                }
+            }
+        }
+        assert!(
+            underwater > 0,
+            "no sampled column was below the water level"
+        );
     }
 }

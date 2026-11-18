@@ -114,7 +114,6 @@ fn handle_finish_configuration(
             .0
             .surface_height_at(config.spawn_x.floor() as i32, config.spawn_z.floor() as i32)
             as f64
-            + 1.0
     });
     let spawn_chunk = ChunkPos::from_block(config.spawn_x, config.spawn_z);
 
