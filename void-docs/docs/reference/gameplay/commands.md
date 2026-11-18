@@ -162,8 +162,8 @@ the handler reads back with `ctx.get::<T>(name)`.
 | `BoolArg` | `bool` | `brigadier:bool` | `true/false/yes/no/1/0` |
 | `IntegerArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i32` | `brigadier:integer` + bounds | Bounded integer |
 | `LongArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i64` | `brigadier:long` + bounds | Bounded long |
-| `FloatArg::new(min, max)` / `::min(min)` / `::unbounded()` | `f32` | `brigadier:float` + bounds | Bounded float |
-| `DoubleArg::new(min, max)` / `::min(min)` / `::unbounded()` | `f64` | `brigadier:double` + bounds | Bounded double |
+| `FloatArg::new(min, max)` / `::min(min)` / `::unbounded()` | `f32` | `brigadier:float` + bounds | Finite float with optional bounds |
+| `DoubleArg::new(min, max)` / `::min(min)` / `::unbounded()` | `f64` | `brigadier:double` + bounds | Finite double with optional bounds |
 | `Vec3Arg` | `[f64; 3]` | `minecraft:vec3` | `x y z` with `~` and `^` forms (3 tokens) |
 | `BlockPosArg` | `[i32; 3]` | `minecraft:block_pos` | Integer `x y z` with `~` and `^` forms (3 tokens) |
 | `PlayerArg` | `Entity` | `minecraft:entity` (single, players) | `@s`, `@p`, `@r` or a player name |
