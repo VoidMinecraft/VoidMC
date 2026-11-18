@@ -11,6 +11,7 @@ use voidmc::{
     Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
     ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
+use voidmc_navigation::{NavRemotePlugin, NavigationPlugin, RemoteAccess};
 use voidmc_vanilla_commands::{Access, VanillaCommandsPlugin};
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 use voidmc_worldedit::WorldEditPlugin;
@@ -22,6 +23,7 @@ mod effects;
 mod entities;
 mod environment;
 mod menu;
+mod navigation;
 mod particle;
 mod sidebar;
 mod sign;
@@ -140,6 +142,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sidebar::altitude_system,
                 ),
             );
+        })
+        .add_plugin(|app| {
+            app.add_plugins((
+                NavigationPlugin::new(),
+                NavRemotePlugin::default().access(RemoteAccess::Everyone),
+            ));
+            app.init_resource::<navigation::DemoSpawned>();
+            app.add_observer(navigation::spawn_on_first_join);
+            app.world_mut()
+                .resource_mut::<CommandRegistry>()
+                .register(navigation::navdemo_command());
         })
         .add_plugin(|app| {
             app.add_plugins(WorldEditPlugin::default());
@@ -282,6 +295,7 @@ fn give_starter_kit(event: On<PlayerReadyEvent>, mut inventories: Query<&mut Inv
         "minecraft:glass",
         "minecraft:glowstone",
         "minecraft:stick",
+        "minecraft:blaze_rod",
     ] {
         if let Some(stack) = ItemStack::of(name, 64) {
             inventory.give(stack);

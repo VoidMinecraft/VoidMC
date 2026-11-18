@@ -1972,10 +1972,26 @@ dependencies = [
  "uuid",
  "voidmc",
  "voidmc-data",
+ "voidmc-navigation",
  "voidmc-protocol",
  "voidmc-vanilla-commands",
  "voidmc-world-io",
  "voidmc-worldedit",
+]
+
+[[package]]
+name = "voidmc-navigation"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "criterion",
+ "flume",
+ "tracing",
+ "uuid",
+ "voidmc",
+ "voidmc-data",
+ "voidmc-protocol",
 ]
 
 [[package]]

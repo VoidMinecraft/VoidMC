@@ -21,6 +21,11 @@
   },
   {
     "type": "file",
+    "name": "navigation",
+    "label": "Navigation"
+  },
+  {
+    "type": "file",
     "name": "boss-bars",
     "label": "Boss Bars"
   },

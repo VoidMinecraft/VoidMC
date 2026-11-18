@@ -47,6 +47,7 @@ mod spawn_entity;
 mod synchronize_player_position;
 mod system_chat;
 mod teleport_entity;
+mod tracked_waypoint;
 mod unload_chunk;
 mod update_advancements;
 mod update_attributes;
@@ -107,6 +108,7 @@ pub use spawn_entity::*;
 pub use synchronize_player_position::*;
 pub use system_chat::*;
 pub use teleport_entity::*;
+pub use tracked_waypoint::*;
 pub use unload_chunk::*;
 pub use update_advancements::*;
 pub use update_attributes::*;
@@ -232,6 +234,8 @@ pub enum PlayPacket {
     UpdateAttributes(UpdateAttributes),
     #[codec(packet_id = 0x84)]
     UpdateMobEffect(UpdateMobEffect),
+    #[codec(packet_id = 0x8A)]
+    TrackedWaypoint(TrackedWaypoint),
 }
 
 /// Packets with manual Encode impls that can't be in the tagged enum.
