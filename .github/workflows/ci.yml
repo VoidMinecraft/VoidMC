@@ -81,10 +81,30 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --all-features
 
+  e2e:
+    name: e2e
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: void-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the toolchain pinned in void-e2e/rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: void-e2e -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, fmt, clippy, test]
+    needs: [changes, fmt, clippy, test, e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Every required job succeeded, or was skipped for a documentation-only change
@@ -94,10 +114,10 @@ jobs:
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$NEEDS" | jq -e '
             {"true": "success", "false": "skipped"}[.changes.outputs.code // ""] as $expected
-            | (keys | sort) == ["changes", "clippy", "fmt", "test"]
+            | (keys | sort) == ["changes", "clippy", "e2e", "fmt", "test"]
               and .changes.result == "success"
               and $expected != null
-              and all(.fmt, .clippy, .test; .result == $expected)' > /dev/null
+              and all(.fmt, .clippy, .test, .e2e; .result == $expected)' > /dev/null
 
   coverage:
     name: coverage
