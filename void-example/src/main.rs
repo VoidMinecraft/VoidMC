@@ -11,6 +11,7 @@ use voidmc::{
     Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
     ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
+use voidmc_vanilla_commands::{Access, VanillaCommandsPlugin};
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
 
 mod biome;
@@ -21,7 +22,6 @@ mod entities;
 mod environment;
 mod menu;
 mod particle;
-mod scoreboard;
 mod sidebar;
 mod sign;
 mod sound;
@@ -97,6 +97,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ));
         })
         .add_plugin(|app| {
+            // Vanilla /team and /scoreboard, open to everyone on this demo server.
+            app.add_plugins(VanillaCommandsPlugin {
+                access: Access::Everyone,
+            });
+        })
+        .add_plugin(|app| {
             // Register all default commands
             let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
             register_default_commands(&mut registry, &[]);
@@ -109,7 +115,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
-            registry.register(scoreboard::team_command());
             registry.register(effects::effect_command());
             registry.register(effects::speed_command());
             registry.register(world_border::border_command());
