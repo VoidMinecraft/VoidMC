@@ -176,3 +176,16 @@ packet); a larger frame is released after it is written. If a packet is
 rejected mid-batch (for example
 `FrameTooLarge`), the frames accepted before it are flushed before the error
 is propagated.
+
+Once compression is enabled (see [configuration](configuration.md#compression)),
+`ClientWriter` zlib-compresses packets at or above the threshold into a second
+reusable buffer, retained up to `max_outbound_frame_bytes / 32`, on the network
+thread. The zlib state is only allocated for connections that switch to
+compression (the deflater on `enable_compression`, the inflater on the first
+compressed inbound packet), so status pings and bare connects never pay for it.
+
+`ClientReader` reads through an 8 KiB `BufReader`, so a frame length prefix no
+longer costs one `read` syscall per byte. Buffering does not weaken the
+cancellation guarantee above, because that guarantee comes from `Client::run`
+never dropping a `receive()` future before connection teardown: the reader loop
+is a single persistent future, so no partially read frame is ever abandoned.

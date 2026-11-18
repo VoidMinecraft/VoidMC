@@ -47,7 +47,10 @@ const SPECS: &[EnumSpec] = &[
         source: include_str!("../src/clientbound/login.rs"),
         state: "login",
         direction: "clientbound",
-        names: &[("LoginSuccess", "minecraft:login_finished")],
+        names: &[
+            ("LoginSuccess", "minecraft:login_finished"),
+            ("SetCompression", "minecraft:login_compression"),
+        ],
     },
     EnumSpec {
         file: "src/serverbound/login.rs",
