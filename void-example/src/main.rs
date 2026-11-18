@@ -13,6 +13,7 @@ use voidmc::{
 };
 use voidmc_vanilla_commands::{Access, VanillaCommandsPlugin};
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
+use voidmc_worldedit::WorldEditPlugin;
 
 mod biome;
 mod boss_bar;
@@ -29,6 +30,7 @@ mod tab_list;
 mod title;
 mod toast;
 mod world_border;
+mod worldedit;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -138,6 +140,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     sidebar::altitude_system,
                 ),
             );
+        })
+        .add_plugin(|app| {
+            app.add_plugins(WorldEditPlugin::default());
+            app.add_observer(worldedit::grant_wand);
         })
         .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",

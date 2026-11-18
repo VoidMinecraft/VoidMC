@@ -125,6 +125,7 @@ const SPECS: &[EnumSpec] = &[
             ("PlayerAbilities", "minecraft:player_abilities"),
             ("SynchronizePlayerPosition", "minecraft:player_position"),
             ("SetHeadRotation", "minecraft:rotate_head"),
+            ("SectionBlocksUpdate", "minecraft:section_blocks_update"),
             ("EntitySoundEffect", "minecraft:sound_entity"),
             ("SoundEffect", "minecraft:sound"),
             ("StopSound", "minecraft:stop_sound"),

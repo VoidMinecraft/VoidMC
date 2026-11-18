@@ -1975,6 +1975,7 @@ dependencies = [
  "voidmc-protocol",
  "voidmc-vanilla-commands",
  "voidmc-world-io",
+ "voidmc-worldedit",
 ]
 
 [[package]]
@@ -2026,6 +2027,25 @@ dependencies = [
  "ussr-nbt",
  "voidmc",
  "voidmc-codec",
+ "voidmc-data",
+ "voidmc-protocol",
+]
+
+[[package]]
+name = "voidmc-worldedit"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "criterion",
+ "flate2",
+ "flume",
+ "simd_cesu8",
+ "tempfile",
+ "tracing",
+ "ussr-nbt",
+ "uuid",
+ "voidmc",
  "voidmc-data",
  "voidmc-protocol",
 ]

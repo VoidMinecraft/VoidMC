@@ -20,7 +20,7 @@ use crate::inventory::Inventory;
 use crate::item::ItemStack;
 use crate::item_behavior::{
     BlockUseTarget, ItemBehaviorRegistry, ItemUseQueue, drain_item_use_queue, enqueue_break,
-    enqueue_use_in_air, enqueue_use_on_block,
+    enqueue_start_break, enqueue_use_in_air, enqueue_use_on_block,
 };
 use crate::network::PacketEvent;
 use crate::schedule::VoidSystems;
@@ -89,13 +89,20 @@ fn queue_creative_break(
     mut queue: ResMut<ItemUseQueue>,
     clients: Query<&ClientId>,
 ) {
-    // Creative clients remove the block on start and do not send FinishedDigging.
-    if config.game_mode != 1 {
-        return;
-    }
     let Ok(client_id) = clients.get(event.entity) else {
         return;
     };
+    // Creative clients remove the block on start and do not send FinishedDigging.
+    if config.game_mode != 1 {
+        enqueue_start_break(
+            &mut queue,
+            event.entity,
+            client_id.0,
+            event.sequence,
+            event.position,
+        );
+        return;
+    }
     enqueue_break(
         &mut queue,
         event.entity,
@@ -183,18 +190,58 @@ mod tests {
     }
 
     #[test]
-    fn survival_start_digging_waits_for_finish() {
-        let mut app = app_with_game_mode(0);
-        let player = app.world_mut().spawn(ClientId(7)).id();
+    fn survival_start_digging_consults_the_hook_and_keeps_the_block() {
+        use crate::item_behavior::{BlockBreakContext, ItemBehavior, UseResult};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        app.world_mut().trigger(PlayerStartDiggingEvent {
-            entity: player,
-            position: BlockPosition { x: 1, y: 64, z: 2 },
-            face: BlockFace::Top,
-            sequence: 12,
-        });
+        struct Count(Arc<AtomicUsize>);
+        impl ItemBehavior for Count {
+            fn before_break_block(&self, _ctx: &mut BlockBreakContext) -> UseResult {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                UseResult::Pass
+            }
+        }
 
-        assert_eq!(app.world().resource::<ItemUseQueue>().pending_len(), 0);
+        let mut server = MultiplayerHarness::with_game_mode(0);
+        let position = BlockPosition { x: 2, y: 64, z: 2 };
+        server.place(0, position);
+        let calls = Arc::new(AtomicUsize::new(0));
+        server
+            .app
+            .world_mut()
+            .resource_mut::<ItemBehaviorRegistry>()
+            .register_for("minecraft:stone", Count(calls.clone()));
+
+        for (status, sequence) in [
+            (PlayerActionStatus::StartedDigging, 20),
+            (PlayerActionStatus::FinishedDigging, 21),
+        ] {
+            let started = status == PlayerActionStatus::StartedDigging;
+            server.app.world_mut().trigger(PacketEvent {
+                client_id: 1,
+                entity: server.players[0],
+                packet: PlayerAction {
+                    status,
+                    position,
+                    face: BlockFace::Top,
+                    sequence,
+                },
+            });
+            server.app.update();
+            server.assert_block(position, if started { 1 } else { 0 });
+            let acked = server.outgoing.try_iter().any(|outgoing| {
+                outgoing.client_id == 1
+                    && matches!(
+                        &outgoing.packet,
+                        voidmc_protocol::clientbound::ClientboundPacket::Play(
+                            voidmc_protocol::clientbound::PlayPacket::BlockChangedAck(ack)
+                        ) if ack.sequence == sequence
+                    )
+            });
+            assert!(acked, "sequence {sequence} acknowledged");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -239,6 +286,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn handled_before_break_keeps_the_block_and_resyncs_the_breaker() {
+        use crate::item_behavior::{BlockBreakContext, ItemBehavior, UseResult};
+
+        struct Keep;
+        impl ItemBehavior for Keep {
+            fn before_break_block(&self, ctx: &mut BlockBreakContext) -> UseResult {
+                assert_eq!(ctx.broken_state, 1);
+                UseResult::Handled
+            }
+        }
+
+        let mut server = MultiplayerHarness::new();
+        let position = BlockPosition { x: 2, y: 64, z: 2 };
+        server.place(0, position);
+        server
+            .app
+            .world_mut()
+            .resource_mut::<ItemBehaviorRegistry>()
+            .register_for("minecraft:stone", Keep);
+
+        server.app.world_mut().trigger(PacketEvent {
+            client_id: 2,
+            entity: server.players[1],
+            packet: PlayerAction {
+                status: PlayerActionStatus::StartedDigging,
+                position,
+                face: BlockFace::Top,
+                sequence: 9,
+            },
+        });
+        server.app.update();
+
+        server.assert_block(position, 1);
+        let packets: Vec<_> = server.outgoing.try_iter().collect();
+        let to_breaker: Vec<_> = packets
+            .iter()
+            .filter(|outgoing| outgoing.client_id == 2)
+            .map(|outgoing| &outgoing.packet)
+            .collect();
+        assert!(matches!(
+            to_breaker.as_slice(),
+            [
+                voidmc_protocol::clientbound::ClientboundPacket::Play(
+                    voidmc_protocol::clientbound::PlayPacket::BlockUpdate(update)
+                ),
+                voidmc_protocol::clientbound::ClientboundPacket::Play(
+                    voidmc_protocol::clientbound::PlayPacket::BlockChangedAck(ack)
+                ),
+            ] if update.position == position && update.block_state_id == 1 && ack.sequence == 9
+        ));
+        assert!(packets.iter().all(|outgoing| outgoing.client_id == 2));
+    }
+
     struct MultiplayerHarness {
         app: App,
         outgoing: flume::Receiver<OutgoingPacket>,
@@ -249,6 +350,10 @@ mod tests {
 
     impl MultiplayerHarness {
         fn new() -> Self {
+            Self::with_game_mode(ServerConfig::default().game_mode)
+        }
+
+        fn with_game_mode(game_mode: u8) -> Self {
             let mut app = App::new();
             let (_incoming_tx, incoming_rx) = flume::unbounded::<IncomingPacket>();
             let (outgoing_tx, outgoing) = flume::unbounded::<OutgoingPacket>();
@@ -260,7 +365,10 @@ mod tests {
                 disconnect: disconnect_rx,
                 kick: kick_tx,
             })
-            .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
+            .insert_resource(ServerConfigResource::from(&ServerConfig {
+                game_mode,
+                ..Default::default()
+            }))
             .insert_resource(ChunkIndex::default())
             .add_plugins((InteractionPlugin, ItemUsePlugin));
 
