@@ -65,12 +65,12 @@ fn paint(out: &mut String, color: TextColor) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Text {
+pub struct Span {
     pub text: String,
     pub color: Option<TextColor>,
 }
 
-impl Text {
+impl Span {
     pub fn color(mut self, color: TextColor) -> Self {
         self.color = Some(named_or_white(color));
         self
@@ -298,7 +298,7 @@ impl Progress {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Widget {
-    Text(Text),
+    Span(Span),
     Labeled(Labeled),
     Blank,
     Separator(char),
@@ -308,8 +308,8 @@ pub enum Widget {
 }
 
 impl Widget {
-    pub fn text(text: impl Into<String>) -> Text {
-        Text {
+    pub fn span(text: impl Into<String>) -> Span {
+        Span {
             text: text.into(),
             color: None,
         }
@@ -359,7 +359,7 @@ impl Widget {
 
     pub fn render(&self, out: &mut Vec<String>) {
         match self {
-            Widget::Text(text) => text.render(out),
+            Widget::Span(text) => text.render(out),
             Widget::Labeled(labeled) => labeled.render(out),
             Widget::Blank => out.push(String::new()),
             Widget::Separator(glyph) => {
@@ -375,9 +375,9 @@ impl Widget {
     }
 }
 
-impl From<Text> for Widget {
-    fn from(text: Text) -> Self {
-        Widget::Text(text)
+impl From<Span> for Widget {
+    fn from(text: Span) -> Self {
+        Widget::Span(text)
     }
 }
 
@@ -558,7 +558,7 @@ impl Sidebar {
                 labeled.set_value(value);
                 true
             }
-            Some(Widget::Text(text)) => {
+            Some(Widget::Span(text)) => {
                 text.text = value.into();
                 true
             }
@@ -892,8 +892,8 @@ mod tests {
     #[test]
     fn each_widget_renders_its_exact_lines() {
         let sidebar = Sidebar::new("t")
-            .widget(Widget::text("plain"))
-            .widget(Widget::text("aqua").color(TextColor::Aqua))
+            .widget(Widget::span("plain"))
+            .widget(Widget::span("aqua").color(TextColor::Aqua))
             .widget(Widget::labeled("Tour", "1/3"))
             .widget(Widget::labeled("Vitesse", "42").color(TextColor::Gold))
             .widget(Widget::blank())
@@ -969,7 +969,7 @@ mod tests {
     fn long_lines_are_cut_to_the_visible_limit_ignoring_colour_codes() {
         let long = "x".repeat(60);
         let sidebar = Sidebar::new("t")
-            .widget(Widget::text(&long).color(TextColor::Gold))
+            .widget(Widget::span(&long).color(TextColor::Gold))
             .widget(Widget::labeled("é".repeat(38), "value"));
         let rendered = lines(&sidebar);
         assert_eq!(rendered[0], format!("§6{}", "x".repeat(MAX_LINE_CHARS)));
@@ -991,7 +991,7 @@ mod tests {
             TextColor::White
         );
         assert_eq!(
-            Widget::text("a").color(TextColor::rgb(0x123456)).color,
+            Widget::span("a").color(TextColor::rgb(0x123456)).color,
             Some(TextColor::White)
         );
     }
@@ -1076,11 +1076,11 @@ mod tests {
     #[test]
     fn ids_survive_inserts_and_removals() {
         let mut sidebar = Sidebar::new("t");
-        let a = sidebar.push(Widget::text("a"));
+        let a = sidebar.push(Widget::span("a"));
         let b = sidebar.push(Widget::labeled("b", "1"));
-        let c = sidebar.push(Widget::text("c"));
-        let before = sidebar.insert_before(a, Widget::text("before")).unwrap();
-        let after = sidebar.insert_after(c, Widget::text("after")).unwrap();
+        let c = sidebar.push(Widget::span("c"));
+        let before = sidebar.insert_before(a, Widget::span("before")).unwrap();
+        let after = sidebar.insert_after(c, Widget::span("after")).unwrap();
         assert_eq!(ids(&sidebar), [before, a, b, c, after]);
         assert_eq!(
             sidebar
@@ -1090,7 +1090,7 @@ mod tests {
         );
         assert!(sidebar.set_value(b, "2"));
         assert_eq!(sidebar.labeled_mut(b).unwrap().value, "2");
-        let again = sidebar.push(Widget::text("a"));
+        let again = sidebar.push(Widget::span("a"));
         assert_ne!(again, a);
         assert!(sidebar.get(a).is_none());
         assert_eq!(lines(&sidebar), ["before", "§fb: §f2", "c", "after", "a"]);
@@ -1238,7 +1238,7 @@ mod tests {
         player(&mut app, 1, "Leo");
         let mut sidebar = Sidebar::new("t");
         for index in 0..20 {
-            sidebar.push(Widget::text(format!("line {index}")));
+            sidebar.push(Widget::span(format!("line {index}")));
         }
         let board = app.world_mut().spawn(sidebar).id();
         app.update();
@@ -1375,7 +1375,7 @@ mod tests {
         player(&mut app, 1, "Leo");
         let mut sidebar = Sidebar::new("t");
         for index in 0..20 {
-            sidebar.push(Widget::text(format!("line {index}")));
+            sidebar.push(Widget::span(format!("line {index}")));
         }
         let board = app.world_mut().spawn(sidebar).id();
         app.update();
