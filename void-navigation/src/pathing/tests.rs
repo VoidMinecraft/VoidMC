@@ -652,3 +652,38 @@ fn smoothed_segments_keep_the_body_clear_of_blocks() {
     }
     assert!(checked > 10);
 }
+
+#[test]
+fn block_positions_clamp_extreme_coordinates() {
+    let far = BlockPos::containing(Vec3::new(1.0e300, -1.0e300, f64::INFINITY));
+    assert_eq!(
+        far,
+        BlockPos::new(MAX_HORIZONTAL, -MAX_VERTICAL, MAX_HORIZONTAL)
+    );
+    assert_eq!(
+        BlockPos::containing(Vec3::new(f64::NAN, 0.5, -0.5)),
+        BlockPos::new(0, 0, -1)
+    );
+    assert_eq!(
+        BlockPos::new(i32::MAX, i32::MIN, 0).offset(1, -1, 0),
+        BlockPos::new(i32::MAX, i32::MIN, 0)
+    );
+}
+
+#[test]
+fn absurd_goals_from_players_do_not_overflow() {
+    // A client controls its own position, and a follow goal or `/nav goto`
+    // turns it into a search goal: none of these may panic.
+    let mut world = flat();
+    for goal in [
+        Vec3::new(0.0, 1.0e300, 0.0),
+        Vec3::new(0.0, -1.0e300, 0.0),
+        Vec3::new(1.0e300, 1.0, -1.0e300),
+        Vec3::new(f64::MAX, f64::MAX, f64::MAX),
+    ] {
+        for profile in [walker(), NavigationProfile::flyer()] {
+            let (status, _) = search(&mut world, &profile, feet(0, 0), goal);
+            assert_ne!(status, SearchStatus::Complete, "{goal:?}");
+        }
+    }
+}

@@ -1,5 +1,13 @@
 use std::ops::{Add, AddAssign, Mul, Sub};
 
+/// Largest horizontal block coordinate navigation works with: the vanilla
+/// world border limit.
+pub const MAX_HORIZONTAL: i32 = 30_000_000;
+
+/// Largest vertical block coordinate navigation works with, comfortably past
+/// the tallest vanilla dimension height.
+pub const MAX_VERTICAL: i32 = 4_096;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockPos {
     pub x: i32,
@@ -13,14 +21,25 @@ impl BlockPos {
     }
 
     pub const fn offset(self, dx: i32, dy: i32, dz: i32) -> Self {
-        Self::new(self.x + dx, self.y + dy, self.z + dz)
+        Self::new(
+            self.x.saturating_add(dx),
+            self.y.saturating_add(dy),
+            self.z.saturating_add(dz),
+        )
     }
 
+    /// The block containing `point`, clamped to [`MAX_HORIZONTAL`] and
+    /// [`MAX_VERTICAL`].
+    ///
+    /// Points come from player positions and command arguments, so they can
+    /// be arbitrarily large (or NaN, which maps to 0). Clamping keeps every
+    /// difference between two block positions inside `i32` and bounds how
+    /// many sections a column can cache.
     pub fn containing(point: Vec3) -> Self {
         Self::new(
-            point.x.floor() as i32,
-            point.y.floor() as i32,
-            point.z.floor() as i32,
+            (point.x.floor() as i32).clamp(-MAX_HORIZONTAL, MAX_HORIZONTAL),
+            (point.y.floor() as i32).clamp(-MAX_VERTICAL, MAX_VERTICAL),
+            (point.z.floor() as i32).clamp(-MAX_HORIZONTAL, MAX_HORIZONTAL),
         )
     }
 

@@ -22,7 +22,7 @@ pub use grid::{
     ArrayWorld, CacheStats, CachedWorld, CellCache, CellSource, NavWorld, SECTION_CELLS,
     SectionCells, SectionPos, cell_index,
 };
-pub use math::{BlockPos, Vec3, yaw_towards};
+pub use math::{BlockPos, MAX_HORIZONTAL, MAX_VERTICAL, Vec3, yaw_towards};
 pub use movement::{Move, Stand, heuristic, neighbors, stand};
 pub use path::Path;
 pub use profile::{Mobility, MoveModel, NavigationProfile};
