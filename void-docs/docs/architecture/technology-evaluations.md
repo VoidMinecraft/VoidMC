@@ -14,6 +14,7 @@ This page records the main technology comparisons behind the architecture. The b
 | Thread handoff | flume channels | Mutex/RwLock queues, shared state | Accepted |
 | Observability | tracing + tracing-flame | println logs, external-only profilers | Accepted |
 | AI workflow | AGENTS.md contextualization | Generic AI prompts | Accepted |
+| End-to-end test client | Azalea protocol crate | Mineflayer, HeadlessMC, in-repo client | Accepted |
 
 ## Custom `void-codec` vs Serde/bincode
 
@@ -108,6 +109,30 @@ AI coding tools are useful but risky in a custom architecture. Generic prompts o
 **Decision:** keep AGENTS.md as a first-class engineering artifact for AI-assisted development.
 
 **Evidence:** `AGENTS.md`, project runbook, architecture notes, and change patterns.
+
+## Azalea for End-to-End Tests
+
+The end-to-end suite connects real clients to a real server. The client must
+decode what VoidMC sends independently of VoidMC: a client built on
+`void-protocol` would decode with the same derives that encode, so a bug on
+both sides would pass unseen. Azalea also rejects packets with leftover bytes.
+
+| Criterion | Azalea protocol crate | Mineflayer | HeadlessMC | In-repo client |
+|---|---|---|---|---|
+| Independent of VoidMC's codec | Yes, generated from vanilla data | Yes | Yes, it is the vanilla client | No |
+| Determinism | Packets sent only when the test sends them | Physics loop sends on its own timer | Full game loop | Full control |
+| Toolchain cost | Nightly Rust, isolated in `void-e2e/` | Node.js in CI, cross-process tests | JVM and game assets per test | None |
+| Runs in-process | Yes | No | No | Yes |
+
+**Decision:** use Azalea's protocol crate, pinned to the release that speaks
+VoidMC's protocol version, in a separate `void-e2e/` workspace with its own
+pinned nightly so that the rest of the repository stays on stable. A protocol
+bump waits until Azalea publishes a matching release. HeadlessMC remains an
+option for a few full-client smoke tests later.
+
+**Evidence:** `void-e2e/`, its scenarios, the regressions they were shown to
+catch (listed in the [testing guide](/guide/testing#what-the-scenarios-cover)),
+and the `e2e` CI job.
 
 ## Resulting Architecture Principles
 

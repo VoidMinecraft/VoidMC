@@ -8,6 +8,7 @@ This file gives AI coding agents the minimum project context needed to make safe
 - Run all tests: `cargo test --workspace`
 - Format: `cargo fmt --all`
 - Lint (warnings are errors): `cargo clippy --all-targets --all-features -- -D warnings`
+- End-to-end suite (from `void-e2e/`, its own nightly workspace, outside `--workspace`): `cargo test`
 - Run example server: `cargo run -p voidmc-example`
 - Run the Alpine Rush demo: `cargo run --release -p voidmc-demo`
 - Docs site (from `void-docs/`): `npm install`, `npm run dev`, `npm run build`
@@ -26,6 +27,7 @@ Directory names drop the `mc`; package names keep it. Pass the package name to `
 - `void-codec-macros/`: proc-macro derives for codec traits
 - `void-data/`: vanilla registry, block and entity data baked to NBT at build time
 - `void-world-io/`: opt-in chunk persistence plugin (save/load to disk)
+- `void-e2e/`: end-to-end suite driving Azalea clients against an in-process server; separate workspace on a pinned nightly
 
 ## Architecture Notes
 
@@ -41,6 +43,7 @@ Directory names drop the `mc`; package names keep it. Pass the package name to `
   2. Export/register it in `void/src/plugins.rs`.
   3. Add or update tests when behavior changes.
 - Protocol changes usually touch both `void-protocol/` packet definitions and `void-codec/` encode/decode behavior.
+- A `PROTOCOL_VERSION` bump waits for an Azalea release of that version; see the end-to-end rules in `void-docs/docs/guide/testing.md`.
 - Keep changes focused; do not mix unrelated refactors.
 
 ## Conventions
@@ -49,7 +52,7 @@ Directory names drop the `mc`; package names keep it. Pass the package name to `
 - Add tests for behavior changes.
 - Update docs/examples when public APIs change.
 - Check crate edition before using language features:
-  - `void`, `void-example`, `void-demo`, `void-net`, `void-protocol`, `void-data`, `void-world-io`: edition 2024
+  - `void`, `void-example`, `void-demo`, `void-net`, `void-protocol`, `void-data`, `void-world-io`, `void-e2e`: edition 2024
   - `void-codec`, `void-codec-macros`: edition 2021
 
 ## Reference Docs
