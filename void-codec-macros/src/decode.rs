@@ -195,9 +195,9 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     .collect::<Result<Vec<_>>>()?;
 
                 let encode_part = if type_attrs.varint32 {
-                    quote! { decoder.decode::<voidmc_codec::VarI32>()?.0 as #repr_type_ident }
+                    quote! { #repr_type_ident::try_from(decoder.decode::<voidmc_codec::VarI32>()?.0).map_err(|_| voidmc_codec::DecodeError::InvalidPacketId(None))? }
                 } else if type_attrs.varint64 {
-                    quote! { decoder.decode::<voidmc_codec::VarI64>()?.0 as #repr_type_ident }
+                    quote! { #repr_type_ident::try_from(decoder.decode::<voidmc_codec::VarI64>()?.0).map_err(|_| voidmc_codec::DecodeError::InvalidPacketId(None))? }
                 } else {
                     quote! { decoder.decode::<#repr_type_ident>()? }
                 };

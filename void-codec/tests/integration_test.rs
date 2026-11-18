@@ -404,6 +404,61 @@ fn test_repr_i32_enum_with_varint32() {
     assert!(buf.len() < 4);
 }
 
+#[derive(
+    voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy,
+)]
+#[codec(varint32)]
+#[repr(u8)]
+pub enum SmallVarState {
+    Off = 0,
+    On = 1,
+}
+
+#[test]
+fn a_varint_outside_the_repr_is_refused_not_wrapped() {
+    for value in [257, 256, -1, -255, i32::MAX, i32::MIN] {
+        let mut buf = Vec::new();
+        voidmc_codec::VarI32(value).encode(&mut buf);
+        assert_eq!(
+            SmallVarState::decode(&mut buf.as_slice()),
+            Err(voidmc_codec::DecodeError::InvalidPacketId(None)),
+            "{value}"
+        );
+    }
+    let mut buf = Vec::new();
+    voidmc_codec::VarI32(1).encode(&mut buf);
+    assert_eq!(
+        SmallVarState::decode(&mut buf.as_slice()),
+        Ok(SmallVarState::On)
+    );
+}
+
+#[derive(
+    voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq, Clone, Copy,
+)]
+#[codec(varint64)]
+#[repr(i32)]
+pub enum WideVarState {
+    Low = -1,
+    High = 7,
+}
+
+#[test]
+fn a_varlong_outside_the_repr_is_refused_not_wrapped() {
+    let mut buf = Vec::new();
+    voidmc_codec::VarI64((1i64 << 32) + 7).encode(&mut buf);
+    assert_eq!(
+        WideVarState::decode(&mut buf.as_slice()),
+        Err(voidmc_codec::DecodeError::InvalidPacketId(None))
+    );
+    let mut buf = Vec::new();
+    voidmc_codec::VarI64(-1).encode(&mut buf);
+    assert_eq!(
+        WideVarState::decode(&mut buf.as_slice()),
+        Ok(WideVarState::Low)
+    );
+}
+
 #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
 pub struct StatePacketRepr {
     pub state: SimpleState,

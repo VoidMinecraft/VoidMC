@@ -26,10 +26,8 @@ impl Encode for VarI32 {
 impl Decode for VarI32 {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let mut value: u32 = 0;
-        let mut shift = 0;
-
-        for _ in 0..5 {
-            let byte = decoder.take(1)?[0];
+        for shift in [0, 7, 14, 21, 28] {
+            let byte = decoder.take_u8()?;
 
             if shift == 28 && byte & 0xf0 != 0 {
                 return Err(DecodeError::InvalidVarintLength);
@@ -40,8 +38,6 @@ impl Decode for VarI32 {
             if byte & 0x80 == 0 {
                 return Ok(VarI32(value as i32));
             }
-
-            shift += 7;
         }
 
         Err(DecodeError::InvalidVarintLength)
