@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bevy_ecs::prelude::*;
 use voidmc_net::socket::FrameLimits;
 
@@ -46,6 +48,18 @@ pub struct ServerConfig {
     pub registries: RegistryDataStore,
 }
 
+impl ServerConfig {
+    /// Length of one game tick, derived from `tick_rate`.
+    ///
+    /// A rate of `0` ticks per second cannot be scheduled, so it is read as
+    /// `1`; every other rate maps to exactly `1 / tick_rate` seconds, so rates
+    /// that do not divide 1000 (30 TPS, 60 TPS, ...) are not truncated to a
+    /// whole millisecond.
+    pub fn tick_duration(&self) -> Duration {
+        Duration::from_secs_f64(1.0 / self.tick_rate.max(1) as f64)
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -90,8 +104,13 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Game ticks per second. `0` is not a rate the scheduler can run at and
+    /// is replaced by `1`.
     pub fn tick_rate(mut self, tick_rate: u64) -> Self {
-        self.config.tick_rate = tick_rate;
+        if tick_rate == 0 {
+            tracing::warn!("tick_rate(0) is not a valid rate; using 1 tick per second instead");
+        }
+        self.config.tick_rate = tick_rate.max(1);
         self
     }
 
@@ -243,5 +262,41 @@ impl From<&ServerConfig> for ServerConfigResource {
             max_chunk_generations_per_tick: config.max_chunk_generations_per_tick,
             slow_tick_ms: config.slow_tick_ms,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_replaces_a_zero_tick_rate_with_one() {
+        let config = ServerConfigBuilder::new().tick_rate(0).build();
+        assert_eq!(config.tick_rate, 1);
+        assert_eq!(config.tick_duration(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn tick_duration_never_divides_by_zero() {
+        let config = ServerConfig {
+            tick_rate: 0,
+            ..ServerConfig::default()
+        };
+        assert_eq!(config.tick_duration(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn tick_duration_is_exact_for_rates_that_do_not_divide_a_second() {
+        let at = |tick_rate| {
+            ServerConfig {
+                tick_rate,
+                ..ServerConfig::default()
+            }
+            .tick_duration()
+        };
+        assert_eq!(at(20), Duration::from_millis(50));
+        assert_eq!(at(30), Duration::from_secs_f64(1.0 / 30.0));
+        assert!(at(30) > Duration::from_millis(33));
+        assert!(at(2000) > Duration::ZERO);
     }
 }
