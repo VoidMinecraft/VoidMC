@@ -23,7 +23,7 @@ impl Encode for u8 {
 
 impl Decode for u8 {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(decoder.take(1)?[0])
+        decoder.take_u8()
     }
 }
 
@@ -35,7 +35,7 @@ impl Encode for i8 {
 
 impl Decode for i8 {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
-        Ok(decoder.take(1)?[0] as i8)
+        Ok(decoder.take_u8()? as i8)
     }
 }
 
