@@ -5,7 +5,7 @@ use tracing::instrument;
 use voidmc_protocol::clientbound;
 
 use crate::components::{ClientId, KeepAliveState, PlayerReady};
-use crate::messages::{TextColor, text_component};
+use crate::messages::{Text, TextColor};
 use crate::network::{ClientSenders, NetworkChannels};
 use crate::players::Players;
 
@@ -68,7 +68,7 @@ pub fn send_keep_alive(
         players.send(
             entity,
             clientbound::Disconnect {
-                reason: text_component("Timed out", TextColor::Red),
+                reason: Text::truncated("Timed out").component(TextColor::Red),
             },
         );
         if let Some(client) = senders.as_deref().and_then(|senders| senders.get(entity)) {
