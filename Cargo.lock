@@ -1901,6 +1901,7 @@ dependencies = [
  "flume",
  "log",
  "rand 0.8.6",
+ "socket2",
  "tokio",
  "tracing",
  "ussr-nbt",

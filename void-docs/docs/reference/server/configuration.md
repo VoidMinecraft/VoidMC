@@ -54,6 +54,22 @@ let config = ServerConfigBuilder::new()
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
 
+## Listen address
+
+`VoidServer::run` binds `address` before starting the game loop and panics if
+the address cannot be bound. The address actually bound is available to systems
+as the `ListenAddress` resource, which is how a server configured with port `0`
+learns the ephemeral port the operating system picked:
+
+```rust
+use bevy_ecs::prelude::Res;
+use voidmc::ListenAddress;
+
+fn announce(address: Res<ListenAddress>) {
+    tracing::info!("listening on {}", address.0);
+}
+```
+
 ## Packet limits
 
 `FrameLimits` rejects invalid packet lengths before allocation and carries the
