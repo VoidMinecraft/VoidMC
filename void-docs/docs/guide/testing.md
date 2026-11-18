@@ -4,7 +4,7 @@ Comprehensive testing is essential for maintaining code quality and preventing r
 
 ## Test Organization
 
-Tests are organized into three categories:
+Tests are organized into four categories:
 
 ### Unit Tests
 
@@ -58,6 +58,12 @@ pub fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 ````
+
+### End-to-End Tests
+
+Located in `void-e2e/`, a separate Cargo workspace. They start a real server in
+the test process and connect real Minecraft clients to it over TCP. See
+[End-to-End Tests](#end-to-end-tests) below.
 
 ## Running Tests
 
@@ -292,6 +298,174 @@ async fn concurrent_clients_dont_interfere() {
 }
 ```
 
+## End-to-End Tests
+
+Unit and integration tests check VoidMC with VoidMC's own types. The
+end-to-end suite, `voidmc-e2e`, checks what a player actually experiences: it
+starts a real `VoidServer` in the test process on an ephemeral port, connects
+Minecraft clients over TCP, and drives them packet by packet through login,
+configuration and play.
+
+The clients are built on [Azalea](https://github.com/azalea-rs/azalea)'s
+protocol crate, a Rust implementation written independently from VoidMC.
+Every packet the server sends is decoded by Azalea, which rejects leftover
+bytes, and chunks are parsed section by section. A bug shared by VoidMC's
+encoder and its own decoder, which a round-trip test cannot see, fails here.
+The reasons for this choice are in
+[Technology Evaluations](/architecture/technology-evaluations#azalea-for-end-to-end-tests).
+
+### Running the Suite
+
+Azalea needs a nightly compiler, so `void-e2e/` is its own Cargo workspace
+with a pinned toolchain in `void-e2e/rust-toolchain.toml`. The root workspace
+excludes it: `cargo test --workspace` does not build it.
+
+```bash
+cd void-e2e
+cargo test
+```
+
+The first build takes a few minutes, because dependencies are compiled with
+optimisations so that the suite runs in seconds. A `RUSTUP_TOOLCHAIN`
+environment variable overrides `rust-toolchain.toml`; unset it if the build
+complains about nightly features.
+
+Set `VOID_E2E_LOG` to an `EnvFilter` directive to see the server logs:
+
+```bash
+VOID_E2E_LOG=voidmc=debug cargo test -- --nocapture block_changes
+```
+
+CI runs `cargo fmt --check`, `cargo clippy` and `cargo test` in this directory
+in the `e2e` job, which `ci-ok` requires.
+
+### Writing a Scenario
+
+Scenarios live in `void-e2e/tests/scenarios/`, one module per area.
+
+```rust
+use voidmc_e2e::TestServer;
+use voidmc_e2e::core::position::Vec3;
+use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
+
+#[tokio::test]
+async fn teleport_is_seen_by_others() {
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+
+    alice.command("tp 10 100 10").await;
+    alice
+        .expect("the teleport", |packet| match packet {
+            ClientboundGamePacket::PlayerPosition(teleport) => Some(teleport.change.pos),
+            _ => None,
+        })
+        .await;
+
+    let destination = Vec3::new(10.0, 100.0, 10.0);
+    bob.wait_until("Alice teleported", |view| {
+        view.entity_by_uuid(alice.uuid())
+            .is_some_and(|(_, entity)| entity.position == destination)
+    })
+    .await;
+
+    alice.assert_healthy();
+    server.stop().await;
+}
+```
+
+`TestServer::builder()` starts from a small configuration: `127.0.0.1:0`, 50
+ticks per second, view distance 4, the default world generator and the default
+commands.
+
+| Method | Effect |
+|---|---|
+| `config(\|c\| c.view_distance(6))` | Edits the `ServerConfigBuilder` |
+| `compression_threshold(Some(64))` | Shortcut for the compression setting |
+| `plugin(\|app\| { ... })` | Adds systems, observers or resources, like `VoidServer::add_plugin` |
+| `command(my_command)` | Registers a command built by `my_command()` |
+| `without_default_commands()` | Starts with an empty command registry |
+
+On a running server:
+
+- `join(name)` and `join_with(name, BotOptions { view_distance })` log a bot
+  in and return once the server lists it.
+- `with_world(|world| ...)` runs a closure on the game thread at the start of
+  the next tick and returns its result.
+- `wait_for(what, |world| Option<T>)` polls once per tick until the closure
+  returns `Some`.
+- `wait_ticks(n)`, `status()` (the server-list ping) and `player_entity(uuid)`.
+- `stop()` shuts the server down and fails the test if VoidMC logged an
+  error, or an unrecognised packet, on any thread.
+
+Only one `TestServer` runs at a time in a test process; the others wait for it
+to stop. That is what lets `stop()` attribute every log line to the right
+server.
+
+A `Bot` answers keep-alives and pings, accepts teleports like the vanilla
+client, and keeps a `ClientView` of what a vanilla client would remember: its
+position, chunks, entities, tab list and inventory.
+
+- `send(packet)` sends any serverbound play packet; `command`, `chat` and
+  `move_to` are shortcuts.
+- `expect(what, matcher)` removes and returns the oldest received packet the
+  matcher accepts, waiting for it if needed. Packets that do not match stay
+  queued, so expectations do not have to follow the order of packets.
+- `wait_until(what, |view| bool)` waits for the client view to reach a state.
+- `queued(matcher)` and `clear()` inspect or drop queued packets.
+- `assert_healthy()` fails on decode errors, kicks, and anomalies a vanilla
+  client tolerates but that point at a server bug: an entity added twice, a
+  block update for a chunk the client does not hold, a forget for a chunk it
+  never received.
+- `disconnect()` closes the connection like a player quitting.
+
+### Waiting Without Sleeping
+
+Never sleep to let the server catch up. Wait for something observable:
+
+- `expect` and `wait_until` wait for what the client receives.
+- `wait_for` waits for what the server holds.
+- `bot.sync()` returns once the server has handled every packet the bot sent
+  before the call, finished that tick, and every packet it sent the bot during
+  that tick has arrived. Use it before asserting that something did **not**
+  happen.
+
+Every wait times out after 15 seconds with a message naming what it waited
+for. `sync()` sends a `Pong` with the high bit set, which the harness answers
+with a `Ping` carrying the same id at the end of the tick.
+
+### Maintenance Rules
+
+- **Protocol bumps wait for Azalea.** The suite fails fast when Azalea and
+  `voidmc-protocol` speak different protocol versions. A pull request that
+  bumps `PROTOCOL_VERSION` waits until Azalea publishes a release for that
+  version, then bumps the `azalea-*` crates in `void-e2e/Cargo.toml` with it.
+- **The nightly moves with Azalea.** Change `void-e2e/rust-toolchain.toml` only
+  when bumping Azalea, to a nightly that release builds on.
+- **Flaky scenarios are quarantined, not retried.** CI does not retry failed
+  tests. A scenario that fails intermittently gets `#[ignore = "flaky: <issue>"]`
+  pointing at an issue, and is fixed from there.
+- **No sleeps.** Wait for an observable condition, or `sync()` before a
+  negative assertion.
+
+### What the Scenarios Cover
+
+Each regression below was injected into the server, one at a time, and made at
+least one scenario fail.
+
+| Regression | Caught by |
+|---|---|
+| Chunk section header off by two bytes | every scenario |
+| Compression announced but not enabled | every scenario with compression |
+| Chunks no longer forgotten behind a moving player | `chunks_follow_the_player_and_are_forgotten_behind_it` |
+| Block change broadcast to the wrong chunk | `block_changes_reach_other_players_and_late_joiners` |
+| Block change broadcast but not stored | `block_changes_reach_other_players_and_late_joiners` |
+| Keep-alive answers never accepted | `keep_alive_round_trips_and_keeps_going` |
+| Wrong serverbound packet id for container clicks | `clicks_move_items_between_slots` |
+| Suggestion ranges in bytes instead of UTF-16 units | `server_suggestions_use_utf16_ranges` |
+| Joining player not announced to others | `players_see_each_other_move_and_leave` |
+| Quitting player not removed for others | `players_see_each_other_move_and_leave` |
+
 ## Testing Best Practices
 
 ### What to Test
@@ -370,7 +544,9 @@ All tests run automatically on:
 - Every pull request
 - Before merge to main
 
-Tests must pass before code can be merged.
+Tests must pass before code can be merged. The `e2e` job runs the
+[end-to-end suite](#end-to-end-tests) on its pinned nightly; every other job
+uses the stable toolchain in `rust-toolchain.toml`.
 
 ## Common Test Patterns
 
