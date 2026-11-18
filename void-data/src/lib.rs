@@ -11,6 +11,8 @@ use std::sync::OnceLock;
 
 mod biome_attributes;
 pub use biome_attributes::*;
+mod block_types;
+pub use block_types::*;
 
 use ussr_nbt::owned::Nbt;
 

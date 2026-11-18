@@ -1182,8 +1182,8 @@ Per-action payload:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| Section Position | [Long](./data-types#long) | Packed `SectionPos` — chunk section X/Y/Z. |
-| Records | Array of [Long](./data-types#long) | Each `Long` packs `(BlockState << 12) | (relPos within section)` where `relPos` is `(x<<8)|(z<<4)|y`. Length is sent as a VarInt. |
+| Section Position | [Long](./data-types#long) | Packed `SectionPos`: `(x & 0x3FFFFF) << 42 | (z & 0x3FFFFF) << 20 | (y & 0xFFFFF)`. |
+| Records | Array of [VarLong](./data-types#varlong) | Each `VarLong` packs `(BlockState << 12) | (relPos within section)` where `relPos` is `(x<<8)|(z<<4)|y`. Length is sent as a VarInt. |
 
 **Semantics.** Batches multiple block changes within one chunk section.
 

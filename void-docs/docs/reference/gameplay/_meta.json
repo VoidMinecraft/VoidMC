@@ -36,6 +36,11 @@
   },
   {
     "type": "file",
+    "name": "vanilla-commands",
+    "label": "Vanilla /team & /scoreboard"
+  },
+  {
+    "type": "file",
     "name": "sidebar",
     "label": "Sidebar"
   },
@@ -98,6 +103,11 @@
     "type": "file",
     "name": "world",
     "label": "World & Chunks"
+  },
+  {
+    "type": "file",
+    "name": "worldedit",
+    "label": "World Editing"
   },
   {
     "type": "file",

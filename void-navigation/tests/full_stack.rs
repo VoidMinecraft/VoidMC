@@ -126,7 +126,7 @@ fn the_watcher_sees_the_path_marker_and_waypoints_and_nothing_lingers() {
         .id();
     let nav = world.resource_scope(
         |world, registry: bevy_ecs::prelude::Mut<voidmc::CommandRegistry>| {
-            registry.complete("/nav ", world)
+            registry.complete("/nav ", world, operator)
         },
     );
     assert!(

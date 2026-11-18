@@ -12,7 +12,9 @@ use voidmc::{
     ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
 use voidmc_navigation::{NavRemotePlugin, NavigationPlugin, RemoteAccess};
+use voidmc_vanilla_commands::{Access, VanillaCommandsPlugin};
 use voidmc_world_io::{PersistenceConfig, WorldPersistencePlugin};
+use voidmc_worldedit::WorldEditPlugin;
 
 mod biome;
 mod boss_bar;
@@ -23,7 +25,6 @@ mod environment;
 mod menu;
 mod navigation;
 mod particle;
-mod scoreboard;
 mod sidebar;
 mod sign;
 mod sound;
@@ -31,6 +32,7 @@ mod tab_list;
 mod title;
 mod toast;
 mod world_border;
+mod worldedit;
 
 struct LogGuards {
     _file: WorkerGuard,
@@ -99,6 +101,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ));
         })
         .add_plugin(|app| {
+            // Vanilla /team and /scoreboard, open to everyone on this demo server.
+            app.add_plugins(VanillaCommandsPlugin {
+                access: Access::Everyone,
+            });
+        })
+        .add_plugin(|app| {
             // Register all default commands
             let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
             register_default_commands(&mut registry, &[]);
@@ -111,7 +119,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             registry.register(entities::display_command());
             registry.register(sign::sign_command());
             registry.register(menu::menu_command());
-            registry.register(scoreboard::team_command());
             registry.register(effects::effect_command());
             registry.register(effects::speed_command());
             registry.register(world_border::border_command());
@@ -146,6 +153,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.world_mut()
                 .resource_mut::<CommandRegistry>()
                 .register(navigation::navdemo_command());
+        })
+        .add_plugin(|app| {
+            app.add_plugins(WorldEditPlugin::default());
+            app.add_observer(worldedit::grant_wand);
         })
         .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",

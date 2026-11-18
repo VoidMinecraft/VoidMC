@@ -10,7 +10,9 @@ members = [
   "void-protocol",
   "void-codec",
   "void-codec-macros",
-  "void-world-io"
+  "void-world-io",
+  "void-vanilla-commands",
+  "void-worldedit"
 ]
 
 [workspace.package]

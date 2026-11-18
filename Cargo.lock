@@ -1917,6 +1917,7 @@ version = "0.1.1"
 dependencies = [
  "criterion",
  "proptest",
+ "tracing",
  "ussr-nbt",
  "uuid",
  "voidmc-codec-macros",
@@ -1973,7 +1974,9 @@ dependencies = [
  "voidmc-data",
  "voidmc-navigation",
  "voidmc-protocol",
+ "voidmc-vanilla-commands",
  "voidmc-world-io",
+ "voidmc-worldedit",
 ]
 
 [[package]]
@@ -2016,6 +2019,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "voidmc-vanilla-commands"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "flume",
+ "ussr-nbt",
+ "voidmc",
+ "voidmc-codec",
+ "voidmc-protocol",
+]
+
+[[package]]
 name = "voidmc-world-io"
 version = "0.1.0"
 dependencies = [
@@ -2027,6 +2043,25 @@ dependencies = [
  "ussr-nbt",
  "voidmc",
  "voidmc-codec",
+ "voidmc-data",
+ "voidmc-protocol",
+]
+
+[[package]]
+name = "voidmc-worldedit"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "criterion",
+ "flate2",
+ "flume",
+ "simd_cesu8",
+ "tempfile",
+ "tracing",
+ "ussr-nbt",
+ "uuid",
+ "voidmc",
  "voidmc-data",
  "voidmc-protocol",
 ]

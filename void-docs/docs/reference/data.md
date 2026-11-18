@@ -236,6 +236,27 @@ properties are listed in the same order Mojang reports them, and the
 right-most property changes fastest. The per-property strides are computed
 at codegen time and inlined into `to_state_id`.
 
+### Runtime block types
+
+When the block is only known at runtime (a schematic palette, a command
+argument), `block_type` and `block_type_of_state` give its name and every
+property with its values, straight from `blocks.json`:
+
+```rust
+use voidmc_data::{Version, block_type, block_type_of_state, block_state_count};
+
+let stairs = block_type(Version::V26_1_2, "minecraft:oak_stairs").unwrap();
+let east = stairs.with_property(stairs.default_state_id, "facing", "east").unwrap();
+assert_eq!(stairs.property(east, "facing"), Some("east"));
+for (name, value) in stairs.property_values(east) { /* facing=east, half=bottom, ... */ }
+
+assert_eq!(block_type_of_state(Version::V26_1_2, 1).unwrap().name, "minecraft:stone");
+let direct_bits = (block_state_count(Version::V26_1_2) as f64).log2().ceil();
+```
+
+Integer properties keep their real values (`delay` is `1..=4`), unlike the
+typed `state` structs which store them as indices.
+
 ### `shapes` — Collision boxes
 
 `shapes::for_state(state_id) -> &'static [Aabb]` returns the axis-aligned

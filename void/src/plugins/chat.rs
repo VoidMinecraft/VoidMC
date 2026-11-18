@@ -145,9 +145,10 @@ fn handle_command_suggestions(
     world: &World,
     players: Players,
 ) {
-    let Some(completion) = world
-        .resource::<CommandRegistry>()
-        .complete(&event.packet.text, world)
+    let Some(completion) =
+        world
+            .resource::<CommandRegistry>()
+            .complete(&event.packet.text, world, event.entity)
     else {
         return;
     };

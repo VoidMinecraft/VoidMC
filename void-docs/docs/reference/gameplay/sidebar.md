@@ -67,7 +67,7 @@ can be passed to `.widget(..)`, `push`, `insert_before` / `insert_after` or
 
 | Widget | Builder | Renders |
 |---|---|---|
-| `Text` | `Widget::text("Bienvenue").color(c)` | the text, optionally coloured |
+| `Span` | `Widget::span("Bienvenue").color(c)` | the text, optionally coloured |
 | `Labeled` | `Widget::labeled("Tour", "1/3").color(c)` | `Tour: 1/3`, the value in `c` (default white) |
 | `Blank` | `Widget::blank()` | an empty line |
 | `Separator` | `Widget::separator('─')` | 20 dark-gray copies of the glyph |
@@ -96,7 +96,7 @@ with that board. The only panicking access is
 | `insert_before(id, widget)` / `insert_after(id, widget)` `-> Option<WidgetId>` | insert next to an existing widget; `None` if `id` is unknown |
 | `set(id, widget) -> bool` | replace a widget, keeping its handle |
 | `remove(id) -> Option<Widget>` | remove a widget; its handle is never reused |
-| `set_value(id, text) -> bool` | new value of a `Labeled` (or text of a `Text`); `false` if the widget is something else |
+| `set_value(id, text) -> bool` | new value of a `Labeled` (or text of a `Span`); `false` if the widget is something else |
 | `labeled_mut(id)`, `ranking_mut(id)`, `timer_mut(id)`, `progress_mut(id)` | `Option<&mut ..>` typed access: `ranking.set(entries)`, `ranking.set_highlight(Some("Leo"))`, `timer.set(Duration)` / `timer.set_ticks(t)`, `progress.set(v)` / `progress.set_max(m)`, `labeled.set_value(..)` |
 | `get(id)` / `get_mut(id)` / `sidebar[id]` | the raw `Widget` |
 | `widgets()` / `ids()` / `len()` / `is_empty()` | iterate `(WidgetId, &Widget)` pairs or handles in display order |

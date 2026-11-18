@@ -30,14 +30,18 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
+use voidmc_protocol::clientbound;
 use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 
 use crate::components::PlayerDimension;
 use crate::inventory::Inventory;
 use crate::item::{ItemId, ItemStack};
 use crate::messages::TextColor;
+use crate::players::WorldPlayers;
 use crate::world::mutation::send_ack;
-use crate::world::{BlockMutation, mutate_block, offset_position};
+use crate::world::{
+    BlockMutation, ChunkData, ChunkIndex, ChunkPos, DimensionId, mutate_block, offset_position,
+};
 
 /// The block a "use item on block" action targeted.
 #[derive(Clone, Copy, Debug)]
@@ -163,6 +167,14 @@ pub trait ItemBehavior: Send + Sync + 'static {
     fn on_use(&self, _ctx: &mut ItemUseContext) -> UseResult {
         UseResult::Pass
     }
+    /// Called when the player starts breaking a block while holding this item,
+    /// and in survival once more right before the mined block is removed
+    /// (`broken_state` is the block still in place). `Handled` keeps the block
+    /// and resyncs it to the player, so tools like a selection wand can use
+    /// left-click without destroying anything.
+    fn before_break_block(&self, _ctx: &mut BlockBreakContext) -> UseResult {
+        UseResult::Pass
+    }
     /// Called when the player finishes breaking a block while holding this item
     /// (after the block is removed). Use it for tool side effects — custom drops,
     /// durability, messages. The return value is reserved for suppressing default
@@ -231,6 +243,10 @@ impl ItemBehaviorRegistry {
         }
     }
 
+    pub fn contains(&self, item: ItemId) -> bool {
+        self.behaviors.contains_key(&item)
+    }
+
     fn get(&self, item: ItemId) -> Option<Arc<dyn ItemBehavior>> {
         self.behaviors.get(&item).cloned()
     }
@@ -247,6 +263,8 @@ enum UseAction {
         position: BlockPosition,
         face: BlockFace,
     },
+    /// Started mining a block that is only removed once mining finishes.
+    StartBreak { position: BlockPosition },
 }
 
 /// A queued action awaiting processing in the exclusive drain system.
@@ -322,6 +340,73 @@ pub fn enqueue_break(
     });
 }
 
+fn break_cancelled(
+    world: &mut World,
+    player: Entity,
+    client_id: u32,
+    dimension: DimensionId,
+    position: BlockPosition,
+) -> bool {
+    let held = world
+        .get::<Inventory>(player)
+        .map(|inv| inv.held().clone())
+        .unwrap_or(ItemStack::EMPTY);
+    let Some(behavior) = world.resource::<ItemBehaviorRegistry>().get(held.item) else {
+        return false;
+    };
+    let Some(current) = block_state(world, dimension, position) else {
+        return false;
+    };
+    let mut ctx = BlockBreakContext {
+        world,
+        player,
+        client_id,
+        held,
+        position,
+        broken_state: current,
+    };
+    if behavior.before_break_block(&mut ctx) == UseResult::Pass {
+        return false;
+    }
+    let state = block_state(world, dimension, position).unwrap_or(current);
+    WorldPlayers::new(world).send(
+        player,
+        clientbound::BlockUpdate {
+            position,
+            block_state_id: state,
+        },
+    );
+    true
+}
+
+fn block_state(world: &World, dimension: DimensionId, position: BlockPosition) -> Option<i32> {
+    let chunk = ChunkPos::new(position.x.div_euclid(16), position.z.div_euclid(16));
+    let entity = *world.resource::<ChunkIndex>().0.get(&(dimension, chunk))?;
+    world.get::<ChunkData>(entity)?.get_block(
+        position.x.rem_euclid(16) as u8,
+        i32::from(position.y),
+        position.z.rem_euclid(16) as u8,
+    )
+}
+
+/// Enqueues the start of a survival dig, which only consults
+/// [`ItemBehavior::before_break_block`].
+pub fn enqueue_start_break(
+    queue: &mut ItemUseQueue,
+    player: Entity,
+    client_id: u32,
+    sequence: i32,
+    position: BlockPosition,
+) {
+    queue.0.push_back(QueuedUse {
+        player,
+        client_id,
+        hand: Hand::MainHand,
+        sequence,
+        action: UseAction::StartBreak { position },
+    });
+}
+
 /// Exclusive system: process each queued action — break, or dispatch a use to
 /// its behaviour (or the built-in default) — then acknowledge the prediction
 /// sequence exactly once.
@@ -332,8 +417,14 @@ pub fn drain_item_use_queue(world: &mut World) {
         }
 
         match queued.action {
+            UseAction::StartBreak { position } => {
+                if let Some(dimension) = world.get::<PlayerDimension>(queued.player).map(|d| d.0) {
+                    break_cancelled(world, queued.player, queued.client_id, dimension, position);
+                }
+            }
             UseAction::BreakBlock { position, face } => {
                 if let Some(dimension) = world.get::<PlayerDimension>(queued.player).map(|d| d.0)
+                    && !break_cancelled(world, queued.player, queued.client_id, dimension, position)
                     && let Some(broken_state) = mutate_block(
                         world,
                         queued.player,
