@@ -6,7 +6,8 @@ use rand::seq::SliceRandom;
 use voidmc_protocol::clientbound::commands::Parser;
 
 use super::parser::{ArgParser, ParseContext};
-use crate::components::{PlayerName, PlayerReady, Position};
+use crate::components::{PlayerDimension, PlayerName, PlayerReady, Position};
+use crate::world::DimensionId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlayerSelector {
@@ -57,7 +58,17 @@ impl PlayerSelector {
                 let origin = ctx
                     .position()
                     .ok_or_else(|| "@p needs an executor position".to_string())?;
-                ready.retain(|(entity, _)| world.get::<Position>(*entity).is_some());
+                let dimension = |entity| {
+                    world
+                        .get::<PlayerDimension>(entity)
+                        .map(|dimension| dimension.0)
+                        .unwrap_or(DimensionId::Overworld)
+                };
+                let origin_dimension = dimension(ctx.executor);
+                ready.retain(|(entity, _)| {
+                    world.get::<Position>(*entity).is_some()
+                        && dimension(*entity) == origin_dimension
+                });
                 ready
                     .into_iter()
                     .map(|(entity, _)| {
@@ -236,6 +247,58 @@ mod tests {
         assert_eq!(single(&world, far, "@p").unwrap(), carol);
         let nowhere = world.spawn_empty().id();
         assert!(single(&world, nowhere, "@p").is_err());
+    }
+
+    #[test]
+    fn nearest_ignores_players_in_other_dimensions() {
+        let mut world = World::new();
+        let executor = world
+            .spawn((
+                Position {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                PlayerDimension(DimensionId::Overworld),
+            ))
+            .id();
+        let remote = player(&mut world, "Remote", 1.0);
+        world
+            .entity_mut(remote)
+            .insert(PlayerDimension(DimensionId::Nether));
+        let nearby = player(&mut world, "Nearby", 10.0);
+        world
+            .entity_mut(nearby)
+            .insert(PlayerDimension(DimensionId::Overworld));
+
+        assert_eq!(single(&world, executor, "@p").unwrap(), nearby);
+        world.despawn(nearby);
+        assert!(single(&world, executor, "@p").is_err());
+        // Global selectors and names still reach players in other dimensions.
+        assert_eq!(single(&world, executor, "Remote").unwrap(), remote);
+        assert_eq!(many(&world, executor, "@a").unwrap(), vec![remote]);
+    }
+
+    #[test]
+    fn nearest_defaults_missing_dimensions_to_overworld() {
+        let mut world = World::new();
+        let executor = world
+            .spawn(Position {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            })
+            .id();
+        let remote = player(&mut world, "Remote", 1.0);
+        world
+            .entity_mut(remote)
+            .insert(PlayerDimension(DimensionId::End));
+        let nearby = player(&mut world, "Nearby", 10.0);
+        assert_eq!(single(&world, executor, "@p").unwrap(), nearby);
+        world
+            .entity_mut(executor)
+            .insert(PlayerDimension(DimensionId::End));
+        assert_eq!(single(&world, executor, "@p").unwrap(), remote);
     }
 
     #[test]
