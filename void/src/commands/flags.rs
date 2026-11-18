@@ -78,7 +78,9 @@ impl FlagSet {
     }
 }
 
-fn is_flag_token(token: &str) -> bool {
+/// Whether dispatch reads `token` as a flag (or `--`) rather than as the
+/// value of a preceding value flag.
+pub(crate) fn is_flag_token(token: &str) -> bool {
     token.starts_with("--")
         || token
             .strip_prefix('-')

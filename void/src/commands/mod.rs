@@ -537,7 +537,16 @@ fn skip_flag<S: AsRef<str>>(
     definitions
         .iter()
         .find(|definition| definition.matches_token(token))
-        .map(|definition| index + 1 + definition.takes_value as usize)
+        .map(|definition| index + 1 + takes_next_token(tokens, index + 1, definition) as usize)
+}
+
+/// Whether a value flag reads the token at `next` as its value: dispatch
+/// leaves a following flag (or `--`) alone and reports the value missing.
+fn takes_next_token<S: AsRef<str>>(tokens: &[S], next: usize, definition: &FlagDefinition) -> bool {
+    definition.takes_value
+        && tokens
+            .get(next)
+            .is_some_and(|token| !flags::is_flag_token(token.as_ref()))
 }
 
 fn append_flag_branch(
@@ -743,11 +752,14 @@ fn scan_positionals(
             })
             .flatten();
         match flag {
+            // The token being typed is this flag's value, unless it is a flag
+            // itself: dispatch then reports the value missing and reads the
+            // flag, so flag completions stay on offer.
             Some(definition) if definition.takes_value && index == tokens.len() => {
-                return (count, false);
+                return (count, true);
             }
             Some(definition) => {
-                if definition.takes_value {
+                if takes_next_token(tokens, index, definition) {
                     index += 1;
                 }
             }
