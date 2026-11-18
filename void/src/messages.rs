@@ -11,11 +11,12 @@ use tracing::warn;
 #[cfg(test)]
 use ussr_nbt::owned::{Compound, List};
 use ussr_nbt::owned::{Nbt, Tag};
+use voidmc_codec::nbt::{fitting_len, modified_utf8_width};
 use voidmc_protocol::clientbound::SystemChat;
 
 use crate::players::{Audience, Players, Recipients, WorldPlayers};
 
-pub(crate) const MAX_TEXT_BYTES: usize = u16::MAX as usize;
+pub(crate) const MAX_TEXT_BYTES: usize = voidmc_codec::nbt::MAX_STRING_BYTES;
 
 /// Only these names and `#rrggbb` decode on the client; anything else
 /// disconnects the recipient with a `DecoderException`.
@@ -272,7 +273,7 @@ impl<'a> MessageRequest<'a> {
 
     pub fn packet(&self) -> SystemChat {
         SystemChat {
-            content: text_component(&self.text, self.color),
+            content: Text::truncated(self.text.as_str()).component(self.color),
             overlay: self.overlay,
         }
     }
@@ -286,16 +287,89 @@ impl<'a> MessageRequest<'a> {
     }
 }
 
-pub fn text_component(text: &str, color: TextColor) -> Nbt {
-    component(text, Some(color))
+/// A text the client decodes: at most [`Text::MAX_BYTES`] in modified UTF-8, the NBT string
+/// limit. Longer, the client drops the connection. Only [`Text::new`] and
+/// [`Text::truncated`] make one:
+///
+/// ```compile_fail
+/// let text = voidmc::Text(String::from("built around the check"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct Text(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextTooLong {
+    pub bytes: usize,
 }
 
-pub fn plain_text_component(text: &str) -> Nbt {
-    component(text, None)
+impl fmt::Display for TextTooLong {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "text takes {} modified UTF-8 bytes, the client decodes at most {}",
+            self.bytes,
+            Text::MAX_BYTES
+        )
+    }
+}
+
+impl std::error::Error for TextTooLong {}
+
+impl Text {
+    pub const MAX_BYTES: usize = MAX_TEXT_BYTES;
+
+    pub fn new(text: impl Into<String>) -> Result<Self, TextTooLong> {
+        let text = text.into();
+        if fitting_len(&text) == text.len() {
+            Ok(Self(text))
+        } else {
+            Err(TextTooLong {
+                bytes: modified_utf8_len(&text),
+            })
+        }
+    }
+
+    /// Keeps what fits, cut on a character boundary, and logs what it cut.
+    pub fn truncated(text: impl Into<String>) -> Self {
+        let mut text = text.into();
+        let end = fitting_len(&text);
+        if end < text.len() {
+            warn!(
+                bytes = modified_utf8_len(&text),
+                limit = MAX_TEXT_BYTES,
+                kept = modified_utf8_len(&text[..end]),
+                "text exceeds the NBT string limit, truncating"
+            );
+            text.truncate(end);
+        }
+        Self(text)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
+    pub fn component(&self, color: TextColor) -> Nbt {
+        component(&self.0, Some(color))
+    }
+
+    pub fn plain(&self) -> Nbt {
+        component(&self.0, None)
+    }
+}
+
+impl fmt::Display for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 fn component(text: &str, color: Option<TextColor>) -> Nbt {
-    let mut compound = vec![("text".into(), Tag::String(truncate_text(text).into()))];
+    let mut compound = vec![("text".into(), Tag::String(text.into()))];
     if let Some(color) = color {
         compound.push(("color".into(), Tag::String(color.to_string().into())));
     }
@@ -305,33 +379,8 @@ fn component(text: &str, color: Option<TextColor>) -> Nbt {
     }
 }
 
-fn modified_utf8_width(c: char) -> usize {
-    match c {
-        '\0' => 2,
-        c if c as u32 >= 0x1_0000 => 6,
-        c => c.len_utf8(),
-    }
-}
-
-pub(crate) fn truncate_text(text: &str) -> &str {
-    let mut encoded = 0;
-    let mut end = text.len();
-    for (index, c) in text.char_indices() {
-        encoded += modified_utf8_width(c);
-        if encoded > MAX_TEXT_BYTES {
-            end = index;
-            break;
-        }
-    }
-    if end == text.len() {
-        return text;
-    }
-    warn!(
-        bytes = text.len(),
-        kept = end,
-        "text exceeds the NBT string limit, truncating"
-    );
-    &text[..end]
+fn modified_utf8_len(text: &str) -> usize {
+    text.chars().map(modified_utf8_width).sum()
 }
 
 #[cfg(test)]
@@ -369,25 +418,19 @@ fn collect_strings(compound: &Compound, out: &mut Vec<String>) {
 
 #[cfg(test)]
 pub(crate) fn assert_guarded(nbt: &Nbt, text: &str) {
-    use voidmc_codec::Encode;
-
-    let mut bytes = Vec::new();
-    nbt.encode(&mut bytes);
-    let (decoded, trailing) = decode_wire(&bytes);
-    assert_eq!(trailing, 0);
     let mut strings = Vec::new();
-    collect_strings(&decoded.compound, &mut strings);
-    let sent = strings
+    collect_strings(&nbt.compound, &mut strings);
+    let built = strings
         .into_iter()
         .max_by_key(String::len)
         .expect("a string field");
-    assert!(sent.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
-    assert!(sent.len() < text.len());
-    assert!(text.starts_with(&sent));
+    assert!(built.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
+    assert!(built.len() < text.len());
+    assert!(text.starts_with(&built));
 }
 
 #[cfg(test)]
-fn decode_wire_text(bytes: &[u8]) -> (usize, String) {
+fn decode_text(bytes: &[u8]) -> (usize, String) {
     let len = u16::from_be_bytes([bytes[8], bytes[9]]) as usize;
     let (decoded, _) = decode_wire(bytes);
     let text = decoded
@@ -468,6 +511,40 @@ mod tests {
             Some((_, Tag::String(value))) => value.to_string(),
             other => panic!("expected string {key}, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_text_the_client_cannot_decode_is_refused() {
+        for (text, bytes) in [
+            ("é".repeat(40000), 80000),
+            (
+                "😀".repeat(MAX_TEXT_BYTES / 6 + 1),
+                (MAX_TEXT_BYTES / 6 + 1) * 6,
+            ),
+            (
+                "\0".repeat(MAX_TEXT_BYTES / 2 + 1),
+                (MAX_TEXT_BYTES / 2 + 1) * 2,
+            ),
+        ] {
+            assert_eq!(Text::new(text.as_str()), Err(TextTooLong { bytes }));
+            let cut = Text::truncated(text.as_str());
+            assert!(text.starts_with(cut.as_str()));
+            assert!(cut.as_str().chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
+        }
+        let fits = "a".repeat(MAX_TEXT_BYTES);
+        assert_eq!(Text::new(fits.as_str()).unwrap().as_str(), fits);
+        assert_eq!(Text::truncated(fits.as_str()).into_string(), fits);
+    }
+
+    #[test]
+    fn a_text_is_cut_before_the_encoder_sees_it() {
+        let text = "😀".repeat(11000);
+        let error = Text::new(text.as_str()).unwrap_err();
+        assert!(error.to_string().contains("66000"), "{error}");
+        assert_guarded(
+            &Text::truncated(text.as_str()).component(TextColor::White),
+            &text,
+        );
     }
 
     #[test]
@@ -628,10 +705,11 @@ mod tests {
     }
 
     fn system_chat_packet(text: &str, color: TextColor) -> SystemChat {
-        SystemChat {
-            content: text_component(text, color),
-            overlay: false,
-        }
+        let (app, _rx) = test_app();
+        WorldMessages::new(app.world())
+            .broadcast(text)
+            .color(color)
+            .packet()
     }
 
     #[test]
@@ -647,12 +725,16 @@ mod tests {
             "gold"
         );
         assert_eq!(TextColor::parse_or_white("#12345"), TextColor::Rgb(0x12345));
+
+        let long = "😀".repeat(11000);
+        assert_guarded(&crate::commands::text_to_nbt(&long, "gold"), &long);
+        assert_guarded(&crate::commands::system_chat(&long, "gold").content, &long);
     }
 
-    fn wire_text_round_trips(packet: &SystemChat) -> (usize, String) {
+    fn text_round_trips(packet: &SystemChat) -> (usize, String) {
         let mut bytes = Vec::new();
         packet.encode(&mut bytes);
-        decode_wire_text(&bytes)
+        decode_text(&bytes)
     }
 
     #[test]
@@ -663,7 +745,7 @@ mod tests {
         assert_eq!(sent.len(), MAX_TEXT_BYTES - 1);
         assert!(sent.chars().all(|c| c == 'é'));
 
-        let (len, decoded) = wire_text_round_trips(&packet);
+        let (len, decoded) = text_round_trips(&packet);
         assert_eq!(len, MAX_TEXT_BYTES - 1);
         assert_eq!(decoded, sent);
 
@@ -683,7 +765,7 @@ mod tests {
             assert!(text.starts_with(&sent));
             assert!(sent.chars().map(modified_utf8_width).sum::<usize>() <= MAX_TEXT_BYTES);
 
-            let (len, decoded) = wire_text_round_trips(&packet);
+            let (len, decoded) = text_round_trips(&packet);
             assert!(len <= MAX_TEXT_BYTES);
             assert_eq!(decoded, sent);
         }
@@ -693,14 +775,14 @@ mod tests {
             field(&system_chat_packet(&emoji, TextColor::White), "text").len(),
             emoji.len()
         );
-        let (len, decoded) = wire_text_round_trips(&system_chat_packet(&emoji, TextColor::White));
+        let (len, decoded) = text_round_trips(&system_chat_packet(&emoji, TextColor::White));
         assert_eq!(len, MAX_TEXT_BYTES / 6 * 6);
         assert_eq!(decoded, emoji);
     }
 
     #[test]
     fn plain_component_has_no_color_and_is_truncated() {
-        let nbt = plain_text_component("hi");
+        let nbt = Text::truncated("hi").plain();
         assert_eq!(nbt.compound.tags.len(), 1);
         let mut bytes = Vec::new();
         nbt.encode(&mut bytes);
@@ -717,7 +799,7 @@ mod tests {
         );
 
         let text = "😀".repeat(11000);
-        assert_guarded(&plain_text_component(&text), &text);
+        assert_guarded(&Text::truncated(text.as_str()).plain(), &text);
     }
 
     #[test]
@@ -742,7 +824,7 @@ mod tests {
 
         let mut overlay = Vec::new();
         SystemChat {
-            content: text_component("", TextColor::rgb(0xff8800)),
+            content: Text::default().component(TextColor::rgb(0xff8800)),
             overlay: true,
         }
         .encode(&mut overlay);

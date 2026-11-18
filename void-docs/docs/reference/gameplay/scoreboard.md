@@ -154,6 +154,7 @@ Despawn the entity, or remove the `Objective` / `Team` component; viewers get
 the remove packet immediately. The client drops an objective's scores and
 display slot together with it.
 
-The example server shows a `/team <name> [--leave]` command
-(`void-example/src/scoreboard.rs`) and a live altitude sidebar built with the
-[`Sidebar`](sidebar.md) widgets (`void-example/src/sidebar.rs`).
+The example server shows a live altitude sidebar built with the
+[`Sidebar`](sidebar.md) widgets (`void-example/src/sidebar.rs`), and registers
+the vanilla [`/team` and `/scoreboard`](vanilla-commands.md) commands, which
+drive these same components.

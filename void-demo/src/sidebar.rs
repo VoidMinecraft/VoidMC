@@ -523,7 +523,7 @@ fn fill(
         }
         let mut last = handles.rows.last().copied().unwrap_or(anchor);
         for (index, (text, color)) in rows.into_iter().enumerate() {
-            let widget = Widget::from(Widget::text(text).color(color));
+            let widget = Widget::from(Widget::span(text).color(color));
             match handles.rows.get(index) {
                 Some(id) => {
                     if sidebar.get(*id) != Some(&widget) {

@@ -8,10 +8,14 @@ This file gives AI coding agents the minimum project context needed to make safe
 - Run all tests: `cargo test --workspace`
 - Format: `cargo fmt --all`
 - Lint (warnings are errors): `cargo clippy --all-targets --all-features -- -D warnings`
-- Run example server: `cargo run -p void-example`
+- Run example server: `cargo run -p voidmc-example`
+- Run the Alpine Rush demo: `cargo run --release -p voidmc-demo`
 - Docs site (from `void-docs/`): `npm install`, `npm run dev`, `npm run build`
 
 ## Workspace Map
+
+Directory names drop the `mc`; package names keep it. Pass the package name to `cargo -p`
+(`void-example/` is `voidmc-example`, `void-codec/` is `voidmc-codec`, and so on).
 
 - `void/`: core server framework (Bevy ECS app, systems, plugins, commands, world)
 - `void-example/`: runnable example server and logging setup reference
@@ -20,6 +24,8 @@ This file gives AI coding agents the minimum project context needed to make safe
 - `void-protocol/`: protocol packet types and related tests
 - `void-codec/`: encode/decode primitives and tests
 - `void-codec-macros/`: proc-macro derives for codec traits
+- `void-data/`: vanilla registry, block and entity data baked to NBT at build time
+- `void-world-io/`: opt-in chunk persistence plugin (save/load to disk)
 
 ## Architecture Notes
 
@@ -43,7 +49,7 @@ This file gives AI coding agents the minimum project context needed to make safe
 - Add tests for behavior changes.
 - Update docs/examples when public APIs change.
 - Check crate edition before using language features:
-  - `void`, `void-example`, `void-demo`, `void-net`, `void-protocol`: edition 2024
+  - `void`, `void-example`, `void-demo`, `void-net`, `void-protocol`, `void-data`, `void-world-io`: edition 2024
   - `void-codec`, `void-codec-macros`: edition 2021
 
 ## Reference Docs
