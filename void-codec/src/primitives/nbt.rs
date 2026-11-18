@@ -4,7 +4,7 @@ use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
 use tracing::{error, warn};
 use ussr_nbt::mutf8::MString;
 use ussr_nbt::owned::{Compound, List, Nbt, Tag};
-use ussr_nbt::WriteOpts;
+use ussr_nbt::{ReadOpts, WriteOpts};
 
 /// The client reads an NBT string length as an unsigned 16-bit prefix.
 pub const MAX_STRING_BYTES: usize = u16::MAX as usize;
@@ -22,9 +22,9 @@ pub const fn modified_utf8_width(c: char) -> usize {
 /// The length in bytes of the longest prefix of `text`, cut on a character, that fits in an NBT
 /// string.
 pub fn fitting_len(text: &str) -> usize {
-    let mut width = 0;
+    let mut width: usize = 0;
     for (index, c) in text.char_indices() {
-        width += modified_utf8_width(c);
+        width = width.saturating_add(modified_utf8_width(c));
         if width > MAX_STRING_BYTES {
             return index;
         }
@@ -116,7 +116,8 @@ fn fit_string(text: &mut MString) {
         );
         return;
     };
-    *text = MString::from(&decoded[..fitting_len(&decoded)]);
+    // `fitting_len` always lands on a character boundary.
+    *text = MString::from(decoded.get(..fitting_len(&decoded)).unwrap_or_default());
 }
 
 /// Custom reader that prepends the NBT protocol header for the root compound tag
@@ -137,24 +138,22 @@ impl<'a> NbtReader<'a> {
 
 impl<'a> std::io::Read for NbtReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let len = buf.len();
-        if len == 0 {
-            return Ok(0);
-        }
-
         // Send the protocol header bytes: 0x0A (tag) + 0x00 0x00 (empty root name)
+        let Some(first) = buf.first_mut() else {
+            return Ok(0);
+        };
         if self.read_bytes == 0 {
-            buf[0] = 0x0A; // Compound tag
+            *first = 0x0A; // Compound tag
             self.read_bytes = 1;
             return Ok(1);
         }
         if self.read_bytes == 1 {
-            buf[0] = 0x00; // Name length high byte
+            *first = 0x00; // Name length high byte
             self.read_bytes = 2;
             return Ok(1);
         }
         if self.read_bytes == 2 {
-            buf[0] = 0x00; // Name length low byte
+            *first = 0x00; // Name length low byte
             self.read_bytes = 3;
             // Also consume one dummy byte from inner since NBT expects to read the name
             let _ = self.inner.read(&mut [0])?;
@@ -164,7 +163,7 @@ impl<'a> std::io::Read for NbtReader<'a> {
         // After header, read the payload directly from inner
         match self.inner.read(buf) {
             Ok(n) => {
-                self.read_bytes += n;
+                self.read_bytes = self.read_bytes.saturating_add(n);
                 Ok(n)
             }
             Err(e) => Err(e),
@@ -202,18 +201,21 @@ impl Decode for Nbt {
     fn decode_with(decoder: &mut Decoder<'_>) -> Result<Self, DecodeError> {
         let original = decoder.remaining();
         let start_len = original.len();
-        let root_tag = nbt_take(decoder, start_len, 1)?[0];
+        let [root_tag] = nbt_take_array(decoder, start_len)?;
         if root_tag != 0x0A {
             return Err(DecodeError::InvalidLength);
         }
         scan_compound(decoder, start_len, 0)?;
-        let consumed = start_len - decoder.remaining_len();
-        let nbt_bytes = &original[..consumed];
+        let consumed = start_len
+            .checked_sub(decoder.remaining_len())
+            .ok_or(DecodeError::InvalidLength)?;
+        let nbt_bytes = original.get(..consumed).ok_or(DecodeError::InvalidLength)?;
 
         // Wrap the buffer with the NBT reader that prepends the header
         let mut reader = NbtReader::new(nbt_bytes);
 
-        match Nbt::read(&mut reader) {
+        let opts = ReadOpts::new().with_depth_limit(decoder.limits().max_nbt_depth.ussr_limit());
+        match Nbt::read_with_opts(&mut reader, opts) {
             Ok(nbt) => Ok(nbt),
             Err(_) => Err(DecodeError::InvalidLength),
         }
@@ -225,6 +227,11 @@ fn nbt_take<'a>(
     start_len: usize,
     len: usize,
 ) -> Result<&'a [u8], DecodeError> {
+    nbt_charge(decoder, start_len, len)?;
+    decoder.take(len)
+}
+
+fn nbt_charge(decoder: &Decoder<'_>, start_len: usize, len: usize) -> Result<(), DecodeError> {
     let consumed = start_len
         .checked_sub(decoder.remaining_len())
         .and_then(|value| value.checked_add(len))
@@ -236,21 +243,23 @@ fn nbt_take<'a>(
             limit: decoder.limits().max_nbt_bytes,
         });
     }
-    decoder.take(len)
+    Ok(())
+}
+
+fn nbt_take_array<const N: usize>(
+    decoder: &mut Decoder<'_>,
+    start_len: usize,
+) -> Result<[u8; N], DecodeError> {
+    nbt_charge(decoder, start_len, N)?;
+    decoder.take_array()
 }
 
 fn nbt_i32(decoder: &mut Decoder<'_>, start_len: usize) -> Result<i32, DecodeError> {
-    let bytes: [u8; 4] = nbt_take(decoder, start_len, 4)?
-        .try_into()
-        .expect("four bytes");
-    Ok(i32::from_be_bytes(bytes))
+    Ok(i32::from_be_bytes(nbt_take_array(decoder, start_len)?))
 }
 
 fn scan_string(decoder: &mut Decoder<'_>, start_len: usize) -> Result<(), DecodeError> {
-    let bytes: [u8; 2] = nbt_take(decoder, start_len, 2)?
-        .try_into()
-        .expect("two bytes");
-    let len = usize::from(u16::from_be_bytes(bytes));
+    let len = usize::from(u16::from_be_bytes(nbt_take_array(decoder, start_len)?));
     decoder.charge_allocation(len)?;
     nbt_take(decoder, start_len, len)?;
     Ok(())
@@ -264,7 +273,7 @@ fn scan_compound(
     check_nbt_depth(decoder, depth)?;
     let mut entries = 0usize;
     loop {
-        let tag = nbt_take(decoder, start_len, 1)?[0];
+        let [tag] = nbt_take_array(decoder, start_len)?;
         if tag == 0 {
             return Ok(());
         }
@@ -279,7 +288,7 @@ fn scan_compound(
         decoder.charge_elements(1)?;
         decoder.charge_allocation(64)?;
         scan_string(decoder, start_len)?;
-        scan_payload(decoder, start_len, tag, depth + 1)?;
+        scan_payload(decoder, start_len, tag, depth)?;
     }
 }
 
@@ -289,7 +298,6 @@ fn scan_payload(
     tag: u8,
     depth: usize,
 ) -> Result<(), DecodeError> {
-    check_nbt_depth(decoder, depth)?;
     match tag {
         1 => {
             nbt_take(decoder, start_len, 1)?;
@@ -306,7 +314,9 @@ fn scan_payload(
         7 => scan_array(decoder, start_len, 1)?,
         8 => scan_string(decoder, start_len)?,
         9 => {
-            let element_tag = nbt_take(decoder, start_len, 1)?[0];
+            let list_depth = deeper(depth)?;
+            check_nbt_depth(decoder, list_depth)?;
+            let [element_tag] = nbt_take_array(decoder, start_len)?;
             let raw_count = nbt_i32(decoder, start_len)?;
             let count = checked_nbt_count(decoder, raw_count)?;
             if element_tag == 0 && count != 0 {
@@ -315,10 +325,10 @@ fn scan_payload(
             decoder.charge_elements(count)?;
             decoder.charge_allocation(count.checked_mul(32).ok_or(DecodeError::InvalidLength)?)?;
             for _ in 0..count {
-                scan_payload(decoder, start_len, element_tag, depth + 1)?;
+                scan_payload(decoder, start_len, element_tag, list_depth)?;
             }
         }
-        10 => scan_compound(decoder, start_len, depth + 1)?,
+        10 => scan_compound(decoder, start_len, deeper(depth)?)?,
         11 => scan_array(decoder, start_len, 4)?,
         12 => scan_array(decoder, start_len, 8)?,
         _ => return Err(DecodeError::InvalidLength),
@@ -348,12 +358,17 @@ fn checked_nbt_count(decoder: &Decoder<'_>, count: i32) -> Result<usize, DecodeE
     )
 }
 
+fn deeper(depth: usize) -> Result<usize, DecodeError> {
+    depth.checked_add(1).ok_or(DecodeError::InvalidLength)
+}
+
 fn check_nbt_depth(decoder: &Decoder<'_>, depth: usize) -> Result<(), DecodeError> {
-    if depth > decoder.limits().max_nbt_depth {
+    let limit = decoder.limits().max_nbt_depth.levels();
+    if depth > limit {
         return Err(DecodeError::LimitExceeded {
             kind: LimitKind::NbtDepth,
             requested: depth,
-            limit: decoder.limits().max_nbt_depth,
+            limit,
         });
     }
     Ok(())

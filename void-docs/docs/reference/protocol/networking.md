@@ -109,7 +109,7 @@ The server sends periodic keep-alive packets to detect dead connections:
 - **Interval**: 200 ticks (10 seconds at 20 TPS)
 - **Mechanism**: Each tick, `KeepAliveTicker` increments. When the interval is reached, a `KeepAlive` packet with a timestamp ID is sent to all ready players.
 - **Tracking**: `KeepAliveState` on each player tracks the last sent ID and whether a response is pending.
-- **Timeout**: If a player hasn't responded when the next keep-alive is due, a warning is logged and the keep-alive is skipped for that player.
+- **Timeout**: If a player hasn't responded when the next keep-alive is due, a warning is logged and the keep-alive is skipped for that player. Once a keep-alive has gone unanswered for 30 seconds (`KEEP_ALIVE_TIMEOUT_MS`), the player receives a `Disconnect` ("Timed out") and the network thread closes the connection, which despawns the player like any other disconnect.
 
 ## Status Response
 
