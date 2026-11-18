@@ -100,12 +100,12 @@ pub trait WorldGenerator: Send + Sync {
     /// Generate a full chunk at the given position.
     fn generate_chunk(&self, pos: &ChunkPos) -> ProtocolChunk;
 
-    /// Return the Y of the first air block above the terrain at a given block coordinate.
+    /// Return the Y of the first air block above the terrain and any water at a given block coordinate.
     fn surface_height_at(&self, block_x: i32, block_z: i32) -> i32;
 }
 ```
 
-`surface_height_at` returns the Y of the first air block above the terrain (where an entity standing on the surface has its feet). The server uses it as the spawn Y coordinate when `SpawnPosition::y` is `None`.
+`surface_height_at` returns the Y of the first air block above the terrain and any water (where an entity standing on the surface has its feet). The server uses it as the spawn Y coordinate when `SpawnPosition::y` is `None`.
 
 ## DefaultWorldGenerator
 

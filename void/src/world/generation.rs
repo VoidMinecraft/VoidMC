@@ -9,8 +9,9 @@ pub trait WorldGenerator: Send + Sync {
     /// Generates a full chunk at the given position.
     fn generate_chunk(&self, pos: &ChunkPos) -> ProtocolChunk;
 
-    /// Returns the Y of the first air block above the terrain at a given block
-    /// coordinate: where an entity standing on the surface has its feet.
+    /// Returns the Y of the first air block above the terrain and any water at
+    /// a given block coordinate: where an entity standing on the surface has
+    /// its feet.
     fn surface_height_at(&self, block_x: i32, block_z: i32) -> i32;
 
     /// Biome of the 4×4×4 cell whose lowest corner is at these block
@@ -70,7 +71,8 @@ impl WorldGenerator for DefaultWorldGenerator {
             (block_x as f64 * self.frequency).sin() + (block_z as f64 * self.frequency).sin();
         let detail = (block_x as f64 * self.frequency * 3.7).sin() * 0.3
             + (block_z as f64 * self.frequency * 2.9).sin() * 0.3;
-        self.base_height + ((main_wave + detail) * self.amplitude) as i32
+        let terrain = self.base_height + ((main_wave + detail) * self.amplitude) as i32;
+        terrain.max(self.water_level + 1)
     }
 }
 
@@ -82,7 +84,7 @@ const BASE_HEIGHT: i32 = 64;
 const FREQUENCY: f64 = 0.02;
 const AMPLITUDE: f64 = 8.0;
 
-/// Convenience: computes the terrain surface Y using `DefaultWorldGenerator`.
+/// Convenience: [`WorldGenerator::surface_height_at`] of `DefaultWorldGenerator`.
 pub fn surface_height_at(block_x: i32, block_z: i32) -> i32 {
     DefaultWorldGenerator::default().surface_height_at(block_x, block_z)
 }
@@ -102,4 +104,47 @@ pub fn generate_spawn_area(center: ChunkPos, radius: i32) -> Vec<(ChunkPos, Prot
             (pos, chunk)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::ChunkData;
+
+    #[test]
+    fn surface_height_is_the_first_air_block_above_terrain_and_water() {
+        let generator = DefaultWorldGenerator::default();
+        let mut underwater = 0;
+        // (-5, -5) lies in the sine trough, below the water level.
+        for pos in [
+            ChunkPos::new(0, 0),
+            ChunkPos::new(-5, -5),
+            ChunkPos::new(3, -2),
+        ] {
+            let chunk = ChunkData::from_protocol_chunk(&generator.generate_chunk(&pos));
+            for z in 0..16u8 {
+                for x in 0..16u8 {
+                    let (block_x, block_z) = (pos.x * 16 + i32::from(x), pos.z * 16 + i32::from(z));
+                    let y = generator.surface_height_at(block_x, block_z);
+                    let below = chunk.get_block(x, y - 1, z);
+                    assert_eq!(
+                        chunk.get_block(x, y, z),
+                        Some(blocks::AIR),
+                        "({block_x}, {y}, {block_z})"
+                    );
+                    assert_ne!(
+                        below,
+                        Some(blocks::AIR),
+                        "({block_x}, {}, {block_z})",
+                        y - 1
+                    );
+                    underwater += usize::from(below == Some(blocks::WATER));
+                }
+            }
+        }
+        assert!(
+            underwater > 0,
+            "no sampled column was below the water level"
+        );
+    }
 }
