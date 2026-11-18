@@ -32,7 +32,7 @@ let config = ServerConfigBuilder::new()
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `address` | `String` | `"127.0.0.1:25565"` | TCP bind address |
-| `tick_rate` | `u64` | `20` | Game ticks per second |
+| `tick_rate` | `u64` | `20` | Game ticks per second; must be at least `1` (`0` is read as `1`) |
 | `max_players` | `i32` | `100` | Maximum player count (shown in server list) |
 | `view_distance` | `i32` | `10` | Maximum server-side view distance (in chunks) |
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
