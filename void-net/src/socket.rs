@@ -6,7 +6,7 @@ use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use voidmc_codec::{Decode, DecodeError, DecodeLimits, Decoder, Encode, VarI32};
+use voidmc_codec::{Decode, DecodeError, DecodeLimits, Encode, VarI32};
 
 const MAX_DECOMPRESSED_BYTES: usize = 1 << 23;
 
@@ -160,8 +160,7 @@ pub struct Packet {
 
 impl Packet {
     pub fn decode<T: Decode>(&self) -> Result<T, DecodeError> {
-        let mut decoder = Decoder::new(&self.bytes, self.decode_limits);
-        decoder.decode_exact::<T>()
+        self.decode_limits.decode_exact::<T>(&self.bytes)
     }
 }
 

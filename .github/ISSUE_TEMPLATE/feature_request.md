@@ -25,7 +25,10 @@ Which crate(s) are affected?
 - [ ] `void-protocol`
 - [ ] `void-codec`
 - [ ] `void-codec-macros`
+- [ ] `void-data`
+- [ ] `void-world-io`
 - [ ] `void-example`
+- [ ] `void-demo`
 
 ## Additional context
 

@@ -3,7 +3,7 @@ use crate::{Decode, DecodeError, Decoder, Encode, LimitKind};
 
 impl<T: Encode> Encode for Vec<T> {
     fn encode(&self, buf: &mut Vec<u8>) {
-        VarI32(self.len() as i32).encode(buf);
+        VarI32(i32::try_from(self.len()).unwrap_or(i32::MAX)).encode(buf);
         for item in self {
             item.encode(buf);
         }
@@ -38,7 +38,7 @@ impl<T: Decode> Decode for Vec<T> {
 
 impl Encode for String {
     fn encode(&self, buf: &mut Vec<u8>) {
-        VarI32(self.len() as i32).encode(buf);
+        VarI32(i32::try_from(self.len()).unwrap_or(i32::MAX)).encode(buf);
         buf.extend_from_slice(self.as_bytes());
     }
 }

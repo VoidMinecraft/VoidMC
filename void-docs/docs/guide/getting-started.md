@@ -24,13 +24,13 @@ Void is an academic project (EIP) that implements a Minecraft-compatible server 
 ```bash
 # Clone the repository
 git clone https://github.com/VoidMinecraft/VoidMC.git
-cd void
+cd VoidMC
 
-# Build the project
-cargo build --release
+# Build every crate
+cargo build --release --workspace
 
-# Run the server
-cargo run --release
+# Run the example server
+cargo run --release -p voidmc-example
 ```
 
 The server will start on `127.0.0.1:25565` by default.

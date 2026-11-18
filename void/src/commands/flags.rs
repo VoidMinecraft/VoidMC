@@ -77,12 +77,20 @@ impl FlagSet {
     }
 }
 
+fn is_flag_token(token: &str) -> bool {
+    token.starts_with("--")
+        || token
+            .strip_prefix('-')
+            .is_some_and(|short| !short.is_empty() && short.chars().all(|c| c.is_alphabetic()))
+}
+
 /// Pre-pass that separates flags from positional tokens.
 ///
 /// - `--flag` sets a boolean flag
 /// - `--flag value` sets a value flag (if the flag definition expects a value)
 /// - `-f` matches a short flag
 /// - `--` stops flag parsing; everything after is positional
+/// - A value flag followed by another flag or `--` reports a missing value
 ///
 /// Returns `(positional_tokens, flag_set, errors)`.
 pub fn extract_flags(
@@ -114,7 +122,7 @@ pub fn extract_flags(
         if let Some(long_name) = token.strip_prefix("--") {
             if let Some(def) = definitions.iter().find(|d| d.long == long_name) {
                 if def.takes_value {
-                    if i + 1 < tokens.len() {
+                    if i + 1 < tokens.len() && !is_flag_token(&tokens[i + 1]) {
                         i += 1;
                         let value_str = &tokens[i];
                         flags.insert_value(def, value_str, ctx, &mut errors);
@@ -134,13 +142,16 @@ pub fn extract_flags(
         }
 
         if let Some(short_chars) = token.strip_prefix('-') {
-            if !short_chars.is_empty() && short_chars.chars().all(|c| c.is_alphabetic()) {
+            if is_flag_token(token) {
                 let mut matched = true;
                 for ch in short_chars.chars() {
                     if let Some(def) = definitions.iter().find(|d| d.short == Some(ch)) {
                         if def.takes_value {
                             // Short value flags must be standalone: -c value
-                            if short_chars.len() == 1 && i + 1 < tokens.len() {
+                            if short_chars.len() == 1
+                                && i + 1 < tokens.len()
+                                && !is_flag_token(&tokens[i + 1])
+                            {
                                 i += 1;
                                 let value_str = &tokens[i];
                                 flags.insert_value(def, value_str, ctx, &mut errors);
@@ -175,4 +186,112 @@ pub fn extract_flags(
     }
 
     (positional, flags, errors)
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::world::World;
+
+    use super::*;
+    use crate::commands::parser::IntegerArg;
+
+    fn definitions() -> Vec<FlagDefinition> {
+        vec![
+            FlagDefinition {
+                long: "count".into(),
+                short: Some('c'),
+                description: String::new(),
+                takes_value: true,
+                value_parser: Some(IntegerArg::unbounded()),
+            },
+            FlagDefinition {
+                long: "verbose".into(),
+                short: Some('v'),
+                description: String::new(),
+                takes_value: false,
+                value_parser: None,
+            },
+            FlagDefinition {
+                long: "quiet".into(),
+                short: Some('q'),
+                description: String::new(),
+                takes_value: false,
+                value_parser: None,
+            },
+        ]
+    }
+
+    fn extract(input: &[&str]) -> (Vec<String>, FlagSet, Vec<ParseError>) {
+        let mut world = World::new();
+        let executor = world.spawn_empty().id();
+        let ctx = ParseContext {
+            world: &world,
+            executor,
+        };
+        let tokens = input
+            .iter()
+            .map(|token| token.to_string())
+            .collect::<Vec<_>>();
+        extract_flags(&tokens, &definitions(), &ctx)
+    }
+
+    fn assert_missing_count(errors: &[ParseError]) {
+        assert!(matches!(
+            errors.first(),
+            Some(ParseError::FlagMissingValue { flag }) if flag == "count"
+        ));
+    }
+
+    #[test]
+    fn missing_value_does_not_consume_the_next_flag() {
+        for count in ["--count", "-c"] {
+            for verbose in ["--verbose", "-v", "-vq"] {
+                let (positional, flags, errors) = extract(&[count, verbose]);
+                assert_missing_count(&errors);
+                assert_eq!(errors.len(), 1);
+                assert!(positional.is_empty());
+                assert!(flags.has("verbose"));
+                assert_eq!(flags.has("quiet"), verbose == "-vq");
+                assert!(flags.get_value::<i32>("count").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn missing_value_preserves_the_flag_terminator() {
+        for count in ["--count", "-c"] {
+            let (positional, flags, errors) = extract(&[count, "--", "--verbose"]);
+            assert_missing_count(&errors);
+            assert_eq!(errors.len(), 1);
+            assert_eq!(positional, vec!["--verbose"]);
+            assert!(!flags.has("verbose"));
+        }
+    }
+
+    #[test]
+    fn missing_value_preserves_unknown_flag_errors() {
+        for count in ["--count", "-c"] {
+            for unknown in ["--unknown", "-x"] {
+                let (_, _, errors) = extract(&[count, unknown]);
+                assert_missing_count(&errors);
+                assert_eq!(errors.len(), 2);
+                assert!(matches!(errors[1], ParseError::UnknownFlag(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn value_flags_still_accept_negative_numbers_and_report_end_of_input() {
+        for count in ["--count", "-c"] {
+            let (positional, flags, errors) = extract(&[count, "-3", "--verbose", "tail"]);
+            assert!(errors.is_empty());
+            assert_eq!(flags.get_value::<i32>("count"), Some(&-3));
+            assert!(flags.has("verbose"));
+            assert_eq!(positional, vec!["tail"]);
+
+            let (_, _, errors) = extract(&[count]);
+            assert_missing_count(&errors);
+            assert_eq!(errors.len(), 1);
+        }
+    }
 }
