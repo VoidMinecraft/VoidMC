@@ -33,7 +33,7 @@ pub mod toasts;
 pub(crate) mod window;
 pub mod world;
 
-pub use app::VoidServer;
+pub use app::{ListenAddress, VoidServer};
 pub use commands::defaults::{
     PluginList, broadcast_command, clear_command, gamemode_command, give_command, help_command,
     kick_command, list_command, ping_command, plugins_command, register_default_commands,
