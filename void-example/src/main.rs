@@ -7,6 +7,7 @@ use tracing_subscriber::prelude::*;
 use voidmc::components::PlayerName;
 use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
 use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
+use voidmc::plugins::redstone::RedstonePlugin;
 use voidmc::{
     Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
     ServerConfig, ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
@@ -25,6 +26,7 @@ mod environment;
 mod menu;
 mod navigation;
 mod particle;
+mod redstone;
 mod sidebar;
 mod sign;
 mod sound;
@@ -142,6 +144,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_plugin(|app| {
             app.add_plugins(WorldEditPlugin::default());
             app.add_observer(worldedit::grant_wand);
+        })
+        .add_plugin(|app| {
+            // Levers, buttons, flat redstone dust and note blocks; `/circuit`
+            // builds a test circuit next to the player.
+            app.add_plugins(RedstonePlugin);
+            app.world_mut()
+                .resource_mut::<CommandRegistry>()
+                .register(redstone::circuit_command());
         })
         .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",

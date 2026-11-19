@@ -94,7 +94,9 @@ default to `UseResult::Pass`, which runs the built-in default (a block item
 places its block); return `UseResult::Handled` to take over.
 
 ```rust
-use voidmc::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult, VoidServer};
+use voidmc::{
+    ItemBehavior, ItemBehaviorRegistry, ItemUseContext, ServerConfig, UseResult, VoidServer,
+};
 
 struct Wand;
 impl ItemBehavior for Wand {
@@ -105,7 +107,7 @@ impl ItemBehavior for Wand {
     }
 }
 
-VoidServer::new(config)
+VoidServer::new(ServerConfig::default())
     .add_plugin(|app| {
         app.world_mut()
             .resource_mut::<ItemBehaviorRegistry>()
@@ -114,10 +116,29 @@ VoidServer::new(config)
     .run();
 ```
 
+Block-state constants such as `GLOWSTONE` come from the `voidmc-data` crate, so
+add it next to `voidmc`; `ItemId::from_name("minecraft:glowstone")` and
+`default_block_state()` give the same id without it. Registering a second
+behaviour for the same item replaces the first. `register_for` resolves the name
+when it is called: an unknown name logs a warning and registers nothing.
+
 `ItemUseContext` exposes full world access — `place_block`, `set_block`,
 `give`, `consume`, `reply`, and `with_world` / `with_world_mut`. Behaviours run
 in an exclusive system (the same queue + drain pattern as commands), so they can
 mutate anything.
+
+A right-click runs the behaviour of the item in the hand that was used
+(`ctx.hand`): the selected hotbar slot for the main hand, slot 45 for the off
+hand. `ctx.held` is that item as it was when the packet arrived, and `consume`
+takes from that slot. The client tries the main hand first and the off hand
+next, unless it expects the main-hand item to do something. A main-hand
+behaviour the client does not know about can therefore be followed by an
+off-hand use of the same click, which runs the off-hand item. Before that, the
+client follows the use on the block with a use in the air of the same hand, so a
+behaviour that implements both `on_use_on_block` and `on_use` runs both for one
+click on a block. An empty hand runs no item behaviour and places nothing; the
+clicked block's own interaction ([below](#blocks-that-react-to-a-right-click))
+still runs, so an empty hand toggles a lever.
 
 Four hooks are available:
 
@@ -140,6 +161,34 @@ impl ItemBehavior for DirtToBedrock {
 }
 // reg.register_for("minecraft:dirt", DirtToBedrock);
 ```
+
+## Blocks that react to a right-click
+
+A right-click on a block runs, in order: the held item's `ItemBehavior`, then
+the clicked block's `BlockInteraction` (if the item passed), then the default
+placement (if both passed). Register an interaction for every state of a
+block in `BlockInteractionRegistry`; it is empty by default, and the opt-in
+[`RedstonePlugin`](./redstone.md) fills it for levers and buttons.
+
+```rust
+use voidmc::{BlockInteraction, BlockInteractionRegistry, ItemUseContext, UseResult};
+
+struct Doorbell;
+impl BlockInteraction for Doorbell {
+    fn on_use(&self, ctx: &mut ItemUseContext, _state: i32) -> UseResult {
+        ctx.reply("ding dong");
+        UseResult::Handled // consumed: the held block is not placed
+    }
+}
+// app.world_mut().resource_mut::<BlockInteractionRegistry>()
+//     .register_for("minecraft:bell", Doorbell);
+```
+
+As in vanilla, the block's interaction only runs for a main-hand use, and not
+while the player is sneaking with an item in either hand (`Sneaking`
+component, from the Player Input packet): then the item is used, so a sneaking
+player can place a block against a lever. An off-hand use, which a client sends
+after a main-hand use it did not consume, never reaches the block.
 
 ## Getting items in
 

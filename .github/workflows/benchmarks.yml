@@ -1,14 +1,10 @@
 name: Benchmarks
 
+# Not run automatically on pull requests: the Criterion run takes over ten
+# minutes and its results are informative only. To benchmark a pull request,
+# start the workflow by hand on its branch (Actions tab > Benchmarks > Run
+# workflow, or `gh workflow run benchmarks.yml --ref <branch>`).
 on:
-  pull_request:
-    paths:
-      - "**/*.rs"
-      - "**/benches/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - ".github/workflows/benchmarks.yml"
   workflow_dispatch:
     inputs:
       run_tcp_stress:
