@@ -755,9 +755,10 @@ async fn gravity_and_block_checks_are_opt_in() {
             "the three pigs past or at the wall and floor",
             move |world| {
                 let (a, _, _) = pig_state(world, floating)?;
-                let (b, _, _) = pig_state(world, sinking)?;
+                // Once out of the world, the sinking pig is removed.
+                let sunk = pig_state(world, sinking).is_none_or(|(b, _, _)| b[1] < floor - 2.0);
                 let (c, _, _) = pig_state(world, ghost)?;
-                let done = a[0] > east - WANDER_SPEED && b[1] < floor - 2.0 && c[0] < wall - 1.0;
+                let done = a[0] > east - WANDER_SPEED && sunk && c[0] < wall - 1.0;
                 done.then_some(())
             },
         )

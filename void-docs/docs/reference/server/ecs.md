@@ -163,7 +163,8 @@ components listed above.
    inserted on the returned `EntityCommands`. `EntityKind` is generated from
    `minecraft:entity_type` (`EntityKind::from_name`, `.id()`, `.name()`).
    `.settle_ticks(n)` bounds the ground-snap window of `settle_recent_spawns`
-   (default 15).
+   (default 15), which puts a stationary gravity spawn on the highest block
+   top under its collision box.
 2. `PostUpdate` (`VoidSystems::EntityVisibility`, after chunk streaming): the
    tracker resolves each entity's viewers from a chunk-indexed lookup of the
    ready players whose `LoadedChunks` contain the entity's chunk in its
@@ -186,7 +187,10 @@ components listed above.
 5. Remove with `commands.entity(e).despawn()` (or `world.despawn(e)`). An
    `On<Remove, SpawnedEntity>` observer sends `Remove Entities` to every
    current viewer, so a client can never keep a ghost. `EntityDespawnEvent`
-   remains as a trigger-style hook that does the same despawn.
+   remains as a trigger-style hook that does the same despawn. The framework
+   fires it for every non-player entity more than 64 blocks below the bottom
+   of the world (`despawn_out_of_world_entities`, at the start of
+   `VoidSystems::EntitySimulation`).
 
 Features that need extra packets per viewer observe
 `EntityShownEvent { entity, viewer }` instead of broadcasting on spawn; entity
