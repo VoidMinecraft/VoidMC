@@ -565,7 +565,7 @@ stay local to `void-example`.
 
 ## Tab-Completion
 
-The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to clients during the configuration phase. This provides:
+The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to each client as it enters the play state, right after the `Login` packet. This provides:
 
 - Command name completion (typing `/` shows all commands)
 - Client-side validation and completion for every vanilla parser in the table
@@ -578,12 +578,31 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
   calls its parser's `suggestions`, and the reply is a
   `CommandSuggestionsResponse` covering just the partial token. `GameProfileArg`
   (ready player names) and `EnumArg` (variant names) use it out of the box.
-- Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
+- Summon entity suggestions for `SummonableEntityArg` arguments (via
+  `minecraft:summonable_entities`), completed by the client from its own list
+- Player names for `PlayerArg` and `PlayersArg` (`minecraft:entity`), completed
+  by the client from its player list
 - Alias support (aliases appear as separate entries pointing to the same argument chain)
 - Subcommand literals, completed locally by the client; `complete` walks the
   literals typed so far before picking the argument under the cursor
 
 The command tree is rebuilt from the registry each time a client joins.
+
+No default command has a `minecraft:ask_server` argument, so a vanilla client
+completes them without asking the server. When a client does send
+`CommandSuggestionsRequest`, the server answers it as follows:
+
+- The line may start with `/` or not. It is answered only when it names a
+  registered command or alias followed by a space; an empty line, a bare name
+  (`/he`) or an unknown command gets no reply.
+- Otherwise the reply echoes the transaction id and always comes, with an
+  empty list when the argument under the cursor does not ask the server, or
+  when the line is past the last argument.
+- The built-in parsers (`EnumArg`, `GameProfileArg`, subcommand literals)
+  match a prefix ignoring ASCII case; flags match it exactly. Matches keep the
+  parser's order and are not sorted.
+- Every player in the play state is answered, ready or not; `GameProfileArg`
+  offers the ready players only, the requester included.
 
 ## Registration Methods
 
