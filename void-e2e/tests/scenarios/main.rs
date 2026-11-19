@@ -1,3 +1,4 @@
+mod atp_032_observability;
 mod commands;
 mod connection;
 mod inventory;
