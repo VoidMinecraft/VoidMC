@@ -407,7 +407,7 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | Command | Aliases | Description | Arguments |
 |---|---|---|---|
 | `/help` | | List commands or show command details | `[command:string]` |
-| `/gamemode` | `/gm` | Change game mode | `<mode:gamemode>` |
+| `/gamemode` | `/gm` | Change the game mode your client shows ([details](#gamemode)) | `<mode:gamemode>` |
 | `/kick` | | Kick a player | `<player:player> [reason:text]...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/ping` | | Pong! | (none) |
 | `/plugins` | `/pl` | List loaded plugins | (none) |
@@ -426,6 +426,43 @@ down cleanly. Plugins that clean up on shutdown — such as
 [world serialization](/reference/server/world-serialization), which flushes
 dirty chunks — react to the same signal. Ctrl-C / SIGTERM stop the server the
 same way.
+
+### `/gamemode`
+
+`/gamemode <mode>` changes the game mode the sender's client displays, and
+nothing the server enforces. `mode` is `survival`, `creative`, `adventure` or
+`spectator` (any case) or the legacy id `0`-`3`. On success the server:
+
+- sends the sender a Game Event `change_game_mode` with the mode id, so the
+  client switches its local mode. The vanilla client derives flight and
+  instant break from that mode itself; no Player Abilities packet is sent;
+- sets the sender's `TabEntry::game_mode`, so every player, the sender
+  included, receives a Player Info Update with `UPDATE_GAME_MODE` (a
+  spectator shows greyed out in the tab list);
+- replies `Game mode set to <name> (<id>)`, for example
+  `Game mode set to creative (1)`.
+
+There is no teleport and no respawn. Any other value (`4`, `-1`, `99`,
+`hardcore`, a missing mode or an extra argument) is a parse error: the
+sender gets the error in red, such as `Invalid value '4' for <mode>: expected
+gamemode ('4' is not a valid game mode (expected survival, creative, adventure
+or spectator))`, `Missing required argument <mode> (expected gamemode)` or
+`Too many arguments: expected 1, got 2`, followed by
+`Usage: /gamemode <mode:gamemode>` in grey, and nothing changes.
+
+The argument is advertised as `minecraft:gamemode`, so the vanilla client
+shows anything but the four names in red as you type, the numeric ids `0`-`3`
+included, since vanilla only knows the names. Pressing Enter still sends the
+command, and the server accepts those ids.
+
+The server keeps applying the rules of the configured
+[`game_mode`](../server/configuration.md) to every player: block
+breaking and the creative-only inventory clicks (cloning a stack,
+middle-button drags) follow it, not `/gamemode`. On a Survival
+server, a player shown Creative removes a block locally when it starts digging,
+but the server treats that as the start of a survival dig, so the block comes
+back. The mode is not stored either: a player who reconnects starts in the
+configured mode again.
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
