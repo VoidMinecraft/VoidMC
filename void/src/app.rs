@@ -116,8 +116,9 @@ impl VoidServer {
                 task_pool_options: task_pool_options(),
             },
             ScheduleRunnerPlugin::run_loop(tick_duration),
-            // Ctrl-C / SIGTERM emits AppExit so the server stops gracefully
-            // (the same signal `/stop` uses).
+            // Ctrl-C / SIGTERM / SIGHUP emit AppExit so the server stops
+            // gracefully (the same signal `/stop` uses). SIGTERM and SIGHUP
+            // need the `termination` feature of `ctrlc`, see Cargo.toml.
             TerminalCtrlCHandlerPlugin,
         ))
         .add_plugins(NetworkPlugin::new(

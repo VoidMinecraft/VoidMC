@@ -199,4 +199,82 @@ mod tests {
         );
         assert_eq!(app.world().get::<PreviousPosition>(entity).unwrap().y, 64.0);
     }
+
+    /// A summoned `--gravity --block-checks` pig over a chunk holding `blocks`,
+    /// run through spawn settling and physics in their `Update` order; returns
+    /// its height at the end of each tick, which is what viewers are sent.
+    fn simulate_pig(
+        blocks: &[(u8, i32, u8)],
+        spawn: (f64, f64, f64),
+        ticks: usize,
+    ) -> (Vec<f64>, bool) {
+        let mut app = App::new();
+        app.insert_resource(ChunkIndex::default()).add_systems(
+            Update,
+            (
+                settle_recent_spawns,
+                crate::systems::physics::apply_spawned_entity_physics,
+                update_previous_entity_positions,
+            )
+                .chain(),
+        );
+        let mut chunk = ChunkData::new(
+            (0..24).map(|_| ChunkSection::empty()).collect(),
+            ChunkHeightmaps::empty(),
+            LightData::empty(),
+        );
+        for &(x, y, z) in blocks {
+            chunk.set_block(x, y, z, blocks::STONE);
+        }
+        let chunk_pos = ChunkPos::new(0, 0);
+        let chunk_entity = app
+            .world_mut()
+            .spawn((ChunkPosition(chunk_pos), chunk))
+            .id();
+        app.world_mut()
+            .resource_mut::<ChunkIndex>()
+            .0
+            .insert((DimensionId::Overworld, chunk_pos), chunk_entity);
+        let pig = EntityBuilder::new(EntityKind::Pig)
+            .at(spawn.0, spawn.1, spawn.2)
+            .gravity(true)
+            .block_collision(true)
+            .spawn_in(app.world_mut())
+            .id();
+
+        let mut heights = Vec::new();
+        for _ in 0..ticks {
+            app.update();
+            heights.push(app.world().get::<Position>(pig).unwrap().y);
+        }
+        (heights, app.world().get::<Grounded>(pig).unwrap().0)
+    }
+
+    #[test]
+    fn pig_summoned_on_thick_ground_stays_on_top_of_it() {
+        // Three layers of ground under the summon point, which is exactly on
+        // the top face or a hair above it.
+        let ground: Vec<_> = (61..=63).map(|y| (5, y, 5)).collect();
+        for y in [64.0, 64.05] {
+            let (heights, grounded) = simulate_pig(&ground, (5.5, y, 5.5), 20);
+            assert!(
+                heights.iter().all(|&height| height == 64.0),
+                "summoned at y = {y}: {heights:?}"
+            );
+            assert!(grounded);
+        }
+    }
+
+    #[test]
+    fn pig_summoned_beside_a_rise_comes_to_rest_on_it() {
+        // The pig's centre is above the floor column, but its 0.9-wide box
+        // also reaches over the one-block rise next to it.
+        let blocks = [(5, 63, 5), (6, 63, 5), (6, 64, 5)];
+        let (heights, grounded) = simulate_pig(&blocks, (5.9, 70.0, 5.5), 20);
+        assert!(
+            heights.iter().all(|&height| height == 65.0),
+            "lands on the rise: {heights:?}"
+        );
+        assert!(grounded);
+    }
 }

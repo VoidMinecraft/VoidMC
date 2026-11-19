@@ -57,10 +57,23 @@ impl WorldGenerator for Islands {
 }
 ```
 
-A generator that places more than eight biomes in one section and runs with
-custom biomes registered should call `ChunkBuilder::biome_registry_size(n)`;
-the framework also re-widens direct palettes to the synced registry size when a
-chunk is loaded or generated.
+A section with more than eight biomes uses a direct palette, whose width
+depends on the registry size. `ChunkBuilder` never truncates an id to fit it,
+and the framework re-encodes direct palettes at the synced registry size when a
+chunk is generated or loaded, so a generator needs no change when custom
+biomes are registered (`ChunkBuilder::biome_registry_size(n)` remains
+available). The custom biome's `BiomeId` comes from `register` or
+`RegistryDataStore::biome`.
+
+## What clients do with biomes
+
+Biomes are stored and sent, never simulated. The client uses them to render:
+grass, foliage and water colours, sky and fog, ambient sounds and music, and
+whether [weather](./time-and-weather.md#weather) falls as rain, as snow (where
+the biome `temperature` is below `0.15`) or not at all
+(`has_precipitation: false`). The server does nothing with them: no
+temperature effects, no snow or ice forming in cold biomes, and no
+biome-dependent mob spawning or crop growth.
 
 ## Custom biomes
 
@@ -87,15 +100,36 @@ ServerConfigBuilder::new().configure_registries(|registries| {
 });
 ```
 
-`register` returns the new `BiomeId` and fails on an unqualified name, a
-duplicate, or an attribute the client does not sync (gameplay attributes are
-server-only). It must run before any client logs in (a debug assertion checks
-`RegistryDataStore::sent_to_clients`): ids are positions in the synced list, so
-a late addition would not match what earlier clients received. `Tag` is
-`voidmc::Tag`, the NBT tag type used for raw attribute values. Later, `RegistryDataStore::biome("myserver:crimson_sky")` finds it
-again. Visual and audio attributes apply at the camera's biome only; a custom
-biome must therefore surround the player to be seen.
+`register` appends the biome to the end of the registry and returns its
+`BiomeId`; vanilla ids and biome tags are unchanged. It returns a `BiomeError`
+instead of registering:
 
-The example server registers `void_example:crimson_sky` and offers
-`/biome [name]` to show the current biome or set the cell you stand in
-(`void-example/src/biome.rs`).
+| Error | Cause |
+|---|---|
+| `UnqualifiedName` | No namespace (`crimson_sky`) |
+| `InvalidName` | Not a valid identifier: empty namespace or path, or characters other than `a-z 0-9 _ - .` (and `/` in the path); a client could not read the registry |
+| `AlreadyRegistered` | The name is taken, by a vanilla or a custom biome |
+| `NotSyncable` | An attribute the client does not sync (gameplay attributes are server-only) |
+| `RegistriesAlreadySent` | A client already received the registries (`RegistryDataStore::sent_to_clients`) |
+
+Register custom biomes in `configure_registries`, before any client logs in:
+ids are positions in the synced list, so a later addition would not match what
+earlier clients received. `Tag` is `voidmc::Tag`, the NBT tag type used for raw
+attribute values. Later, `RegistryDataStore::biome("myserver:crimson_sky")`
+finds it again. Visual and audio attributes apply at the camera's biome only; a
+custom biome must therefore surround the player to be seen.
+
+A custom biome is in no known pack, so its data is sent inline, like every
+registry entry Void sends. The builder always writes the fields every vanilla
+biome carries (`has_precipitation`, `temperature`, `downfall` and
+`effects.water_color`, with defaults `true`, `0.8`, `0.4` and `#3f76e4`); the
+others are optional in the client's network codec.
+
+The example server registers `void_example:crimson_sky` (red sky and fog, dark
+red water, purple grass, no rain) and offers `/biome [name] [radius]`
+(`void-example/src/biome.rs`): without arguments it shows the biome you stand
+in; with a name it sets your 4×4×4 cell and, with a radius of up to 4, every
+cell within that many cells of it. To try the custom biome, walk somewhere,
+run `/biome void_example:crimson_sky 4` to mark a 36-block cube around you,
+walk away until the area is out of view, and come back: the debug screen (F3)
+names the biome, and the changes are saved with the world.

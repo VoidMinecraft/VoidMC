@@ -150,6 +150,12 @@ when it fires. Radii are capped at 32. Binding refuses items that already
 have an `ItemBehavior` (and the wand), so a brush never replaces another
 plugin's behaviour.
 
+The wand and brushes work from the main hand. Held in the off hand, they do
+nothing for a player allowed to edit and act as plain items for anyone else.
+The client does not know the wand or a brush acts on a right click, so it can
+send an off-hand use for the same click: a block in your off hand can be
+placed at the same time.
+
 ## Schematics
 
 `/schem save <name>` writes the clipboard as a gzip-compressed **Sponge

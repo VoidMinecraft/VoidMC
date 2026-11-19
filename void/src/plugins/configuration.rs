@@ -14,13 +14,14 @@ use voidmc_protocol::{
 use crate::{
     CommandRegistry, RegistryDataStore, ServerConfigResource, WorldGen,
     components::{
-        ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance, KeepAliveState,
-        LoadedChunks, MinecraftEntityId, PlayerDimension, Position, PreviousPosition, Rotation,
-        TeleportState,
+        ChunkStreamBacklog, ClientSettings, ConnectionState, CurrentChunkPos,
+        EffectiveViewDistance, KeepAliveState, LoadedChunks, MinecraftEntityId, PlayerDimension,
+        Position, PreviousPosition, Rotation, TeleportState,
     },
     events::PlayerJoinEvent,
     network::PacketEvent,
     players::Players,
+    systems::chunk::effective_view_distance,
     world::{ChunkData, ChunkIndex, ChunkPos, ChunkPosition, DimensionId},
 };
 
@@ -107,7 +108,14 @@ fn handle_finish_configuration(
     players: Players,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
+    settings: Query<&ClientSettings>,
 ) {
+    // The join never sends chunks the player's effective view distance would
+    // forget on the first streaming pass.
+    let join_radius = config.initial_chunk_radius.min(effective_view_distance(
+        settings.get(event.entity).ok(),
+        config.view_distance,
+    ));
     // Determine spawn position
     let spawn_y = config.spawn_y.unwrap_or_else(|| {
         world_gen
@@ -143,7 +151,7 @@ fn handle_finish_configuration(
         },
         KeepAliveState::default(),
         CurrentChunkPos(spawn_chunk),
-        EffectiveViewDistance(config.initial_chunk_radius),
+        EffectiveViewDistance(join_radius),
         LoadedChunks(HashSet::new()),
         PlayerDimension(DimensionId::Overworld),
         crate::inventory::Inventory::new(),
@@ -201,12 +209,15 @@ fn handle_finish_configuration(
         },
     );
 
-    // Send initial chunks around spawn
+    // Send initial chunks around spawn, in one batch
+    players.send(event.entity, clientbound::ChunkBatchStart {});
     let early_teleport_threshold = 9;
     let mut loaded = HashSet::new();
     let mut teleport_sent = false;
 
-    for pos in spawn_chunk.chunks_in_radius(config.initial_chunk_radius) {
+    let join_chunks = spawn_chunk.chunks_in_radius(join_radius);
+    let join_chunk_count = join_chunks.len();
+    for pos in join_chunks {
         let key = (DimensionId::Overworld, pos);
         let chunk_entity = chunk_index.0.get(&key).copied();
 
@@ -230,6 +241,12 @@ fn handle_finish_configuration(
             teleport_sent = true;
         }
     }
+    players.send(
+        event.entity,
+        clientbound::ChunkBatchFinished {
+            batch_size: loaded.len() as i32,
+        },
+    );
 
     if !teleport_sent {
         send_teleport(
@@ -241,8 +258,16 @@ fn handle_finish_configuration(
         );
     }
 
-    // Update LoadedChunks component with the chunks we've sent
-    commands.entity(event.entity).insert(LoadedChunks(loaded));
+    // Chunks outside the pre-generated spawn area were skipped. A backlog
+    // makes chunk streaming generate them on its first pass, even when the
+    // player's view distance equals the join radius and nothing else would
+    // trigger it.
+    let missing_join_chunks = loaded.len() < join_chunk_count;
+    let mut player = commands.entity(event.entity);
+    player.insert(LoadedChunks(loaded));
+    if missing_join_chunks {
+        player.insert(ChunkStreamBacklog::default());
+    }
     commands.trigger(PlayerJoinEvent {
         client_id: event.client_id,
         entity: event.entity,

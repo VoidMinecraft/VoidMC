@@ -37,10 +37,10 @@ let config = ServerConfigBuilder::new()
 | `max_players` | `i32` | `100` | Maximum player count (shown in server list) |
 | `view_distance` | `i32` | `10` | Maximum server-side view distance (in chunks) |
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
-| `game_mode` | `u8` | `1` (Creative) | Default game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) |
+| `game_mode` | `u8` | `1` (Creative) | Game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) every player joins in and whose rules the server applies; [`/gamemode`](../gameplay/commands.md#gamemode) only changes what a client shows |
 | `spawn_position` | `SpawnPosition` | `{ x: 0.0, z: 0.0, y: None }` | World spawn location |
 | `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn |
-| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over) |
+| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over), capped by the player's effective view distance |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
 | `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output |
@@ -115,7 +115,7 @@ pub struct SpawnPosition {
 }
 ```
 
-When `y` is `None` (the default), the server uses `WorldGenerator::surface_height_at(x, z)` as the spawn Y coordinate: the first air block above the terrain and any water, so players spawn standing on it.
+When `y` is `None` (the default), the server uses `WorldGenerator::surface_height_at(x.floor(), z.floor())` of the configured `world_generator` as the spawn Y coordinate: the first air block above the terrain and any water, so players spawn standing on it. When `y` is `Some`, that height is used as is.
 
 ## Execution mode
 
