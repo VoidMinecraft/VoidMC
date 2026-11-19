@@ -38,10 +38,10 @@ let config = ServerConfigBuilder::new()
 | `max_players` | `i32` | `100` | Maximum player count (shown in server list) |
 | `view_distance` | `i32` | `10` | Maximum server-side view distance (in chunks) |
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
-| `game_mode` | `u8` | `1` (Creative) | Default game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) |
+| `game_mode` | `u8` | `1` (Creative) | Game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) every player joins in and whose rules the server applies; [`/gamemode`](../gameplay/commands.md#gamemode) only changes what a client shows |
 | `spawn_position` | `SpawnPosition` | `{ x: 0.0, z: 0.0, y: None }` | World spawn location |
 | `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn |
-| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over) |
+| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over), capped by the player's effective view distance |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
 | `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output |
@@ -55,6 +55,7 @@ let config = ServerConfigBuilder::new()
 | `observability` | `Option<ObservabilityConfig>` | `None` | Serves `/health` and Prometheus `/metrics` over HTTP; see [Health and Metrics Endpoints](./observability.md) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
+| `execution_mode` | `ExecutionMode` | `SingleThreaded` | Run systems and independent regions concurrently (`MultiThreaded`) or one after another on the game thread; see [Execution mode](#execution-mode) |
 
 ## Listen address
 
@@ -116,7 +117,43 @@ pub struct SpawnPosition {
 }
 ```
 
-When `y` is `None` (the default), the server uses `WorldGenerator::surface_height_at(x, z)` as the spawn Y coordinate: the first air block above the terrain and any water, so players spawn standing on it.
+When `y` is `None` (the default), the server uses `WorldGenerator::surface_height_at(x.floor(), z.floor())` of the configured `world_generator` as the spawn Y coordinate: the first air block above the terrain and any water, so players spawn standing on it. When `y` is `Some`, that height is used as is.
+
+## Execution mode
+
+```rust
+use voidmc::{ExecutionMode, ServerConfigBuilder};
+
+let config = ServerConfigBuilder::new()
+    .execution_mode(ExecutionMode::MultiThreaded)
+    .build();
+```
+
+| Mode | Systems | Region-partitioned work |
+|---|---|---|
+| `SingleThreaded` (default) | Every schedule uses Bevy's single-threaded executor: one system at a time, on the game thread | Regions one after another, on the game thread |
+| `MultiThreaded` | Bevy's multi-threaded executor: systems whose data access does not conflict run at the same time on the compute task pool | Independent regions run as concurrent tasks on the compute task pool |
+
+Both modes produce the same world state, provided that systems which write
+data another system reads or writes are ordered (`.before` / `.after` or a
+[`VoidSystems`](/reference/server/ecs) set). Under `MultiThreaded`, Bevy picks
+the order of two unordered conflicting systems at run time. The order of
+packets sent by two unordered systems to the same client is not fixed either.
+
+VoidMC's own `Update` sets are not all ordered with each other yet: Bevy's
+ambiguity detection reports unordered conflicting pairs among `CommandDrain`,
+`ItemUseDrain`, `MenuClickDrain`, `TeleportBarrier`, `ItemPickup`,
+`KeepAlive`, `EntitySimulation` and, with `RedstonePlugin`, `Redstone`.
+Their order within a tick can differ from the single-threaded one, which
+only shows when two of them act on the same thing in the same tick, for
+example an item used on the tick another item is picked up into the same
+inventory.
+
+The compute task pool always has at least two threads, so two systems or
+regions can be in flight at once on a two-core machine. The running mode is
+available as the `ExecutionMode` resource. See
+[Parallel execution](/reference/server/architecture#parallel-execution) for
+what is partitioned by region.
 
 ## ServerConfigResource
 

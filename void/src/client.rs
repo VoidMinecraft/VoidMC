@@ -29,6 +29,7 @@ pub struct Client {
     client_id: u32,
     server_status: Option<ServerStatusSnapshot>,
     status_fast_path: StatusFastPath,
+    close: Option<Receiver<()>>,
 }
 
 impl Client {
@@ -52,7 +53,16 @@ impl Client {
             client_id: id,
             server_status,
             status_fast_path,
+            close: None,
         }
+    }
+
+    /// Closes the connection gracefully once `close` receives a message or
+    /// its sender is dropped: the packets already queued for the client are
+    /// written and flushed, then [`Client::run`] returns.
+    pub fn with_close_signal(mut self, close: Receiver<()>) -> Self {
+        self.close = Some(close);
+        self
     }
 
     pub async fn run(self) -> Result<(), SocketError> {
@@ -90,7 +100,12 @@ impl Client {
             }
         };
 
-        let writer_loop = Self::write_loop(&mut writer, &self.outgoing_rx, &status_rx);
+        let writer_loop = Self::write_loop(
+            &mut writer,
+            &self.outgoing_rx,
+            &status_rx,
+            self.close.as_ref(),
+        );
 
         tokio::select! {
             result = reader_loop => result,
@@ -148,32 +163,24 @@ impl Client {
         writer: &mut ClientWriter,
         outgoing_rx: &Receiver<OutgoingPacket>,
         status_rx: &Receiver<clientbound::StatusPacket>,
+        close: Option<&Receiver<()>>,
     ) -> Result<(), SocketError> {
         let mut status_open = true;
         loop {
-            let first = if status_open {
-                tokio::select! {
-                    result = outgoing_rx.recv_async() => {
-                        let Ok(packet) = result else {
-                            return Ok(());
-                        };
-                        Outbound::Game(packet)
+            let next = tokio::select! {
+                next = Self::next_outbound(outgoing_rx, status_rx, &mut status_open) => next,
+                () = Self::closing(close) => {
+                    // Write what the game queued before it asked to close
+                    // (a kick's Disconnect), then end the connection.
+                    while let Ok(packet) = outgoing_rx.try_recv() {
+                        Self::write_outbound(writer, Outbound::Game(packet)).await?;
                     }
-                    result = status_rx.recv_async() => {
-                        match result {
-                            Ok(packet) => Outbound::Status(packet),
-                            Err(_) => {
-                                status_open = false;
-                                continue;
-                            }
-                        }
-                    }
-                }
-            } else {
-                let Ok(packet) = outgoing_rx.recv_async().await else {
+                    writer.flush().await?;
                     return Ok(());
-                };
-                Outbound::Game(packet)
+                }
+            };
+            let Some(first) = next else {
+                return Ok(());
             };
 
             let batch = Self::write_batch(writer, first, outgoing_rx, status_open, status_rx);
@@ -182,6 +189,38 @@ impl Client {
                 return Err(error);
             }
             writer.flush().await?;
+        }
+    }
+
+    /// The next packet to write, or `None` once the game dropped the client's
+    /// sender.
+    async fn next_outbound(
+        outgoing_rx: &Receiver<OutgoingPacket>,
+        status_rx: &Receiver<clientbound::StatusPacket>,
+        status_open: &mut bool,
+    ) -> Option<Outbound> {
+        loop {
+            if !*status_open {
+                return outgoing_rx.recv_async().await.ok().map(Outbound::Game);
+            }
+            tokio::select! {
+                result = outgoing_rx.recv_async() => return result.ok().map(Outbound::Game),
+                result = status_rx.recv_async() => match result {
+                    Ok(packet) => return Some(Outbound::Status(packet)),
+                    Err(_) => *status_open = false,
+                },
+            }
+        }
+    }
+
+    /// Resolves when the close signal fires or its sender is dropped; never
+    /// without a signal.
+    async fn closing(close: Option<&Receiver<()>>) {
+        match close {
+            Some(close) => {
+                let _ = close.recv_async().await;
+            }
+            None => std::future::pending().await,
         }
     }
 
@@ -658,6 +697,40 @@ mod tests {
         let mut received = Vec::new();
         peer.read_to_end(&mut received).await.unwrap();
         assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn close_signal_writes_what_is_queued_then_ends_the_connection() {
+        let (socket, mut peer) = connected_socket().await;
+        let (incoming_tx, _incoming_rx) = flume::unbounded();
+        let (outgoing_tx, outgoing_rx) = flume::unbounded();
+        let (close_tx, close_rx) = flume::bounded(1);
+
+        // Queued before the close, like a kick's Disconnect.
+        send_ping(&outgoing_tx, 1);
+        send_ping(&outgoing_tx, 2);
+        drop(close_tx);
+        let client = Client::new(7, socket, incoming_tx, outgoing_rx, None)
+            .with_close_signal(close_rx)
+            .run();
+        tokio::time::timeout(Duration::from_secs(1), client)
+            .await
+            .expect("the close signal ends the client")
+            .expect("a graceful close is not an error");
+
+        let mut expected = Vec::new();
+        for timestamp in 1..=2 {
+            expected.extend(encode_frame(&clientbound::StatusPacket::PingResponse(
+                clientbound::PingResponse { timestamp },
+            )));
+        }
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(
+            received, expected,
+            "every queued packet, then end of stream"
+        );
+        drop(outgoing_tx);
     }
 
     fn send_ping(outgoing_tx: &Sender<OutgoingPacket>, timestamp: i64) {

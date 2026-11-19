@@ -178,7 +178,10 @@ Rust's compiler checks, Clippy, rustfmt, and Cargo tests are the project's prima
 ## Performance Monitoring
 
 The separate **Benchmarks** GitHub Actions workflow runs the Criterion benchmarks
-weekly and on demand. Its reports are uploaded as a `criterion-reports` artifact.
+weekly and on demand. It does not run automatically on pull requests; to
+benchmark one, start the workflow manually on its branch
+(`gh workflow run benchmarks.yml --ref <branch>`). Its reports are uploaded as a
+`criterion-reports` artifact.
 Results are tracked as observations rather than CI thresholds because hosted
 runners are not stable enough for reliable performance gating.
 

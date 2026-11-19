@@ -50,7 +50,9 @@ pub use commands::plugin::CommandSystems;
 pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, Completion, ParseError,
 };
-pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
+pub use config::{
+    ExecutionMode, ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition,
+};
 pub use entity::{
     AttributeInstance, Attributes, Billboard, BlockDisplay, CustomName, Display, DisplayTransform,
     Effect, EffectCategory, EffectDuration, EffectInstance, EndCrystal, EntityAttribute,
@@ -62,8 +64,8 @@ pub use entity::{
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
 pub use item_behavior::{
-    BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
-    UseResult,
+    BlockBreakContext, BlockInteraction, BlockInteractionRegistry, BlockUseTarget, ItemBehavior,
+    ItemBehaviorRegistry, ItemUseContext, UseResult,
 };
 pub use menu::{
     ContainerIds, ContainerInput, Menu, MenuClickContext, MenuClickEvent, MenuCloseReason,

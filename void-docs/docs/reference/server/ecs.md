@@ -32,12 +32,14 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
 | `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
+| `Grounded(bool)` | On-ground flag | The on-ground flag of the client's last movement packet, relayed in the movement packets other players receive |
+| `Sneaking(bool)` | Shift key | From the client's Player Input; other players see the player crouch (shared sneaking flag + crouching pose) while it sneaks without flying. The flag goes out in the complete shared flags byte, with the glowing and invisible bits of `Glowing`, `Invisible` and the glowing / invisibility effects, whichever of them changes; the player's own client is not sent its flags |
 
 ### Teleportation
 
 | Component | Fields | Description |
 |---|---|---|
-| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms |
+| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms; until then client positions are ignored |
 | `ServerControlledPosition` | Marker | Server owns the position; client movement packets update `Rotation` only |
 | `Teleport { x, y, z, .. }` | Destination + options | Teleport with loading barrier; removed once the client confirms, times out or it is cancelled (see [Players](../gameplay/players.md#teleportation)) |
 | `PlayerAbilities { flying, allow_flight, .. }` | Flags + speeds | Opt-in; changes are sent as Player Abilities packets |
@@ -139,12 +141,14 @@ As the client progresses through protocol states, handlers insert additional com
 
 When a client disconnects:
 1. The network thread sends the client ID through the `disconnect` channel
-2. `ingest_network_packets` removes the client from `ClientToEntityMap` and drops its sender from `ClientSenders`
-3. If the player was ready (`PlayerReady` present), a `PlayerQuitEvent` is triggered
-4. The entity is despawned with `world.despawn(entity)`
+2. `ingest_network_packets` removes the client from `ClientToEntityMap`
+3. If the player joined (`ConnectionState(Play)`), ready or not, a `PlayerQuitEvent` is triggered
+4. The entity is despawned and its sender dropped from `ClientSenders`
 
-A client whose outbound queue overflows is kicked by the network thread and
-then follows exactly this path.
+A client whose outbound queue overflows, or that is kicked or times out, has
+its connection closed by the network thread and then follows exactly this
+path; on `AppExit` every connected client does too. A client entity despawned
+by game code has its connection closed without a `PlayerQuitEvent`.
 
 ### Non-Player Entity Lifecycle
 

@@ -5,18 +5,25 @@ use crate::components::{
     EntityDimension, Grounded, MovementConfig, Position, PreviousPosition, RecentlySpawned,
     SpawnedEntity, VerticalVelocity,
 };
+use crate::config::ExecutionMode;
 use crate::world::{
-    ChunkData, ChunkIndex, ChunkPosition, block_state_at_world, is_solid_block_state,
+    ChunkData, ChunkIndex, ChunkPosition, RegionPos, block_state_at_world, for_each_region,
+    is_solid_block_state,
 };
 
 /// Settle newly spawned gravity-enabled entities by scanning downward and snapping them
 /// onto the first solid block found within `MAX_SCAN` blocks.
+///
+/// Like the physics step, entities are processed per region with
+/// [`for_each_region`]: each one only reads chunk data and writes its own
+/// components.
 #[instrument(
     name = "entity_spawn_settling",
     level = "info",
-    skip(chunk_index, chunks, query)
+    skip(mode, chunk_index, chunks, query)
 )]
 pub fn settle_recent_spawns(
+    mode: Option<Res<ExecutionMode>>,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
     mut query: Query<
@@ -32,49 +39,78 @@ pub fn settle_recent_spawns(
         With<SpawnedEntity>,
     >,
 ) {
+    let mode = mode.as_deref().copied().unwrap_or_default();
+    let entities: Vec<_> = query
+        .iter_mut()
+        .filter(|(.., marker)| marker.0 != 0)
+        .collect();
+    for_each_region(
+        mode,
+        entities,
+        |(pos, _, _, dimension, ..)| RegionPos::of_block(dimension.0, pos.x, pos.z),
+        |_, entities| {
+            for (pos, prev_pos, movement, dimension, velocity, grounded, marker) in entities {
+                settle_entity(
+                    &chunk_index,
+                    &chunks,
+                    pos,
+                    prev_pos,
+                    movement,
+                    dimension,
+                    velocity,
+                    grounded,
+                    marker,
+                );
+            }
+        },
+    );
+}
+
+fn settle_entity(
+    chunk_index: &ChunkIndex,
+    chunks: &Query<(&ChunkPosition, &ChunkData)>,
+    pos: &mut Mut<Position>,
+    prev_pos: &PreviousPosition,
+    movement: &MovementConfig,
+    dimension: &EntityDimension,
+    velocity: &mut Mut<VerticalVelocity>,
+    grounded: &mut Mut<Grounded>,
+    marker: &mut Mut<RecentlySpawned>,
+) {
     const MAX_SCAN: i32 = 64;
 
-    for (mut pos, prev_pos, movement, dimension, mut velocity, mut grounded, mut marker) in
-        query.iter_mut()
-    {
-        if marker.0 == 0 {
-            continue;
-        }
+    marker.0 -= 1;
 
-        marker.0 -= 1;
+    if !movement.gravity_enabled {
+        marker.0 = 0;
+        return;
+    }
 
-        if !movement.gravity_enabled {
-            marker.0 = 0;
-            continue;
-        }
+    // Only stationary summons are eligible for the initial ground snap.
+    // Thrown item entities have an intentional launch velocity and must
+    // follow their normal arc instead of teleporting to the ground.
+    if velocity.0.abs() > f64::EPSILON {
+        return;
+    }
 
-        // Only stationary summons are eligible for the initial ground snap.
-        // Thrown item entities have an intentional launch velocity and must
-        // follow their normal arc instead of teleporting to the ground.
-        if velocity.0.abs() > f64::EPSILON {
-            continue;
-        }
+    let start_y = pos.y.floor() as i32 - 1;
+    let min_y = start_y - MAX_SCAN;
+    let tx = pos.x.floor() as i32;
+    let tz = pos.z.floor() as i32;
 
-        let start_y = pos.y.floor() as i32 - 1;
-        let min_y = start_y - MAX_SCAN;
-        let tx = pos.x.floor() as i32;
-        let tz = pos.z.floor() as i32;
+    for y in (min_y..=start_y).rev() {
+        if let Some(block_state) = block_state_at_world(chunk_index, chunks, dimension.0, tx, y, tz)
+        {
+            if is_solid_block_state(block_state) {
+                let ground_y = (y as f64) + 1.0;
+                let fall_distance = prev_pos.y - ground_y;
 
-        for y in (min_y..=start_y).rev() {
-            if let Some(block_state) =
-                block_state_at_world(&chunk_index, &chunks, dimension.0, tx, y, tz)
-            {
-                if is_solid_block_state(block_state) {
-                    let ground_y = (y as f64) + 1.0;
-                    let fall_distance = prev_pos.y - ground_y;
-
-                    if fall_distance > 0.1 {
-                        pos.y = ground_y;
-                        velocity.0 = 0.0;
-                        grounded.0 = true;
-                        marker.0 = 0;
-                        break;
-                    }
+                if fall_distance > 0.1 {
+                    pos.y = ground_y;
+                    velocity.0 = 0.0;
+                    grounded.0 = true;
+                    marker.0 = 0;
+                    break;
                 }
             }
         }
@@ -162,5 +198,83 @@ mod tests {
             (0, -24576, 0)
         );
         assert_eq!(app.world().get::<PreviousPosition>(entity).unwrap().y, 64.0);
+    }
+
+    /// A summoned `--gravity --block-checks` pig over a chunk holding `blocks`,
+    /// run through spawn settling and physics in their `Update` order; returns
+    /// its height at the end of each tick, which is what viewers are sent.
+    fn simulate_pig(
+        blocks: &[(u8, i32, u8)],
+        spawn: (f64, f64, f64),
+        ticks: usize,
+    ) -> (Vec<f64>, bool) {
+        let mut app = App::new();
+        app.insert_resource(ChunkIndex::default()).add_systems(
+            Update,
+            (
+                settle_recent_spawns,
+                crate::systems::physics::apply_spawned_entity_physics,
+                update_previous_entity_positions,
+            )
+                .chain(),
+        );
+        let mut chunk = ChunkData::new(
+            (0..24).map(|_| ChunkSection::empty()).collect(),
+            ChunkHeightmaps::empty(),
+            LightData::empty(),
+        );
+        for &(x, y, z) in blocks {
+            chunk.set_block(x, y, z, blocks::STONE);
+        }
+        let chunk_pos = ChunkPos::new(0, 0);
+        let chunk_entity = app
+            .world_mut()
+            .spawn((ChunkPosition(chunk_pos), chunk))
+            .id();
+        app.world_mut()
+            .resource_mut::<ChunkIndex>()
+            .0
+            .insert((DimensionId::Overworld, chunk_pos), chunk_entity);
+        let pig = EntityBuilder::new(EntityKind::Pig)
+            .at(spawn.0, spawn.1, spawn.2)
+            .gravity(true)
+            .block_collision(true)
+            .spawn_in(app.world_mut())
+            .id();
+
+        let mut heights = Vec::new();
+        for _ in 0..ticks {
+            app.update();
+            heights.push(app.world().get::<Position>(pig).unwrap().y);
+        }
+        (heights, app.world().get::<Grounded>(pig).unwrap().0)
+    }
+
+    #[test]
+    fn pig_summoned_on_thick_ground_stays_on_top_of_it() {
+        // Three layers of ground under the summon point, which is exactly on
+        // the top face or a hair above it.
+        let ground: Vec<_> = (61..=63).map(|y| (5, y, 5)).collect();
+        for y in [64.0, 64.05] {
+            let (heights, grounded) = simulate_pig(&ground, (5.5, y, 5.5), 20);
+            assert!(
+                heights.iter().all(|&height| height == 64.0),
+                "summoned at y = {y}: {heights:?}"
+            );
+            assert!(grounded);
+        }
+    }
+
+    #[test]
+    fn pig_summoned_beside_a_rise_comes_to_rest_on_it() {
+        // The pig's centre is above the floor column, but its 0.9-wide box
+        // also reaches over the one-block rise next to it.
+        let blocks = [(5, 63, 5), (6, 63, 5), (6, 64, 5)];
+        let (heights, grounded) = simulate_pig(&blocks, (5.9, 70.0, 5.5), 20);
+        assert!(
+            heights.iter().all(|&height| height == 65.0),
+            "lands on the rise: {heights:?}"
+        );
+        assert!(grounded);
     }
 }

@@ -6,6 +6,7 @@ pub mod dimension;
 pub mod generation;
 pub mod loader;
 pub mod mutation;
+pub mod region;
 
 pub use biome::{
     Attribute, BiomeBuilder, BiomeError, BiomeId, GrassColorModifier, biome_at, set_biome,
@@ -19,4 +20,5 @@ pub use chunk_entity::*;
 pub use chunk_pos::*;
 pub use dimension::*;
 pub use loader::*;
-pub use mutation::{BlockMutation, mutate_block, offset_position};
+pub use mutation::{BlockMutation, mutate_block, offset_position, set_block_state};
+pub use region::{REGION_CHUNKS, RegionPos, for_each_region};
