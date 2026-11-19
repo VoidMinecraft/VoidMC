@@ -191,6 +191,15 @@ impl PaletteData {
 
 pub const BIOME_CELLS_PER_SECTION: usize = 64;
 const BIOME_MAX_INDIRECT_BITS: u8 = 3;
+/// Widest indirect block-state palette the client reads; beyond it, a
+/// section carries global ids.
+const BLOCK_MAX_INDIRECT_BITS: u8 = 8;
+
+/// Bits per entry of a direct block-state palette: `ceil(log2(block state
+/// count))`, which the client uses for any width above 8.
+pub fn block_direct_bits() -> u8 {
+    ceil_log2(voidmc_data::block_state_count(voidmc_data::Version::V26_1_2) as usize)
+}
 
 /// Bits per entry of a direct biome palette: `ceil(log2(registry size))`.
 pub fn biome_direct_bits(registry_size: usize) -> u8 {
@@ -226,6 +235,10 @@ fn packed_set(data: &mut [u64], bits: u8, index: usize, value: u64) {
 
 /// Biome container for 64 cells: single value, indirect at 1..=3 bits, or
 /// direct at `biome_direct_bits(registry_size)` — the only widths the client accepts.
+/// A direct palette is widened to hold an id beyond `registry_size` rather
+/// than truncate it, so that a registry size set too low (a custom biome
+/// appended after the builder was configured) loses no cell; the server
+/// re-encodes such a section at the synced width before sending it.
 pub fn biome_palette(cells: &[i32; BIOME_CELLS_PER_SECTION], registry_size: usize) -> PaletteData {
     let mut palette: Vec<i32> = Vec::new();
     for &id in cells {
@@ -249,7 +262,8 @@ pub fn biome_palette(cells: &[i32; BIOME_CELLS_PER_SECTION], registry_size: usiz
             data,
         }
     } else {
-        let bits = biome_direct_bits(registry_size);
+        let largest = palette.iter().copied().max().unwrap_or(0).max(0) as usize;
+        let bits = biome_direct_bits(registry_size.max(largest + 1));
         let mut data = vec![0u64; packed_len(bits, BIOME_CELLS_PER_SECTION)];
         for (index, &id) in cells.iter().enumerate() {
             packed_set(&mut data, bits, index, id as u64);
@@ -362,6 +376,21 @@ impl ChunkSection {
         }
 
         let bits_per_entry = ((palette.len() as f64).log2().ceil() as u8).max(4);
+        if bits_per_entry > BLOCK_MAX_INDIRECT_BITS {
+            let bits = block_direct_bits();
+            let mut data = vec![0u64; packed_len(bits, block_array.len())];
+            for (index, &block) in block_array.iter().enumerate() {
+                packed_set(&mut data, bits, index, block as u64);
+            }
+            return Self {
+                block_count,
+                block_state: PaletteData::Direct {
+                    bits_per_entry: bits,
+                    data,
+                },
+                biome: PaletteData::SingleValue(biome_id),
+            };
+        }
         let entries_per_long = 64 / bits_per_entry as usize;
         let total_longs = 4096_usize.div_ceil(entries_per_long);
 
@@ -900,8 +929,10 @@ impl ChunkBuilder {
         self
     }
 
-    /// Number of entries in the synced biome registry; only needed when custom
-    /// biomes were added, since it fixes the width of direct biome palettes.
+    /// Number of entries in the synced biome registry, which fixes the width
+    /// of direct biome palettes. Optional: no id is truncated when it is too
+    /// low, and the server re-encodes direct palettes at the synced width
+    /// when it generates or loads a chunk.
     pub fn biome_registry_size(mut self, size: usize) -> Self {
         self.biome_registry_size = size;
         self
@@ -1351,6 +1382,18 @@ mod biome_tests {
     }
 
     #[test]
+    fn direct_palettes_never_truncate_ids_beyond_the_registry_size() {
+        let expected = cells(|i| if i % 9 == 8 { 128 } else { (i % 9) as i32 });
+        let palette = biome_palette(&expected, 65);
+        assert_eq!(palette.bits_per_entry(), 8);
+        let mut section = ChunkSection::empty();
+        section.biome = palette;
+        assert_eq!(section.biome_cells(), expected);
+        assert_eq!(biome_palette(&expected, 129).bits_per_entry(), 8);
+        assert_eq!(biome_palette(&expected, 300).bits_per_entry(), 9);
+    }
+
+    #[test]
     fn set_biome_promotes_and_demotes_palettes() {
         let mut section = ChunkSection::filled(1, 3);
         assert_eq!(section.set_biome(0, 0, 0, 3, 65), 3);
@@ -1399,6 +1442,33 @@ mod biome_tests {
         assert_eq!(truncated.get_block_state(0, 0, 0), 1);
         assert_eq!(truncated.get_block_state(1, 0, 0), 0);
         assert_eq!(truncated.get_block_state(0, 15, 15), 1);
+    }
+
+    #[test]
+    fn sections_with_more_than_256_states_use_global_ids() {
+        assert_eq!(block_direct_bits(), 15);
+        let blocks: [i32; 4096] = std::array::from_fn(|index| 1000 + (index % 300) as i32);
+        let section = ChunkSection::from_block_array(&blocks, 5, 4096);
+        assert_eq!(section.block_state.bits_per_entry(), 15);
+        assert!(matches!(section.block_state, PaletteData::Direct { .. }));
+        for (index, &block) in blocks.iter().enumerate() {
+            let (x, y, z) = (index % 16, index / 256, (index / 16) % 16);
+            assert_eq!(section.get_block_state(x as u8, y as u8, z as u8), block);
+        }
+
+        // Header, bits, then 4096 entries packed four per long with no
+        // palette and no length prefix, then the biome container.
+        let bytes = section.encode_to_bytes();
+        assert_eq!(&bytes[..5], [0x10, 0x00, 0x00, 0x00, 15]);
+        let first = u64::from_be_bytes(bytes[5..13].try_into().unwrap());
+        assert_eq!(first, 1000 | 1001 << 15 | 1002 << 30 | 1003 << 45);
+        assert_eq!(bytes.len(), 5 + 1024 * 8 + 2);
+        assert_eq!(&bytes[bytes.len() - 2..], [0, 5]);
+
+        let below: [i32; 4096] = std::array::from_fn(|index| 1000 + (index % 255) as i32);
+        let section = ChunkSection::from_block_array(&below, 5, 4096);
+        assert_eq!(section.block_state.bits_per_entry(), 8);
+        assert!(matches!(section.block_state, PaletteData::Indirect { .. }));
     }
 
     #[test]
