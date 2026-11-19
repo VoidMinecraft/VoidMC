@@ -19,6 +19,7 @@ mod atp_020_world_loader;
 mod atp_021_custom_command;
 mod atp_022_item_behavior;
 mod atp_023_plugin_hook;
+mod atp_024_server_config;
 mod atp_025_tps_diagnostics;
 mod atp_026_graceful_stop;
 mod atp_027_world_generation;

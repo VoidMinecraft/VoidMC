@@ -144,18 +144,25 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Player count advertised in the server list and the Login packet. Not
+    /// enforced: logins are not refused once this many players are online.
     pub fn max_players(mut self, max_players: i32) -> Self {
         self.config.max_players = max_players;
         self
     }
 
+    /// Server-side cap on each player's view distance, in chunks, also sent
+    /// in the Login packet. A negative distance is replaced by `0`.
     pub fn view_distance(mut self, view_distance: i32) -> Self {
-        self.config.view_distance = view_distance;
+        self.config.view_distance = non_negative_distance("view_distance", view_distance);
         self
     }
 
+    /// Simulation distance sent in the Login packet, in chunks. A negative
+    /// distance is replaced by `0`.
     pub fn simulation_distance(mut self, simulation_distance: i32) -> Self {
-        self.config.simulation_distance = simulation_distance;
+        self.config.simulation_distance =
+            non_negative_distance("simulation_distance", simulation_distance);
         self
     }
 
@@ -265,6 +272,15 @@ impl Default for ServerConfigBuilder {
     }
 }
 
+/// A distance in chunks cannot be negative: the Login packet would carry a
+/// value no client expects and no chunk would ever be in range.
+fn non_negative_distance(option: &str, distance: i32) -> i32 {
+    if distance < 0 {
+        tracing::warn!("{option}({distance}) is not a valid distance; using 0 instead");
+    }
+    distance.max(0)
+}
+
 /// Runtime-readable config resource (plain data, no `Box<dyn>`).
 #[derive(Resource, Clone)]
 pub struct ServerConfigResource {
@@ -339,6 +355,23 @@ mod tests {
         let config = ServerConfigBuilder::new().tick_rate(0).build();
         assert_eq!(config.tick_rate, 1);
         assert_eq!(config.tick_duration(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn builder_replaces_negative_distances_with_zero() {
+        let config = ServerConfigBuilder::new()
+            .view_distance(-3)
+            .simulation_distance(-1)
+            .build();
+        assert_eq!(config.view_distance, 0);
+        assert_eq!(config.simulation_distance, 0);
+
+        let config = ServerConfigBuilder::new()
+            .view_distance(0)
+            .simulation_distance(7)
+            .build();
+        assert_eq!(config.view_distance, 0);
+        assert_eq!(config.simulation_distance, 7);
     }
 
     #[test]
