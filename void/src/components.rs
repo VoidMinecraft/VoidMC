@@ -117,6 +117,11 @@ pub struct ChunkSendBudget(pub usize);
 #[derive(Component)]
 pub struct ServerControlledPosition;
 
+/// Whether the player holds the sneak key, from its client's Player Input.
+/// Other players see it crouch while it sneaks without flying.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Sneaking(pub bool);
+
 /// The chunk column the player is currently standing in.
 #[derive(Component)]
 pub struct CurrentChunkPos(pub ChunkPos);
@@ -261,8 +266,9 @@ impl Default for EntityCollider {
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct VerticalVelocity(pub f64);
 
-/// Whether the entity is resting on a solid surface.
-#[derive(Component, Clone, Copy, Debug, Default)]
+/// Whether the entity is resting on a solid surface. For a player, the
+/// on-ground flag its client last reported, relayed to the other players.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Grounded(pub bool);
 
 /// Simple wander behavior state for random walking AI example.

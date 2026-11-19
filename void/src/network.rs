@@ -526,6 +526,11 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
+                serverbound::PlayPacket::ChunkBatchReceived(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
                 serverbound::PlayPacket::ClientInformation(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,

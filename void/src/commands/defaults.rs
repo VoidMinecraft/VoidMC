@@ -82,6 +82,10 @@ fn handle_give(ctx: &mut CommandContext) {
     let item_name = item.name().unwrap_or("unknown").to_string();
     let count = ctx.get::<i32>("count").copied().unwrap_or(1).clamp(1, 64) as u8;
     let stack = ItemStack::new(item, count);
+    if stack.is_empty() {
+        ctx.reply_error(&format!("Cannot give {item_name}"));
+        return;
+    }
 
     let entity = ctx.entity;
     let leftover = ctx.with_world_mut(|world| {
@@ -263,16 +267,19 @@ fn handle_ping(ctx: &mut CommandContext) {
     ctx.reply("Pong!");
 }
 
+/// Replies with the names in `PluginList`; a server without the resource has
+/// listed no plugins, so it gets the same explicit empty answer.
 fn handle_plugins(ctx: &mut CommandContext) {
-    if let Some(plugin_list) = ctx.with_world(|world| world.get_resource::<PluginList>().cloned()) {
-        if plugin_list.0.is_empty() {
-            ctx.reply("No plugins loaded.");
-        } else {
-            let list = plugin_list.0.join(", ");
-            ctx.reply(&format!("Plugins ({}): {}", plugin_list.0.len(), list));
-        }
+    let names = ctx.with_world(|world| {
+        world
+            .get_resource::<PluginList>()
+            .map(|list| list.0.clone())
+            .unwrap_or_default()
+    });
+    if names.is_empty() {
+        ctx.reply("No plugins loaded.");
     } else {
-        ctx.reply("No plugin list available.");
+        ctx.reply(&format!("Plugins ({}): {}", names.len(), names.join(", ")));
     }
 }
 
@@ -510,7 +517,9 @@ fn handle_stop(ctx: &mut CommandContext) {
     });
 }
 
-/// Optional resource listing plugin names — can be inserted by the user.
+/// The names `/plugins` lists, in order. VoidMC never fills it: the
+/// application inserts the names it wants players to see, and plugins added
+/// with `add_plugin` are not listed unless it names them here.
 #[derive(Clone, bevy_ecs::prelude::Resource)]
 pub struct PluginList(pub Vec<String>);
 

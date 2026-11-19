@@ -27,10 +27,12 @@ The server sends a burst of packets to set up the client:
 2. **Commands** — Protocol command tree for tab-completion
 3. **GameEvent(StartWaitingForLevelChunks)** — Tells the client to show the loading screen
 4. **SetCenterChunk** — Sets the client's chunk loading center
-5. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`)
-6. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
+5. **ChunkBatchStart** — Opens the batch of initial chunks
+6. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready
+7. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
+8. **ChunkBatchFinished** — Closes the batch with its chunk count
 
-An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive.
+An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive. The vanilla client answers the batch with `ChunkBatchReceived`, which the server accepts and ignores.
 
 ### 3. PlayerJoinEvent
 
