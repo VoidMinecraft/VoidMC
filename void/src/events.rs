@@ -128,11 +128,12 @@ pub struct PlayerDropItemEvent {
 }
 
 /// Fired to spawn a dropped item entity in the world. Emitted by inventory
-/// throws, the drop key, and (optionally) developer code; the item-drops plugin
-/// turns it into a floating item entity at the dropper's position.
+/// throws, creative-inventory drops, the drop key, and (optionally) developer
+/// code; the item-drops plugin throws it as an item entity from the dropper's
+/// eyes in the direction they look.
 #[derive(Event)]
 pub struct ItemDropEvent {
-    /// The player who dropped it (used for the spawn position and pickup delay).
+    /// The player who dropped it (the throw starts from their eyes).
     pub dropper: Entity,
     pub stack: crate::item::ItemStack,
 }

@@ -10,9 +10,10 @@ use tracing_subscriber::prelude::*;
 use voidmc::components::PlayerName;
 use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
 use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
+use voidmc::plugins::redstone::RedstonePlugin;
 use voidmc::{
-    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
-    ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
+    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, ObservabilityConfig,
+    On, Query, ServerConfig, ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
 use voidmc_navigation::{NavRemotePlugin, NavigationPlugin, RemoteAccess};
 use voidmc_vanilla_commands::{Access, VanillaCommandsPlugin};
@@ -30,6 +31,7 @@ mod environment;
 mod menu;
 mod navigation;
 mod particle;
+mod redstone;
 mod sidebar;
 mod sign;
 mod sound;
@@ -58,7 +60,7 @@ struct MetricsEnv {
 
 impl MetricsEnv {
     fn from_env() -> Self {
-        Self::from_lookup(|name| env::var(name).ok())
+        Self::from_lookup(env_var)
     }
 
     /// Reads the diagnostics settings through `var`, which returns a
@@ -90,28 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics_env = MetricsEnv::from_env();
     let _log_guards = setup_logging(&metrics_env)?;
 
-    let mut config_builder = ServerConfigBuilder::new()
-        .spawn_chunk_radius(4)
-        .initial_chunk_radius(4)
-        .motd("Void Example Server")
-        .max_players(100)
-        .configure_registries(biome::register_crimson_sky);
-
-    if metrics_env.metrics_debug {
-        config_builder = config_builder.metrics_debug(true);
-    }
-
-    if let Some(tps_output) = metrics_env.tps_output.clone() {
-        config_builder = config_builder.metrics_tps_output(tps_output);
-    }
-
-    // `VOID_LISTEN_ADDR=127.0.0.1:0` picks a free port, as the diagnostics
-    // tests do. Unset: the default `127.0.0.1:25565`.
-    if let Some(address) = env_string("VOID_LISTEN_ADDR") {
-        config_builder = config_builder.address(address);
-    }
-
-    VoidServer::new(config_builder.build())
+    VoidServer::new(server_config(&metrics_env, env_var))
         .add_plugin(|app| {
             // Persist modified chunks to ./world and reload them on restart.
             app.add_plugins(WorldPersistencePlugin::new(
@@ -177,6 +158,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.add_observer(worldedit::grant_wand);
         })
         .add_plugin(|app| {
+            // Levers, buttons, flat redstone dust and note blocks; `/circuit`
+            // builds a test circuit next to the player.
+            app.add_plugins(RedstonePlugin);
+            app.world_mut()
+                .resource_mut::<CommandRegistry>()
+                .register(redstone::circuit_command());
+        })
+        .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",
             // overriding the default right-click action.
             app.world_mut()
@@ -198,6 +187,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run();
 
     Ok(())
+}
+
+/// The configuration the example server runs with. `var` looks up the
+/// address variables, as [`MetricsEnv::from_lookup`] does the diagnostics.
+fn server_config(metrics_env: &MetricsEnv, var: impl Fn(&str) -> Option<String>) -> ServerConfig {
+    let mut config_builder = ServerConfigBuilder::new()
+        .spawn_chunk_radius(4)
+        .initial_chunk_radius(4)
+        .motd("Welcome to Void Server!")
+        .max_players(100)
+        .configure_registries(biome::register_crimson_sky);
+
+    if metrics_env.metrics_debug {
+        config_builder = config_builder.metrics_debug(true);
+    }
+
+    if let Some(tps_output) = metrics_env.tps_output.clone() {
+        config_builder = config_builder.metrics_tps_output(tps_output);
+    }
+
+    // `VOID_LISTEN_ADDR=127.0.0.1:0` picks a free port, as the diagnostics
+    // tests do. Unset: the default `127.0.0.1:25565`.
+    if let Some(address) = non_empty(var("VOID_LISTEN_ADDR")) {
+        config_builder = config_builder.address(address);
+    }
+
+    // `VOID_OBSERVABILITY_ADDR=9464` serves /health and /metrics on
+    // 127.0.0.1:9464; a full `host:port` picks the interface. Unset: off.
+    if let Some(address) = non_empty(var("VOID_OBSERVABILITY_ADDR")) {
+        config_builder = config_builder.observability(observability_config(&address));
+    }
+
+    config_builder.build()
 }
 
 fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::error::Error>> {
@@ -309,8 +331,16 @@ where
     Ok((flame_layer, flame_guard))
 }
 
-fn env_string(name: &str) -> Option<String> {
-    non_empty(env::var(name).ok())
+fn observability_config(address: &str) -> ObservabilityConfig {
+    match address.parse::<u16>() {
+        Ok(port) => ObservabilityConfig::localhost(port),
+        Err(_) => ObservabilityConfig::new(address),
+    }
+}
+
+/// The value of the environment variable `name`, if it is set.
+fn env_var(name: &str) -> Option<String> {
+    env::var(name).ok()
 }
 
 fn is_on(value: Option<String>) -> bool {
@@ -387,4 +417,34 @@ fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) 
         event.position.y,
         event.position.z,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_list_shows_the_welcome_motd_and_room_for_100_players() {
+        let config = server_config(
+            &MetricsEnv {
+                metrics_debug: false,
+                flame_enabled: false,
+                tps_output: None,
+                flame_output: None,
+                flame_include_idle: false,
+                packet_debug: false,
+            },
+            |_| None,
+        );
+
+        assert_eq!(config.motd, "Welcome to Void Server!");
+        assert_eq!(config.max_players, 100);
+        assert_eq!(config.address, "127.0.0.1:25565");
+    }
+
+    #[test]
+    fn observability_address_defaults_to_loopback_for_a_bare_port() {
+        assert_eq!(observability_config("9464").address, "127.0.0.1:9464");
+        assert_eq!(observability_config("[::1]:9464").address, "[::1]:9464");
+    }
 }

@@ -126,6 +126,7 @@ The example server also supports environment variables for diagnostics:
 | `VOID_FLAME_OUTPUT` | Sets the flame trace output path (also enables flame output). |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time in the flame trace to show server utilization. |
 | `VOID_PACKET_DEBUG` | Adds packet-level network debug logs. |
+| `VOID_OBSERVABILITY_ADDR` | Serves `/health` and Prometheus `/metrics`: a bare port binds `127.0.0.1`, or give `host:port`. Off when unset. |
 
 See [Server Configuration](void-docs/docs/reference/server/configuration.md) and [Configuration Examples](void-docs/docs/architecture/operational-readiness/configuration-example.md).
 
@@ -178,7 +179,10 @@ Rust's compiler checks, Clippy, rustfmt, and Cargo tests are the project's prima
 ## Performance Monitoring
 
 The separate **Benchmarks** GitHub Actions workflow runs the Criterion benchmarks
-weekly and on demand. Its reports are uploaded as a `criterion-reports` artifact.
+weekly and on demand. It does not run automatically on pull requests; to
+benchmark one, start the workflow manually on its branch
+(`gh workflow run benchmarks.yml --ref <branch>`). Its reports are uploaded as a
+`criterion-reports` artifact.
 Results are tracked as observations rather than CI thresholds because hosted
 runners are not stable enough for reliable performance gating.
 

@@ -21,6 +21,7 @@ Use this order during a review:
 | Channel handoff throughput | Millions of messages per second in micro-benchmarks | Criterion benchmark in `void/benches/channel_handoff.rs` | Validates network-to-ECS communication cost |
 | Chunk packet serialization | Low microseconds for representative superflat chunk packets | Criterion benchmark in `void-protocol/benches/packet_chunk.rs` | Covers one of the heaviest clientbound packet paths |
 | TCP connection acceptance | 100% success in local stress POC at documented client counts | `pocs/performance` TCP connect tool | Validates listener responsiveness under bursts |
+| Functional and load run | PASS against the thresholds of a named workload | `voidmc-load` in `void-e2e/`, see [Load Testing](./load-testing.md) | Full-protocol clients join, move, chat and run commands |
 | Memory footprint | Track with `/usr/bin/time -v` during release runs | Manual profiling command | Prevents hidden growth as systems are added |
 
 ## Runtime Controls
@@ -35,6 +36,7 @@ The example server exposes performance-oriented environment variables:
 | `VOID_FLAME_OUTPUT=logs/void-flame.folded` | Selects the folded flame-trace output path. Default: `logs/trace-<unix-ms>.folded` |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time so the trace shows overall utilization |
 | `VOID_PACKET_DEBUG=1` | Enables verbose packet logging for protocol debugging |
+| `VOID_OBSERVABILITY_ADDR=9464` | Serves `/health` and Prometheus `/metrics` on `127.0.0.1:9464` ([reference](../reference/server/observability.md)) |
 
 Relative paths are resolved against the working directory. Missing parent
 directories are created and an existing file is replaced. When a file cannot

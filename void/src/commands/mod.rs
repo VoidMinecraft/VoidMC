@@ -833,8 +833,8 @@ impl CommandRegistry {
     }
 
     /// Server-side tab-completion for a `minecraft:ask_server` request
-    /// carrying the full chat line (`/tp @`), or `None` when the line does
-    /// not name a registered command with at least one argument typed.
+    /// carrying the chat line up to the cursor (`/tp @`), or `None` when the
+    /// line does not name a registered command or alias followed by a space.
     pub fn complete(&self, text: &str, world: &World, executor: Entity) -> Option<Completion> {
         let line = text.strip_prefix('/').unwrap_or(text);
         let (name, rest) = line.split_once(' ')?;
