@@ -37,7 +37,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 
 | Component | Fields | Description |
 |---|---|---|
-| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms |
+| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms; until then client positions are ignored |
 | `ServerControlledPosition` | Marker | Server owns the position; client movement packets update `Rotation` only |
 | `Teleport { x, y, z, .. }` | Destination + options | Teleport with loading barrier; removed once the client confirms, times out or it is cancelled (see [Players](../gameplay/players.md#teleportation)) |
 | `PlayerAbilities { flying, allow_flight, .. }` | Flags + speeds | Opt-in; changes are sent as Player Abilities packets |

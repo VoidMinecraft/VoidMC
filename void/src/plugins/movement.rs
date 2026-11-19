@@ -51,9 +51,14 @@ fn handle_confirm_teleportation(
     }
 }
 
+/// Like vanilla, positions are ignored while a position sync is unconfirmed:
+/// they were sent before the client processed the teleport and would undo it.
 fn apply_position(world: &World, commands: &mut Commands, entity: Entity, new: Position) {
     if world.get::<Mount>(entity).is_some()
         || world.get::<ServerControlledPosition>(entity).is_some()
+        || world
+            .get::<TeleportState>(entity)
+            .is_some_and(|state| state.pending_id.is_some())
     {
         return;
     }
@@ -378,6 +383,47 @@ mod tests {
             .remove::<ServerControlledPosition>();
         move_to(&mut app, entity, 3.0, 2.0);
         assert_eq!(app.world().get::<Position>(entity).unwrap().x, 3.0);
+    }
+
+    #[test]
+    fn positions_sent_before_a_teleport_is_confirmed_are_ignored() {
+        let mut app = test_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                Position {
+                    x: 100.0,
+                    y: 80.0,
+                    z: 100.0,
+                },
+                TeleportState {
+                    next_id: 6,
+                    pending_id: Some(5),
+                },
+            ))
+            .id();
+
+        move_to(&mut app, entity, 1.0, 1.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 100.0);
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: ConfirmTeleportation { teleport_id: 4 },
+        });
+        app.world_mut().flush();
+        move_to(&mut app, entity, 1.0, 1.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 100.0);
+        assert_eq!(app.world().resource::<Moves>().0, 0);
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: ConfirmTeleportation { teleport_id: 5 },
+        });
+        app.world_mut().flush();
+        move_to(&mut app, entity, 101.0, 100.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 101.0);
+        assert_eq!(app.world().resource::<Moves>().0, 1);
     }
 
     #[test]
