@@ -59,10 +59,12 @@ pub fn on_player_ready(
 
     let snapshot = EntrySnapshot::resolve(entry, keep_alive, game_mode);
     let own_entry = snapshot.initial(new_uuid.0, &new_name.0);
+    // `try_`: another ready observer may have queued a despawn of the player
+    // before these inserts apply.
     commands
         .entity(new_entity)
-        .insert_if_new(TabEntry::default())
-        .insert(TabEntryState::sent(snapshot));
+        .try_insert_if_new(TabEntry::default())
+        .try_insert(TabEntryState::sent(snapshot));
 
     let mut listing = Vec::with_capacity(all_players.iter().len());
     listing.push(own_entry.clone());
@@ -384,6 +386,28 @@ mod tests {
                 Sent::Info(2, 0x20, vec![(1, 2, true, 10, true, 0)]),
             ]
         );
+    }
+
+    /// Another ready observer may despawn the player. Observers of one event
+    /// run in an order set by their entity ids, not by registration, so
+    /// `on_player_ready` can still see the entity and queue its tab-list
+    /// inserts after the despawn. Those inserts must not panic the game
+    /// thread, whichever observer runs first: the despawning observer is
+    /// registered at a range of entity ids to cover both orders.
+    #[test]
+    fn a_player_despawned_by_another_ready_observer_does_not_panic() {
+        fn despawn_on_ready(event: On<PlayerReadyEvent>, mut commands: Commands) {
+            commands.entity(event.entity).despawn();
+        }
+        for fillers in 0..32 {
+            let (mut app, _rx) = join_app();
+            for _ in 0..fillers {
+                app.world_mut().spawn_empty();
+            }
+            app.add_observer(despawn_on_ready);
+            let entity = join(&mut app, 1, "gone", None);
+            assert!(app.world().get_entity(entity).is_err());
+        }
     }
 
     #[test]

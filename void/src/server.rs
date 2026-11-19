@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use flume::{Receiver, Sender};
 use tokio::net::TcpListener;
@@ -15,9 +16,20 @@ use voidmc_net::socket::{FrameLimits, ServerSocket};
 #[derive(Debug)]
 pub struct Server {
     socket: ServerSocket,
-    connections: HashMap<u32, AbortHandle>,
+    connections: HashMap<u32, Connection>,
     next_id: u32,
 }
+
+/// A running client task and the signal that closes it gracefully.
+#[derive(Debug)]
+struct Connection {
+    abort: AbortHandle,
+    close: Sender<()>,
+}
+
+/// How long a kicked connection may take to write what is queued for it (the
+/// `Disconnect` with the reason) before it is aborted.
+const KICK_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl Server {
     pub async fn new(addr: &str) -> std::io::Result<Self> {
@@ -111,10 +123,16 @@ impl Server {
                                 break;
                             }
 
+                            let (close_tx, close_rx) = flume::bounded(1);
                             let task = tokio::spawn(
-                                Client::new(client_id, client, incoming_tx, outgoing_rx, server_status).run(),
+                                Client::new(client_id, client, incoming_tx, outgoing_rx, server_status)
+                                    .with_close_signal(close_rx)
+                                    .run(),
                             );
-                            self.connections.insert(client_id, task.abort_handle());
+                            self.connections.insert(
+                                client_id,
+                                Connection { abort: task.abort_handle(), close: close_tx },
+                            );
 
                             tokio::spawn(async move {
                                 match task.await {
@@ -147,7 +165,15 @@ impl Server {
                     };
 
                     if let Some(connection) = self.connections.remove(&client_id) {
-                        connection.abort();
+                        // Dropping the signal closes the connection once the
+                        // packets queued before the kick are written; a client
+                        // that does not read them is cut off after a delay.
+                        let Connection { abort, close } = connection;
+                        drop(close);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(KICK_FLUSH_TIMEOUT).await;
+                            abort.abort();
+                        });
                         info!(client_id = client_id, "Kicked client");
                     }
                 }

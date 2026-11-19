@@ -2,6 +2,7 @@ mod chat_ack;
 mod chat_command;
 mod chat_message;
 mod chat_session_update;
+mod chunk_batch_received;
 mod click_container;
 mod client_information;
 mod close_container;
@@ -30,6 +31,7 @@ pub use chat_ack::*;
 pub use chat_command::*;
 pub use chat_message::*;
 pub use chat_session_update::*;
+pub use chunk_batch_received::*;
 pub use click_container::*;
 pub use client_information::*;
 pub use close_container::*;
@@ -70,6 +72,8 @@ pub enum PlayPacket {
     ChatMessage(ChatMessage),
     #[codec(packet_id = 0x0A)]
     ChatSessionUpdate(ChatSessionUpdate),
+    #[codec(packet_id = 0x0B)]
+    ChunkBatchReceived(ChunkBatchReceived),
     #[codec(packet_id = 0x0D)]
     TickEnd(TickEnd),
     #[codec(packet_id = 0x0E)]
