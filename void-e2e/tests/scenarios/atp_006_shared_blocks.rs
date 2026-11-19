@@ -364,6 +364,94 @@ async fn a_block_held_in_the_off_hand_is_placed_when_the_main_hand_is_empty() {
 }
 
 #[tokio::test]
+async fn a_click_with_no_block_in_hand_leaves_the_neighbouring_block() {
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+
+    // Two clicked blocks whose neighbour across the top face is not air: a
+    // stone (as a lagging client view sees it) and short grass (which a
+    // vanilla client lets the player click through).
+    let base = ground(&bob);
+    let other = bob
+        .view(|view| view.ground_below(BlockPos::new(base.x + 2, base.y + 8, base.z)))
+        .expect("Bob holds the chunk next to him");
+    let mut seq = 1;
+    for (clicked, item) in [(base, ItemKind::Stone), (other, ItemKind::ShortGrass)] {
+        hold(&bob, HOTBAR_START, Some(item)).await;
+        place(&bob, clicked, Direction::Up, seq).await;
+        expect_ack(&bob, seq).await;
+        seq += 1;
+    }
+    let neighbours = [base.up(1), other.up(1)];
+    settle(&[&alice, &bob]).await;
+    let before = server_blocks(&server, neighbours.to_vec()).await;
+    assert_eq!(
+        neighbours.map(|pos| kind(bob.block_at(pos))),
+        [Some(BlockKind::Stone), Some(BlockKind::ShortGrass)]
+    );
+    alice.clear();
+    bob.clear();
+
+    hold(&bob, OFF_HAND, None).await;
+    for main_hand in [None, Some(ItemKind::Diamond)] {
+        hold(&bob, HOTBAR_START, main_hand).await;
+        for clicked in [base, other] {
+            // Like the vanilla client: the main hand on the block, a use in
+            // the air if it holds an item, then the off hand on the block.
+            use_on(
+                &bob,
+                InteractionHand::MainHand,
+                hit(clicked, Direction::Up),
+                seq,
+            )
+            .await;
+            let mut sent = vec![seq];
+            seq += 1;
+            if main_hand.is_some() {
+                bob.send(ServerboundUseItem {
+                    hand: InteractionHand::MainHand,
+                    seq,
+                    y_rot: 0.0,
+                    x_rot: 90.0,
+                })
+                .await;
+                sent.push(seq);
+                seq += 1;
+            }
+            use_on(
+                &bob,
+                InteractionHand::OffHand,
+                hit(clicked, Direction::Up),
+                seq,
+            )
+            .await;
+            sent.push(seq);
+            seq += 1;
+            for s in sent {
+                expect_ack(&bob, s).await;
+            }
+        }
+    }
+
+    settle(&[&alice, &bob]).await;
+    assert_eq!(
+        server_blocks(&server, neighbours.to_vec()).await,
+        before,
+        "an empty hand or a non-block item places nothing"
+    );
+    let watched = HashSet::from(neighbours);
+    for bot in [&alice, &bob] {
+        assert_eq!(updates_at(bot, &watched), [], "{} saw a change", bot.name());
+    }
+    assert_converged(&server, &[&alice, &bob], &neighbours).await;
+    for bot in [&alice, &bob] {
+        bot.assert_healthy();
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn interleaved_changes_by_two_players_converge() {
     let server = TestServer::start().await;
     let alice = server.join("Alice").await;

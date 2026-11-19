@@ -508,8 +508,11 @@ pub fn drain_item_use_queue(world: &mut World) {
                 };
 
                 // Default: a block item places its block when used on a block.
+                // An empty hand places nothing (the air item maps to the air
+                // block, which would erase what is there).
                 if result == UseResult::Pass
                     && block.is_some()
+                    && !held.is_empty()
                     && let Some(state) = held.item.default_block_state()
                 {
                     ctx.place_block(state);

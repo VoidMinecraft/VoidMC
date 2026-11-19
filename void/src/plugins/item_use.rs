@@ -393,6 +393,60 @@ mod tests {
         assert_ne!(planks_state, 1);
     }
 
+    #[test]
+    fn an_empty_hand_places_nothing() {
+        let mut server = MultiplayerHarness::new();
+        let position = BlockPosition { x: 7, y: 64, z: 7 };
+        server.place(0, position);
+        // Player two's hands are empty.
+        server
+            .app
+            .world_mut()
+            .get_mut::<Inventory>(server.players[1])
+            .unwrap()
+            .set(Inventory::HOTBAR_START, ItemStack::EMPTY);
+
+        // A vanilla click: main hand, then off hand, on the face the stone
+        // covers (as with water or grass there, or a lagging client view).
+        for (hand, sequence) in [(Hand::MainHand, 30), (Hand::OffHand, 31)] {
+            server.app.world_mut().trigger(PacketEvent {
+                client_id: 2,
+                entity: server.players[1],
+                packet: UseItemOn {
+                    hand,
+                    location: BlockPosition { y: 63, ..position },
+                    face: BlockFace::Top,
+                    cursor_x: 0.5,
+                    cursor_y: 1.0,
+                    cursor_z: 0.5,
+                    inside_block: false,
+                    world_border_hit: false,
+                    sequence,
+                },
+            });
+        }
+        server.app.update();
+
+        server.assert_block(position, 1);
+        let packets: Vec<_> = server.outgoing.try_iter().collect();
+        assert!(!packets.iter().any(|outgoing| matches!(
+            &outgoing.packet,
+            voidmc_protocol::clientbound::ClientboundPacket::Play(
+                voidmc_protocol::clientbound::PlayPacket::BlockUpdate(_)
+            )
+        )));
+        let acks: Vec<i32> = packets
+            .iter()
+            .filter_map(|outgoing| match &outgoing.packet {
+                voidmc_protocol::clientbound::ClientboundPacket::Play(
+                    voidmc_protocol::clientbound::PlayPacket::BlockChangedAck(ack),
+                ) if outgoing.client_id == 2 => Some(ack.sequence),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(acks, [30, 31]);
+    }
+
     struct MultiplayerHarness {
         app: App,
         outgoing: flume::Receiver<OutgoingPacket>,
