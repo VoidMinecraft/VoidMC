@@ -87,6 +87,12 @@ pub struct ClientSettings {
 #[require(crate::entity::visibility_index::IndexedChunks)]
 pub struct PlayerReady;
 
+/// Present while the player holds the sneak key, as last reported by its
+/// Player Input packet. A sneaking player holding an item uses the item on a
+/// block instead of the block's own interaction (vanilla "secondary use").
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct Sneaking;
+
 /// The effective (capped) view distance last used for chunk streaming.
 #[derive(Component)]
 pub struct EffectiveViewDistance(pub i32);

@@ -10,6 +10,7 @@ use voidmc_protocol::{
 };
 
 use crate::{
+    components::Sneaking,
     events::{
         PlayerCancelDiggingEvent, PlayerChangeSlotEvent, PlayerCloseContainerEvent,
         PlayerDropItemEvent, PlayerFinishDiggingEvent, PlayerInputEvent, PlayerInteractEntityEvent,
@@ -37,6 +38,13 @@ impl Plugin for InteractionPlugin {
 
 fn handle_player_input(event: On<PacketEvent<PlayerInput>>, mut commands: Commands) {
     let input = event.packet;
+    if let Ok(mut player) = commands.get_entity(event.entity) {
+        if input.sneak() {
+            player.insert(Sneaking);
+        } else {
+            player.remove::<Sneaking>();
+        }
+    }
     commands.trigger(PlayerInputEvent {
         entity: event.entity,
         forward: input.forward(),
