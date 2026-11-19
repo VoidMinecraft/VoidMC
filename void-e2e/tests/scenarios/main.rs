@@ -1,3 +1,4 @@
+mod atp_021_custom_command;
 mod commands;
 mod connection;
 mod inventory;
