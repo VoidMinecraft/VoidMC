@@ -1,3 +1,4 @@
+mod atp_033_command_completion;
 mod commands;
 mod connection;
 mod inventory;
