@@ -1,8 +1,10 @@
 mod block_changed_ack;
 mod block_entity_data;
+mod block_event;
 mod block_update;
 mod boss_event;
 pub mod chunk;
+mod chunk_batch;
 mod clear_titles;
 mod close_container;
 mod command_suggestions_response;
@@ -59,9 +61,11 @@ mod world_border;
 
 pub use block_changed_ack::*;
 pub use block_entity_data::*;
+pub use block_event::*;
 pub use block_update::*;
 pub use boss_event::*;
 pub use chunk::*;
+pub use chunk_batch::*;
 pub use clear_titles::*;
 pub use close_container::*;
 pub use command_suggestions_response::*;
@@ -128,10 +132,16 @@ pub enum PlayPacket {
     BlockChangedAck(BlockChangedAck),
     #[codec(packet_id = 0x06)]
     BlockEntityData(BlockEntityData),
+    #[codec(packet_id = 0x07)]
+    BlockEvent(BlockEvent),
     #[codec(packet_id = 0x08)]
     BlockUpdate(BlockUpdate),
     #[codec(packet_id = 0x09)]
     BossEvent(BossEvent),
+    #[codec(packet_id = 0x0B)]
+    ChunkBatchFinished(ChunkBatchFinished),
+    #[codec(packet_id = 0x0C)]
+    ChunkBatchStart(ChunkBatchStart),
     #[codec(packet_id = 0x0D)]
     ChunksBiomes(ChunksBiomes),
     #[codec(packet_id = 0x0E)]

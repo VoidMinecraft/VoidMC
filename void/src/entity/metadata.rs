@@ -23,7 +23,7 @@ use voidmc_protocol::types::BlockPosition;
 
 use super::EntityShownEvent;
 use super::effects::StatusEffects;
-use crate::components::{EntityViewers, ItemEntity, MinecraftEntityId, SpawnedEntity};
+use crate::components::{EntityViewers, ItemEntity, MinecraftEntityId, Sneaking, SpawnedEntity};
 use crate::item::ItemStack;
 use crate::players::Players;
 use crate::schedule::VoidSystems;
@@ -495,12 +495,25 @@ impl MetadataSource for TextDisplay {
     }
 }
 
-fn flags_byte(
-    invisible: Option<&Invisible>,
-    glowing: Option<&Glowing>,
-    effects: Option<&StatusEffects>,
-) -> i8 {
+/// Every server-side source of the shared flags byte (index 0): the
+/// [`Invisible`] and [`Glowing`] markers, the glowing and invisibility
+/// [`StatusEffects`], and a player's [`Sneaking`]. The other bits (on fire,
+/// sprinting, swimming, gliding) have no server-side state and stay clear.
+pub(crate) type FlagSources<'a> = (
+    Option<&'a Invisible>,
+    Option<&'a Glowing>,
+    Option<&'a StatusEffects>,
+    Option<&'a Sneaking>,
+);
+
+/// The complete shared flags byte of an entity. Every packet that carries
+/// index 0 sends this byte, whichever source changed: [`project_flags`] for
+/// spawned entities, `systems::pose::broadcast_shared_flags` for players.
+pub(crate) fn flags_byte((invisible, glowing, effects, sneaking): FlagSources) -> i8 {
     let mut flags = 0u8;
+    if sneaking.is_some_and(|sneaking| sneaking.0) {
+        flags |= entity_flag::SNEAKING;
+    }
     if invisible.is_some() || effects.is_some_and(StatusEffects::invisible) {
         flags |= entity_flag::INVISIBLE;
     }
@@ -510,67 +523,62 @@ fn flags_byte(
     flags as i8
 }
 
-type FlagSources<'a> = (
-    Option<&'a Invisible>,
-    Option<&'a Glowing>,
-    Option<&'a StatusEffects>,
-);
+fn set_flags(meta: &mut EntityMetadata, sources: FlagSources) {
+    meta.set(entity_index::FLAGS, Value::Byte(flags_byte(sources)));
+}
 
 pub(super) fn project_flags(
     mut entities: Query<
         (FlagSources, &mut EntityMetadata),
-        Or<(Added<Invisible>, Added<Glowing>, Changed<StatusEffects>)>,
+        Or<(
+            Added<Invisible>,
+            Added<Glowing>,
+            Changed<StatusEffects>,
+            Changed<Sneaking>,
+        )>,
     >,
 ) {
-    for ((invisible, glowing, effects), mut meta) in entities.iter_mut() {
-        meta.set(
-            entity_index::FLAGS,
-            Value::Byte(flags_byte(invisible, glowing, effects)),
-        );
+    for (sources, mut meta) in entities.iter_mut() {
+        set_flags(&mut meta, sources);
     }
 }
 
+// Removal observers run while the removed component is still there, so each
+// passes `None` for it and reads the other sources.
+
 fn on_remove_invisible(
     event: On<Remove, Invisible>,
-    mut entities: Query<(
-        Option<&Glowing>,
-        Option<&StatusEffects>,
-        &mut EntityMetadata,
-    )>,
+    mut entities: Query<(FlagSources, &mut EntityMetadata)>,
 ) {
-    if let Ok((glowing, effects, mut meta)) = entities.get_mut(event.entity) {
-        meta.set(
-            entity_index::FLAGS,
-            Value::Byte(flags_byte(None, glowing, effects)),
-        );
+    if let Ok(((_, glowing, effects, sneaking), mut meta)) = entities.get_mut(event.entity) {
+        set_flags(&mut meta, (None, glowing, effects, sneaking));
     }
 }
 
 fn on_remove_glowing(
     event: On<Remove, Glowing>,
-    mut entities: Query<(
-        Option<&Invisible>,
-        Option<&StatusEffects>,
-        &mut EntityMetadata,
-    )>,
+    mut entities: Query<(FlagSources, &mut EntityMetadata)>,
 ) {
-    if let Ok((invisible, effects, mut meta)) = entities.get_mut(event.entity) {
-        meta.set(
-            entity_index::FLAGS,
-            Value::Byte(flags_byte(invisible, None, effects)),
-        );
+    if let Ok(((invisible, _, effects, sneaking), mut meta)) = entities.get_mut(event.entity) {
+        set_flags(&mut meta, (invisible, None, effects, sneaking));
     }
 }
 
 fn on_remove_effects(
     event: On<Remove, StatusEffects>,
-    mut entities: Query<(Option<&Invisible>, Option<&Glowing>, &mut EntityMetadata)>,
+    mut entities: Query<(FlagSources, &mut EntityMetadata)>,
 ) {
-    if let Ok((invisible, glowing, mut meta)) = entities.get_mut(event.entity) {
-        meta.set(
-            entity_index::FLAGS,
-            Value::Byte(flags_byte(invisible, glowing, None)),
-        );
+    if let Ok(((invisible, glowing, _, sneaking), mut meta)) = entities.get_mut(event.entity) {
+        set_flags(&mut meta, (invisible, glowing, None, sneaking));
+    }
+}
+
+fn on_remove_sneaking(
+    event: On<Remove, Sneaking>,
+    mut entities: Query<(FlagSources, &mut EntityMetadata)>,
+) {
+    if let Ok(((invisible, glowing, effects, _), mut meta)) = entities.get_mut(event.entity) {
+        set_flags(&mut meta, (invisible, glowing, effects, None));
     }
 }
 
@@ -608,6 +616,7 @@ pub(super) fn register(app: &mut App) {
     app.add_observer(on_remove_invisible)
         .add_observer(on_remove_glowing)
         .add_observer(on_remove_effects)
+        .add_observer(on_remove_sneaking)
         .add_observer(send_full_metadata_on_shown)
         .add_systems(
             PostUpdate,
@@ -1009,6 +1018,129 @@ mod tests {
         let meta = app.world().get::<EntityMetadata>(crystal).unwrap();
         assert_eq!(meta.get(8), Some(&Value::OptionalBlockPos(None)));
         assert_eq!(meta.get(9), Some(&Value::Boolean(true)));
+    }
+
+    #[test]
+    fn the_flags_byte_combines_every_source() {
+        use crate::entity::{Effect, EffectDuration};
+
+        // (effects, do they make the entity glow, do they make it invisible)
+        let effect_cases = [
+            (None, false, false),
+            (Some(vec![]), false, false),
+            (Some(vec![Effect::Speed]), false, false),
+            (Some(vec![Effect::Glowing]), true, false),
+            (Some(vec![Effect::Invisibility]), false, true),
+            (
+                Some(vec![Effect::Glowing, Effect::Invisibility]),
+                true,
+                true,
+            ),
+        ]
+        .map(|(effects, glows, hides)| {
+            let component = effects.map(|effects: Vec<Effect>| {
+                effects
+                    .into_iter()
+                    .fold(StatusEffects::new(), |all, effect| {
+                        all.with(effect, 0, EffectDuration::Infinite)
+                    })
+            });
+            (component, glows, hides)
+        });
+        for invisible in [false, true] {
+            for glowing in [false, true] {
+                for sneaking in [None, Some(Sneaking(false)), Some(Sneaking(true))] {
+                    for (effects, effect_glows, effect_hides) in &effect_cases {
+                        let mut expected = 0;
+                        if sneaking.is_some_and(|sneaking| sneaking.0) {
+                            expected |= entity_flag::SNEAKING;
+                        }
+                        if invisible || *effect_hides {
+                            expected |= entity_flag::INVISIBLE;
+                        }
+                        if glowing || *effect_glows {
+                            expected |= entity_flag::GLOWING;
+                        }
+                        let byte = flags_byte((
+                            invisible.then_some(&Invisible),
+                            glowing.then_some(&Glowing),
+                            effects.as_ref(),
+                            sneaking.as_ref(),
+                        ));
+                        assert_eq!(
+                            byte, expected as i8,
+                            "invisible {invisible}, glowing {glowing}, {sneaking:?}, {effects:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_flags_update_of_a_spawned_entity_carries_every_source() {
+        let (mut app, rx) = test_app();
+        let _viewer = player(&mut app, 1);
+        let zombie = EntityBuilder::new(EntityKind::Zombie)
+            .spawn_in(app.world_mut())
+            .insert(Glowing)
+            .id();
+        app.update();
+        metadata(&rx);
+        let flags = |app: &App| {
+            app.world()
+                .get::<EntityMetadata>(zombie)
+                .unwrap()
+                .get(0)
+                .cloned()
+        };
+        let glowing = entity_flag::GLOWING;
+        let sneaking = entity_flag::SNEAKING;
+        let invisible = entity_flag::INVISIBLE;
+
+        let mut step = |change: &dyn Fn(&mut EntityWorldMut), expected: u8| {
+            change(&mut app.world_mut().entity_mut(zombie));
+            app.update();
+            assert_eq!(metadata(&rx), vec![(1, vec![(0, 0)])]);
+            assert_eq!(flags(&app), Some(Value::Byte(expected as i8)));
+        };
+        step(
+            &|e| {
+                e.insert(Sneaking(true));
+            },
+            glowing | sneaking,
+        );
+        step(
+            &|e| {
+                e.insert(Invisible);
+            },
+            glowing | sneaking | invisible,
+        );
+        step(
+            &|e| {
+                e.remove::<Glowing>();
+            },
+            sneaking | invisible,
+        );
+        step(
+            &|e| {
+                e.get_mut::<Sneaking>().unwrap().0 = false;
+            },
+            invisible,
+        );
+        step(
+            &|e| {
+                e.insert(Sneaking(true));
+                e.remove::<Invisible>();
+            },
+            sneaking,
+        );
+        step(
+            &|e| {
+                e.remove::<Sneaking>();
+            },
+            0,
+        );
     }
 
     #[test]
