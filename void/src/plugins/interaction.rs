@@ -1,5 +1,5 @@
 use bevy_app::{App, Plugin};
-use bevy_ecs::{observer::On, system::Commands};
+use bevy_ecs::{component::Component, observer::On, system::Commands, world::EntityWorldMut};
 use voidmc_codec::Decode;
 use voidmc_protocol::{
     serverbound::{
@@ -35,10 +35,16 @@ impl Plugin for InteractionPlugin {
     }
 }
 
+/// The sneak key state from the client's last Player Input, so a sneak
+/// event fires only when it changes.
+#[derive(Component, Default)]
+struct SneakKey(bool);
+
 fn handle_player_input(event: On<PacketEvent<PlayerInput>>, mut commands: Commands) {
     let input = event.packet;
+    let entity = event.entity;
     commands.trigger(PlayerInputEvent {
-        entity: event.entity,
+        entity,
         forward: input.forward(),
         backward: input.backward(),
         left: input.left(),
@@ -47,6 +53,22 @@ fn handle_player_input(event: On<PacketEvent<PlayerInput>>, mut commands: Comman
         sneak: input.sneak(),
         sprint: input.sprint(),
     });
+    // Since 1.21.2 the sneak key is reported here, not by Player Command.
+    let sneaking = input.sneak();
+    commands
+        .entity(entity)
+        .queue(move |mut player: EntityWorldMut| {
+            let changed = match player.get_mut::<SneakKey>() {
+                Some(mut held) => std::mem::replace(&mut held.0, sneaking) != sneaking,
+                None => {
+                    player.insert(SneakKey(sneaking));
+                    sneaking
+                }
+            };
+            if changed {
+                player.world_scope(|world| world.trigger(PlayerSneakEvent { entity, sneaking }));
+            }
+        });
 }
 
 fn handle_swing_arm(event: On<PacketEvent<SwingArm>>, mut commands: Commands) {
@@ -71,33 +93,15 @@ fn handle_close_container(event: On<PacketEvent<CloseContainer>>, mut commands: 
 }
 
 fn handle_player_command(event: On<PacketEvent<PlayerCommand>>, mut commands: Commands) {
-    match event.packet.action_id {
-        PlayerCommandAction::StartSneaking => {
-            commands.trigger(PlayerSneakEvent {
-                entity: event.entity,
-                sneaking: true,
-            });
-        }
-        PlayerCommandAction::StopSneaking => {
-            commands.trigger(PlayerSneakEvent {
-                entity: event.entity,
-                sneaking: false,
-            });
-        }
-        PlayerCommandAction::StartSprinting => {
-            commands.trigger(PlayerSprintEvent {
-                entity: event.entity,
-                sprinting: true,
-            });
-        }
-        PlayerCommandAction::StopSprinting => {
-            commands.trigger(PlayerSprintEvent {
-                entity: event.entity,
-                sprinting: false,
-            });
-        }
-        _ => {}
-    }
+    let sprinting = match event.packet.action_id {
+        PlayerCommandAction::StartSprinting => true,
+        PlayerCommandAction::StopSprinting => false,
+        _ => return,
+    };
+    commands.trigger(PlayerSprintEvent {
+        entity: event.entity,
+        sprinting,
+    });
 }
 
 fn handle_player_action(event: On<PacketEvent<PlayerAction>>, mut commands: Commands) {
@@ -218,4 +222,116 @@ fn handle_interact(event: On<PacketEvent<Interact>>, mut commands: Commands) {
         target_pos,
         sneaking,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_ecs::prelude::*;
+
+    use super::*;
+
+    #[derive(Resource, Default)]
+    struct Seen(Vec<String>);
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.init_resource::<Seen>()
+            .add_plugins(InteractionPlugin)
+            .add_observer(|event: On<PlayerSneakEvent>, mut seen: ResMut<Seen>| {
+                seen.0.push(format!("sneak {}", event.sneaking));
+            })
+            .add_observer(|event: On<PlayerSprintEvent>, mut seen: ResMut<Seen>| {
+                seen.0.push(format!("sprint {}", event.sprinting));
+            })
+            .add_observer(|event: On<PlayerInputEvent>, mut seen: ResMut<Seen>| {
+                seen.0.push(format!("input sneak={}", event.sneak));
+            });
+        app
+    }
+
+    fn take(app: &mut App) -> Vec<String> {
+        std::mem::take(&mut app.world_mut().resource_mut::<Seen>().0)
+    }
+
+    fn input(app: &mut App, entity: Entity, flags: u8) -> Vec<String> {
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: PlayerInput { flags },
+        });
+        app.world_mut().flush();
+        take(app)
+    }
+
+    fn command(app: &mut App, entity: Entity, action_id: PlayerCommandAction) -> Vec<String> {
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: PlayerCommand {
+                entity_id: 1,
+                action_id,
+                jump_boost: 0,
+            },
+        });
+        app.world_mut().flush();
+        take(app)
+    }
+
+    #[test]
+    fn the_sneak_key_in_player_input_fires_a_sneak_event_when_it_changes() {
+        let mut app = app();
+        let player = app.world_mut().spawn_empty().id();
+
+        assert_eq!(
+            input(&mut app, player, PlayerInput::FORWARD),
+            ["input sneak=false"]
+        );
+        assert_eq!(
+            input(&mut app, player, PlayerInput::SNEAK),
+            ["input sneak=true", "sneak true"]
+        );
+        assert_eq!(
+            input(&mut app, player, PlayerInput::SNEAK | PlayerInput::FORWARD),
+            ["input sneak=true"]
+        );
+        assert_eq!(
+            input(&mut app, player, PlayerInput::FORWARD),
+            ["input sneak=false", "sneak false"]
+        );
+        assert_eq!(input(&mut app, player, 0), ["input sneak=false"]);
+    }
+
+    #[test]
+    fn a_player_already_sneaking_in_its_first_input_starts_sneaking() {
+        let mut app = app();
+        let player = app.world_mut().spawn_empty().id();
+        assert_eq!(
+            input(&mut app, player, PlayerInput::SNEAK),
+            ["input sneak=true", "sneak true"]
+        );
+    }
+
+    #[test]
+    fn player_commands_report_sprinting_and_never_sneaking() {
+        let mut app = app();
+        let player = app.world_mut().spawn_empty().id();
+
+        assert_eq!(
+            command(&mut app, player, PlayerCommandAction::StartSprinting),
+            ["sprint true"]
+        );
+        assert_eq!(
+            command(&mut app, player, PlayerCommandAction::StopSprinting),
+            ["sprint false"]
+        );
+        for other in [
+            PlayerCommandAction::LeaveBed,
+            PlayerCommandAction::StartJumpWithHorse,
+            PlayerCommandAction::StopJumpWithHorse,
+            PlayerCommandAction::OpenVehicleInventory,
+            PlayerCommandAction::StartFlyingWithElytra,
+        ] {
+            assert!(command(&mut app, player, other).is_empty(), "{other:?}");
+        }
+    }
 }

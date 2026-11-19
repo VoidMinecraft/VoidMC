@@ -84,17 +84,31 @@ const BASE_HEIGHT: i32 = 64;
 const FREQUENCY: f64 = 0.02;
 const AMPLITUDE: f64 = 8.0;
 
-/// Convenience: [`WorldGenerator::surface_height_at`] of `DefaultWorldGenerator`.
+/// [`WorldGenerator::surface_height_at`] of `DefaultWorldGenerator::default()`.
+///
+/// Always the default terrain, never the generator configured with
+/// `ServerConfigBuilder::world_generator`: on a running server, ask the
+/// [`WorldGen`] resource instead.
 pub fn surface_height_at(block_x: i32, block_z: i32) -> i32 {
     DefaultWorldGenerator::default().surface_height_at(block_x, block_z)
 }
 
-/// Convenience: generates a terrain chunk using `DefaultWorldGenerator`.
+/// [`WorldGenerator::generate_chunk`] of `DefaultWorldGenerator::default()`.
+///
+/// Always the default terrain, never the generator configured with
+/// `ServerConfigBuilder::world_generator`: on a running server, ask the
+/// [`WorldGen`] resource instead.
 pub fn generate_chunk(pos: &ChunkPos) -> ProtocolChunk {
     DefaultWorldGenerator::default().generate_chunk(pos)
 }
 
-/// Generates all chunks in a square radius around a center position.
+/// Generates the default terrain of all chunks in a square radius around a
+/// center position.
+#[deprecated(
+    note = "always uses DefaultWorldGenerator, not the configured generator, and the server \
+            does not call it: the spawn area is pre-generated from the `WorldGen` resource. \
+            Iterate `center.chunks_in_radius(radius)` with your `WorldGenerator` instead"
+)]
 pub fn generate_spawn_area(center: ChunkPos, radius: i32) -> Vec<(ChunkPos, ProtocolChunk)> {
     center
         .chunks_in_radius(radius)

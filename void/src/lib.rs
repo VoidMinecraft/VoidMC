@@ -61,8 +61,8 @@ pub use entity::{
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
 pub use item_behavior::{
-    BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
-    UseResult,
+    BlockBreakContext, BlockInteraction, BlockInteractionRegistry, BlockUseTarget, ItemBehavior,
+    ItemBehaviorRegistry, ItemUseContext, UseResult,
 };
 pub use menu::{
     ContainerIds, ContainerInput, Menu, MenuClickContext, MenuClickEvent, MenuCloseReason,
