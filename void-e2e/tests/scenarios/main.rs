@@ -1,3 +1,4 @@
+mod atp_011_teleport;
 mod commands;
 mod connection;
 mod inventory;
