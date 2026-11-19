@@ -10,6 +10,7 @@ mod atp_010_gamemode;
 mod atp_011_teleport;
 mod atp_012_manage_players;
 mod atp_013_give_and_clear;
+mod atp_014_inventory_clicks;
 mod atp_015_item_drop;
 mod atp_016_summon;
 mod atp_017_wander;

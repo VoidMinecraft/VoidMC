@@ -25,6 +25,7 @@ use crate::item_behavior::{
 };
 use crate::network::PacketEvent;
 use crate::schedule::VoidSystems;
+use crate::window::max_stack;
 
 pub struct ItemUsePlugin;
 
@@ -140,25 +141,35 @@ fn queue_break(
 
 /// Applies a creative-mode slot change to the server-side inventory; the slot
 /// is echoed back by the inventory sync like any other change. A negative slot
-/// is the creative inventory throwing the stack into the world.
+/// is the creative inventory throwing the stack into the world. As in vanilla,
+/// only a creative server accepts it, only for slots 1..=45 (or a throw) and
+/// stacks within their max size; anything else resends the slot's true
+/// contents, and a refused throw drops nothing.
 fn handle_creative_slot(
     event: On<PacketEvent<SetCreativeModeSlot>>,
     mut inventories: Query<&mut Inventory>,
+    config: Option<Res<ServerConfigResource>>,
     mut commands: Commands,
 ) {
-    let slot = event.packet.slot;
-    if slot < 0 {
-        let stack = ItemStack::from_slot(&event.packet.item);
-        if !stack.is_empty() {
+    let creative = config.is_some_and(|config| config.game_mode == 1);
+    let stack = ItemStack::from_slot(&event.packet.item);
+    let Ok(slot) = usize::try_from(event.packet.slot) else {
+        if creative && !stack.is_empty() && stack.count <= max_stack(&stack) {
             commands.trigger(ItemDropEvent {
                 dropper: event.entity,
                 stack,
             });
         }
         return;
-    }
-    if let Ok(mut inv) = inventories.get_mut(event.entity) {
-        inv.set(slot as usize, ItemStack::from_slot(&event.packet.item));
+    };
+    let Ok(mut inv) = inventories.get_mut(event.entity) else {
+        return;
+    };
+    let valid_slot = (1..Inventory::SIZE).contains(&slot);
+    if creative && valid_slot && stack.count <= max_stack(&stack) {
+        inv.set(slot, stack);
+    } else if slot < Inventory::SIZE {
+        inv.mark_slot(slot);
     }
 }
 

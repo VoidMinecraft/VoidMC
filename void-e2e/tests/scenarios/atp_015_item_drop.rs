@@ -432,6 +432,14 @@ async fn holding(server: &TestServer, bot: &Bot, item: Item) -> u32 {
         .await
 }
 
+/// What one slot of the player's inventory holds, server side.
+async fn server_slot(server: &TestServer, bot: &Bot, slot: usize) -> ServerItemStack {
+    let player = server.player_entity(bot.uuid()).await;
+    server
+        .with_world(move |world| world.get::<Inventory>(player).unwrap().get(slot).clone())
+        .await
+}
+
 /// Moves the bot there and turns it, like a client walking and looking.
 async fn place(bot: &Bot, position: Vec3, yaw: f32, pitch: f32) {
     bot.move_to(position).await;
@@ -934,7 +942,7 @@ async fn every_drop_path_throws_exactly_the_dropped_stack() {
     .await;
     expect_item(&alice, EMERALD, 1).await;
     expect_item(&bob, EMERALD, 1).await;
-    expect_slot(&alice, 9, EMERALD, 4).await;
+    assert_eq!(server_slot(&server, &alice, 9).await, EMERALD.stack(4));
     click(
         &alice,
         9,
@@ -946,7 +954,7 @@ async fn every_drop_path_throws_exactly_the_dropped_stack() {
     .await;
     expect_item(&alice, EMERALD, 4).await;
     expect_item(&bob, EMERALD, 4).await;
-    expect_slot(&alice, 9, EMERALD, 0).await;
+    assert!(server_slot(&server, &alice, 9).await.is_empty());
 
     // A stack picked up on the cursor and clicked outside the window.
     set_slot(&server, &alice, 10, GOLD, 3).await;
