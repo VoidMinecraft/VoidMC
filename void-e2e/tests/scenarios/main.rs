@@ -1,3 +1,4 @@
+mod atp_010_gamemode;
 mod commands;
 mod connection;
 mod inventory;
