@@ -201,7 +201,8 @@ fn handle_finish_configuration(
         },
     );
 
-    // Send initial chunks around spawn
+    // Send initial chunks around spawn, in one batch
+    players.send(event.entity, clientbound::ChunkBatchStart {});
     let early_teleport_threshold = 9;
     let mut loaded = HashSet::new();
     let mut teleport_sent = false;
@@ -232,6 +233,12 @@ fn handle_finish_configuration(
             teleport_sent = true;
         }
     }
+    players.send(
+        event.entity,
+        clientbound::ChunkBatchFinished {
+            batch_size: loaded.len() as i32,
+        },
+    );
 
     if !teleport_sent {
         send_teleport(

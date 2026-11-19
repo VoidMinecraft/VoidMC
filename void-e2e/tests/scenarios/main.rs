@@ -1,3 +1,4 @@
+mod atp_004_initial_world;
 mod atp_027_world_generation;
 mod commands;
 mod connection;
