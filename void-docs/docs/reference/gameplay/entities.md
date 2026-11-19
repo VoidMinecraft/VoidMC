@@ -87,7 +87,7 @@ full state once.
 | Component | Effect |
 |---|---|
 | `CustomName::new("Bob")` / `.hidden()` | Name tag (indices 2, 3) |
-| `Glowing`, `Invisible` | Entity flag bits (index 0) |
+| `Glowing`, `Invisible` | Entity flag bits (index 0); on a player too, sent to the other players with its sneaking bit |
 | `NoGravity`, `Silent` | Indices 5 and 4 |
 | `ItemEntity { stack }` | Rendered item of a `minecraft:item` entity |
 | `EndCrystal::floating()` / `.show_base()` / `.beam_target(x, y, z)` | Bedrock base (index 9) and beam target (index 8) of a `minecraft:end_crystal`; the default is floating with no beam |
