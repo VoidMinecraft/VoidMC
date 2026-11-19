@@ -14,9 +14,9 @@ use voidmc_protocol::{
 use crate::{
     CommandRegistry, RegistryDataStore, ServerConfigResource, WorldGen,
     components::{
-        ClientSettings, ConnectionState, CurrentChunkPos, EffectiveViewDistance, KeepAliveState,
-        LoadedChunks, MinecraftEntityId, PlayerDimension, Position, PreviousPosition, Rotation,
-        TeleportState,
+        ChunkStreamBacklog, ClientSettings, ConnectionState, CurrentChunkPos,
+        EffectiveViewDistance, KeepAliveState, LoadedChunks, MinecraftEntityId, PlayerDimension,
+        Position, PreviousPosition, Rotation, TeleportState,
     },
     events::PlayerJoinEvent,
     network::PacketEvent,
@@ -206,7 +206,9 @@ fn handle_finish_configuration(
     let mut loaded = HashSet::new();
     let mut teleport_sent = false;
 
-    for pos in spawn_chunk.chunks_in_radius(config.initial_chunk_radius) {
+    let join_chunks = spawn_chunk.chunks_in_radius(config.initial_chunk_radius);
+    let join_chunk_count = join_chunks.len();
+    for pos in join_chunks {
         let key = (DimensionId::Overworld, pos);
         let chunk_entity = chunk_index.0.get(&key).copied();
 
@@ -241,8 +243,16 @@ fn handle_finish_configuration(
         );
     }
 
-    // Update LoadedChunks component with the chunks we've sent
-    commands.entity(event.entity).insert(LoadedChunks(loaded));
+    // Chunks outside the pre-generated spawn area were skipped. A backlog
+    // makes chunk streaming generate them on its first pass, even when the
+    // player's view distance equals the join radius and nothing else would
+    // trigger it.
+    let missing_join_chunks = loaded.len() < join_chunk_count;
+    let mut player = commands.entity(event.entity);
+    player.insert(LoadedChunks(loaded));
+    if missing_join_chunks {
+        player.insert(ChunkStreamBacklog::default());
+    }
     commands.trigger(PlayerJoinEvent {
         client_id: event.client_id,
         entity: event.entity,
