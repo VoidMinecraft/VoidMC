@@ -1,3 +1,4 @@
+mod atp_036_custom_world_generator;
 mod commands;
 mod connection;
 mod inventory;
