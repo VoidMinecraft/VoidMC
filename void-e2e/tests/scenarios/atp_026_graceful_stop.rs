@@ -61,7 +61,7 @@ fn persistent(world: &TempWorld) -> TestServerBuilder {
 async fn stop_command_saves_dirty_chunks_and_stops_the_server() {
     let world = TempWorld::new();
 
-    let server = persistent(&world).start().await;
+    let server = persistent(&world).operators().start().await;
     let alice = server.join("Alice").await;
     let broken = ground(&alice);
     alice

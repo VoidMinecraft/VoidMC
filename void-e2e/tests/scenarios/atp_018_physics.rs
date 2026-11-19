@@ -225,6 +225,7 @@ fn record(
 
 async fn recorded_server() -> TestServer {
     TestServer::builder()
+        .operators()
         .plugin(|app| {
             app.init_resource::<Trace>().add_systems(PostUpdate, record);
         })

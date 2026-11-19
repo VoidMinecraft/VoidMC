@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use bevy_app::AppExit;
-use bevy_ecs::prelude::{Entity, With};
+use bevy_ecs::prelude::{Entity, With, World};
 use rand::Rng;
 
 use crate::components::{
-    PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState, Wander,
+    Operator, PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState, Wander,
 };
 use crate::entity::{EntityBuilder, EntityKind};
 use crate::messages::TextColor;
@@ -23,6 +23,10 @@ use crate::item::ItemId;
 use crate::item::ItemStack;
 
 /// Registers all default commands except those listed in `exclude`.
+///
+/// `broadcast`, `clear`, `gamemode`, `give`, `kick`, `say`, `stop`, `summon`
+/// and `tp` require the sender to have [`Operator`]; `help`, `list`, `ping`,
+/// `plugins` and `tell` are open to every player.
 pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str]) {
     if !exclude.contains(&"help") {
         registry.register(help_command());
@@ -71,10 +75,16 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
 pub fn give_command() -> Command {
     CommandBuilder::new("give")
         .description("Give yourself an item")
+        .requires(is_operator)
         .arg("item", Arc::new(ItemArg))
         .arg_optional("count", IntegerArg::new(1, 64))
         .handler(handle_give)
         .build()
+}
+
+/// The requirement of the operator-only default commands.
+fn is_operator(world: &World, executor: Entity) -> bool {
+    world.get::<Operator>(executor).is_some()
 }
 
 fn handle_give(ctx: &mut CommandContext) {
@@ -109,6 +119,7 @@ fn handle_give(ctx: &mut CommandContext) {
 pub fn clear_command() -> Command {
     CommandBuilder::new("clear")
         .description("Clear your inventory")
+        .requires(is_operator)
         .handler(handle_clear)
         .build()
 }
@@ -134,6 +145,7 @@ pub fn help_command() -> Command {
 pub fn gamemode_command() -> Command {
     CommandBuilder::new("gamemode")
         .description("Change game mode")
+        .requires(is_operator)
         .alias("gm")
         .arg("mode", Arc::new(GameModeArg))
         .handler(handle_gamemode)
@@ -143,6 +155,7 @@ pub fn gamemode_command() -> Command {
 pub fn kick_command() -> Command {
     CommandBuilder::new("kick")
         .description("Kick a player")
+        .requires(is_operator)
         .arg("player", Arc::new(PlayerArg))
         .arg_variadic("reason", Arc::new(GreedyStringArg))
         .handler(handle_kick)
@@ -167,8 +180,12 @@ pub fn plugins_command() -> Command {
 fn handle_help(ctx: &mut CommandContext) {
     // Check if a specific command was requested
     if let Some(cmd_name) = ctx.get::<String>("command").cloned() {
+        let sender = ctx.entity;
         let resolved = ctx.with_world(|world| {
             let registry = world.resource::<CommandRegistry>();
+            if !registry.can_use(&cmd_name, world, sender) {
+                return None;
+            }
             registry.resolve(&cmd_name).map(|canonical_name| {
                 let canonical = canonical_name.to_string();
                 let desc = registry.description(&canonical).unwrap_or("").to_string();
@@ -193,12 +210,14 @@ fn handle_help(ctx: &mut CommandContext) {
         return;
     }
 
-    // List all commands
+    // List the commands the sender may run
+    let sender = ctx.entity;
     let mut entries: Vec<(String, String)> = ctx.with_world(|world| {
         let registry = world.resource::<CommandRegistry>();
         registry
             .command_names()
             .iter()
+            .filter(|name| registry.can_use(name, world, sender))
             .map(|name| {
                 let desc = registry.description(name).unwrap_or("").to_string();
                 (name.to_string(), desc)
@@ -286,6 +305,7 @@ fn handle_plugins(ctx: &mut CommandContext) {
 pub fn tp_command() -> Command {
     CommandBuilder::new("tp")
         .description("Teleport to coordinates")
+        .requires(is_operator)
         .arg("position", Arc::new(Vec3Arg))
         .handler(handle_tp)
         .build()
@@ -294,6 +314,7 @@ pub fn tp_command() -> Command {
 pub fn broadcast_command() -> Command {
     CommandBuilder::new("broadcast")
         .description("Broadcast a message to all players")
+        .requires(is_operator)
         .arg_variadic_required("message", Arc::new(GreedyStringArg))
         .handler(handle_broadcast)
         .build()
@@ -444,6 +465,7 @@ fn handle_tp(ctx: &mut CommandContext) {
 pub fn say_command() -> Command {
     CommandBuilder::new("say")
         .description("Send a message as yourself")
+        .requires(is_operator)
         .arg_variadic_required("message", Arc::new(GreedyStringArg))
         .handler(handle_say)
         .build()
@@ -458,6 +480,7 @@ fn handle_say(ctx: &mut CommandContext) {
 pub fn summon_command() -> Command {
     CommandBuilder::new("summon")
         .description("Summon an entity at a position")
+        .requires(is_operator)
         .arg("entity", Arc::new(SummonableEntityArg))
         .arg_optional("position", Arc::new(Vec3Arg))
         .flag("wander", Some('w'), "Attach the demo random-walk behavior")
@@ -536,6 +559,7 @@ fn handle_summon(ctx: &mut CommandContext) {
 pub fn stop_command() -> Command {
     CommandBuilder::new("stop")
         .description("Gracefully stop the server")
+        .requires(is_operator)
         .handler(handle_stop)
         .build()
 }
@@ -560,7 +584,6 @@ pub struct PluginList(pub Vec<String>);
 
 #[cfg(test)]
 mod tests {
-    use bevy_ecs::prelude::*;
     use flume::Receiver;
 
     use super::*;
@@ -597,6 +620,7 @@ mod tests {
             .spawn((
                 ClientId(7),
                 PlayerReady,
+                Operator,
                 PlayerName("Alice".into()),
                 TeleportState {
                     next_id: 1,

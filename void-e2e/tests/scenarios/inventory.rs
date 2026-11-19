@@ -20,7 +20,7 @@ fn hashed(kind: ItemKind, count: i32) -> HashedStack {
 
 #[tokio::test]
 async fn clicks_move_items_between_slots() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let entity = server.player_entity(alice.uuid()).await;
 

@@ -10,6 +10,7 @@ mod close_container;
 mod command_suggestions_response;
 pub mod commands;
 mod disconnect;
+mod entity_event;
 pub mod entity_metadata;
 mod entity_position_sync;
 mod game_event;
@@ -73,6 +74,7 @@ pub use close_container::*;
 pub use command_suggestions_response::*;
 pub use commands::*;
 pub use disconnect::*;
+pub use entity_event::*;
 pub use entity_metadata::{
     Billboard, DisplayTransform, ItemDisplayContext, MAX_TELEPORT_TICKS, pack_brightness,
 };
@@ -160,6 +162,8 @@ pub enum PlayPacket {
     SetCooldown(SetCooldown),
     #[codec(packet_id = 0x20)]
     Disconnect(Disconnect),
+    #[codec(packet_id = 0x22)]
+    EntityEvent(EntityEvent),
     #[codec(packet_id = 0x23)]
     EntityPositionSync(EntityPositionSync),
     #[codec(packet_id = 0x25)]

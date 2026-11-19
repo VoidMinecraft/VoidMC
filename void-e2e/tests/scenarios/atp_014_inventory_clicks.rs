@@ -836,6 +836,7 @@ impl<'a> Session<'a> {
 
 async fn survival() -> TestServer {
     TestServer::builder()
+        .operators()
         .config(|config| config.game_mode(0))
         .start()
         .await

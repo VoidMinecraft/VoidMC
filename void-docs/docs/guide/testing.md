@@ -350,7 +350,7 @@ use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 
 #[tokio::test]
 async fn teleport_is_seen_by_others() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
 
@@ -385,6 +385,7 @@ commands.
 | `plugin(\|app\| { ... })` | Adds systems, observers or resources, like `VoidServer::add_plugin` |
 | `command(my_command)` | Registers a command built by `my_command()` |
 | `without_default_commands()` | Starts with an empty command registry |
+| `operators()` | Makes every player an `Operator` from login, so its bots may run the operator-only default commands (`/tp`, `/give`, `/kick`, `/stop`, ...) |
 
 On a running server:
 
@@ -397,6 +398,8 @@ On a running server:
 - `wait_for(what, |world| Option<T>)` polls once per tick until the closure
   returns `Some`.
 - `wait_ticks(n)`, `status()` (the server-list ping) and `player_entity(uuid)`.
+- `op(&bot)` and `deop(&bot)` add and remove `Operator` on a connected bot's
+  player, as an application would at runtime.
 - `stop()` shuts the server down and fails the test if VoidMC logged an
   error, or an unrecognised packet, on any thread.
 - `wait_for_exit()` waits for the server to stop on its own, for example
