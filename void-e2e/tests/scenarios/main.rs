@@ -1,3 +1,4 @@
+mod atp_003_login_handshake;
 mod commands;
 mod connection;
 mod inventory;
