@@ -1,5 +1,5 @@
 use voidmc_protocol::clientbound::{
-    Chunk, ChunkHeightmaps, ChunkSection, LightData, PaletteData, biomes, blocks,
+    Chunk, ChunkHeightmaps, ChunkSection, LightData, PaletteData, biomes, block_direct_bits, blocks,
 };
 
 /// Encode a VarInt the same way the protocol does, for manual verification.
@@ -405,6 +405,44 @@ fn set_block_state_grows_palette_bits() {
         panic!("expected Indirect palette after multi-id writes");
     }
     assert_eq!(section.block_count, 17);
+}
+
+#[test]
+fn set_block_state_switches_to_global_ids_past_256_states() {
+    // Air plus 255 placed states fill an 8-bit indirect palette exactly.
+    let mut section = ChunkSection::empty();
+    let mut expected = [blocks::AIR; 4096];
+    for (index, cell) in expected.iter_mut().enumerate().take(255) {
+        *cell = 1 + index as i32;
+        let (x, y, z) = (index % 16, index / 256, (index / 16) % 16);
+        section.set_block_state(x as u8, y as u8, z as u8, *cell);
+    }
+    assert_eq!(section.block_state.bits_per_entry(), 8);
+    assert!(matches!(section.block_state, PaletteData::Indirect { .. }));
+
+    // The 257th distinct state lands on another layer of the same section.
+    let (x, y, z) = (5u8, 1u8, 7u8);
+    let old = section.set_block_state(x, y, z, 1000);
+    assert_eq!(old, blocks::AIR);
+    expected[y as usize * 256 + z as usize * 16 + x as usize] = 1000;
+
+    for (index, &block) in expected.iter().enumerate() {
+        let (x, y, z) = (index % 16, index / 256, (index / 16) % 16);
+        assert_eq!(
+            section.get_block_state(x as u8, y as u8, z as u8),
+            block,
+            "cell ({x}, {y}, {z})"
+        );
+    }
+    assert_eq!(section.block_count, 256);
+    assert_eq!(section.block_state.bits_per_entry(), block_direct_bits());
+    assert!(matches!(section.block_state, PaletteData::Direct { .. }));
+    let bytes = section.encode_to_bytes();
+    assert_eq!(
+        bytes[4],
+        block_direct_bits(),
+        "bits per entry after the header"
+    );
 }
 
 #[test]
