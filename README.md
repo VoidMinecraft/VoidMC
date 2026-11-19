@@ -49,6 +49,9 @@ cargo run -p voidmc-example
 ```
 
 The example binds to `127.0.0.1:25565` by default. It creates runtime logs in `logs/`.
+Nobody is an operator on it, so the operator-only default commands (`/gamemode`, `/give`, `/tp`,
+`/kick`, `/stop`, ...) are refused; start it with `VOID_EXAMPLE_OPERATORS=1` to make every player an
+operator while testing locally.
 
 Run the **Alpine Rush** demo world (Minecraft Java 26.1.2):
 
