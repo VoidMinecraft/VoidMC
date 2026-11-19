@@ -75,8 +75,10 @@ The `stream_chunks` system (runs in `PostUpdate`) manages chunk loading and unlo
 5. **Load in-range**: For chunks within view distance not yet loaded:
    - If the chunk entity exists in `ChunkIndex`, send its data.
    - If not, generate it on-demand using the `WorldGenerator`, spawn a chunk entity, and send the data.
-   - New chunks are sent in nearest-first order (from `chunks_in_radius` sorting).
+   - New chunks are sent in nearest-first order (from `chunks_in_radius` sorting, squared Euclidean distance from the player's chunk). Once a chunk has to wait (send budget, generation cap, or spawn still pending), every farther chunk waits behind it, so a cached chunk never overtakes a nearer one that still has to be generated.
 6. **Throttle**: A player with a `ChunkSendBudget(n)` receives at most `n` chunk packets per tick (cached ones included). When the budget, the `max_chunk_generations_per_tick` cap or a chunk still pending spawn leaves chunks unsent, the unsent tail is stored nearest-first in `ChunkStreamBacklog` and drained on the following ticks without recomputing the range or the unload set (steps 4–5 only rerun when the chunk column or view distance changes); the component is removed once the range is complete. Players without a budget receive their whole range at once.
+
+The join sends the square of `initial_chunk_radius` around spawn, capped by the same effective view distance, so a player is never sent chunks that the first streaming pass would forget. The `Login` packet carries the server's `view_distance` (the client's chunk-cache radius) and `simulation_distance`.
 
 ## Spawn Area Pre-Generation
 

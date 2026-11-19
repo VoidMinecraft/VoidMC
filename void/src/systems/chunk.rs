@@ -81,10 +81,7 @@ pub fn stream_chunks(
     {
         let new_chunk = ChunkPos::from_block(position.x, position.z);
 
-        let view_distance = settings
-            .map(|s| s.view_distance as i32)
-            .unwrap_or(config.view_distance)
-            .min(config.view_distance);
+        let view_distance = effective_view_distance(settings, config.view_distance);
 
         let chunk_changed = new_chunk != current_chunk.0;
         let vd_changed = view_distance != effective_vd.0;
@@ -142,13 +139,16 @@ pub fn stream_chunks(
         };
 
         let dim_id = dimension.0;
+        // Nearest-first: once a chunk has to wait (budget, generation cap or
+        // spawn still pending), every farther one waits behind it.
+        let mut held_back = false;
         let budget = send_budget.map_or(usize::MAX, |b| b.0.max(1));
         let mut sent = 0usize;
         pending.retain(|pos| {
             if loaded_chunks.0.contains(pos) {
                 return false;
             }
-            if sent >= budget {
+            if held_back || sent >= budget {
                 return true;
             }
 
@@ -156,6 +156,7 @@ pub fn stream_chunks(
             if !chunk_index.0.contains_key(&key) {
                 if max_chunk_generations > 0 && generated_this_tick >= max_chunk_generations {
                     throttled = true;
+                    held_back = true;
                     return true;
                 }
 
@@ -177,9 +178,11 @@ pub fn stream_chunks(
             }
 
             let Some(&chunk_entity) = chunk_index.0.get(&key) else {
+                held_back = true;
                 return true;
             };
             let Ok((chunk_pos, chunk_data)) = chunk_query.get(chunk_entity) else {
+                held_back = true;
                 return true;
             };
             let packet = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
@@ -215,6 +218,15 @@ pub fn stream_chunks(
             "Chunk generation throttled"
         );
     }
+}
+
+/// The view distance chunks are streamed with: the client's requested view
+/// distance capped by the server's, or the server's when the client never sent
+/// its settings.
+pub(crate) fn effective_view_distance(settings: Option<&ClientSettings>, server: i32) -> i32 {
+    settings
+        .map_or(server, |s| i32::from(s.view_distance))
+        .min(server)
 }
 
 #[cfg(test)]
@@ -398,6 +410,60 @@ mod tests {
         );
         let loaded = &app.world().get::<LoadedChunks>(entity).unwrap().0;
         assert!(loaded.iter().all(|p| (p.x - 10).abs() <= 1));
+    }
+
+    #[test]
+    fn a_chunk_still_pending_spawn_holds_back_the_farther_ones() {
+        let (mut app, receiver) = test_app(ServerConfig {
+            view_distance: 1,
+            max_chunk_generations_per_tick: 0,
+            ..Default::default()
+        });
+        // Every chunk of the 3×3 range is cached except its centre, which the
+        // first player to stream generates; for the second player it is still
+        // pending spawn in that tick.
+        let range = ChunkPos::new(0, 0).chunks_in_radius(1);
+        for pos in &range[1..] {
+            let data = ChunkData::from_protocol_chunk(&Empty.generate_chunk(pos));
+            let chunk = app
+                .world_mut()
+                .spawn((
+                    ChunkPosition(*pos),
+                    data,
+                    ChunkDimension(DimensionId::Overworld),
+                ))
+                .id();
+            app.world_mut()
+                .resource_mut::<ChunkIndex>()
+                .0
+                .insert((DimensionId::Overworld, *pos), chunk);
+        }
+        player(&mut app, 1);
+        player(&mut app, 2);
+
+        let mut received = [Vec::new(), Vec::new()];
+        for _ in 0..2 {
+            app.update();
+            let outgoing: Vec<OutgoingPacket> = receiver.drain().collect();
+            for (index, client) in [1, 2].into_iter().enumerate() {
+                received[index].extend(outgoing.iter().filter_map(|p| match &p.packet {
+                    ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(chunk))
+                        if p.client_id == client =>
+                    {
+                        Some(ChunkPos::new(chunk.chunk_x, chunk.chunk_z))
+                    }
+                    _ => None,
+                }));
+            }
+        }
+        assert_eq!(
+            received[0], range,
+            "client 1 receives its range nearest-first"
+        );
+        assert_eq!(
+            received[1], range,
+            "client 2 receives its range nearest-first"
+        );
     }
 
     #[test]
