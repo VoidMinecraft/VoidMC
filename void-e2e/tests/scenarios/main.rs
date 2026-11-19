@@ -1,3 +1,4 @@
+mod atp_017_wander;
 mod commands;
 mod connection;
 mod inventory;
