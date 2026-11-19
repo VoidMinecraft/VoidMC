@@ -6,7 +6,11 @@
 //! address that cannot be bound are checked in `void/tests/server_config.rs`.
 //! `packet_ingest_budget_ms` has no assertion here: it only bounds the
 //! microseconds spent draining the incoming channel, which no test can
-//! exceed deterministically.
+//! exceed deterministically. `execution_mode` and `observability` are not set
+//! here: `atp_028_parallel_regions` runs a server built with
+//! `execution_mode(ExecutionMode::MultiThreaded)` and checks its systems and
+//! regions run concurrently, and `atp_032_observability` queries the
+//! endpoints a server built with `observability(..)` serves.
 
 use std::collections::HashSet;
 use std::path::PathBuf;

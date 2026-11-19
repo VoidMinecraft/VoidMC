@@ -12,9 +12,9 @@ use std::thread;
 use bevy_app::{App, AppExit, Update};
 use bevy_ecs::prelude::*;
 use voidmc::{
-    ChunkIndex, ChunkPos, DefaultWorldGenerator, FrameLimits, RegistryDataStore, ServerConfig,
-    ServerConfigBuilder, ServerConfigResource, SpawnPosition, VoidServer, WorldGenerator,
-    default_registry_data,
+    ChunkIndex, ChunkPos, DefaultWorldGenerator, ExecutionMode, FrameLimits, ObservabilityConfig,
+    RegistryDataStore, ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition,
+    VoidServer, WorldGenerator, default_registry_data,
 };
 
 const REFERENCE: &str = "../void-docs/docs/reference/server/configuration.md";
@@ -105,8 +105,10 @@ fn fields(config: ServerConfig) -> Rows {
         slow_tick_ms,
         frame_limits,
         compression_threshold,
+        observability,
         world_generator,
         registries,
+        execution_mode,
     } = config;
     let SpawnPosition { x, z, y } = typed::<SpawnPosition>(&spawn_position);
     let custom = |is_default: bool, documented: &str| {
@@ -192,6 +194,11 @@ fn fields(config: ServerConfig) -> Rows {
             format!("{:?}", typed::<Option<u32>>(&compression_threshold)),
         ),
         (
+            "observability",
+            "Option<ObservabilityConfig>",
+            format!("{:?}", typed::<Option<ObservabilityConfig>>(&observability)),
+        ),
+        (
             "world_generator",
             "Box<dyn WorldGenerator>",
             custom(
@@ -206,6 +213,11 @@ fn fields(config: ServerConfig) -> Rows {
                 registry_ids(typed::<RegistryDataStore>(&registries)) == default_registry_ids(),
                 "RegistryDataStore::default()",
             ),
+        ),
+        (
+            "execution_mode",
+            "ExecutionMode",
+            format!("{:?}", typed::<ExecutionMode>(&execution_mode)),
         ),
     ]
     .into_iter()
@@ -242,6 +254,7 @@ fn customised() -> ServerConfig {
             ..FrameLimits::default()
         })
         .compression_threshold(Some(128))
+        .observability(ObservabilityConfig::localhost(9464))
         .world_generator(DefaultWorldGenerator {
             base_height: 100,
             amplitude: 0.0,
@@ -250,6 +263,7 @@ fn customised() -> ServerConfig {
         .configure_registries(|registries| {
             registries.remove_entry("minecraft:painting_variant", "minecraft:alban");
         })
+        .execution_mode(ExecutionMode::MultiThreaded)
         .build()
 }
 
