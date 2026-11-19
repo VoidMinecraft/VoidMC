@@ -31,5 +31,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = "1.16.0"
 
+[dev-dependencies]
+voidmc-world-io = { path = "../void-world-io" }
+
 [profile.dev.package."*"]
 opt-level = 2
