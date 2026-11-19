@@ -713,6 +713,7 @@ mod tests {
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket, PacketEvent};
     use crate::plugins::interaction::InteractionPlugin;
     use crate::plugins::item_use::ItemUsePlugin;
+    use crate::plugins::movement::MovementPlugin;
 
     const Y: i16 = 100;
 
@@ -784,7 +785,12 @@ mod tests {
             })
             .insert_resource(ServerConfigResource::from(&ServerConfig::default()))
             .insert_resource(ChunkIndex::default())
-            .add_plugins((InteractionPlugin, ItemUsePlugin, RedstonePlugin));
+            .add_plugins((
+                InteractionPlugin,
+                MovementPlugin,
+                ItemUsePlugin,
+                RedstonePlugin,
+            ));
 
             // Only chunk (0, 0) is loaded.
             let chunk = ChunkData::new(
@@ -1262,6 +1268,19 @@ mod tests {
             .set(Inventory::HOTBAR_START, ItemStack::EMPTY);
         harness.click(lever_at);
         assert!(harness.powered(lever_at));
+
+        // Releasing the sneak key (Sneaking(false)) toggles with an item again.
+        harness.world().get_mut::<Inventory>(player).unwrap().set(
+            Inventory::HOTBAR_START,
+            ItemStack::of("minecraft:stone", 64).unwrap(),
+        );
+        harness.world().trigger(PacketEvent {
+            client_id: 1,
+            entity: player,
+            packet: PlayerInput { flags: 0 },
+        });
+        harness.click(lever_at);
+        assert!(!harness.powered(lever_at));
     }
 
     #[test]

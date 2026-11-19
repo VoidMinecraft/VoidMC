@@ -312,7 +312,9 @@ fn interact_with_block(ctx: &mut ItemUseContext, target: BlockUseTarget, hand: H
         return UseResult::Pass;
     }
     let player = ctx.player;
-    let secondary_use = ctx.world.get::<Sneaking>(player).is_some()
+    // A player that has not sent any input yet has no `Sneaking`: not sneaking.
+    let sneaking = ctx.world.get::<Sneaking>(player).is_some_and(|s| s.0);
+    let secondary_use = sneaking
         && ctx.world.get::<Inventory>(player).is_some_and(|inventory| {
             !inventory.held().is_empty() || !inventory.get(Inventory::OFFHAND).is_empty()
         });
