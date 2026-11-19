@@ -43,8 +43,8 @@ let config = ServerConfigBuilder::new()
 | `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over) |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
-| `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output |
-| `metrics_tps_output` | `Option<String>` | `None` | Optional TPS CSV output path (defaults to `logs/tps-<timestamp>.csv`) |
+| `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output; when `false` nothing is sampled or written |
+| `metrics_tps_output` | `Option<String>` | `None` | Optional TPS CSV output path (defaults to `logs/tps-<timestamp>.csv`); used only with `metrics_debug`. Missing directories are created and an existing file is replaced; if the file cannot be created, a warning names the path and the reason and samples are only logged |
 | `max_packets_per_tick` | `usize` | `1000` | Cap the number of packets drained from the incoming channel each tick (0 = unlimited) |
 | `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |

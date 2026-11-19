@@ -29,12 +29,20 @@ The example server exposes performance-oriented environment variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `VOID_METRICS_DEBUG=1` | Enables TPS metrics collection in `void-example` |
-| `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Writes TPS samples to a chosen CSV file |
-| `VOID_METRICS_MODE=flame` | Enables flame tracing mode in the example logging setup |
-| `VOID_FLAME_OUTPUT=logs/void-flame.folded` | Selects the folded flame-trace output path |
+| `VOID_METRICS_DEBUG=1` | Enables TPS sampling and the TPS CSV in `void-example` (`true` and `yes` also work). Without it nothing is sampled and no CSV is written |
+| `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Writes TPS samples to a chosen CSV file; needs `VOID_METRICS_DEBUG=1`. Default: `logs/tps-<unix-ms>.csv` |
+| `VOID_METRICS_MODE=flame` | Writes a folded flame trace (setting `VOID_FLAME_OUTPUT` does too). Independent of TPS sampling |
+| `VOID_FLAME_OUTPUT=logs/void-flame.folded` | Selects the folded flame-trace output path. Default: `logs/trace-<unix-ms>.folded` |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time so the trace shows overall utilization |
 | `VOID_PACKET_DEBUG=1` | Enables verbose packet logging for protocol debugging |
+
+Relative paths are resolved against the working directory. Missing parent
+directories are created and an existing file is replaced. When a file cannot
+be created (the path is a directory, lies under a regular file, or is not
+writable), the server logs a warning that names the path and the reason, and
+runs without that output. Otherwise it logs `Writing TPS samples to <path>` or
+`Writing flame trace to <path>`. See [Benchmarking](./benchmarking.md) for the
+file formats.
 
 Generated `logs/`, raw Criterion output, flame traces, and `target/` artifacts stay out of git. Commit summarized Markdown tables instead.
 
