@@ -1,3 +1,4 @@
+mod atp_037_custom_biome;
 mod commands;
 mod connection;
 mod inventory;
