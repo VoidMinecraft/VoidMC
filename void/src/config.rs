@@ -24,6 +24,24 @@ impl Default for SpawnPosition {
     }
 }
 
+/// How the game thread runs a tick.
+///
+/// Available as a resource on the running server.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Every system, and every region of region-partitioned work, runs one
+    /// after another on the game thread. The baseline, and the default.
+    #[default]
+    SingleThreaded,
+    /// Bevy's multi-threaded executor runs systems whose data access does not
+    /// conflict at the same time on the compute task pool, and
+    /// region-partitioned work (the entity physics and spawn-settling steps)
+    /// processes independent regions concurrently. Produces the same world
+    /// state as [`ExecutionMode::SingleThreaded`] as long as systems that
+    /// write the same data are ordered.
+    MultiThreaded,
+}
+
 /// Full server configuration. Consumed once by `VoidServer::new`.
 pub struct ServerConfig {
     pub address: String,
@@ -49,6 +67,8 @@ pub struct ServerConfig {
     pub compression_threshold: Option<u32>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
+    /// Single- or multi-threaded tick execution. Defaults to single-threaded.
+    pub execution_mode: ExecutionMode,
 }
 
 impl ServerConfig {
@@ -87,6 +107,7 @@ impl Default for ServerConfig {
             compression_threshold: Some(DEFAULT_COMPRESSION_THRESHOLD),
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
+            execution_mode: ExecutionMode::default(),
         }
     }
 }
@@ -210,6 +231,14 @@ impl ServerConfigBuilder {
 
     pub fn configure_registries(mut self, f: impl FnOnce(&mut RegistryDataStore)) -> Self {
         f(&mut self.config.registries);
+        self
+    }
+
+    /// Runs systems and independent regions concurrently
+    /// ([`ExecutionMode::MultiThreaded`]) or one after another on the game
+    /// thread ([`ExecutionMode::SingleThreaded`], the default).
+    pub fn execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.config.execution_mode = mode;
         self
     }
 

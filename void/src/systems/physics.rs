@@ -5,8 +5,10 @@ use crate::components::{
     EntityCollider, EntityDimension, Grounded, MovementConfig, Position, SpawnedEntity, Velocity,
     VerticalVelocity,
 };
+use crate::config::ExecutionMode;
 use crate::world::{
-    ChunkData, ChunkIndex, ChunkPosition, block_state_at_world, is_solid_block_state,
+    ChunkData, ChunkIndex, ChunkPosition, RegionPos, block_state_at_world, for_each_region,
+    is_solid_block_state,
 };
 
 const GRAVITY_STEP: f64 = 0.08;
@@ -15,12 +17,19 @@ const COLLISION_EPSILON: f64 = 1.0e-7;
 const SUPPORT_EPSILON: f64 = 1.0e-4;
 
 /// Applies a small server-authoritative physics step for spawned entities.
+///
+/// Entities are grouped by the region they stand in and the regions are
+/// stepped with [`for_each_region`], concurrently under
+/// [`ExecutionMode::MultiThreaded`]. A step only reads chunk data and writes
+/// the entity's own components, so the result does not depend on how regions
+/// are scheduled.
 #[instrument(
     name = "entity_physics",
     level = "info",
-    skip(chunk_index, chunks, query)
+    skip(mode, chunk_index, chunks, query)
 )]
 pub fn apply_spawned_entity_physics(
+    mode: Option<Res<ExecutionMode>>,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
     mut query: Query<
@@ -36,40 +45,66 @@ pub fn apply_spawned_entity_physics(
         With<SpawnedEntity>,
     >,
 ) {
-    for (
-        mut position,
+    let mode = mode.as_deref().copied().unwrap_or_default();
+    let entities: Vec<_> = query.iter_mut().collect();
+    for_each_region(
+        mode,
+        entities,
+        |(position, _, dimension, ..)| RegionPos::of_block(dimension.0, position.x, position.z),
+        |_, entities| {
+            for (position, movement, dimension, velocity, vertical_velocity, grounded, collider) in
+                entities
+            {
+                step_entity(
+                    &chunk_index,
+                    &chunks,
+                    position,
+                    movement,
+                    dimension,
+                    velocity,
+                    vertical_velocity,
+                    grounded,
+                    *collider,
+                );
+            }
+        },
+    );
+}
+
+fn step_entity(
+    chunk_index: &ChunkIndex,
+    chunks: &Query<(&ChunkPosition, &ChunkData)>,
+    position: &mut Mut<Position>,
+    movement: &MovementConfig,
+    dimension: &EntityDimension,
+    velocity: &mut Mut<Velocity>,
+    vertical_velocity: &mut Mut<VerticalVelocity>,
+    grounded: &mut Mut<Grounded>,
+    collider: Option<&EntityCollider>,
+) {
+    let collider = collider.copied().unwrap_or_default();
+    let mut next_position = **position;
+    let mut next_velocity = **velocity;
+    let mut solid_at = |x, y, z| {
+        block_state_at_world(chunk_index, chunks, dimension.0, x, y, z)
+            .is_some_and(is_solid_block_state)
+    };
+
+    apply_physics_step(
+        &mut next_position,
         movement,
-        dimension,
-        mut velocity,
-        mut vertical_velocity,
-        mut grounded,
+        &mut next_velocity,
+        vertical_velocity,
+        grounded,
         collider,
-    ) in query.iter_mut()
-    {
-        let collider = collider.copied().unwrap_or_default();
-        let mut next_position = *position;
-        let mut next_velocity = *velocity;
-        let mut solid_at = |x, y, z| {
-            block_state_at_world(&chunk_index, &chunks, dimension.0, x, y, z)
-                .is_some_and(is_solid_block_state)
-        };
+        &mut solid_at,
+    );
 
-        apply_physics_step(
-            &mut next_position,
-            movement,
-            &mut next_velocity,
-            &mut vertical_velocity,
-            &mut grounded,
-            collider,
-            &mut solid_at,
-        );
-
-        if *position != next_position {
-            *position = next_position;
-        }
-        if *velocity != next_velocity {
-            *velocity = next_velocity;
-        }
+    if **position != next_position {
+        **position = next_position;
+    }
+    if **velocity != next_velocity {
+        **velocity = next_velocity;
     }
 }
 
@@ -380,5 +415,169 @@ mod tests {
         assert_eq!(position.x, 0.58);
         assert_eq!(position.y, 65.0);
         assert!(grounded.0);
+    }
+
+    mod regions {
+        use bevy_app::{App, Update};
+        use bevy_ecs::schedule::{ExecutorKind, IntoScheduleConfigs};
+        use voidmc_protocol::clientbound::chunk::{
+            ChunkHeightmaps, ChunkSection, LightData, blocks,
+        };
+
+        use super::super::*;
+        use crate::components::RecentlySpawned;
+        use crate::entity::{EntityBuilder, EntityKind};
+        use crate::systems::settle::settle_recent_spawns;
+        use crate::world::{ChunkPos, DimensionId};
+
+        const TICKS: usize = 120;
+
+        /// Chunks in three regions: (0, 0), (-1, -1) and (1, 0).
+        const CHUNKS: [(i32, i32); 3] = [(1, 1), (-2, -2), (33, 0)];
+
+        /// A floor at y = 63, a one-block step along local x = 12 and a
+        /// two-block wall along local z = 12.
+        fn chunk() -> ChunkData {
+            let mut chunk = ChunkData::new(
+                (0..24).map(|_| ChunkSection::empty()).collect(),
+                ChunkHeightmaps::empty(),
+                LightData::empty(),
+            );
+            for a in 0..16 {
+                for b in 0..16 {
+                    chunk.set_block(a, 63, b, blocks::STONE);
+                }
+                chunk.set_block(12, 64, a, blocks::STONE);
+                chunk.set_block(a, 64, 12, blocks::STONE);
+                chunk.set_block(a, 65, 12, blocks::STONE);
+            }
+            chunk
+        }
+
+        struct Run {
+            /// Per entity, in spawn order: position, velocity, vertical
+            /// velocity, grounded and settle ticks, floats as raw bits.
+            state: Vec<[u64; 9]>,
+            flyers: Vec<(Entity, Position, Velocity)>,
+            app: App,
+        }
+
+        fn run(mode: ExecutionMode) -> Run {
+            let mut app = App::new();
+            app.insert_resource(mode)
+                .init_resource::<ChunkIndex>()
+                .add_systems(
+                    Update,
+                    (settle_recent_spawns, apply_spawned_entity_physics).chain(),
+                );
+            app.edit_schedule(Update, |schedule| {
+                schedule.set_executor_kind(match mode {
+                    ExecutionMode::SingleThreaded => ExecutorKind::SingleThreaded,
+                    ExecutionMode::MultiThreaded => ExecutorKind::MultiThreaded,
+                });
+            });
+
+            let world = app.world_mut();
+            let mut entities = Vec::new();
+            let mut flyers = Vec::new();
+            for (cx, cz) in CHUNKS {
+                let pos = ChunkPos::new(cx, cz);
+                let chunk = world.spawn((ChunkPosition(pos), chunk())).id();
+                world
+                    .resource_mut::<ChunkIndex>()
+                    .0
+                    .insert((DimensionId::Overworld, pos), chunk);
+
+                for i in 0..16 {
+                    let x = (cx * 16) as f64 + 1.5 + (i % 4) as f64 * 2.5;
+                    let z = (cz * 16) as f64 + 1.5 + (i / 4) as f64 * 2.5;
+                    let velocity = Velocity {
+                        x: 0.04 + 0.01 * (i % 5) as f64,
+                        y: 0.0,
+                        z: 0.03 * (i % 3) as f64,
+                    };
+                    let builder = EntityBuilder::new(EntityKind::Pig)
+                        .at(x, 64.0 + (i % 6) as f64 * 1.7, z)
+                        .velocity(velocity)
+                        .gravity(i % 7 != 0)
+                        .block_collision(i % 7 != 0);
+                    let entity = builder.spawn_in(world).id();
+                    if i % 7 == 0 {
+                        flyers.push((entity, *world.get::<Position>(entity).unwrap(), velocity));
+                    }
+                    entities.push(entity);
+                }
+            }
+
+            for _ in 0..TICKS {
+                app.update();
+            }
+
+            let world = app.world();
+            let state = entities
+                .iter()
+                .map(|entity| {
+                    let p = world.get::<Position>(*entity).unwrap();
+                    let v = world.get::<Velocity>(*entity).unwrap();
+                    let vertical = world.get::<VerticalVelocity>(*entity).unwrap();
+                    let grounded = world.get::<Grounded>(*entity).unwrap();
+                    let settle = world.get::<RecentlySpawned>(*entity).unwrap();
+                    [
+                        p.x.to_bits(),
+                        p.y.to_bits(),
+                        p.z.to_bits(),
+                        v.x.to_bits(),
+                        v.y.to_bits(),
+                        v.z.to_bits(),
+                        vertical.0.to_bits(),
+                        grounded.0 as u64,
+                        settle.0 as u64,
+                    ]
+                })
+                .collect();
+            Run { state, flyers, app }
+        }
+
+        #[test]
+        fn region_parallel_physics_matches_the_single_threaded_baseline() {
+            let baseline = run(ExecutionMode::SingleThreaded);
+            let parallel = run(ExecutionMode::MultiThreaded);
+
+            for (i, (serial, multi)) in baseline.state.iter().zip(&parallel.state).enumerate() {
+                assert_eq!(serial, multi, "entity {i} diverged from the baseline");
+            }
+            assert_eq!(baseline.state.len(), parallel.state.len());
+
+            // The scenario exercises falling, landing, stepping and walls:
+            // 6 of 16 entities per chunk start without z velocity, so more
+            // than 18 without it means some ran into the wall.
+            let y = |state: &[u64; 9]| f64::from_bits(state[1]);
+            assert!(baseline.state.iter().any(|s| y(s) == 64.0 && s[7] == 1));
+            assert!(baseline.state.iter().any(|s| y(s) == 65.0 && s[7] == 1));
+            let stopped = |state: &&[u64; 9]| f64::from_bits(state[5]) == 0.0;
+            assert!(baseline.state.iter().filter(stopped).count() > 18);
+        }
+
+        #[test]
+        fn every_tick_steps_every_entity_exactly_once_in_both_modes() {
+            for mode in [ExecutionMode::SingleThreaded, ExecutionMode::MultiThreaded] {
+                let run = run(mode);
+                assert_eq!(run.flyers.len(), 3 * 3);
+                for (entity, start, velocity) in &run.flyers {
+                    // A flyer moves by its velocity once per step, so its
+                    // position counts the steps it took.
+                    let mut expected = *start;
+                    for _ in 0..TICKS {
+                        expected.x += velocity.x;
+                        expected.z += velocity.z;
+                    }
+                    assert_eq!(
+                        *run.app.world().get::<Position>(*entity).unwrap(),
+                        expected,
+                        "{mode:?}: an entity was stepped more or fewer than {TICKS} times"
+                    );
+                }
+            }
+        }
     }
 }
