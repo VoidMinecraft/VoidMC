@@ -1,6 +1,7 @@
 #![cfg(feature = "engine")]
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use bevy_app::App;
 use bevy_ecs::prelude::*;
@@ -22,6 +23,19 @@ use voidmc_protocol::serverbound::{PlayerAction, UseItem, UseItemOn};
 use voidmc_protocol::types::{BlockFace, BlockPosition, Hand, PlayerActionStatus};
 use voidmc_worldedit::engine::{EditQueue, EditSession, Permission};
 use voidmc_worldedit::{BlockPos, BlockState, WorldEditPlugin};
+
+/// A per-tick wall-clock budget no test tick comes near. The production
+/// default (15 ms) lets a stalled or slow (e.g. coverage-instrumented) test
+/// thread split an edit over extra ticks, which changes how many sections each
+/// flush covers and so which packets go out. The block budget still applies,
+/// so tests that spread an edit over ticks do it with `blocks_per_tick`.
+/// Not `Duration::MAX`: the budget adds this to `Instant::now()`.
+const NO_TIME_LIMIT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The plugin under test, with only the deterministic block budget per tick.
+fn plugin() -> WorldEditPlugin {
+    WorldEditPlugin::default().time_per_tick(NO_TIME_LIMIT)
+}
 
 struct Server {
     app: App,
@@ -171,7 +185,7 @@ fn stone() -> BlockState {
 
 #[test]
 fn set_writes_chunks_sends_section_updates_and_undo_restores() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 0 64 0");
     server.command("//pos2 3 65 2");
     server.packets();
@@ -217,7 +231,7 @@ fn set_writes_chunks_sends_section_updates_and_undo_restores() {
 
 #[test]
 fn large_edits_spread_over_ticks_and_resend_whole_chunks() {
-    let mut server = Server::new(WorldEditPlugin::default().blocks_per_tick(4096));
+    let mut server = Server::new(plugin().blocks_per_tick(4096));
     server.command("//pos1 0 -64 0");
     server.command("//pos2 15 63 15");
     server.command("//set stone");
@@ -234,7 +248,7 @@ fn large_edits_spread_over_ticks_and_resend_whole_chunks() {
     assert_eq!(server.block(7, -64, 7), stone());
     assert_eq!(server.block(15, 63, 15), stone());
 
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 0 -64 0");
     server.command("//pos2 15 63 15");
     server.command("//set stone");
@@ -254,7 +268,7 @@ fn large_edits_spread_over_ticks_and_resend_whole_chunks() {
 
 #[test]
 fn copy_rotate_paste_and_move() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 0 64 0");
     server.command("//pos2 2 64 0");
     server.command("//set oak_stairs[facing=east]");
@@ -302,7 +316,7 @@ fn copy_rotate_paste_and_move() {
 
 #[test]
 fn stack_repeats_along_the_facing_direction() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 0 64 0");
     server.command("//pos2 1 64 0");
     server.command("//set glass");
@@ -321,7 +335,7 @@ fn stack_repeats_along_the_facing_direction() {
 
 #[test]
 fn selection_outline_is_sent_to_its_owner_only() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     let other = server
         .app
         .world_mut()
@@ -375,7 +389,7 @@ fn selection_outline_is_sent_to_its_owner_only() {
 
 #[test]
 fn non_operators_are_refused_unless_everyone_may_edit() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server
         .app
         .world_mut()
@@ -390,7 +404,7 @@ fn non_operators_are_refused_unless_everyone_may_edit() {
             .is_none()
     );
 
-    let mut server = Server::new(WorldEditPlugin::default().permission(Permission::Everyone));
+    let mut server = Server::new(plugin().permission(Permission::Everyone));
     server
         .app
         .world_mut()
@@ -408,7 +422,7 @@ fn non_operators_are_refused_unless_everyone_may_edit() {
 #[test]
 fn schematics_save_and_load_through_the_clipboard() {
     let dir = tempfile::tempdir().unwrap();
-    let mut server = Server::new(WorldEditPlugin::default().schematic_dir(dir.path()));
+    let mut server = Server::new(plugin().schematic_dir(dir.path()));
     server.command("//pos1 0 64 0");
     server.command("//pos2 1 65 1");
     server.command("//set dirt");
@@ -445,7 +459,7 @@ fn schematics_save_and_load_through_the_clipboard() {
 
 #[test]
 fn brushes_bind_to_the_held_item_and_edit_where_the_player_looks() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 -20 60 -20");
     server.command("//pos2 20 63 20");
     server.command("//set stone");
@@ -483,7 +497,7 @@ fn brushes_bind_to_the_held_item_and_edit_where_the_player_looks() {
 
 #[test]
 fn wand_left_click_sets_the_first_corner_and_keeps_the_block() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 2 64 2");
     server.command("//set stone");
     server.command("//desel");
@@ -518,7 +532,7 @@ fn wand_left_click_sets_the_first_corner_and_keeps_the_block() {
 
 #[test]
 fn edits_larger_than_the_history_budget_are_not_recorded() {
-    let mut server = Server::new(WorldEditPlugin::default().history(25, 1024));
+    let mut server = Server::new(plugin().history(25, 1024));
     server.command("//pos1 0 64 0");
     server.command("//pos2 15 79 15");
     server.packets();
@@ -557,7 +571,7 @@ fn the_wand_checks_permission_before_claiming_the_off_hand() {
         });
         server.tick();
     }
-    let mut server = Server::new(WorldEditPlugin::default().wand("minecraft:stone"));
+    let mut server = Server::new(plugin().wand("minecraft:stone"));
     server
         .app
         .world_mut()
@@ -592,7 +606,7 @@ fn the_wand_checks_permission_before_claiming_the_off_hand() {
 
 #[test]
 fn brush_fires_at_the_block_in_sight() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 -10 60 -10");
     server.command("//pos2 10 63 10");
     server.command("//set stone");
@@ -623,7 +637,7 @@ fn brush_fires_at_the_block_in_sight() {
 
 #[test]
 fn clipboard_and_edit_commands_wait_for_the_running_edit() {
-    let mut server = Server::new(WorldEditPlugin::default().blocks_per_tick(4096));
+    let mut server = Server::new(plugin().blocks_per_tick(4096));
     server.command("//pos1 0 0 0");
     server.command("//pos2 40 40 40");
     server.command("//copy");
@@ -650,7 +664,7 @@ fn clipboard_and_edit_commands_wait_for_the_running_edit() {
 
 #[test]
 fn tall_sparse_edits_resend_the_chunk_once() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//pos1 3 -64 3");
     server.command("//pos2 3 319 3");
     server.command("//set stone");
@@ -680,7 +694,7 @@ fn tall_sparse_edits_resend_the_chunk_once() {
 
 #[test]
 fn absurd_coordinates_neither_panic_nor_pass_the_volume_limit() {
-    let mut server = Server::new(WorldEditPlugin::default());
+    let mut server = Server::new(plugin());
     server.command("//sel sphere");
     server.command("//pos1 1000000000 64 0");
     server.command("//pos2 -1000000000 64 0");

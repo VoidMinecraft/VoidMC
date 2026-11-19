@@ -160,6 +160,34 @@ impl ItemBehavior for DirtToBedrock {
 // reg.register_for("minecraft:dirt", DirtToBedrock);
 ```
 
+## Blocks that react to a right-click
+
+A right-click on a block runs, in order: the held item's `ItemBehavior`, then
+the clicked block's `BlockInteraction` (if the item passed), then the default
+placement (if both passed). Register an interaction for every state of a
+block in `BlockInteractionRegistry`; it is empty by default, and the opt-in
+[`RedstonePlugin`](./redstone.md) fills it for levers and buttons.
+
+```rust
+use voidmc::{BlockInteraction, BlockInteractionRegistry, ItemUseContext, UseResult};
+
+struct Doorbell;
+impl BlockInteraction for Doorbell {
+    fn on_use(&self, ctx: &mut ItemUseContext, _state: i32) -> UseResult {
+        ctx.reply("ding dong");
+        UseResult::Handled // consumed: the held block is not placed
+    }
+}
+// app.world_mut().resource_mut::<BlockInteractionRegistry>()
+//     .register_for("minecraft:bell", Doorbell);
+```
+
+As in vanilla, the block's interaction only runs for a main-hand use, and not
+while the player is sneaking with an item in either hand (`Sneaking`
+component, from the Player Input packet): then the item is used, so a sneaking
+player can place a block against a lever. An off-hand use, which a client sends
+after a main-hand use it did not consume, never reaches the block.
+
 ## Getting items in
 
 - **Creative**: grabbing an item in the creative menu (`SetCreativeModeSlot`)
