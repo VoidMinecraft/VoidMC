@@ -57,6 +57,31 @@ The game thread runs a fixed-rate tick loop using Bevy's `ScheduleRunnerPlugin`.
 ScheduleRunnerPlugin::run_loop(Duration::from_millis(1000 / tick_rate))
 ```
 
+## Parallel Execution
+
+The tick loop itself runs on the game thread. With the default
+`ExecutionMode::SingleThreaded`, every system, and every region of
+region-partitioned work, runs there, one after another. With
+`ServerConfigBuilder::execution_mode(ExecutionMode::MultiThreaded)` (see
+[Execution mode](/reference/server/configuration#execution-mode)):
+
+- **Systems.** The schedules use Bevy's multi-threaded executor: systems
+  whose data access does not conflict run at the same time on Bevy's compute
+  task pool. Systems that conflict still run one at a time, in the order the
+  schedule sets; unordered conflicting systems run in an order Bevy picks.
+- **Regions.** A region is the vanilla 32×32-chunk area of one dimension
+  (`RegionPos`, the area a region file covers). `for_each_region` groups
+  per-entity work by the region the entity stands in and runs each region as a
+  task on the compute task pool, so independent regions are processed
+  concurrently. The entity physics step (`apply_spawned_entity_physics`) and
+  spawn settling (`settle_recent_spawns`) use it: each entity only reads chunk
+  data and writes its own components, so the result is the same in either
+  mode.
+
+Everything else, including packet ingest and handlers, command execution,
+chunk streaming and generation, and the wander AI, is not split by region.
+Exclusive systems (`&mut World`) always run alone.
+
 ## Bevy Schedule Organization
 
 Each tick executes these schedules in order:

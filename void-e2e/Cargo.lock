@@ -2733,6 +2733,7 @@ version = "0.2.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
+ "bevy_tasks",
  "ctrlc",
  "flume",
  "rand 0.8.6",

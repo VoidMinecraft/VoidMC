@@ -21,6 +21,7 @@ mod atp_022_item_behavior;
 mod atp_023_plugin_hook;
 mod atp_026_graceful_stop;
 mod atp_027_world_generation;
+mod atp_028_parallel_regions;
 mod atp_029_biomes_weather;
 mod atp_030_note_block_redstone;
 mod atp_031_load;

@@ -5,18 +5,25 @@ use crate::components::{
     EntityDimension, Grounded, MovementConfig, Position, PreviousPosition, RecentlySpawned,
     SpawnedEntity, VerticalVelocity,
 };
+use crate::config::ExecutionMode;
 use crate::world::{
-    ChunkData, ChunkIndex, ChunkPosition, block_state_at_world, is_solid_block_state,
+    ChunkData, ChunkIndex, ChunkPosition, RegionPos, block_state_at_world, for_each_region,
+    is_solid_block_state,
 };
 
 /// Settle newly spawned gravity-enabled entities by scanning downward and snapping them
 /// onto the first solid block found within `MAX_SCAN` blocks.
+///
+/// Like the physics step, entities are processed per region with
+/// [`for_each_region`]: each one only reads chunk data and writes its own
+/// components.
 #[instrument(
     name = "entity_spawn_settling",
     level = "info",
-    skip(chunk_index, chunks, query)
+    skip(mode, chunk_index, chunks, query)
 )]
 pub fn settle_recent_spawns(
+    mode: Option<Res<ExecutionMode>>,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
     mut query: Query<
@@ -32,49 +39,78 @@ pub fn settle_recent_spawns(
         With<SpawnedEntity>,
     >,
 ) {
+    let mode = mode.as_deref().copied().unwrap_or_default();
+    let entities: Vec<_> = query
+        .iter_mut()
+        .filter(|(.., marker)| marker.0 != 0)
+        .collect();
+    for_each_region(
+        mode,
+        entities,
+        |(pos, _, _, dimension, ..)| RegionPos::of_block(dimension.0, pos.x, pos.z),
+        |_, entities| {
+            for (pos, prev_pos, movement, dimension, velocity, grounded, marker) in entities {
+                settle_entity(
+                    &chunk_index,
+                    &chunks,
+                    pos,
+                    prev_pos,
+                    movement,
+                    dimension,
+                    velocity,
+                    grounded,
+                    marker,
+                );
+            }
+        },
+    );
+}
+
+fn settle_entity(
+    chunk_index: &ChunkIndex,
+    chunks: &Query<(&ChunkPosition, &ChunkData)>,
+    pos: &mut Mut<Position>,
+    prev_pos: &PreviousPosition,
+    movement: &MovementConfig,
+    dimension: &EntityDimension,
+    velocity: &mut Mut<VerticalVelocity>,
+    grounded: &mut Mut<Grounded>,
+    marker: &mut Mut<RecentlySpawned>,
+) {
     const MAX_SCAN: i32 = 64;
 
-    for (mut pos, prev_pos, movement, dimension, mut velocity, mut grounded, mut marker) in
-        query.iter_mut()
-    {
-        if marker.0 == 0 {
-            continue;
-        }
+    marker.0 -= 1;
 
-        marker.0 -= 1;
+    if !movement.gravity_enabled {
+        marker.0 = 0;
+        return;
+    }
 
-        if !movement.gravity_enabled {
-            marker.0 = 0;
-            continue;
-        }
+    // Only stationary summons are eligible for the initial ground snap.
+    // Thrown item entities have an intentional launch velocity and must
+    // follow their normal arc instead of teleporting to the ground.
+    if velocity.0.abs() > f64::EPSILON {
+        return;
+    }
 
-        // Only stationary summons are eligible for the initial ground snap.
-        // Thrown item entities have an intentional launch velocity and must
-        // follow their normal arc instead of teleporting to the ground.
-        if velocity.0.abs() > f64::EPSILON {
-            continue;
-        }
+    let start_y = pos.y.floor() as i32 - 1;
+    let min_y = start_y - MAX_SCAN;
+    let tx = pos.x.floor() as i32;
+    let tz = pos.z.floor() as i32;
 
-        let start_y = pos.y.floor() as i32 - 1;
-        let min_y = start_y - MAX_SCAN;
-        let tx = pos.x.floor() as i32;
-        let tz = pos.z.floor() as i32;
+    for y in (min_y..=start_y).rev() {
+        if let Some(block_state) = block_state_at_world(chunk_index, chunks, dimension.0, tx, y, tz)
+        {
+            if is_solid_block_state(block_state) {
+                let ground_y = (y as f64) + 1.0;
+                let fall_distance = prev_pos.y - ground_y;
 
-        for y in (min_y..=start_y).rev() {
-            if let Some(block_state) =
-                block_state_at_world(&chunk_index, &chunks, dimension.0, tx, y, tz)
-            {
-                if is_solid_block_state(block_state) {
-                    let ground_y = (y as f64) + 1.0;
-                    let fall_distance = prev_pos.y - ground_y;
-
-                    if fall_distance > 0.1 {
-                        pos.y = ground_y;
-                        velocity.0 = 0.0;
-                        grounded.0 = true;
-                        marker.0 = 0;
-                        break;
-                    }
+                if fall_distance > 0.1 {
+                    pos.y = ground_y;
+                    velocity.0 = 0.0;
+                    grounded.0 = true;
+                    marker.0 = 0;
+                    break;
                 }
             }
         }

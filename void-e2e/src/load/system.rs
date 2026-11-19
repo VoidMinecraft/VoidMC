@@ -2,6 +2,7 @@
 //! the report then lists the reading as unavailable.
 
 /// CPU time the calling thread has run, in milliseconds.
+#[cfg(test)]
 pub(crate) fn thread_cpu_ms() -> Option<f64> {
     let schedstat = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
     let nanos: f64 = schedstat.split_whitespace().next()?.parse().ok()?;
@@ -25,6 +26,7 @@ pub(crate) const SERVER_THREADS: [&str; 5] = [
 
 /// Total CPU time of this process's live threads whose name starts with one
 /// of `prefixes`, in milliseconds.
+#[cfg(test)]
 pub(crate) fn threads_cpu_ms(prefixes: &[&str]) -> Option<f64> {
     let mut nanos = 0.0;
     for task in std::fs::read_dir("/proc/self/task").ok()?.flatten() {
@@ -46,6 +48,49 @@ pub(crate) fn threads_cpu_ms(prefixes: &[&str]) -> Option<f64> {
             .unwrap_or(0.0);
     }
     Some(nanos / 1e6)
+}
+
+/// The calling thread's CPU time and the total of this process's live
+/// threads whose name starts with one of `prefixes`, in nanoseconds, from a
+/// single reading of each thread. When the calling thread is one of those
+/// threads, the total includes exactly the time returned for it. Integers, so
+/// that the difference between two totals is never less than the calling
+/// thread's own difference by rounding: [`ms_between`] turns them into the
+/// milliseconds of a window.
+pub(crate) fn thread_and_threads_cpu_ns(prefixes: &[&str]) -> Option<(u64, u64)> {
+    let own = std::fs::read_link("/proc/thread-self").ok()?;
+    let own = own.file_name()?;
+    let mut own_nanos = None;
+    let mut nanos = 0;
+    for task in std::fs::read_dir("/proc/self/task").ok()?.flatten() {
+        let path = task.path();
+        let is_own = task.file_name() == own;
+        let named = std::fs::read_to_string(path.join("comm"))
+            .is_ok_and(|name| prefixes.iter().any(|prefix| name.starts_with(prefix)));
+        if !is_own && !named {
+            continue;
+        }
+        // A thread may exit between the two reads.
+        let Some(cpu) = std::fs::read_to_string(path.join("schedstat"))
+            .ok()
+            .and_then(|schedstat| schedstat.split_whitespace().next()?.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if is_own {
+            own_nanos = Some(cpu);
+        }
+        if named {
+            nanos += cpu;
+        }
+    }
+    Some((own_nanos?, nanos))
+}
+
+/// Milliseconds from the `first` to the `last` of two nanosecond readings.
+/// Exact for equal differences: both readings stay far below 2^53.
+pub(crate) fn ms_between(first: u64, last: u64) -> f64 {
+    (last as f64 - first as f64) / 1e6
 }
 
 /// User plus system CPU time of the whole process, in milliseconds.
@@ -90,5 +135,17 @@ mod tests {
         assert!(threads_cpu_ms(&[own.trim_end()]).unwrap() > 0.0);
         assert_eq!(threads_cpu_ms(&["no thread has this name"]), Some(0.0));
         assert!(process_rss_kib().unwrap() > 0);
+    }
+
+    #[test]
+    fn one_pass_counts_the_calling_thread_in_the_total() {
+        let own = std::fs::read_to_string("/proc/thread-self/comm").unwrap();
+        let (own_ns, total_ns) = thread_and_threads_cpu_ns(&[own.trim_end()]).unwrap();
+        assert!(total_ns >= own_ns, "{total_ns} < {own_ns}");
+        let (later_own_ns, total_ns) =
+            thread_and_threads_cpu_ns(&["no thread has this name"]).unwrap();
+        assert!(later_own_ns >= own_ns);
+        assert_eq!(total_ns, 0);
+        assert_eq!(ms_between(1_000_000, 3_500_000), 2.5);
     }
 }
