@@ -1,4 +1,5 @@
 mod atp_002_server_status;
+mod atp_003_login_handshake;
 mod atp_004_initial_world;
 mod atp_005_two_player_sync;
 mod atp_006_shared_blocks;
