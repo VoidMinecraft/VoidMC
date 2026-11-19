@@ -14,10 +14,11 @@
 //!   the world never changes except through `/give` and `/clear`, and no
 //!   stack exceeds its max size.
 //!
-//! VoidMC has no equipment data for items: armor and off-hand slots hold any
-//! item and shift-clicks never route to them. The model treats them as plain
-//! slots too, so the scenarios use no equippable item except where that
-//! difference itself is tested.
+//! Armor slots only take an item whose `equippable` slot is theirs, one at a
+//! time, and a shift-click sends armor and shields to their empty slot, as in
+//! vanilla. The model reads each item's equipment slot from Azalea's default
+//! components, a source independent from VoidMC's data. Another player is
+//! shown what the clicks put into the hands and armor slots.
 
 use std::collections::BTreeMap;
 
@@ -26,6 +27,8 @@ use voidmc::components::ItemEntity;
 use voidmc::events::EntityDespawnEvent;
 use voidmc::{Inventory, ItemId, ItemStack as ServerItemStack};
 use voidmc_e2e::inventory::ItemStack;
+use voidmc_e2e::inventory::components::{EquipmentSlot, Equippable};
+use voidmc_e2e::inventory::default_components::get_default_component;
 use voidmc_e2e::inventory::operations::ClickType;
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 use voidmc_e2e::protocol::packets::game::s_container_click::{
@@ -36,6 +39,8 @@ use voidmc_e2e::protocol::packets::game::s_set_creative_mode_slot::ServerboundSe
 use voidmc_e2e::registry::Registry;
 use voidmc_e2e::registry::builtin::ItemKind;
 use voidmc_e2e::{Bot, TestServer};
+
+use crate::wait_for_equipment;
 
 const SIZE: usize = 46;
 const OUTSIDE: i16 = -999;
@@ -48,8 +53,35 @@ type Stack = Option<(ItemKind, i32)>;
 fn max_stack(kind: ItemKind) -> i32 {
     match kind {
         ItemKind::EnderPearl | ItemKind::Egg => 16,
-        ItemKind::DiamondSword | ItemKind::DiamondHelmet => 1,
+        ItemKind::DiamondSword
+        | ItemKind::DiamondHelmet
+        | ItemKind::DiamondChestplate
+        | ItemKind::DiamondLeggings
+        | ItemKind::DiamondBoots
+        | ItemKind::Shield => 1,
         _ => 64,
+    }
+}
+
+/// `LivingEntity.getEquipmentSlotForItem` for a player: the slot of the
+/// item's `equippable` component if a player can use it (not `body` or
+/// `saddle`), else the main hand.
+fn equipment_slot(kind: ItemKind) -> EquipmentSlot {
+    match get_default_component::<Equippable>(kind).map(|equippable| equippable.slot) {
+        Some(EquipmentSlot::Body | EquipmentSlot::Saddle) | None => EquipmentSlot::Mainhand,
+        Some(slot) => slot,
+    }
+}
+
+/// The window slot of each armor equipment slot (`8 - index`): head 5,
+/// chest 6, legs 7, feet 8.
+fn armor_window_slot(slot: EquipmentSlot) -> Option<usize> {
+    match slot {
+        EquipmentSlot::Head => Some(5),
+        EquipmentSlot::Chest => Some(6),
+        EquipmentSlot::Legs => Some(7),
+        EquipmentSlot::Feet => Some(8),
+        _ => None,
     }
 }
 
@@ -62,8 +94,8 @@ fn count(stack: Stack) -> i32 {
 }
 
 /// Vanilla's click rules for window 0, written in the shape of the vanilla
-/// code. Deliberate differences, documented in VoidMC: armor and off-hand
-/// slots are plain slots, and a creative middle-drag keeps the cursor stack.
+/// code. Deliberate difference, documented in VoidMC: a creative middle-drag
+/// keeps the cursor stack.
 #[derive(Clone, Debug)]
 struct Vanilla {
     slots: Vec<Stack>,
@@ -88,8 +120,55 @@ impl Vanilla {
         }
     }
 
-    fn may_place(&self, index: usize) -> bool {
-        index != RESULT
+    /// `Slot.mayPlace`: nothing goes into the crafting output, and an armor
+    /// slot (`ArmorSlot`) only takes an item equippable in it.
+    fn may_place(&self, index: usize, kind: ItemKind) -> bool {
+        match index {
+            RESULT => false,
+            5..=8 => armor_window_slot(equipment_slot(kind)) == Some(index),
+            _ => true,
+        }
+    }
+
+    /// `Slot.getMaxStackSize(stack)`: an armor slot holds one item.
+    fn slot_max(&self, index: usize, kind: ItemKind) -> i32 {
+        if (5..=8).contains(&index) {
+            1
+        } else {
+            max_stack(kind)
+        }
+    }
+
+    /// `Inventory.add`: tops up the selected slot (always the first hotbar
+    /// slot here), the off-hand, then the hotbar and the main inventory,
+    /// fills the first empty slot of the hotbar then the main inventory, and
+    /// drops what is left.
+    fn add_to_inventory(&mut self, (kind, mut left): (ItemKind, i32)) {
+        let max = max_stack(kind);
+        let merge = [HOTBAR, OFFHAND]
+            .into_iter()
+            .chain(HOTBAR..OFFHAND)
+            .chain(9..HOTBAR);
+        for i in merge {
+            if let Some((held, count)) = self.slots[i]
+                && held == kind
+                && count < max
+            {
+                let moved = left.min(max - count);
+                self.slots[i] = stack(kind, count + moved);
+                left -= moved;
+            }
+        }
+        for i in (HOTBAR..OFFHAND).chain(9..HOTBAR) {
+            if left > 0 && self.slots[i].is_none() {
+                let placed = left.min(max);
+                self.slots[i] = stack(kind, placed);
+                left -= placed;
+            }
+        }
+        if left > 0 {
+            self.drops.push((kind, left));
+        }
     }
 
     fn can_item_quick_replace(&self, index: usize, carried: (ItemKind, i32)) -> bool {
@@ -140,7 +219,7 @@ impl Vanilla {
                 };
                 let carried = self.carried.unwrap();
                 if self.can_item_quick_replace(index, carried)
-                    && self.may_place(index)
+                    && self.may_place(index, carried.0)
                     && (self.quickcraft_type == 2 || carried.1 > self.quickcraft_slots.len() as i32)
                     && !self.quickcraft_slots.contains(&index)
                 {
@@ -157,18 +236,18 @@ impl Vanilla {
                     }
                     let carried = self.carried.unwrap();
                     let slots = self.quickcraft_slots.len() as i32;
-                    let max = max_stack(carried.0);
                     let mut remaining = carried.1;
                     for index in self.quickcraft_slots.clone() {
                         if self.can_item_quick_replace(index, carried)
-                            && self.may_place(index)
+                            && self.may_place(index, carried.0)
                             && (self.quickcraft_type == 2 || carried.1 >= slots)
                         {
                             let existing = count(self.slots[index]);
+                            let max = self.slot_max(index, carried.0);
                             let place = match self.quickcraft_type {
                                 0 => carried.1 / slots,
                                 1 => 1,
-                                _ => max,
+                                _ => max_stack(carried.0),
                             };
                             let placed = (place + existing).min(max);
                             remaining -= placed - existing;
@@ -231,11 +310,11 @@ impl Vanilla {
                 self.slots[index] = stack(kind, held - taken);
                 self.carried = stack(kind, taken);
             }
-            (Some(held), Some(carried)) if self.may_place(index) => {
+            (Some(held), Some(carried)) if self.may_place(index, carried.0) => {
                 if held.0 == carried.0 {
                     let increment = if button == 0 { carried.1 } else { 1 };
                     self.carried = self.safe_insert(index, carried, increment);
-                } else if carried.1 <= max_stack(carried.0) {
+                } else if carried.1 <= self.slot_max(index, carried.0) {
                     self.slots[index] = Some(carried);
                     self.carried = Some(held);
                 }
@@ -251,13 +330,13 @@ impl Vanilla {
     }
 
     fn safe_insert(&mut self, index: usize, carried: (ItemKind, i32), increment: i32) -> Stack {
-        if !self.may_place(index) {
+        if !self.may_place(index, carried.0) {
             return Some(carried);
         }
         let existing = count(self.slots[index]);
         let moved = increment
             .min(carried.1)
-            .min(max_stack(carried.0) - existing);
+            .min(self.slot_max(index, carried.0) - existing);
         if moved <= 0 {
             return Some(carried);
         }
@@ -272,18 +351,30 @@ impl Vanilla {
     }
 
     /// `doClick` keeps calling `quickMoveStack` while it moves something and
-    /// the slot still holds the same item.
+    /// the slot still holds the same item. Outside the crafting grid and the
+    /// armor slots, an item equippable in an empty armor slot or the empty
+    /// off-hand goes there first.
     fn quick_move(&mut self, index: usize) {
         loop {
             let Some((kind, before)) = self.slots[index] else {
                 return;
             };
-            let (start, end, reverse) = match index {
-                RESULT => (9, 45, true),
-                1..=8 => (9, 45, false),
-                9..=35 => (36, 45, false),
-                36..=44 => (9, 36, false),
-                _ => (9, 45, false),
+            let equipment = equipment_slot(kind);
+            let armor = armor_window_slot(equipment).filter(|&slot| self.slots[slot].is_none());
+            let (start, end, reverse) = if index == RESULT {
+                (9, 45, true)
+            } else if (1..=8).contains(&index) {
+                (9, 45, false)
+            } else if let Some(slot) = armor {
+                (slot, slot + 1, false)
+            } else if equipment == EquipmentSlot::Offhand && self.slots[OFFHAND].is_none() {
+                (OFFHAND, OFFHAND + 1, false)
+            } else if (9..=35).contains(&index) {
+                (36, 45, false)
+            } else if (36..=44).contains(&index) {
+                (9, 36, false)
+            } else {
+                (9, 45, false)
             };
             if !self.move_item_stack_to(index, start, end, reverse) {
                 return;
@@ -312,6 +403,7 @@ impl Vanilla {
                 if let Some((target, held)) = self.slots[i]
                     && target == kind
                 {
+                    let max = self.slot_max(i, kind);
                     if held + moving <= max {
                         self.slots[i] = stack(kind, held + moving);
                         moving = 0;
@@ -326,8 +418,8 @@ impl Vanilla {
         }
         if moving > 0 {
             for &i in &order {
-                if self.slots[i].is_none() && self.may_place(i) {
-                    let placed = moving.min(max);
+                if self.slots[i].is_none() && self.may_place(i, kind) {
+                    let placed = moving.min(self.slot_max(i, kind));
                     self.slots[i] = stack(kind, placed);
                     moving -= placed;
                     moved = true;
@@ -339,6 +431,9 @@ impl Vanilla {
         moved
     }
 
+    /// A number key (or the off-hand key, 40) over a slot. A stack larger
+    /// than the slot allows leaves only what fits, and what that slot held
+    /// goes back into the inventory.
     fn swap(&mut self, index: usize, button: i32) {
         let hotbar = if button == 40 {
             OFFHAND
@@ -353,16 +448,29 @@ impl Vanilla {
                 self.slots[hotbar] = item;
                 self.slots[index] = None;
             }
-            (Some(_), None) => {
-                if self.may_place(index) {
-                    self.slots[index] = held;
-                    self.slots[hotbar] = None;
+            (Some((kind, count)), None) => {
+                if self.may_place(index, kind) {
+                    let max = self.slot_max(index, kind);
+                    if count > max {
+                        self.slots[index] = stack(kind, max);
+                        self.slots[hotbar] = stack(kind, count - max);
+                    } else {
+                        self.slots[index] = held;
+                        self.slots[hotbar] = None;
+                    }
                 }
             }
-            (Some(_), Some(_)) => {
-                if self.may_place(index) {
-                    self.slots[hotbar] = item;
-                    self.slots[index] = held;
+            (Some((kind, count)), Some(old)) => {
+                if self.may_place(index, kind) {
+                    let max = self.slot_max(index, kind);
+                    if count > max {
+                        self.slots[index] = stack(kind, max);
+                        self.slots[hotbar] = stack(kind, count - max);
+                        self.add_to_inventory(old);
+                    } else {
+                        self.slots[hotbar] = item;
+                        self.slots[index] = held;
+                    }
                 }
             }
         }
@@ -741,7 +849,11 @@ async fn creative() -> TestServer {
 }
 
 use ClickType::{Clone as CloneClick, Pickup, PickupAll, QuickCraft, QuickMove, Swap, Throw};
-use ItemKind::{Diamond, DiamondHelmet, DiamondSword, Dirt, EnderPearl, Stone};
+use EquipmentSlot::{Chest, Feet, Head, Mainhand, Offhand};
+use ItemKind::{
+    CarvedPumpkin, Diamond, DiamondBoots, DiamondChestplate, DiamondHelmet, DiamondSword, Dirt,
+    EnderPearl, Shield, Stone,
+};
 
 #[tokio::test]
 async fn left_and_right_clicks_pick_up_place_split_merge_and_drop() {
@@ -882,7 +994,7 @@ async fn shift_clicks_merge_first_then_fill_and_keep_the_remainder() {
     s.setup(
         &[
             (1, Diamond, 3),
-            (5, Dirt, 2),
+            (5, DiamondHelmet, 1),
             (OFFHAND, EnderPearl, 4),
             (RESULT, Stone, 5),
         ],
@@ -897,7 +1009,7 @@ async fn shift_clicks_merge_first_then_fill_and_keep_the_remainder() {
         (s.slot(9), s.slot(10), s.slot(11), s.slot(44)),
         (
             Some((Diamond, 3)),
-            Some((Dirt, 2)),
+            Some((DiamondHelmet, 1)),
             Some((EnderPearl, 4)),
             Some((Stone, 5))
         )
@@ -1188,19 +1300,21 @@ async fn wrong_predictions_are_corrected_and_right_ones_are_not_echoed() {
     s.settle().await;
     assert_eq!(s.updates.len(), 1, "{:?}", s.updates);
 
-    // A vanilla client sends a helmet to the head slot; VoidMC, without
-    // equipment data, keeps it in the inventory, and the client follows.
+    // A client that does not know where a helmet goes predicts a shift-click
+    // into the hotbar; the server sends it to the empty head slot, as
+    // vanilla does, and corrects the client.
     let state_id = s.state_id;
     s.send_with(20, 0, QuickMove, state_id, |changed, _| {
-        *changed = vec![(20, None), (5, Some((DiamondHelmet, 1)))];
+        *changed = vec![(20, None), (36, Some((DiamondHelmet, 1)))];
     })
     .await;
     s.settle().await;
-    assert_eq!((s.slot(5), s.slot(36)), (None, Some((DiamondHelmet, 1))));
+    assert_eq!((s.slot(5), s.slot(36)), (Some((DiamondHelmet, 1)), None));
+    assert_eq!(s.updates.len(), 2, "{:?}", s.updates);
 
     // A stale state id is answered with the whole window.
     let stale = s.state_id.wrapping_sub(3);
-    s.send_with(36, 0, Pickup, stale, |_, _| {}).await;
+    s.send_with(5, 0, Pickup, stale, |_, _| {}).await;
     s.settle().await;
     assert!(
         matches!(s.updates[..], [Update::Content(..)]),
@@ -1497,4 +1611,269 @@ async fn creative_slot_packets_only_work_on_a_creative_server() {
         s.finish();
         server.stop().await;
     }
+}
+
+/// Armor slots refuse whatever is not their own armor, whichever click puts
+/// it there, and hold one item; a client that predicts otherwise is
+/// corrected. The off-hand takes any item. Bob is shown what lands in
+/// Alice's hands and armor slots.
+#[tokio::test]
+async fn armor_slots_take_only_their_own_armor_and_the_offhand_takes_anything() {
+    let server = survival().await;
+    let mut s = Session::join(&server, false).await;
+    let bob = server.join("Bob").await;
+    s.setup(
+        &[
+            (9, Dirt, 10),
+            (10, DiamondHelmet, 1),
+            (11, DiamondChestplate, 1),
+            (37, Stone, 3),
+            (38, DiamondBoots, 1),
+            (39, CarvedPumpkin, 5),
+        ],
+        None,
+    )
+    .await;
+
+    // Dirt goes into no armor slot, by either button.
+    s.click(9, 0, Pickup).await;
+    for slot in 5..=8 {
+        s.click(slot, 0, Pickup).await;
+        s.click(slot, 1, Pickup).await;
+    }
+    assert_eq!(
+        (
+            (5..=8).map(|slot| s.slot(slot)).collect::<Vec<_>>(),
+            s.cursor()
+        ),
+        (vec![None; 4], Some((Dirt, 10)))
+    );
+    // A client that predicts the dirt on its head gets the slot and its
+    // cursor back.
+    let state_id = s.state_id;
+    s.send_with(5, 0, Pickup, state_id, |changed, carried| {
+        changed.push((5, Some((Dirt, 10))));
+        *carried = None;
+    })
+    .await;
+    s.settle().await;
+    assert_eq!(s.updates.len(), 2, "{:?}", s.updates);
+    assert_eq!((s.slot(5), s.cursor()), (None, Some((Dirt, 10))));
+    // A drag skips the armor slots it crosses.
+    s.click(OUTSIDE, 0, QuickCraft).await;
+    for slot in [6, 20, 7, 21] {
+        s.click(slot, 1, QuickCraft).await;
+    }
+    s.click(OUTSIDE, 2, QuickCraft).await;
+    assert_eq!(
+        (s.slot(6), s.slot(7), s.slot(20), s.slot(21), s.cursor()),
+        (None, None, Some((Dirt, 5)), Some((Dirt, 5)), None)
+    );
+
+    // The off-hand takes anything.
+    s.click(20, 0, Pickup).await;
+    s.click(OFFHAND as i16, 0, Pickup).await;
+    assert_eq!(s.slot(OFFHAND), Some((Dirt, 5)));
+    wait_for_equipment(&bob, &s.bot, &[(Offhand, Dirt, 5)]).await;
+
+    // A helmet goes on the head only, and a chestplate does not replace it.
+    s.click(10, 0, Pickup).await;
+    s.click(6, 0, Pickup).await;
+    s.click(5, 0, Pickup).await;
+    s.click(11, 0, Pickup).await;
+    s.click(5, 0, Pickup).await;
+    assert_eq!(
+        (s.slot(5), s.cursor()),
+        (Some((DiamondHelmet, 1)), Some((DiamondChestplate, 1)))
+    );
+    s.click(6, 0, Pickup).await;
+    assert_eq!(
+        (s.slot(6), s.cursor()),
+        (Some((DiamondChestplate, 1)), None)
+    );
+
+    // Number keys: boots onto the feet, stone onto no armor slot.
+    s.click(8, 2, Swap).await;
+    s.click(7, 1, Swap).await;
+    assert_eq!(
+        (s.slot(8), s.slot(38), s.slot(7), s.slot(37)),
+        (Some((DiamondBoots, 1)), None, None, Some((Stone, 3)))
+    );
+    wait_for_equipment(
+        &bob,
+        &s.bot,
+        &[
+            (Offhand, Dirt, 5),
+            (Feet, DiamondBoots, 1),
+            (Chest, DiamondChestplate, 1),
+            (Head, DiamondHelmet, 1),
+        ],
+    )
+    .await;
+
+    // Five pumpkins swapped onto the head: one goes on, four stay in the
+    // hotbar, and the helmet goes back into the inventory, into the empty
+    // selected slot: Alice now holds it.
+    s.click(5, 3, Swap).await;
+    assert_eq!(
+        (s.slot(5), s.slot(39), s.slot(36)),
+        (
+            Some((CarvedPumpkin, 1)),
+            Some((CarvedPumpkin, 4)),
+            Some((DiamondHelmet, 1))
+        )
+    );
+    // A pumpkin stack cannot join the one on the head.
+    s.click(39, 0, Pickup).await;
+    s.click(5, 0, Pickup).await;
+    s.click(5, 1, Pickup).await;
+    s.click(39, 0, Pickup).await;
+    assert_eq!(s.slot(5), Some((CarvedPumpkin, 1)));
+    // Shift-clicked off the feet, the boots go into the inventory.
+    s.click(8, 0, QuickMove).await;
+    assert_eq!((s.slot(8), s.slot(9)), (None, Some((DiamondBoots, 1))));
+    wait_for_equipment(
+        &bob,
+        &s.bot,
+        &[
+            (Mainhand, DiamondHelmet, 1),
+            (Offhand, Dirt, 5),
+            (Chest, DiamondChestplate, 1),
+            (Head, CarvedPumpkin, 1),
+        ],
+    )
+    .await;
+
+    bob.assert_healthy();
+    s.finish();
+    server.stop().await;
+}
+
+/// A shift-click sends a helmet, boots or a pumpkin to the empty armor slot
+/// they belong in and a shield to the empty off-hand; with that slot taken,
+/// the item moves as any other. Bob is shown the result.
+#[tokio::test]
+async fn shift_clicks_send_armor_and_shields_to_their_empty_slots() {
+    let server = survival().await;
+    let mut s = Session::join(&server, false).await;
+    let bob = server.join("Bob").await;
+    s.setup(
+        &[
+            (9, DiamondHelmet, 1),
+            (10, DiamondHelmet, 1),
+            (11, DiamondBoots, 1),
+            (12, CarvedPumpkin, 10),
+            (36, Shield, 1),
+            (37, Shield, 1),
+        ],
+        None,
+    )
+    .await;
+
+    s.click(9, 0, QuickMove).await;
+    assert_eq!((s.slot(9), s.slot(5)), (None, Some((DiamondHelmet, 1))));
+    s.click(10, 0, QuickMove).await;
+    assert_eq!((s.slot(10), s.slot(38)), (None, Some((DiamondHelmet, 1))));
+    s.click(36, 0, QuickMove).await;
+    assert_eq!((s.slot(36), s.slot(OFFHAND)), (None, Some((Shield, 1))));
+    s.click(37, 0, QuickMove).await;
+    assert_eq!((s.slot(37), s.slot(9)), (None, Some((Shield, 1))));
+    s.click(11, 0, QuickMove).await;
+    assert_eq!((s.slot(11), s.slot(8)), (None, Some((DiamondBoots, 1))));
+    wait_for_equipment(
+        &bob,
+        &s.bot,
+        &[
+            (Offhand, Shield, 1),
+            (Feet, DiamondBoots, 1),
+            (Head, DiamondHelmet, 1),
+        ],
+    )
+    .await;
+
+    // Off the head, the helmet goes into the inventory; then one pumpkin of
+    // ten goes on the head and the rest moves on to the hotbar.
+    s.click(5, 0, QuickMove).await;
+    assert_eq!((s.slot(5), s.slot(10)), (None, Some((DiamondHelmet, 1))));
+    s.click(12, 0, QuickMove).await;
+    assert_eq!(
+        (s.slot(12), s.slot(5), s.slot(36)),
+        (None, Some((CarvedPumpkin, 1)), Some((CarvedPumpkin, 9)))
+    );
+    // A shield already in the off-hand goes into the inventory.
+    s.click(OFFHAND as i16, 0, QuickMove).await;
+    assert_eq!((s.slot(OFFHAND), s.slot(11)), (None, Some((Shield, 1))));
+    wait_for_equipment(
+        &bob,
+        &s.bot,
+        &[
+            (Mainhand, CarvedPumpkin, 9),
+            (Feet, DiamondBoots, 1),
+            (Head, CarvedPumpkin, 1),
+        ],
+    )
+    .await;
+
+    bob.assert_healthy();
+    s.finish();
+    server.stop().await;
+}
+
+/// On a creative server, the creative inventory sets any slot, armor
+/// included, as vanilla allows (a block on the head); Bob is shown each
+/// change to Alice's hands and armor.
+#[tokio::test]
+async fn others_see_equipment_set_through_the_creative_inventory() {
+    let server = creative().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    for (slot, item) in [
+        (36, ItemStack::new(DiamondSword, 1)),
+        (45, ItemStack::new(Shield, 1)),
+        (5, ItemStack::new(Dirt, 1)),
+        (6, ItemStack::new(DiamondChestplate, 1)),
+    ] {
+        alice
+            .send(ServerboundSetCreativeModeSlot {
+                slot_num: slot,
+                item_stack: item,
+            })
+            .await;
+    }
+    wait_for_equipment(
+        &bob,
+        &alice,
+        &[
+            (Mainhand, DiamondSword, 1),
+            (Offhand, Shield, 1),
+            (Chest, DiamondChestplate, 1),
+            (Head, Dirt, 1),
+        ],
+    )
+    .await;
+    for (slot, item) in [
+        (36, ItemStack::Empty),
+        (5, ItemStack::new(DiamondHelmet, 1)),
+    ] {
+        alice
+            .send(ServerboundSetCreativeModeSlot {
+                slot_num: slot,
+                item_stack: item,
+            })
+            .await;
+    }
+    wait_for_equipment(
+        &bob,
+        &alice,
+        &[
+            (Offhand, Shield, 1),
+            (Chest, DiamondChestplate, 1),
+            (Head, DiamondHelmet, 1),
+        ],
+    )
+    .await;
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
 }
