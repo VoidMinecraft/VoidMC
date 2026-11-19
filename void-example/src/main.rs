@@ -443,6 +443,30 @@ mod tests {
     }
 
     #[test]
+    fn listen_and_observability_addresses_come_from_their_variables() {
+        let metrics_env = MetricsEnv::from_lookup(|_| None);
+
+        let defaults = server_config(&metrics_env, |_| None);
+        assert_eq!(defaults.address, "127.0.0.1:25565");
+        assert!(defaults.observability.is_none(), "the endpoint is opt-in");
+
+        let overridden = server_config(&metrics_env, |name| match name {
+            "VOID_LISTEN_ADDR" => Some(" 127.0.0.1:0 ".to_string()),
+            "VOID_OBSERVABILITY_ADDR" => Some("9464".to_string()),
+            _ => None,
+        });
+        assert_eq!(overridden.address, "127.0.0.1:0");
+        assert_eq!(
+            overridden.observability.map(|config| config.address),
+            Some("127.0.0.1:9464".to_string())
+        );
+
+        let blank = server_config(&metrics_env, |_| Some("  ".to_string()));
+        assert_eq!(blank.address, "127.0.0.1:25565");
+        assert!(blank.observability.is_none());
+    }
+
+    #[test]
     fn observability_address_defaults_to_loopback_for_a_bare_port() {
         assert_eq!(observability_config("9464").address, "127.0.0.1:9464");
         assert_eq!(observability_config("[::1]:9464").address, "[::1]:9464");
