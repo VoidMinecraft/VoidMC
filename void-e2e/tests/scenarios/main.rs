@@ -1,3 +1,4 @@
+mod atp_005_two_player_sync;
 mod commands;
 mod connection;
 mod inventory;
