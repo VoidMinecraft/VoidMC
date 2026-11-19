@@ -1,5 +1,6 @@
 mod block_changed_ack;
 mod block_entity_data;
+mod block_event;
 mod block_update;
 mod boss_event;
 pub mod chunk;
@@ -59,6 +60,7 @@ mod world_border;
 
 pub use block_changed_ack::*;
 pub use block_entity_data::*;
+pub use block_event::*;
 pub use block_update::*;
 pub use boss_event::*;
 pub use chunk::*;
@@ -128,6 +130,8 @@ pub enum PlayPacket {
     BlockChangedAck(BlockChangedAck),
     #[codec(packet_id = 0x06)]
     BlockEntityData(BlockEntityData),
+    #[codec(packet_id = 0x07)]
+    BlockEvent(BlockEvent),
     #[codec(packet_id = 0x08)]
     BlockUpdate(BlockUpdate),
     #[codec(packet_id = 0x09)]
