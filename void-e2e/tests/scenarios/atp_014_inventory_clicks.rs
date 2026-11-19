@@ -1474,6 +1474,26 @@ async fn creative_slot_packets_only_work_on_a_creative_server() {
             s.totals = BTreeMap::from([(Diamond, 64)]);
         }
         s.settle().await;
+        // Slot -1 throws from the creative inventory: a stack within its max
+        // size, then one over it, which is refused.
+        for (kind, count) in [(Diamond, 3), (EnderPearl, 17)] {
+            s.bot
+                .send(ServerboundSetCreativeModeSlot {
+                    slot_num: u16::MAX,
+                    item_stack: ItemStack::new(kind, count),
+                })
+                .await;
+        }
+        if creative_mode {
+            s.model.drops.push((Diamond, 3));
+            *s.totals.entry(Diamond).or_default() += 3;
+        }
+        s.settle().await;
+        assert!(
+            s.updates.is_empty(),
+            "a throw from the creative inventory was answered with {:?}",
+            s.updates
+        );
         s.finish();
         server.stop().await;
     }

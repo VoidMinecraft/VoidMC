@@ -100,7 +100,9 @@ carrying a stale state id is answered with a full `SetContainerContent`.
 
 `SetCreativeModeSlot` is only honoured when the server's `game_mode` is
 creative, for slots 1–45 and stacks within their max size; otherwise the
-slot's true contents are resent.
+slot's true contents are resent. On a creative server a negative slot throws
+the stack, if it is within its max size ([Dropped items](#dropped-items)); on
+any other server it does nothing.
 
 ### Held slot and cooldowns
 
