@@ -17,6 +17,10 @@
 //! stays the server's), right after the summon. Falling, landing, stepping,
 //! blocking and the packets are the server's. The random-walk scenario
 //! steers nothing.
+//!
+//! Spawn settling puts a summoned entity on the highest block top under its
+//! whole box and leaves one already standing on a block top where it is; an
+//! entity that falls 64 blocks below the bottom of the world is removed.
 
 use bevy_app::PostUpdate;
 use bevy_ecs::prelude::*;
@@ -24,11 +28,12 @@ use voidmc::components::{
     EntityCollider, EntityDimension, Grounded, MinecraftEntityId, MovementConfig, Position,
     SpawnedEntity, Wander,
 };
+use voidmc::events::EntityDespawnEvent;
 use voidmc::world::{
     BlockMutation, ChunkData, ChunkIndex, ChunkPosition, DimensionId, block_state_at_world,
     is_solid_block_state, mutate_block,
 };
-use voidmc::{BlockFace, BlockPosition};
+use voidmc::{BlockFace, BlockPosition, EntityBuilder, EntityKind as VoidKind};
 use voidmc_e2e::core::position::BlockPos;
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 use voidmc_e2e::registry::builtin::EntityKind;
@@ -223,11 +228,28 @@ fn record(
     }
 }
 
+/// The network ids of the entities `EntityDespawnEvent` fired for, in order.
+#[derive(Resource, Default)]
+struct Despawned(Vec<i32>);
+
+fn record_despawn(
+    event: On<EntityDespawnEvent>,
+    ids: Query<&MinecraftEntityId>,
+    mut despawned: ResMut<Despawned>,
+) {
+    if let Ok(id) = ids.get(event.entity) {
+        despawned.0.push(id.0);
+    }
+}
+
 async fn recorded_server() -> TestServer {
     TestServer::builder()
         .operators()
         .plugin(|app| {
-            app.init_resource::<Trace>().add_systems(PostUpdate, record);
+            app.init_resource::<Trace>()
+                .init_resource::<Despawned>()
+                .add_systems(PostUpdate, record)
+                .add_observer(record_despawn);
         })
         .start()
         .await
@@ -734,9 +756,10 @@ async fn gravity_and_block_checks_are_opt_in() {
             "the three pigs past or at the wall and floor",
             move |world| {
                 let (a, _, _) = pig_state(world, floating)?;
-                let (b, _, _) = pig_state(world, sinking)?;
+                // Once out of the world, the sinking pig is removed.
+                let sunk = pig_state(world, sinking).is_none_or(|(b, _, _)| b[1] < floor - 2.0);
                 let (c, _, _) = pig_state(world, ghost)?;
-                let done = a[0] > east - WANDER_SPEED && b[1] < floor - 2.0 && c[0] < wall - 1.0;
+                let done = a[0] > east - WANDER_SPEED && sunk && c[0] < wall - 1.0;
                 done.then_some(())
             },
         )
@@ -770,5 +793,314 @@ async fn gravity_and_block_checks_are_opt_in() {
     );
 
     alice.assert_healthy();
+    server.stop().await;
+}
+
+/// Blocks per tick that gravity adds to a falling entity's speed.
+const GRAVITY: f64 = 0.08;
+/// The fastest an entity falls, in blocks per tick.
+const TERMINAL_SPEED: f64 = 3.92;
+/// The height under which an entity is removed: 64 blocks below the bottom
+/// of the world, y = -64.
+const REMOVAL_Y: f64 = -128.0;
+
+/// A stone slab two blocks thick in the air, `-2..=2` by `-1..=1` blocks
+/// around its centre, with one more block standing on its east end.
+#[derive(Clone, Copy, Debug)]
+struct Slab {
+    x: i32,
+    z: i32,
+    /// The height of the slab's upper layer.
+    floor: i32,
+}
+
+impl Slab {
+    /// The feet height of an entity standing on the slab.
+    fn ground(self) -> f64 {
+        f64::from(self.floor + 1)
+    }
+
+    /// The feet height of an entity standing on the block on the east end.
+    fn raised(self) -> f64 {
+        f64::from(self.floor + 2)
+    }
+
+    fn at(self, dx: f64, dz: f64) -> (f64, f64) {
+        (f64::from(self.x) + dx, f64::from(self.z) + dz)
+    }
+
+    fn blocks(self) -> Vec<[i32; 3]> {
+        let mut blocks = Vec::new();
+        for dx in -2..=2 {
+            for dz in -1..=1 {
+                blocks.push([self.x + dx, self.floor - 1, self.z + dz]);
+                blocks.push([self.x + dx, self.floor, self.z + dz]);
+            }
+        }
+        blocks.push([self.x + 2, self.floor + 1, self.z]);
+        blocks
+    }
+}
+
+/// Builds the slab twelve blocks above Alice's feet and waits until she is
+/// sent its last block.
+async fn build_slab(server: &TestServer, alice: &Bot) -> Slab {
+    let feet = feet(alice);
+    let slab = Slab {
+        x: feet.x,
+        z: feet.z,
+        floor: feet.y + 12,
+    };
+    let actor = server.player_entity(alice.uuid()).await;
+    let placed = slab.blocks();
+    let count = placed.len();
+    let changed = server
+        .with_world(move |world| {
+            placed
+                .into_iter()
+                .filter(|&[x, y, z]| {
+                    let position = BlockPosition { x, y: y as i16, z };
+                    mutate_block(
+                        world,
+                        actor,
+                        DimensionId::Overworld,
+                        position,
+                        blocks::STONE,
+                        BlockFace::Top,
+                        BlockMutation::Place,
+                    )
+                    .is_some()
+                })
+                .count()
+        })
+        .await;
+    assert_eq!(changed, count, "the slab was built in empty air");
+    let last = BlockPos::new(slab.x + 2, slab.floor + 1, slab.z);
+    alice
+        .wait_until("the slab", |view| {
+            view.block_at(last).is_some_and(|state| !state.is_air())
+        })
+        .await;
+    slab
+}
+
+/// Spawns, through the public `EntityBuilder`, a pig with gravity and block
+/// checks whose collider steps up only half a block, so that the physics
+/// step cannot lift it back out of a block it was put into. Returns its id.
+async fn spawn_half_step_pig(server: &TestServer, x: f64, y: f64, z: f64) -> i32 {
+    server
+        .with_world(move |world| {
+            EntityBuilder::new(VoidKind::Pig)
+                .at(x, y, z)
+                .collider(EntityCollider::new(0.9, 0.9, 0.5))
+                .gravity(true)
+                .block_collision(true)
+                .spawn_in(world)
+                .get::<MinecraftEntityId>()
+                .expect("a spawned entity has a network id")
+                .0
+        })
+        .await
+}
+
+/// Every height `bot` was shown for the entity, from the one it was added at.
+fn seen_heights(bot: &Bot, id: i32) -> Vec<f64> {
+    let moves = seen_moves(bot, id);
+    let Some(first) = moves.first() else {
+        return Vec::new();
+    };
+    std::iter::once(first.y - first.delta_y)
+        .chain(moves.iter().map(|seen| seen.y))
+        .collect()
+}
+
+#[tokio::test]
+async fn pig_summoned_exactly_on_thick_ground_is_never_shown_inside_it() {
+    let server = recorded_server().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let slab = build_slab(&server, &alice).await;
+    let ground = slab.ground();
+
+    // Gravity without block checks: it falls through the slab, from the
+    // height it was summoned at. Summoned first, so that the pig Alice is
+    // sent next is this one.
+    let (x, z) = slab.at(0.5, 0.5);
+    let sinking = summon(&alice, x, ground, z, "--gravity").await;
+    // Block checks with a half-block step: once inside the slab, nothing
+    // would lift it back out.
+    let (held_x, held_z) = slab.at(-0.5, 0.5);
+    let held = spawn_half_step_pig(&server, held_x, ground, held_z).await;
+    server.wait_ticks(40).await;
+    for bot in [&alice, &bob] {
+        bot.sync().await;
+    }
+
+    // The free fall from the summon height, one height per tick.
+    let mut fall = Vec::new();
+    let (mut y, mut speed) = (ground, 0.0_f64);
+    for _ in 0..200 {
+        speed = (speed + GRAVITY).min(TERMINAL_SPEED);
+        y -= speed;
+        fall.push(y);
+    }
+    let close = |a: f64, b: f64| (a - b).abs() <= 1.0 / 4096.0;
+    let heights = seen_heights(&bob, sinking);
+    assert!(heights.len() >= 20, "Bob saw the fall: {heights:?}");
+    let start = fall
+        .iter()
+        .position(|&y| close(y, heights[0]))
+        .unwrap_or_else(|| {
+            panic!(
+                "Bob was first shown the falling pig at y = {}, not on its fall from \
+                 y = {ground} (one tick down is {}): it was moved into the slab",
+                heights[0], fall[0]
+            )
+        });
+    for (index, (&seen, &expected)) in heights.iter().zip(&fall[start..]).enumerate() {
+        assert!(
+            close(seen, expected),
+            "height {index} Bob was shown is {seen}, the fall from y = {ground} is at \
+             {expected}: {heights:?}"
+        );
+    }
+
+    let held_samples = samples(&server, held).await;
+    assert!(held_samples.len() >= 40, "{held_samples:?}");
+    assert_never_overlaps(&held_samples);
+    for sample in &held_samples {
+        assert_eq!(sample.position[1], ground, "left the top face: {sample:?}");
+        assert!(sample.grounded, "{sample:?}");
+    }
+    let shown_off_top = seen_moves(&bob, held)
+        .into_iter()
+        .find(|seen| seen.y != ground);
+    assert_eq!(
+        shown_off_top, None,
+        "Bob was shown the pig off the top face"
+    );
+    assert_seen_at(&bob, held, [held_x, ground, held_z]);
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn pig_whose_box_reaches_over_a_higher_block_settles_on_its_top() {
+    let server = recorded_server().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let slab = build_slab(&server, &alice).await;
+    let raised = slab.raised();
+
+    // Its centre is over the slab, one block east of the middle; its
+    // 0.9-wide box also reaches over the block standing on the east end.
+    let (x, z) = slab.at(1.9, 0.5);
+    let pig = spawn_half_step_pig(&server, x, slab.ground() + 4.0, z).await;
+    server.wait_ticks(40).await;
+    for bot in [&alice, &bob] {
+        bot.sync().await;
+    }
+
+    let samples = samples(&server, pig).await;
+    assert!(samples.len() >= 40, "{samples:?}");
+    assert_never_overlaps(&samples);
+    for sample in &samples {
+        assert_eq!(
+            sample.position[1], raised,
+            "not on the highest block top under its box: {sample:?}"
+        );
+        assert!(sample.grounded, "{sample:?}");
+    }
+    let shown_off_top = seen_moves(&bob, pig)
+        .into_iter()
+        .find(|seen| seen.y != raised);
+    assert_eq!(
+        shown_off_top, None,
+        "Bob was shown the pig off the raised block"
+    );
+    assert_seen_at(&bob, pig, [x, raised, z]);
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn pig_falling_out_of_the_world_is_removed_64_blocks_below_it() {
+    let server = recorded_server().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+
+    // Gravity without block checks: nothing stops its fall.
+    let feet = feet(&alice);
+    let (x, y, z) = (
+        f64::from(feet.x) + 0.5,
+        f64::from(feet.y) + 2.0,
+        f64::from(feet.z) + 0.5,
+    );
+    let pig = summon(&alice, x, y, z, "--gravity").await;
+    let still_falling = server
+        .wait_for(
+            "the pig removed, or far below the world",
+            move |world| match pig_state(world, pig) {
+                None => Some(None),
+                Some((position, ..)) if position[1] < REMOVAL_Y - 200.0 => Some(Some(position)),
+                Some(_) => None,
+            },
+        )
+        .await;
+    assert_eq!(
+        still_falling, None,
+        "the pig is still simulated, 200 blocks below the height it should have been removed at"
+    );
+    bob.expect("the pig's removal", |packet| match packet {
+        ClientboundGamePacket::RemoveEntities(remove) => {
+            remove.entity_ids.iter().any(|id| id.0 == pig).then_some(())
+        }
+        _ => None,
+    })
+    .await;
+    for bot in [&alice, &bob] {
+        bot.sync().await;
+    }
+
+    // The server: removed in the tick after the first one it ended below
+    // the removal height.
+    let samples = samples(&server, pig).await;
+    let (last, before) = samples.split_last().expect("the pig was simulated");
+    assert!(
+        last.position[1] < REMOVAL_Y,
+        "removed above the removal height: {last:?}"
+    );
+    let below = before.iter().find(|sample| sample.position[1] < REMOVAL_Y);
+    assert!(below.is_none(), "kept below the removal height: {below:?}");
+    let gone = server
+        .with_world(move |world| pig_state(world, pig).is_none())
+        .await;
+    assert!(gone, "the server still holds the pig");
+    let despawned = server
+        .with_world(|world| world.resource::<Despawned>().0.clone())
+        .await;
+    assert_eq!(despawned, vec![pig], "EntityDespawnEvent fired for the pig");
+
+    // Bob was shown it below the removal height once, right before it was
+    // removed, and no longer sees it.
+    let heights = seen_heights(&bob, pig);
+    let (last, before) = heights.split_last().expect("Bob saw the pig fall");
+    assert!(*last < REMOVAL_Y, "Bob's last height for it is {last}");
+    let below = before.iter().find(|&&y| y < REMOVAL_Y);
+    assert!(
+        below.is_none(),
+        "shown below the removal height before: {heights:?}"
+    );
+    assert!(
+        bob.view(|view| !view.entities.contains_key(&pig)),
+        "Bob still sees the pig"
+    );
+
+    alice.assert_healthy();
+    bob.assert_healthy();
     server.stop().await;
 }

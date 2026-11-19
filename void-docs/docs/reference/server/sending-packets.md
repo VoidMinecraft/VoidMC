@@ -186,7 +186,7 @@ inside one schedule.
 | `MenuClickDrain` | `Update` | Fire `MenuClickEvent` and menu `on_click` handlers (see [Menus](../gameplay/menus.md)). |
 | `KeepAlive` | `Update` | Send `KeepAlive`. After `CommandDrain`. |
 | `TeleportBarrier` | `Update` | Advance in-flight `Teleport`s (ping fence, position sync, release). After `CommandDrain`. |
-| `EntitySimulation` | `Update` | Settle spawns, wander, physics. After `KeepAlive`. |
+| `EntitySimulation` | `Update` | Remove entities fallen out of the world, settle spawns, wander, physics. After `KeepAlive`. |
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
 | `EntityBroadcast` | `PostUpdate` | Spawn / movement / motion / metadata packets for non-player entities. |
 | `PlayerBroadcast` | `PostUpdate` | Other players' movement, head rotation and crouch. |
