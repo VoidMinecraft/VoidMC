@@ -5,12 +5,15 @@
 //! the break and placement broadcast, their acknowledgements and a late
 //! joiner. These scenarios add the second player filling the cleared block
 //! with the selected item, placement against every face, the convergence of
-//! interleaved changes, a change made out of a player's view, and invalid
-//! interactions.
+//! interleaved changes, a change made out of a player's view, invalid
+//! interactions, and a placement that brings a section past 256 block states.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use voidmc::world::{ChunkData, ChunkIndex, ChunkPos as ServerChunkPos, DimensionId};
+use voidmc::BlockPosition;
+use voidmc::world::{
+    ChunkData, ChunkIndex, ChunkPos as ServerChunkPos, DimensionId, set_block_state,
+};
 use voidmc_e2e::block::BlockState;
 use voidmc_e2e::core::direction::Direction;
 use voidmc_e2e::core::position::{BlockPos, ChunkPos, Vec3};
@@ -795,6 +798,111 @@ async fn invalid_interactions_leave_the_server_up_and_the_world_consistent() {
     .await;
 
     for bot in [&alice, &bob] {
+        bot.assert_healthy();
+    }
+    server.stop().await;
+}
+
+/// Every cell of `section` holds its `expected` state for `bot`.
+fn assert_section_seen(bot: &Bot, section: &[BlockPos], expected: &HashMap<BlockPos, i32>) {
+    for pos in section {
+        assert_eq!(
+            state_id(bot.block_at(*pos)),
+            Some(expected.get(pos).copied().unwrap_or(0)),
+            "{} sees the wrong block at {pos:?}",
+            bot.name()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_placement_bringing_a_section_past_256_states_keeps_every_block() {
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+
+    // An empty section above the players, in the chunk they stand in.
+    let feet = feet(&alice);
+    let base = BlockPos::new(
+        feet.x.div_euclid(16) * 16,
+        (feet.y.div_euclid(16) + 2) * 16,
+        feet.z.div_euclid(16) * 16,
+    );
+    let section = cuboid(base, BlockPos::new(base.x + 15, base.y + 15, base.z + 15));
+    assert!(
+        server_blocks(&server, section.clone())
+            .await
+            .iter()
+            .all(|state| *state == Some(0)),
+        "the section above the players starts empty"
+    );
+
+    // Air plus 255 distinct states on its bottom layer: 256 states, the most
+    // an 8-bit palette holds. They are states 2 to 256, granite at the
+    // section's corner; stone (state 1) is kept for the placement.
+    let mut expected = HashMap::new();
+    for index in 0..255 {
+        let pos = BlockPos::new(base.x + index % 16, base.y, base.z + index / 16);
+        expected.insert(pos, 2 + index);
+    }
+    let changes: Vec<(BlockPos, i32)> = expected.iter().map(|(pos, id)| (*pos, *id)).collect();
+    server
+        .with_world(move |world| {
+            for (pos, id) in changes {
+                let position = BlockPosition {
+                    x: pos.x,
+                    y: pos.y as i16,
+                    z: pos.z,
+                };
+                set_block_state(world, DimensionId::Overworld, position, id, None);
+            }
+        })
+        .await;
+    settle(&[&alice, &bob]).await;
+    for bot in [&alice, &bob] {
+        assert_section_seen(bot, &section, &expected);
+    }
+
+    // Alice puts stone on the granite: the section's 257th state. Stone, not
+    // a block with a higher id: Azalea grows a palette past 8 bits to 9-bit
+    // global ids on a block update, so it panics on any id from 512 up.
+    let target = base.up(1);
+    hold(&alice, HOTBAR_START, Some(ItemKind::Stone)).await;
+    place(&alice, base, Direction::Up, 1).await;
+    expect_ack(&alice, 1).await;
+    for bot in [&alice, &bob] {
+        bot.wait_until("the stone on the granite", |view| {
+            kind(view.block_at(target)) == Some(BlockKind::Stone)
+        })
+        .await;
+    }
+    let stone = state_id(bob.block_at(target)).expect("Bob holds the section");
+    expected.insert(target, stone);
+    let states: HashSet<i32> = expected.values().copied().chain([0]).collect();
+    assert_eq!(
+        states.len(),
+        257,
+        "the stone is a new state for the section"
+    );
+
+    settle(&[&alice, &bob]).await;
+    let stored = server_blocks(&server, section.clone()).await;
+    for (pos, stored) in section.iter().zip(stored) {
+        assert_eq!(
+            stored,
+            Some(expected.get(pos).copied().unwrap_or(0)),
+            "the server stores the wrong block at {pos:?}"
+        );
+    }
+    for bot in [&alice, &bob] {
+        assert_section_seen(bot, &section, &expected);
+    }
+
+    // A player who joins afterwards gets the section in the chunk data.
+    let carol = server.join("Carol").await;
+    assert_section_seen(&carol, &section, &expected);
+
+    for bot in [&alice, &bob, &carol] {
         bot.assert_healthy();
     }
     server.stop().await;
