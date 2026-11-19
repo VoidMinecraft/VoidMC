@@ -439,6 +439,13 @@ and `--block-checks` enables world block collision checks for that physics
 step. These flags are stored as ECS movement components and synchronized by the
 non-player entity lifecycle.
 
+`/give` tops up matching stacks first, then fills empty slots (hotbar before
+the main inventory), never past the item's maximum stack size: 20 ender pearls
+become 16 + 4. Items that do not fit are not given, and the reply says how many
+did not fit. `minecraft:air` is refused. `/clear` empties every slot of the
+player inventory (crafting grid, armor, main inventory, hotbar, offhand) and the
+carried item, then resends the whole window.
+
 ### PluginList Resource
 
 The `/plugins` command reads from an optional `PluginList` resource. Insert it in your plugin to make plugin names visible:
