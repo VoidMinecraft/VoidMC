@@ -1,3 +1,4 @@
+mod atp_015_item_drop;
 mod commands;
 mod connection;
 mod inventory;
