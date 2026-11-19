@@ -1973,6 +1973,7 @@ dependencies = [
  "ussr-nbt",
  "uuid",
  "voidmc",
+ "voidmc-codec",
  "voidmc-data",
  "voidmc-navigation",
  "voidmc-protocol",

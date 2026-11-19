@@ -32,6 +32,8 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
 | `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
+| `Grounded(bool)` | On-ground flag | The on-ground flag of the client's last movement packet, relayed in the movement packets other players receive |
+| `Sneaking(bool)` | Shift key | From the client's Player Input; other players see the player crouch (shared sneaking flag + crouching pose) while it sneaks without flying. The flag goes out in the complete shared flags byte, with the glowing and invisible bits of `Glowing`, `Invisible` and the glowing / invisibility effects, whichever of them changes; the player's own client is not sent its flags |
 
 ### Teleportation
 
