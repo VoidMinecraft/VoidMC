@@ -66,6 +66,7 @@ This shape mirrors the defaults while making the reliability budgets visible.
 | `VOID_FLAME_OUTPUT` | `logs/trace.folded` | Selects flame trace output (also enables flame mode). |
 | `VOID_FLAME_INCLUDE_IDLE` | `1` | Includes idle time to show server utilization. |
 | `VOID_PACKET_DEBUG` | `1` | Adds network packet debug logging. |
+| `VOID_OBSERVABILITY_ADDR` | `9464` | Serves `/health` and Prometheus `/metrics` ([reference](/reference/server/observability)): a bare port binds `127.0.0.1`, or give `host:port`. Off when unset. |
 
 ## Configuration Reference
 
