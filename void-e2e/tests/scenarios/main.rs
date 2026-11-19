@@ -4,6 +4,7 @@ mod atp_004_initial_world;
 mod atp_005_two_player_sync;
 mod atp_006_shared_blocks;
 mod atp_020_world_loader;
+mod atp_021_custom_command;
 mod atp_022_item_behavior;
 mod atp_023_plugin_hook;
 mod atp_026_graceful_stop;

@@ -76,7 +76,7 @@ Build commands using the fluent `CommandBuilder`:
 
 ```rust
 use std::sync::Arc;
-use voidmc::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg};
+use voidmc::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg, StringArg};
 
 let command = CommandBuilder::new("greet")
     .description("Greet a player with a custom message")
