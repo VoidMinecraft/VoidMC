@@ -16,6 +16,7 @@ mod atp_027_world_generation;
 mod atp_029_biomes_weather;
 mod atp_030_note_block_redstone;
 mod atp_031_load;
+mod atp_035_gameplay_events;
 mod atp_036_custom_world_generator;
 mod atp_037_custom_biome;
 mod commands;
