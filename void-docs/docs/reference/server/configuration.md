@@ -33,8 +33,8 @@ let config = ServerConfigBuilder::new()
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `address` | `String` | `"127.0.0.1:25565"` | TCP bind address |
-| `tick_rate` | `u64` | `20` | Game ticks per second; must be at least `1` (`0` is read as `1`) |
-| `max_players` | `i32` | `100` | Maximum player count (shown in server list) |
+| `tick_rate` | `u64` | `20` | Game ticks per second; must be at least `1` (`0` is read as `1`). Not announced to clients, which assume 20 |
+| `max_players` | `i32` | `100` | Player count advertised in the server list and the Login packet; not enforced (see [Limits](#limits)) |
 | `view_distance` | `i32` | `10` | Maximum server-side view distance (in chunks) |
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
 | `game_mode` | `u8` | `1` (Creative) | Default game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) |
@@ -48,11 +48,32 @@ let config = ServerConfigBuilder::new()
 | `max_packets_per_tick` | `usize` | `1000` | Cap the number of packets drained from the incoming channel each tick (0 = unlimited) |
 | `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
-| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
+| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms); only while `metrics_debug` is on |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
 | `compression_threshold` | `Option<u32>` | `Some(256)` | Packets of at least this many bytes are zlib-compressed after login; `None` disables compression (vanilla's negative threshold) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
+
+Every field has a builder method of the same name, except `registries`, which
+`configure_registries` edits in place. `ServerConfig::default()` and an
+untouched `ServerConfigBuilder::new()` both hold the defaults above.
+
+## Limits
+
+The builder replaces values the server cannot run with and logs a warning: a
+`tick_rate` of `0` becomes `1`, and a negative `view_distance` or
+`simulation_distance` becomes `0`. Every other value is used as given.
+
+The configuration sets targets, not guarantees of capacity or performance:
+
+- `max_players` is only advertised. VoidMC does not refuse a login when that
+  many players are online; an application that needs a cap must enforce it.
+- `tick_rate` is the fastest rate the game loop runs at. A tick that takes
+  longer than `1 / tick_rate` delays the next one, and missed ticks are not
+  made up. Clients are not told the rate (VoidMC sends no Ticking State
+  packet), so they keep simulating at vanilla's 20 ticks per second.
+- `view_distance` caps the distance each client asks for; a client asking for
+  less receives less.
 
 ## Listen address
 

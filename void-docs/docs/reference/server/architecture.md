@@ -50,7 +50,7 @@ disconnect.
 The game thread runs a fixed-rate tick loop using Bevy's `ScheduleRunnerPlugin`. The tick rate is configurable (default: **20 TPS**, or 50ms per tick).
 
 ```rust
-ScheduleRunnerPlugin::run_loop(Duration::from_millis(1000 / tick_rate))
+ScheduleRunnerPlugin::run_loop(config.tick_duration()) // 1 / tick_rate seconds
 ```
 
 ## Bevy Schedule Organization
