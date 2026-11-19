@@ -1,3 +1,4 @@
+mod atp_002_server_status;
 mod commands;
 mod connection;
 mod inventory;
