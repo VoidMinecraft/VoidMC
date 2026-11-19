@@ -1,3 +1,4 @@
+mod atp_009_world_restart;
 mod commands;
 mod connection;
 mod inventory;
