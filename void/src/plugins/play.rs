@@ -1,7 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy_app::{App, Plugin};
-use bevy_ecs::{observer::On, system::Commands, world::World};
+use bevy_ecs::{
+    observer::On,
+    query::Has,
+    system::{Commands, Query},
+    world::World,
+};
 use voidmc_protocol::serverbound::{
     ChunkBatchReceived, ClientInformation, KeepAlive, PlayerLoaded, Pong, TickEnd,
 };
@@ -25,7 +30,17 @@ impl Plugin for PlayPlugin {
     }
 }
 
-fn handle_player_loaded(event: On<PacketEvent<PlayerLoaded>>, mut commands: Commands) {
+/// The first `PlayerLoaded` makes the player ready; a repeated one (the
+/// vanilla client sends it once per login) is ignored, so `PlayerReadyEvent`
+/// fires exactly once per session.
+fn handle_player_loaded(
+    event: On<PacketEvent<PlayerLoaded>>,
+    ready: Query<Has<PlayerReady>>,
+    mut commands: Commands,
+) {
+    if ready.get(event.entity).unwrap_or(true) {
+        return;
+    }
     commands.entity(event.entity).insert(PlayerReady);
     commands.trigger(PlayerReadyEvent {
         client_id: event.client_id,
@@ -73,6 +88,34 @@ fn handle_client_information(event: On<PacketEvent<ClientInformation>>, mut comm
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(bevy_ecs::resource::Resource, Default)]
+    struct ReadyEvents(Vec<bevy_ecs::entity::Entity>);
+
+    #[test]
+    fn a_repeated_player_loaded_does_not_make_the_player_ready_again() {
+        let mut app = App::new();
+        app.add_plugins(PlayPlugin)
+            .init_resource::<ReadyEvents>()
+            .add_observer(
+                |event: On<PlayerReadyEvent>, mut seen: bevy_ecs::system::ResMut<ReadyEvents>| {
+                    seen.0.push(event.entity);
+                },
+            );
+        let entity = app.world_mut().spawn_empty().id();
+
+        for _ in 0..3 {
+            app.world_mut().trigger(PacketEvent {
+                client_id: 7,
+                entity,
+                packet: PlayerLoaded {},
+            });
+            app.world_mut().flush();
+        }
+
+        assert!(app.world().get::<PlayerReady>(entity).is_some());
+        assert_eq!(app.world().resource::<ReadyEvents>().0, vec![entity]);
+    }
 
     #[test]
     fn keep_alive_response_clears_awaiting_response() {

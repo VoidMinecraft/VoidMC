@@ -8,6 +8,7 @@ use bevy_ecs::system::SystemParam;
 use voidmc::{
     ArgParser, Audience, BossBar, BossBarColor, ChunkPos, Command, CommandBuilder, CommandRegistry,
     CommandSystems, IntegerArg, VoidSystems,
+    components::PlayerReady,
     events::{PlayerQuitEvent, PlayerReadyEvent},
     plugins::boss_bar::BossBarState,
 };
@@ -407,8 +408,17 @@ fn ready(event: On<PlayerReadyEvent>, mut grid: Grid, mut travel: Travel) {
     );
 }
 
-fn quit(event: On<PlayerQuitEvent>, karts: Karts, mut grid: Grid) {
+fn quit(
+    event: On<PlayerQuitEvent>,
+    ready: Query<(), With<PlayerReady>>,
+    karts: Karts,
+    mut grid: Grid,
+) {
     let player = event.entity;
+    // A player who left while loading never got `ready`: nothing to undo.
+    if !ready.contains(player) {
+        return;
+    }
     let racing = grid.race.phase == Phase::Racing && karts.get(player).is_some_and(Kart::racing);
     grid.leave(player);
     let name = grid.chat.name(player);

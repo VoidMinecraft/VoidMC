@@ -141,12 +141,14 @@ As the client progresses through protocol states, handlers insert additional com
 
 When a client disconnects:
 1. The network thread sends the client ID through the `disconnect` channel
-2. `ingest_network_packets` removes the client from `ClientToEntityMap` and drops its sender from `ClientSenders`
-3. If the player was ready (`PlayerReady` present), a `PlayerQuitEvent` is triggered
-4. The entity is despawned with `world.despawn(entity)`
+2. `ingest_network_packets` removes the client from `ClientToEntityMap`
+3. If the player joined (`ConnectionState(Play)`), ready or not, a `PlayerQuitEvent` is triggered
+4. The entity is despawned and its sender dropped from `ClientSenders`
 
-A client whose outbound queue overflows is kicked by the network thread and
-then follows exactly this path.
+A client whose outbound queue overflows, or that is kicked or times out, has
+its connection closed by the network thread and then follows exactly this
+path; on `AppExit` every connected client does too. A client entity despawned
+by game code has its connection closed without a `PlayerQuitEvent`.
 
 ### Non-Player Entity Lifecycle
 

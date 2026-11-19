@@ -46,6 +46,10 @@ When the client finishes loading chunks and sends `PlayerLoaded`:
 2. `PlayerReadyEvent` is triggered
 3. The observer broadcasts the new player to all other ready players
 
+This happens once per session: a repeated `PlayerLoaded` is ignored. A client
+that never sends it stays joined but not ready, and never gets
+`PlayerReadyEvent`.
+
 ## Player Ready State
 
 The `PlayerReady` marker component is the key indicator that a player is fully in-game. Most systems filter on it:
@@ -86,13 +90,22 @@ When a client disconnects:
 1. The network thread detects the TCP connection closed
 2. Client ID is sent through the `disconnect` channel
 3. `ingest_network_packets` drains the disconnect channel
-4. The entity is removed from `ClientToEntityMap` and its sender from `ClientSenders`
-5. If the player was ready (`PlayerReady` present):
-   - `PlayerQuitEvent` is triggered
-   - The `on_player_quit` observer broadcasts to all remaining ready players:
+4. The entity is removed from `ClientToEntityMap`
+5. If the player joined (`ConnectionState(Play)`, so `PlayerJoinEvent` fired),
+   whether or not it became ready:
+   - `PlayerQuitEvent` is triggered while the entity and its components can
+     still be read
+   - If it was ready, the `on_player_quit` observer broadcasts to all
+     remaining ready players:
      - `RemoveEntities` — Removes the entity from the world
      - `PlayerInfoRemove` — Removes the player from the tab list
-6. The entity is despawned
+6. The entity is despawned and its sender dropped from `ClientSenders`
+
+A kick (`/kick`, `Players::kick`, keep-alive timeout) closes the connection
+from the server side after the `Disconnect` is written, then follows the same
+path. On shutdown (`AppExit`) every player still connected goes through steps
+4 to 6 in the last tick. See
+[Connection lifecycle](../server/events.md#connection-lifecycle).
 
 ## Position & Rotation Broadcasting
 
