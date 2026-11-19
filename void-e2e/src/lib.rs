@@ -5,7 +5,7 @@
 //! # async fn demo() {
 //! use voidmc_e2e::TestServer;
 //!
-//! let server = TestServer::start().await;
+//! let server = TestServer::builder().operators().start().await;
 //! let alice = server.join("Alice").await;
 //! alice.command("tp 0 100 0").await;
 //! alice.sync().await;
