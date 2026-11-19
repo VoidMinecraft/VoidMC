@@ -522,7 +522,9 @@ The optional `--wander` flag attaches the demo random-walk behavior to the
 summoned entity. `--gravity` enables the simple server-side vertical physics,
 and `--block-checks` enables world block collision checks for that physics
 step. These flags are stored as ECS movement components and synchronized by the
-non-player entity lifecycle.
+non-player entity lifecycle. With `--gravity` alone the entity falls through
+blocks, and it is removed once it is more than 64 blocks below the bottom of
+the world (see [Entities](/reference/gameplay/entities#gravity-and-block-collision)).
 
 `/give` tops up matching stacks first, then fills empty slots (hotbar before
 the main inventory), never past the item's maximum stack size: 20 ender pearls
