@@ -19,6 +19,7 @@ pub mod menu;
 pub mod messages;
 mod metrics;
 pub mod network;
+mod observability;
 pub mod particles;
 pub mod players;
 pub mod plugins;
@@ -49,7 +50,9 @@ pub use commands::plugin::CommandSystems;
 pub use commands::{
     ArgParser, Command, CommandBuilder, CommandContext, CommandRegistry, Completion, ParseError,
 };
-pub use config::{ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition};
+pub use config::{
+    ExecutionMode, ServerConfig, ServerConfigBuilder, ServerConfigResource, SpawnPosition,
+};
 pub use entity::{
     AttributeInstance, Attributes, Billboard, BlockDisplay, CustomName, Display, DisplayTransform,
     Effect, EffectCategory, EffectDuration, EffectInstance, EndCrystal, EntityAttribute,
@@ -61,14 +64,15 @@ pub use entity::{
 pub use inventory::{Cooldown, Inventories, Inventory, WorldInventories};
 pub use item::{ItemId, ItemStack};
 pub use item_behavior::{
-    BlockBreakContext, BlockUseTarget, ItemBehavior, ItemBehaviorRegistry, ItemUseContext,
-    UseResult,
+    BlockBreakContext, BlockInteraction, BlockInteractionRegistry, BlockUseTarget, ItemBehavior,
+    ItemBehaviorRegistry, ItemUseContext, UseResult,
 };
 pub use menu::{
     ContainerIds, ContainerInput, Menu, MenuClickContext, MenuClickEvent, MenuCloseReason,
     MenuClosedEvent, MenuSlot, MenuType, Menus, OpenMenu, WorldMenus,
 };
 pub use messages::{MessageRequest, Messages, Text, TextColor, TextTooLong, WorldMessages};
+pub use observability::{DEFAULT_OBSERVABILITY_HOST, ObservabilityAddress, ObservabilityConfig};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;

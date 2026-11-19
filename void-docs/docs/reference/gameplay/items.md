@@ -129,7 +129,9 @@ default to `UseResult::Pass`, which runs the built-in default (a block item
 places its block); return `UseResult::Handled` to take over.
 
 ```rust
-use voidmc::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult, VoidServer};
+use voidmc::{
+    ItemBehavior, ItemBehaviorRegistry, ItemUseContext, ServerConfig, UseResult, VoidServer,
+};
 
 struct Wand;
 impl ItemBehavior for Wand {
@@ -140,7 +142,7 @@ impl ItemBehavior for Wand {
     }
 }
 
-VoidServer::new(config)
+VoidServer::new(ServerConfig::default())
     .add_plugin(|app| {
         app.world_mut()
             .resource_mut::<ItemBehaviorRegistry>()
@@ -149,10 +151,29 @@ VoidServer::new(config)
     .run();
 ```
 
+Block-state constants such as `GLOWSTONE` come from the `voidmc-data` crate, so
+add it next to `voidmc`; `ItemId::from_name("minecraft:glowstone")` and
+`default_block_state()` give the same id without it. Registering a second
+behaviour for the same item replaces the first. `register_for` resolves the name
+when it is called: an unknown name logs a warning and registers nothing.
+
 `ItemUseContext` exposes full world access — `place_block`, `set_block`,
 `give`, `consume`, `reply`, and `with_world` / `with_world_mut`. Behaviours run
 in an exclusive system (the same queue + drain pattern as commands), so they can
 mutate anything.
+
+A right-click runs the behaviour of the item in the hand that was used
+(`ctx.hand`): the selected hotbar slot for the main hand, slot 45 for the off
+hand. `ctx.held` is that item as it was when the packet arrived, and `consume`
+takes from that slot. The client tries the main hand first and the off hand
+next, unless it expects the main-hand item to do something. A main-hand
+behaviour the client does not know about can therefore be followed by an
+off-hand use of the same click, which runs the off-hand item. Before that, the
+client follows the use on the block with a use in the air of the same hand, so a
+behaviour that implements both `on_use_on_block` and `on_use` runs both for one
+click on a block. An empty hand runs no item behaviour and places nothing; the
+clicked block's own interaction ([below](#blocks-that-react-to-a-right-click))
+still runs, so an empty hand toggles a lever.
 
 Four hooks are available:
 
@@ -176,6 +197,34 @@ impl ItemBehavior for DirtToBedrock {
 // reg.register_for("minecraft:dirt", DirtToBedrock);
 ```
 
+## Blocks that react to a right-click
+
+A right-click on a block runs, in order: the held item's `ItemBehavior`, then
+the clicked block's `BlockInteraction` (if the item passed), then the default
+placement (if both passed). Register an interaction for every state of a
+block in `BlockInteractionRegistry`; it is empty by default, and the opt-in
+[`RedstonePlugin`](./redstone.md) fills it for levers and buttons.
+
+```rust
+use voidmc::{BlockInteraction, BlockInteractionRegistry, ItemUseContext, UseResult};
+
+struct Doorbell;
+impl BlockInteraction for Doorbell {
+    fn on_use(&self, ctx: &mut ItemUseContext, _state: i32) -> UseResult {
+        ctx.reply("ding dong");
+        UseResult::Handled // consumed: the held block is not placed
+    }
+}
+// app.world_mut().resource_mut::<BlockInteractionRegistry>()
+//     .register_for("minecraft:bell", Doorbell);
+```
+
+As in vanilla, the block's interaction only runs for a main-hand use, and not
+while the player is sneaking with an item in either hand (`Sneaking`
+component, from the Player Input packet): then the item is used, so a sneaking
+player can place a block against a lever. An off-hand use, which a client sends
+after a main-hand use it did not consume, never reaches the block.
+
 ## Getting items in
 
 - **Creative**: grabbing an item in the creative menu (`SetCreativeModeSlot`)
@@ -186,9 +235,34 @@ impl ItemBehavior for DirtToBedrock {
 
 ## Dropped items
 
-Throwing from the inventory or the drop key spawns a `minecraft:item` entity
-that falls and can be picked up by nearby players. Emit a `voidmc::events::
-ItemDropEvent { dropper, stack }` to drop an item from your own code.
+The drop key (`Q` for one item, `Ctrl+Q` for the stack), a throw click in the
+inventory, a stack clicked outside the inventory window, and a stack thrown out
+of the creative inventory each spawn one `minecraft:item` entity carrying
+exactly what left the inventory. Emit a `voidmc::events::ItemDropEvent {
+dropper, stack }` to drop an item from your own code; it is thrown the same
+way.
+
+- **Throw.** The item leaves 1.32 blocks above the dropper's feet (0.3 below a
+  standing player's eyes) at 0.3 blocks per tick in the direction they look,
+  plus 0.1 upwards, like vanilla without its random spread. Looking straight
+  down drops it at the feet.
+- **Flight.** It falls with the entity physics of `--gravity --block-checks`
+  summons, keeps 98% of its horizontal speed per tick in the air and 58.8% on
+  the ground, and comes to rest on the block top. A throw on flat ground lands
+  about two blocks ahead.
+- **Rendering.** Every viewer, including players who come into range later, is
+  sent the add-entity and the entity metadata holding the stack.
+- **Pickup delay.** `voidmc::plugins::item_drops::PICKUP_DELAY_TICKS` (40, vanilla's two seconds). An item
+  thrown during tick `T` can be collected from tick `T + 40` on, also by the
+  player who threw it.
+- **Pickup.** A ready player whose feet are within `PICKUP_RADIUS` (1.5 blocks)
+  of the item's position collects it. The stack goes in with `Inventory::give`:
+  onto matching stacks first, then into empty slots, hotbar before main. Viewers
+  are sent the pickup animation (Take Item Entity) with the amount taken. A
+  player whose inventory is full takes nothing and leaves the item to the
+  next player in range; one with room for part of it takes that part and the
+  rest stays on the ground, with its metadata updated. Players in range in the
+  same tick take in turn, so one item is never given twice.
 
 ## Events
 

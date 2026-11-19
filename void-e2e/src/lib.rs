@@ -14,6 +14,7 @@
 //! ```
 
 mod bot;
+pub mod load;
 mod logs;
 mod server;
 mod view;

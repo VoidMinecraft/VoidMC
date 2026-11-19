@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use bevy_app::{App, Plugin, PreUpdate};
+use bevy_app::{App, AppExit, Last, Plugin, PreUpdate};
+use bevy_ecs::lifecycle::Despawn;
+use bevy_ecs::message::Messages;
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use flume::{Receiver, Sender};
@@ -10,9 +12,10 @@ use tracing::instrument;
 use voidmc_net::socket::Packet;
 use voidmc_protocol::serverbound;
 
-use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
+use crate::components::{Client, ClientId, ConnectionState};
 use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
+use crate::observability::TelemetryHandle;
 use crate::schedule::VoidSystems;
 
 pub struct IncomingPacket {
@@ -76,7 +79,9 @@ impl Plugin for NetworkPlugin {
         .add_systems(
             PreUpdate,
             ingest_network_packets.in_set(VoidSystems::NetworkIngest),
-        );
+        )
+        .add_systems(Last, disconnect_clients_on_exit)
+        .add_observer(close_despawned_client);
     }
 }
 
@@ -207,6 +212,9 @@ pub fn ingest_network_packets(world: &mut World) {
     let mut backlog = 0usize;
 
     world.resource_mut::<ClientSenders>().sync();
+    let telemetry = world
+        .get_resource::<TelemetryHandle>()
+        .map(|handle| handle.0.clone());
 
     let packets: Vec<IncomingPacket> =
         world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
@@ -265,7 +273,15 @@ pub fn ingest_network_packets(world: &mut World) {
             client_entity,
             incoming_packet.packet,
         ) {
-            if matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_)) {
+            let unrecognized = matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_));
+            if let Some(telemetry) = &telemetry {
+                if unrecognized {
+                    telemetry.packet_unrecognized();
+                } else {
+                    telemetry.packet_failed();
+                }
+            }
+            if unrecognized {
                 // Unrecognized packet (e.g. one we don't handle yet): expected and
                 // non-fatal, so warn instead of error.
                 tracing::warn!(
@@ -297,27 +313,86 @@ pub fn ingest_network_packets(world: &mut World) {
     }
 
     for disc_client_id in disconnected {
-        let entity = world
-            .resource_mut::<ClientToEntityMap>()
-            .0
-            .remove(&disc_client_id);
-        if let Some(entity) = entity {
-            // Trigger quit event (observer will broadcast to other players)
-            let is_ready = world.get::<PlayerReady>(entity).is_some();
-            if is_ready {
-                world.trigger(PlayerQuitEvent {
-                    client_id: disc_client_id,
-                    entity,
-                });
-                world.flush();
-            }
-
-            world.despawn(entity);
-        }
-        world
-            .resource_mut::<ClientSenders>()
-            .detach(disc_client_id, entity);
+        disconnect_client(world, disc_client_id);
     }
+}
+
+/// Ends a client's session on the game side: a player who joined (reached the
+/// play state, so `PlayerJoinEvent` fired) gets exactly one `PlayerQuitEvent`,
+/// while its entity and components can still be read, then the entity is
+/// despawned and its sender dropped.
+fn disconnect_client(world: &mut World, client_id: u32) {
+    let entity = world
+        .resource_mut::<ClientToEntityMap>()
+        .0
+        .remove(&client_id);
+    if let Some(entity) = entity {
+        let joined = world
+            .get::<ConnectionState>(entity)
+            .is_some_and(|state| state.0 == voidmc_protocol::State::Play);
+        if joined {
+            // Observers broadcast the removal to other players.
+            world.trigger(PlayerQuitEvent { client_id, entity });
+            world.flush();
+        }
+
+        if let Ok(entity) = world.get_entity_mut(entity) {
+            entity.despawn();
+        }
+    }
+    world
+        .resource_mut::<ClientSenders>()
+        .detach(client_id, entity);
+}
+
+/// On `AppExit` (`/stop`, Ctrl-C, ...) every connected player leaves like on a
+/// disconnect: one `PlayerQuitEvent` each, then despawn. Runs in `Last`, so it
+/// sees an `AppExit` written earlier in the same tick, the last one.
+fn disconnect_clients_on_exit(world: &mut World) {
+    let exiting = world
+        .get_resource::<Messages<AppExit>>()
+        .is_some_and(|exits| !exits.is_empty());
+    if !exiting {
+        return;
+    }
+    let mut clients: Vec<u32> = world
+        .resource::<ClientToEntityMap>()
+        .0
+        .keys()
+        .copied()
+        .collect();
+    clients.sort_unstable();
+    for client_id in clients {
+        disconnect_client(world, client_id);
+    }
+}
+
+/// A client entity despawned by game code instead of by a disconnect (which
+/// unmaps it first): forget it and close its connection, so later packets from
+/// that client are dropped instead of being dispatched to a missing entity.
+/// No `PlayerQuitEvent` fires; kick with [`crate::Players::kick`] instead.
+fn close_despawned_client(
+    event: On<Despawn, Client>,
+    clients: Query<&ClientId>,
+    mut map: ResMut<ClientToEntityMap>,
+    mut senders: ResMut<ClientSenders>,
+    channels: Res<NetworkChannels>,
+) {
+    let entity = event.entity;
+    let Ok(client_id) = clients.get(entity).map(|id| id.0) else {
+        return;
+    };
+    if map.0.get(&client_id) != Some(&entity) {
+        return;
+    }
+    map.0.remove(&client_id);
+    senders.detach(client_id, Some(entity));
+    let _ = channels.kick.send(client_id);
+    tracing::debug!(
+        client_id,
+        ?entity,
+        "Client entity despawned while connected; closing its connection"
+    );
 }
 
 fn client_entity(world: &mut World, client_id: u32) -> Option<Entity> {
@@ -453,12 +528,27 @@ fn dispatch_packet(
             tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
 
             match packet {
+                serverbound::PlayPacket::ChatAck(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
                 serverbound::PlayPacket::ChatCommand(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
                     packet,
                 }),
                 serverbound::PlayPacket::ChatMessage(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::ChatSessionUpdate(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::ChunkBatchReceived(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
                     packet,
@@ -606,7 +696,7 @@ mod tests {
     use voidmc_protocol::PROTOCOL_VERSION;
 
     use super::*;
-    use crate::components::PlayerName;
+    use crate::components::{PlayerName, PlayerReady};
     use crate::players::Players;
     use std::sync::{Arc, Mutex};
 
@@ -719,6 +809,11 @@ mod tests {
         });
         let mut bytes = Vec::new();
         packet.encode(&mut bytes);
+        raw_packet(bytes)
+    }
+
+    /// A packet whose id and body are `bytes`, as the network thread hands it over.
+    fn raw_packet(bytes: Vec<u8>) -> Packet {
         let mut frame = Vec::new();
         VarI32(bytes.len() as i32).encode(&mut frame);
         frame.extend(bytes);
@@ -775,6 +870,46 @@ mod tests {
 
     #[derive(Resource, Default)]
     struct Handshakes(Vec<(u32, Entity)>);
+
+    #[test]
+    fn telemetry_counts_unrecognized_and_undecodable_packets() {
+        let mut h = harness();
+        let telemetry = std::sync::Arc::new(crate::observability::Telemetry::new(
+            Duration::from_secs(1),
+            20,
+            100,
+        ));
+        h.app.insert_resource(TelemetryHandle(telemetry.clone()));
+        let _rx = h.connect(1);
+        let _rx2 = h.connect(2);
+        let _rx3 = h.connect(3);
+        // No handshake packet has id 0x7f.
+        h.incoming_tx
+            .send(IncomingPacket {
+                client_id: 1,
+                packet: raw_packet(vec![0x7f]),
+            })
+            .unwrap();
+        // A handshake (id 0) cut short after its protocol version.
+        for client_id in [2, 3] {
+            h.incoming_tx
+                .send(IncomingPacket {
+                    client_id,
+                    packet: raw_packet(vec![0x00, 0x01]),
+                })
+                .unwrap();
+        }
+        let logs = captured(|| h.app.update());
+
+        assert!(logs.contains(tracing::Level::WARN, "Unrecognized packet from client 1"));
+        assert_eq!(logs.errors().len(), 2);
+        let text = telemetry.render_metrics(Instant::now());
+        assert!(
+            text.contains("\nvoidmc_packets_unrecognized_total 1\n"),
+            "{text}"
+        );
+        assert!(text.contains("\nvoidmc_packet_errors_total 2\n"), "{text}");
+    }
 
     #[test]
     fn first_packet_spawns_a_registered_client_entity() {
@@ -910,10 +1045,11 @@ mod tests {
         h.packet(1);
         h.app.update();
         let entity = h.entity_of(1).unwrap();
-        h.app
-            .world_mut()
-            .entity_mut(entity)
-            .insert((PlayerReady, PlayerName("quitter".to_string())));
+        h.app.world_mut().entity_mut(entity).insert((
+            ConnectionState(voidmc_protocol::State::Play),
+            PlayerReady,
+            PlayerName("quitter".to_string()),
+        ));
 
         drop(rx);
         h.disconnect_tx.send(1).unwrap();
@@ -940,5 +1076,109 @@ mod tests {
         assert!(!h.senders().is_pending(1));
         assert_eq!(h.senders().pending_len(), 0);
         assert!(rx.is_disconnected());
+    }
+
+    /// What `PlayerQuitEvent` observers could read: the client id and the name.
+    #[derive(Resource, Default)]
+    struct Quits(Vec<(u32, Option<String>)>);
+
+    fn record_quits(h: &mut Harness) {
+        h.app.init_resource::<Quits>().add_observer(
+            |event: On<PlayerQuitEvent>, names: Query<&PlayerName>, mut quits: ResMut<Quits>| {
+                let name = names.get(event.entity).ok().map(|name| name.0.clone());
+                quits.0.push((event.client_id, name));
+            },
+        );
+    }
+
+    /// Connects a client and puts it in `state`, named `name`.
+    fn client_in(
+        h: &mut Harness,
+        client_id: u32,
+        state: voidmc_protocol::State,
+        name: &str,
+    ) -> (Entity, Receiver<OutgoingPacket>) {
+        let rx = h.connect(client_id);
+        h.packet(client_id);
+        h.app.update();
+        let entity = h.entity_of(client_id).unwrap();
+        h.app
+            .world_mut()
+            .entity_mut(entity)
+            .insert((ConnectionState(state), PlayerName(name.to_string())));
+        (entity, rx)
+    }
+
+    #[test]
+    fn disconnect_quits_a_joined_player_who_never_got_ready() {
+        let mut h = harness();
+        record_quits(&mut h);
+        let (loading, _rx1) = client_in(&mut h, 1, voidmc_protocol::State::Play, "loading");
+        let (_, _rx2) = client_in(&mut h, 2, voidmc_protocol::State::Configuration, "early");
+
+        h.disconnect_tx.send(1).unwrap();
+        h.disconnect_tx.send(2).unwrap();
+        h.app.update();
+
+        assert_eq!(
+            h.app.world().resource::<Quits>().0,
+            vec![(1, Some("loading".to_string()))],
+            "a joined player quits, one still configuring never joined"
+        );
+        assert!(h.app.world().get_entity(loading).is_err());
+        assert!(h.entity_of(2).is_none());
+    }
+
+    #[test]
+    fn app_exit_quits_every_connected_player_once() {
+        let mut h = harness();
+        record_quits(&mut h);
+        let (alice, _rx1) = client_in(&mut h, 1, voidmc_protocol::State::Play, "alice");
+        h.app.world_mut().entity_mut(alice).insert(PlayerReady);
+        let (bob, _rx2) = client_in(&mut h, 2, voidmc_protocol::State::Play, "bob");
+        let (_, _rx3) = client_in(&mut h, 3, voidmc_protocol::State::Login, "carol");
+
+        h.app.world_mut().write_message(AppExit::Success);
+        h.app.update();
+        h.app.update();
+
+        assert_eq!(
+            h.app.world().resource::<Quits>().0,
+            vec![(1, Some("alice".to_string())), (2, Some("bob".to_string()))]
+        );
+        assert!(h.app.world().get_entity(alice).is_err());
+        assert!(h.app.world().get_entity(bob).is_err());
+        assert!(h.app.world().resource::<ClientToEntityMap>().0.is_empty());
+        assert_eq!(h.senders().active_len(), 0);
+    }
+
+    #[test]
+    fn despawned_client_entity_closes_its_connection_and_drops_its_packets() {
+        let mut h = harness();
+        record_quits(&mut h);
+        let (entity, rx) = client_in(&mut h, 1, voidmc_protocol::State::Play, "gone");
+
+        h.app.world_mut().despawn(entity);
+
+        assert!(h.entity_of(1).is_none());
+        assert!(rx.is_disconnected(), "the connection's sender is dropped");
+        assert_eq!(h._kick_rx.try_iter().collect::<Vec<_>>(), vec![1]);
+
+        h.packet(1);
+        let logs = captured(|| h.app.update());
+        h.disconnect_tx.send(1).unwrap();
+        h.app.update();
+
+        assert_eq!(logs.errors(), Vec::<String>::new());
+        assert_eq!(
+            h.app
+                .world_mut()
+                .query::<&ClientId>()
+                .iter(h.app.world())
+                .count(),
+            0,
+            "the packet spawned no new client entity"
+        );
+        assert!(h.app.world().resource::<Quits>().0.is_empty());
     }
 }

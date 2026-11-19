@@ -49,12 +49,13 @@ The release build is the recommended binary for manual demos and performance che
 |---|---|
 | `RUST_LOG=info` | Default structured logging level. |
 | `RUST_LOG=voidmc::network=debug` | Focus network logs. |
-| `VOID_METRICS_DEBUG=1` | Enable TPS metrics plugin. |
-| `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Write TPS samples to a chosen CSV file. |
-| `VOID_METRICS_MODE=flame` | Enable tracing-flame output. |
-| `VOID_FLAME_OUTPUT=logs/trace.folded` | Choose flame trace output path. |
+| `VOID_METRICS_DEBUG=1` | Enable TPS metrics plugin (default CSV: `logs/tps-<unix-ms>.csv`). |
+| `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Write TPS samples to a chosen CSV file (needs `VOID_METRICS_DEBUG=1`). |
+| `VOID_METRICS_MODE=flame` | Enable tracing-flame output (default: `logs/trace-<unix-ms>.folded`). |
+| `VOID_FLAME_OUTPUT=logs/trace.folded` | Choose flame trace output path (also enables flame output). |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Include idle time to show server utilization. |
 | `VOID_PACKET_DEBUG=1` | Enable packet-level debug directive in the example server. |
+| `VOID_OBSERVABILITY_ADDR=9464` | Serve `/health` and Prometheus `/metrics` on `127.0.0.1:9464` (private interfaces only; see [Health and Metrics Endpoints](../../reference/server/observability.md)). |
 
 Example:
 

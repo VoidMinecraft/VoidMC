@@ -5,7 +5,7 @@
 `ServerConfigBuilder` provides a fluent API for constructing a `ServerConfig`:
 
 ```rust
-use voidmc::{FrameLimits, ServerConfigBuilder, SpawnPosition};
+use voidmc::{FrameLimits, ObservabilityConfig, ServerConfigBuilder, SpawnPosition};
 
 let config = ServerConfigBuilder::new()
     .address("0.0.0.0:25565")
@@ -21,6 +21,7 @@ let config = ServerConfigBuilder::new()
     .hardcore(false)
     .frame_limits(FrameLimits::default())
     .compression_threshold(Some(256))
+    .observability(ObservabilityConfig::localhost(9464))
     .world_generator(MyGenerator::new())
     .configure_registries(|registries| {
         // Modify registry data before server starts
@@ -33,26 +34,49 @@ let config = ServerConfigBuilder::new()
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `address` | `String` | `"127.0.0.1:25565"` | TCP bind address |
-| `tick_rate` | `u64` | `20` | Game ticks per second; must be at least `1` (`0` is read as `1`) |
-| `max_players` | `i32` | `100` | Maximum player count (shown in server list) |
+| `tick_rate` | `u64` | `20` | Game ticks per second; must be at least `1` (`0` is read as `1`). Not announced to clients, which assume 20 |
+| `max_players` | `i32` | `100` | Player count advertised in the server list and the Login packet; not enforced (see [Limits](#limits)) |
 | `view_distance` | `i32` | `10` | Maximum server-side view distance (in chunks) |
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
-| `game_mode` | `u8` | `1` (Creative) | Default game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) |
+| `game_mode` | `u8` | `1` (Creative) | Game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) every player joins in and whose rules the server applies; [`/gamemode`](../gameplay/commands.md#gamemode) only changes what a client shows |
 | `spawn_position` | `SpawnPosition` | `{ x: 0.0, z: 0.0, y: None }` | World spawn location |
 | `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn |
-| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over) |
+| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over), capped by the player's effective view distance |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
-| `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output |
-| `metrics_tps_output` | `Option<String>` | `None` | Optional TPS CSV output path (defaults to `logs/tps-<timestamp>.csv`) |
+| `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output; when `false` nothing is sampled or written |
+| `metrics_tps_output` | `Option<String>` | `None` | Optional TPS CSV output path (defaults to `logs/tps-<timestamp>.csv`); used only with `metrics_debug`. Missing directories are created and an existing file is replaced; if the file cannot be created, a warning names the path and the reason and samples are only logged |
 | `max_packets_per_tick` | `usize` | `1000` | Cap the number of packets drained from the incoming channel each tick (0 = unlimited) |
 | `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
-| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
+| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms); only while `metrics_debug` is on |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
 | `compression_threshold` | `Option<u32>` | `Some(256)` | Packets of at least this many bytes are zlib-compressed after login; `None` disables compression (vanilla's negative threshold) |
+| `observability` | `Option<ObservabilityConfig>` | `None` | Serves `/health` and Prometheus `/metrics` over HTTP; see [Health and Metrics Endpoints](./observability.md) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
+| `execution_mode` | `ExecutionMode` | `SingleThreaded` | Run systems and independent regions concurrently (`MultiThreaded`) or one after another on the game thread; see [Execution mode](#execution-mode) |
+
+Every field has a builder method of the same name, except `registries`, which
+`configure_registries` edits in place. `ServerConfig::default()` and an
+untouched `ServerConfigBuilder::new()` both hold the defaults above.
+
+## Limits
+
+The builder replaces values the server cannot run with and logs a warning: a
+`tick_rate` of `0` becomes `1`, and a negative `view_distance` or
+`simulation_distance` becomes `0`. Every other value is used as given.
+
+The configuration sets targets, not guarantees of capacity or performance:
+
+- `max_players` is only advertised. VoidMC does not refuse a login when that
+  many players are online; an application that needs a cap must enforce it.
+- `tick_rate` is the fastest rate the game loop runs at. A tick that takes
+  longer than `1 / tick_rate` delays the next one, and missed ticks are not
+  made up. Clients are not told the rate (VoidMC sends no Ticking State
+  packet), so they keep simulating at vanilla's 20 ticks per second.
+- `view_distance` caps the distance each client asks for; a client asking for
+  less receives less.
 
 ## Listen address
 
@@ -114,7 +138,43 @@ pub struct SpawnPosition {
 }
 ```
 
-When `y` is `None` (the default), the server uses `WorldGenerator::surface_height_at(x, z)` as the spawn Y coordinate: the first air block above the terrain and any water, so players spawn standing on it.
+When `y` is `None` (the default), the server uses `WorldGenerator::surface_height_at(x.floor(), z.floor())` of the configured `world_generator` as the spawn Y coordinate: the first air block above the terrain and any water, so players spawn standing on it. When `y` is `Some`, that height is used as is.
+
+## Execution mode
+
+```rust
+use voidmc::{ExecutionMode, ServerConfigBuilder};
+
+let config = ServerConfigBuilder::new()
+    .execution_mode(ExecutionMode::MultiThreaded)
+    .build();
+```
+
+| Mode | Systems | Region-partitioned work |
+|---|---|---|
+| `SingleThreaded` (default) | Every schedule uses Bevy's single-threaded executor: one system at a time, on the game thread | Regions one after another, on the game thread |
+| `MultiThreaded` | Bevy's multi-threaded executor: systems whose data access does not conflict run at the same time on the compute task pool | Independent regions run as concurrent tasks on the compute task pool |
+
+Both modes produce the same world state, provided that systems which write
+data another system reads or writes are ordered (`.before` / `.after` or a
+[`VoidSystems`](/reference/server/ecs) set). Under `MultiThreaded`, Bevy picks
+the order of two unordered conflicting systems at run time. The order of
+packets sent by two unordered systems to the same client is not fixed either.
+
+VoidMC's own `Update` sets are not all ordered with each other yet: Bevy's
+ambiguity detection reports unordered conflicting pairs among `CommandDrain`,
+`ItemUseDrain`, `MenuClickDrain`, `TeleportBarrier`, `ItemPickup`,
+`KeepAlive`, `EntitySimulation` and, with `RedstonePlugin`, `Redstone`.
+Their order within a tick can differ from the single-threaded one, which
+only shows when two of them act on the same thing in the same tick, for
+example an item used on the tick another item is picked up into the same
+inventory.
+
+The compute task pool always has at least two threads, so two systems or
+regions can be in flight at once on a two-core machine. The running mode is
+available as the `ExecutionMode` resource. See
+[Parallel execution](/reference/server/architecture#parallel-execution) for
+what is partitioned by region.
 
 ## ServerConfigResource
 

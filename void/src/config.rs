@@ -3,6 +3,7 @@ use std::time::Duration;
 use bevy_ecs::prelude::*;
 use voidmc_net::socket::{DEFAULT_COMPRESSION_THRESHOLD, FrameLimits};
 
+use crate::observability::ObservabilityConfig;
 use crate::registry::RegistryDataStore;
 use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
 
@@ -22,6 +23,24 @@ impl Default for SpawnPosition {
             y: None,
         }
     }
+}
+
+/// How the game thread runs a tick.
+///
+/// Available as a resource on the running server.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Every system, and every region of region-partitioned work, runs one
+    /// after another on the game thread. The baseline, and the default.
+    #[default]
+    SingleThreaded,
+    /// Bevy's multi-threaded executor runs systems whose data access does not
+    /// conflict at the same time on the compute task pool, and
+    /// region-partitioned work (the entity physics and spawn-settling steps)
+    /// processes independent regions concurrently. Produces the same world
+    /// state as [`ExecutionMode::SingleThreaded`] as long as systems that
+    /// write the same data are ordered.
+    MultiThreaded,
 }
 
 /// Full server configuration. Consumed once by `VoidServer::new`.
@@ -47,8 +66,13 @@ pub struct ServerConfig {
     /// Packets of at least this many bytes are zlib-compressed after login;
     /// `None` disables compression. Defaults to vanilla's 256.
     pub compression_threshold: Option<u32>,
+    /// Health and Prometheus metrics endpoints; `None` (the default) serves
+    /// nothing.
+    pub observability: Option<ObservabilityConfig>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
+    /// Single- or multi-threaded tick execution. Defaults to single-threaded.
+    pub execution_mode: ExecutionMode,
 }
 
 impl ServerConfig {
@@ -85,8 +109,10 @@ impl Default for ServerConfig {
             slow_tick_ms: 200,
             frame_limits: FrameLimits::default(),
             compression_threshold: Some(DEFAULT_COMPRESSION_THRESHOLD),
+            observability: None,
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
+            execution_mode: ExecutionMode::default(),
         }
     }
 }
@@ -118,18 +144,25 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Player count advertised in the server list and the Login packet. Not
+    /// enforced: logins are not refused once this many players are online.
     pub fn max_players(mut self, max_players: i32) -> Self {
         self.config.max_players = max_players;
         self
     }
 
+    /// Server-side cap on each player's view distance, in chunks, also sent
+    /// in the Login packet. A negative distance is replaced by `0`.
     pub fn view_distance(mut self, view_distance: i32) -> Self {
-        self.config.view_distance = view_distance;
+        self.config.view_distance = non_negative_distance("view_distance", view_distance);
         self
     }
 
+    /// Simulation distance sent in the Login packet, in chunks. A negative
+    /// distance is replaced by `0`.
     pub fn simulation_distance(mut self, simulation_distance: i32) -> Self {
-        self.config.simulation_distance = simulation_distance;
+        self.config.simulation_distance =
+            non_negative_distance("simulation_distance", simulation_distance);
         self
     }
 
@@ -203,6 +236,13 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Serves `/health` and `/metrics` over HTTP as `config` says. Off unless
+    /// called; bind it to a loopback or private interface only.
+    pub fn observability(mut self, config: ObservabilityConfig) -> Self {
+        self.config.observability = Some(config);
+        self
+    }
+
     pub fn world_generator(mut self, generator: impl WorldGenerator + 'static) -> Self {
         self.config.world_generator = Box::new(generator);
         self
@@ -210,6 +250,14 @@ impl ServerConfigBuilder {
 
     pub fn configure_registries(mut self, f: impl FnOnce(&mut RegistryDataStore)) -> Self {
         f(&mut self.config.registries);
+        self
+    }
+
+    /// Runs systems and independent regions concurrently
+    /// ([`ExecutionMode::MultiThreaded`]) or one after another on the game
+    /// thread ([`ExecutionMode::SingleThreaded`], the default).
+    pub fn execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.config.execution_mode = mode;
         self
     }
 
@@ -222,6 +270,15 @@ impl Default for ServerConfigBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// A distance in chunks cannot be negative: the Login packet would carry a
+/// value no client expects and no chunk would ever be in range.
+fn non_negative_distance(option: &str, distance: i32) -> i32 {
+    if distance < 0 {
+        tracing::warn!("{option}({distance}) is not a valid distance; using 0 instead");
+    }
+    distance.max(0)
 }
 
 /// Runtime-readable config resource (plain data, no `Box<dyn>`).
@@ -279,10 +336,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn observability_is_off_unless_enabled() {
+        assert_eq!(ServerConfig::default().observability, None);
+        assert_eq!(ServerConfigBuilder::new().build().observability, None);
+        let config = ServerConfigBuilder::new()
+            .observability(ObservabilityConfig::localhost(9464))
+            .build();
+        assert_eq!(
+            config
+                .observability
+                .map(|observability| observability.address),
+            Some("127.0.0.1:9464".to_string())
+        );
+    }
+
+    #[test]
     fn builder_replaces_a_zero_tick_rate_with_one() {
         let config = ServerConfigBuilder::new().tick_rate(0).build();
         assert_eq!(config.tick_rate, 1);
         assert_eq!(config.tick_duration(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn builder_replaces_negative_distances_with_zero() {
+        let config = ServerConfigBuilder::new()
+            .view_distance(-3)
+            .simulation_distance(-1)
+            .build();
+        assert_eq!(config.view_distance, 0);
+        assert_eq!(config.simulation_distance, 0);
+
+        let config = ServerConfigBuilder::new()
+            .view_distance(0)
+            .simulation_distance(7)
+            .build();
+        assert_eq!(config.view_distance, 0);
+        assert_eq!(config.simulation_distance, 7);
     }
 
     #[test]

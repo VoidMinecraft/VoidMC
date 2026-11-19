@@ -50,6 +50,7 @@ fn broadcast_health(players: Players, mobs: Query<(&MinecraftEntityId, &Health, 
 | `broadcast_chunk(dimension, chunk, packet)` | Ready players whose `LoadedChunks` contains the chunk. |
 | `ready()` → `Recipients` | Snapshot of ready players; chain `except`, `in_dimension`, `visible_from(Option<DimensionId>)`, `seeing_chunk`, `filter`, then `send`. |
 | `Recipients::send_except(entity, packet)` / `send_where(pred, packet)` | Same as above without consuming or allocating — for loops. |
+| `kick(entity, reason)` | Disconnects one client; see [Kicking a player](#kicking-a-player). |
 
 `Recipient` exposes `entity()`, `client_id()`, `dimension()`,
 `visible_from(Option<DimensionId>)` and `sees_chunk(dimension, chunk)` to predicates.
@@ -143,12 +144,33 @@ packets dropped. `NetworkChannels.outgoing` is only a fallback for client
 entities with no direct sender (tests use it as their packet sink); prefer
 `Players`.
 
-`NetworkChannels.kick` aborts the client's connection immediately: whatever is
-still queued for that client is dropped, including a `Disconnect` packet sent
-just before. It exists for stalled clients (the queue-full case above), not
-for a graceful kick with a reason. To kick a player with a reason, send a
-`Disconnect` packet and let the client close the connection, as the `/kick`
-command does.
+`NetworkChannels.kick` asks the network thread to close the client's
+connection: the packets already queued for it are written, then the socket is
+closed; a client that does not read them within 2 seconds is cut off. Prefer
+`Players::kick`, which also sends the `Disconnect` and marks the client so
+nothing else is queued for it.
+
+### Kicking a player
+
+```rust
+fn ban_hammer(event: On<PlayerReadyEvent>, names: Query<&PlayerName>, players: Players) {
+    if names.get(event.entity).is_ok_and(|name| name.0 == "Mallory") {
+        players.kick(event.entity, "You are banned");
+    }
+}
+```
+
+`Players::kick(entity, reason)` (and `WorldPlayers::kick`) sends a play-state
+`Disconnect` with `reason` in red (clients still in login or configuration are
+just disconnected), then closes the connection whether or not the client
+cooperates. Nothing is sent to the client afterwards and a second call does
+nothing. The disconnect is then handled like any other, at the next network
+ingest: `PlayerQuitEvent` for a player who joined, then despawn. The `/kick`
+command uses it, and the keep-alive timeout disconnects the same way.
+
+Do not despawn a client entity to get rid of a player: the framework then
+closes its connection and drops its later packets, but no `PlayerQuitEvent`
+fires and other players are not told it left.
 
 ## System sets
 
@@ -167,7 +189,7 @@ inside one schedule.
 | `EntitySimulation` | `Update` | Settle spawns, wander, physics. After `KeepAlive`. |
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
 | `EntityBroadcast` | `PostUpdate` | Spawn / movement / motion / metadata packets for non-player entities. |
-| `PlayerBroadcast` | `PostUpdate` | Other players' movement and head rotation. |
+| `PlayerBroadcast` | `PostUpdate` | Other players' movement, head rotation and crouch. |
 | `BlockEntitySync` | `PostUpdate` | Block Entity Data packets for changed block entities; before `ChunkStreaming` (see [Block Entities](../gameplay/block-entities.md)). |
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |

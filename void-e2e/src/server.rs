@@ -117,6 +117,7 @@ impl TestServerBuilder {
         self
     }
 
+    /// Boots the server and returns once its first tick has started.
     pub async fn start(self) -> TestServer {
         assert_eq!(
             azalea_protocol::packets::PROTOCOL_VERSION,
@@ -194,11 +195,16 @@ fn run_control(world: &mut World) {
     let address = world.resource::<ListenAddress>().0;
     let jobs: Vec<Job> = {
         let mut control = world.resource_mut::<Control>();
+        control.ticks.send_modify(|tick| *tick += 1);
+        let jobs = control.jobs.try_iter().collect();
+        // Signalled only once this tick's jobs are collected, so a job sent
+        // after `start` returns never runs in the first tick: it waits for the
+        // second, after the first has run to its end (its `PostUpdate`
+        // schedule, for one, has run and been initialized).
         if let Some(ready) = control.ready.take() {
             let _ = ready.send(address);
         }
-        control.ticks.send_modify(|tick| *tick += 1);
-        control.jobs.try_iter().collect()
+        jobs
     };
     for job in jobs {
         job(world);
@@ -249,7 +255,8 @@ impl TestServer {
     }
 
     /// Runs `f` on the game thread at the start of the next tick and returns
-    /// its result.
+    /// its result. That is never the first tick: by the time `f` runs, the
+    /// first tick has run to its end.
     pub async fn with_world<R: Send + 'static>(
         &self,
         f: impl FnOnce(&mut World) -> R + Send + 'static,
@@ -315,6 +322,17 @@ impl TestServer {
     /// it could not recognise.
     pub async fn stop(mut self) {
         self.shutdown().await;
+        self.assert_no_failures();
+    }
+
+    /// Waits for the server to stop on its own, for example after a player
+    /// ran `/stop`, without asking it to; then fails like [`TestServer::stop`].
+    pub async fn wait_for_exit(mut self) {
+        self.join_thread().await;
+        self.assert_no_failures();
+    }
+
+    fn assert_no_failures(&self) {
         let failures: Vec<String> = self
             .logs
             .records()
@@ -330,17 +348,30 @@ impl TestServer {
         );
     }
 
-    async fn shutdown(&mut self) {
+    fn request_exit(&self) {
         let _ = self.handle.jobs.send(Box::new(|world: &mut World| {
             world.write_message(AppExit::Success);
         }));
+    }
+
+    async fn shutdown(&mut self) {
+        self.request_exit();
+        self.join_thread().await;
+    }
+
+    async fn join_thread(&mut self) {
         if let Some(thread) = self.thread.take() {
             let joined = tokio::task::spawn_blocking(move || thread.join());
             match tokio::time::timeout(Duration::from_secs(10), joined).await {
                 Ok(Ok(Ok(()))) => {}
                 Ok(Ok(Err(panic))) => std::panic::resume_unwind(panic),
                 Ok(Err(error)) => panic!("failed to join the server thread: {error}"),
-                Err(_) => panic!("the server did not stop within 10s"),
+                Err(_) => {
+                    // The join is still blocking the test runtime: stop the
+                    // server so the runtime can shut down after the panic.
+                    self.request_exit();
+                    panic!("the server did not stop within 10s");
+                }
             }
         }
     }
@@ -351,9 +382,7 @@ impl Drop for TestServer {
         let Some(thread) = self.thread.take() else {
             return;
         };
-        let _ = self.handle.jobs.send(Box::new(|world: &mut World| {
-            world.write_message(AppExit::Success);
-        }));
+        self.request_exit();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !thread.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
@@ -363,5 +392,34 @@ impl Drop for TestServer {
                 "void-e2e: the server did not stop within 10s; its later logs may be attributed to the next test"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Resource, Default)]
+    struct CompletedTicks(u64);
+
+    fn count_completed_tick(mut completed: ResMut<CompletedTicks>) {
+        completed.0 += 1;
+    }
+
+    #[tokio::test]
+    async fn a_world_closure_sent_right_after_start_runs_after_the_first_tick() {
+        let server = TestServer::builder()
+            .plugin(|app| {
+                app.init_resource::<CompletedTicks>()
+                    .add_systems(Last, count_completed_tick);
+            })
+            .start()
+            .await;
+
+        let completed = server
+            .with_world(|world| world.resource::<CompletedTicks>().0)
+            .await;
+        assert!(completed >= 1, "ran during tick {}", completed + 1);
+        server.stop().await;
     }
 }
