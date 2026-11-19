@@ -8,8 +8,8 @@ use voidmc::components::PlayerName;
 use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
 use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
 use voidmc::{
-    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
-    ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
+    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, ObservabilityConfig,
+    On, Query, ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
 use voidmc_navigation::{NavRemotePlugin, NavigationPlugin, RemoteAccess};
 use voidmc_vanilla_commands::{Access, VanillaCommandsPlugin};
@@ -91,6 +91,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(tps_output) = metrics_env.tps_output.clone() {
         config_builder = config_builder.metrics_tps_output(tps_output);
+    }
+
+    // `VOID_OBSERVABILITY_ADDR=9464` serves /health and /metrics on
+    // 127.0.0.1:9464; a full `host:port` picks the interface. Unset: off.
+    if let Some(address) = env_string("VOID_OBSERVABILITY_ADDR") {
+        config_builder = config_builder.observability(observability_config(&address));
     }
 
     VoidServer::new(config_builder.build())
@@ -263,6 +269,13 @@ fn env_flag(name: &str) -> bool {
     )
 }
 
+fn observability_config(address: &str) -> ObservabilityConfig {
+    match address.parse::<u16>() {
+        Ok(port) => ObservabilityConfig::localhost(port),
+        Err(_) => ObservabilityConfig::new(address),
+    }
+}
+
 fn env_string(name: &str) -> Option<String> {
     env::var(name)
         .ok()
@@ -331,4 +344,15 @@ fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) 
         event.position.y,
         event.position.z,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::observability_config;
+
+    #[test]
+    fn observability_address_defaults_to_loopback_for_a_bare_port() {
+        assert_eq!(observability_config("9464").address, "127.0.0.1:9464");
+        assert_eq!(observability_config("[::1]:9464").address, "[::1]:9464");
+    }
 }

@@ -125,6 +125,7 @@ The example server also supports environment variables for diagnostics:
 | `VOID_FLAME_OUTPUT` | Sets the flame trace output path. |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time in the flame trace to show server utilization. |
 | `VOID_PACKET_DEBUG` | Adds packet-level network debug logs. |
+| `VOID_OBSERVABILITY_ADDR` | Serves `/health` and Prometheus `/metrics`: a bare port binds `127.0.0.1`, or give `host:port`. Off when unset. |
 
 See [Server Configuration](void-docs/docs/reference/server/configuration.md) and [Configuration Examples](void-docs/docs/architecture/operational-readiness/configuration-example.md).
 

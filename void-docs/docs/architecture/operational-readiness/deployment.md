@@ -55,6 +55,7 @@ The release build is the recommended binary for manual demos and performance che
 | `VOID_FLAME_OUTPUT=logs/trace.folded` | Choose flame trace output path. |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Include idle time to show server utilization. |
 | `VOID_PACKET_DEBUG=1` | Enable packet-level debug directive in the example server. |
+| `VOID_OBSERVABILITY_ADDR=9464` | Serve `/health` and Prometheus `/metrics` on `127.0.0.1:9464` (private interfaces only; see [Health and Metrics Endpoints](../../reference/server/observability.md)). |
 
 Example:
 
