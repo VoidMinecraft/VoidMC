@@ -1,53 +1,94 @@
-//! Crouching as other players see it: the shift key flag and the crouching
-//! pose in a player's synched data, derived from its [`Sneaking`] state.
+//! A player's shared flags and pose as other players see them: the complete
+//! shared flags byte (sneaking, invisible, glowing, from
+//! [`crate::entity::metadata::flags_byte`]) and the crouching pose derived
+//! from its [`Sneaking`] state. Players have no `EntityMetadata`, so this is
+//! the only system that sends a player's shared flags.
 
 use bevy_ecs::prelude::*;
 use tracing::instrument;
-use voidmc_protocol::clientbound::entity_metadata::{entity_flag, entity_index, pose};
+use voidmc_protocol::clientbound::entity_metadata::{entity_index, pose};
 use voidmc_protocol::clientbound::{EntityMetadataValue as Value, SetEntityData};
 
-use crate::components::{MinecraftEntityId, PlayerReady, Sneaking};
+use crate::components::{MinecraftEntityId, PlayerReady};
+use crate::entity::metadata::{FlagSources, flags_byte};
 use crate::players::Players;
 use crate::plugins::abilities::PlayerAbilities;
 
-/// The shared flags and pose vanilla derives from the shift key: the flag
-/// follows the key, the pose crouches unless the player is flying.
-fn crouch_metadata(entity_id: i32, sneaking: bool, flying: bool) -> SetEntityData {
-    let flags = if sneaking { entity_flag::SNEAKING } else { 0 };
-    let pose = if sneaking && !flying {
-        pose::CROUCHING
-    } else {
-        pose::STANDING
-    };
-    SetEntityData::new(entity_id)
-        .with(entity_index::FLAGS, Value::Byte(flags as i8))
-        .with(entity_index::POSE, Value::Pose(pose))
+/// The shared flags byte and pose of a player, as last sent to the other
+/// ready players.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SharedPlayerData {
+    flags: i8,
+    pose: i32,
 }
 
-/// Sends a player's crouch to the other ready players when it changes, and
-/// a crouching player's state to players who just spawned it.
+impl SharedPlayerData {
+    /// What a client assumes for a player it just spawned.
+    const SPAWNED: Self = Self {
+        flags: 0,
+        pose: pose::STANDING,
+    };
+
+    /// The flags from every source; the pose crouches while the player
+    /// sneaks without flying, as vanilla does.
+    fn of(sources: FlagSources, flying: bool) -> Self {
+        let sneaking = sources.3.is_some_and(|sneaking| sneaking.0);
+        Self {
+            flags: flags_byte(sources),
+            pose: if sneaking && !flying {
+                pose::CROUCHING
+            } else {
+                pose::STANDING
+            },
+        }
+    }
+
+    fn packet(self, entity_id: i32) -> SetEntityData {
+        SetEntityData::new(entity_id)
+            .with(entity_index::FLAGS, Value::Byte(self.flags))
+            .with(entity_index::POSE, Value::Pose(self.pose))
+    }
+}
+
+/// Sends a player's complete shared flags and pose to the other ready
+/// players whenever any of their sources changes, and to players who just
+/// spawned it when it differs from a freshly spawned player. The player's
+/// own client is never sent its own flags: it owns its crouch.
 #[instrument(level = "info", skip_all)]
-pub fn broadcast_crouch(
+pub(crate) fn broadcast_shared_flags(
+    mut commands: Commands,
     players: Players,
     joined: Query<Entity, Added<PlayerReady>>,
-    sneakers: Query<(
+    mut ready_players: Query<(
         Entity,
         &MinecraftEntityId,
-        Ref<Sneaking>,
-        Option<Ref<PlayerAbilities>>,
+        FlagSources,
+        Option<&PlayerAbilities>,
         Ref<PlayerReady>,
+        Option<&mut SharedPlayerData>,
     )>,
 ) {
     let ready = players.ready();
-    for (player, id, sneaking, abilities, is_ready) in sneakers.iter() {
-        let flying = abilities.as_ref().is_some_and(|abilities| abilities.flying);
-        let abilities_changed = abilities.is_some_and(|abilities| abilities.is_changed());
-        let packet = || crouch_metadata(id.0, sneaking.0, flying);
-        if sneaking.is_changed() || (sneaking.0 && (abilities_changed || is_ready.is_added())) {
-            ready.send_except(player, packet());
-        } else if sneaking.0 {
+    for (player, id, sources, abilities, is_ready, sent) in ready_players.iter_mut() {
+        let flying = abilities.is_some_and(|abilities| abilities.flying);
+        let current = SharedPlayerData::of(sources, flying);
+        let known = match &sent {
+            Some(sent) if !is_ready.is_added() => **sent,
+            _ => SharedPlayerData::SPAWNED,
+        };
+        if current != known {
+            ready.send_except(player, current.packet(id.0));
+        } else if current != SharedPlayerData::SPAWNED {
             for viewer in joined.iter().filter(|viewer| *viewer != player) {
-                players.send(viewer, packet());
+                players.send(viewer, current.packet(id.0));
+            }
+        }
+        match sent {
+            Some(mut sent) => {
+                sent.set_if_neq(current);
+            }
+            None => {
+                commands.entity(player).insert(current);
             }
         }
     }
@@ -56,10 +97,12 @@ pub fn broadcast_crouch(
 #[cfg(test)]
 mod tests {
     use bevy_app::{App, PostUpdate};
+    use voidmc_protocol::clientbound::entity_metadata::entity_flag;
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
-    use crate::components::ClientId;
+    use crate::components::{ClientId, Sneaking};
+    use crate::entity::{Effect, EffectDuration, Glowing, Invisible, StatusEffects};
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
 
     fn test_app() -> (App, flume::Receiver<OutgoingPacket>) {
@@ -75,7 +118,7 @@ mod tests {
             kick: kick_tx,
         })
         .insert_non_send_resource((incoming_tx, disconnect_tx, kick_rx))
-        .add_systems(PostUpdate, broadcast_crouch);
+        .add_systems(PostUpdate, broadcast_shared_flags);
         (app, outgoing_rx)
     }
 
@@ -106,8 +149,19 @@ mod tests {
         sent
     }
 
-    const CROUCHING: (i8, i32) = (entity_flag::SNEAKING as i8, pose::CROUCHING);
+    const SNEAKING: u8 = entity_flag::SNEAKING;
+    const GLOWING: u8 = entity_flag::GLOWING;
+    const INVISIBLE: u8 = entity_flag::INVISIBLE;
+    const CROUCHING: (i8, i32) = (SNEAKING as i8, pose::CROUCHING);
     const STANDING: (i8, i32) = (0, pose::STANDING);
+
+    fn crouching(flags: u8) -> (i8, i32) {
+        ((flags | SNEAKING) as i8, pose::CROUCHING)
+    }
+
+    fn standing(flags: u8) -> (i8, i32) {
+        (flags as i8, pose::STANDING)
+    }
 
     fn to(receiver: u32, entity: i32, (flags, pose): (i8, i32)) -> (u32, i32, i8, i32) {
         (receiver, entity, flags, pose)
@@ -186,5 +240,150 @@ mod tests {
         app.world_mut().entity_mut(late).insert(PlayerReady);
         app.update();
         assert_eq!(sent(&rx), [to(1, 2, CROUCHING)]);
+    }
+
+    #[test]
+    fn crouching_keeps_glowing_and_invisibility() {
+        let (mut app, rx) = test_app();
+        let alpha = player(&mut app, 1);
+        let beta = player(&mut app, 2);
+        app.world_mut().entity_mut(alpha).insert(Glowing);
+        app.world_mut()
+            .entity_mut(beta)
+            .insert(StatusEffects::new().with(Effect::Invisibility, 0, EffectDuration::Infinite));
+        app.update();
+        assert_eq!(
+            sent(&rx),
+            [to(1, 2, standing(INVISIBLE)), to(2, 1, standing(GLOWING))]
+        );
+
+        app.world_mut().entity_mut(alpha).insert(Sneaking(true));
+        app.world_mut().entity_mut(beta).insert(Sneaking(true));
+        app.update();
+        assert_eq!(
+            sent(&rx),
+            [to(1, 2, crouching(INVISIBLE)), to(2, 1, crouching(GLOWING))]
+        );
+
+        app.world_mut().get_mut::<Sneaking>(alpha).unwrap().0 = false;
+        app.world_mut().get_mut::<Sneaking>(beta).unwrap().0 = false;
+        app.update();
+        assert_eq!(
+            sent(&rx),
+            [to(1, 2, standing(INVISIBLE)), to(2, 1, standing(GLOWING))]
+        );
+    }
+
+    #[test]
+    fn glowing_and_invisibility_changing_while_crouching_keep_the_crouch() {
+        let (mut app, rx) = test_app();
+        let alpha = player(&mut app, 1);
+        player(&mut app, 2);
+        app.world_mut().entity_mut(alpha).insert(Sneaking(true));
+        app.update();
+        assert_eq!(sent(&rx), [to(2, 1, CROUCHING)]);
+
+        let mut world_step = |change: &dyn Fn(&mut EntityWorldMut)| {
+            change(&mut app.world_mut().entity_mut(alpha));
+            app.update();
+            sent(&rx)
+        };
+        assert_eq!(
+            world_step(&|alpha| {
+                alpha.insert(Glowing);
+            }),
+            [to(2, 1, crouching(GLOWING))]
+        );
+        assert_eq!(
+            world_step(&|alpha| {
+                alpha.insert(StatusEffects::new().with(
+                    Effect::Invisibility,
+                    0,
+                    EffectDuration::Infinite,
+                ));
+            }),
+            [to(2, 1, crouching(GLOWING | INVISIBLE))]
+        );
+        assert_eq!(
+            world_step(&|alpha| {
+                alpha.remove::<Glowing>();
+            }),
+            [to(2, 1, crouching(INVISIBLE))]
+        );
+        assert_eq!(
+            world_step(&|alpha| {
+                alpha.insert(Invisible);
+            }),
+            [],
+            "a second source of a bit that is already set changes nothing"
+        );
+        assert_eq!(
+            world_step(&|alpha| {
+                alpha.remove::<StatusEffects>();
+            }),
+            [],
+            "still invisible through the marker"
+        );
+        assert_eq!(
+            world_step(&|alpha| {
+                alpha.remove::<Invisible>();
+            }),
+            [to(2, 1, CROUCHING)]
+        );
+    }
+
+    #[test]
+    fn effects_that_leave_the_flags_alone_send_nothing() {
+        let (mut app, rx) = test_app();
+        let alpha = player(&mut app, 1);
+        player(&mut app, 2);
+        app.world_mut()
+            .entity_mut(alpha)
+            .insert((Sneaking(true), StatusEffects::new()));
+        app.update();
+        assert_eq!(sent(&rx), [to(2, 1, CROUCHING)]);
+
+        app.world_mut()
+            .get_mut::<StatusEffects>(alpha)
+            .unwrap()
+            .add(Effect::Speed, 1, EffectDuration::Infinite);
+        app.update();
+        assert!(sent(&rx).is_empty());
+    }
+
+    #[test]
+    fn a_player_who_joins_gets_the_complete_flags_and_pose() {
+        let (mut app, rx) = test_app();
+        let alpha = player(&mut app, 1);
+        let beta = player(&mut app, 2);
+        app.world_mut()
+            .entity_mut(alpha)
+            .insert((Sneaking(true), Glowing));
+        app.world_mut().entity_mut(beta).insert(Invisible);
+        app.update();
+        sent(&rx);
+
+        player(&mut app, 3);
+        app.update();
+        assert_eq!(
+            sent(&rx),
+            [to(3, 1, crouching(GLOWING)), to(3, 2, standing(INVISIBLE))]
+        );
+    }
+
+    #[test]
+    fn a_glowing_player_is_announced_with_its_flags_once_ready() {
+        let (mut app, rx) = test_app();
+        player(&mut app, 1);
+        let late = app
+            .world_mut()
+            .spawn((ClientId(2), MinecraftEntityId(2), Glowing))
+            .id();
+        app.update();
+        assert!(sent(&rx).is_empty());
+
+        app.world_mut().entity_mut(late).insert(PlayerReady);
+        app.update();
+        assert_eq!(sent(&rx), [to(1, 2, standing(GLOWING))]);
     }
 }
