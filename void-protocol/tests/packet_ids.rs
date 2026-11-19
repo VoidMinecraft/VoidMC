@@ -131,6 +131,7 @@ const SPECS: &[EnumSpec] = &[
             ("SoundEffect", "minecraft:sound"),
             ("StopSound", "minecraft:stop_sound"),
             ("SetEntityMotion", "minecraft:set_entity_motion"),
+            ("SetEquipment", "minecraft:set_equipment"),
             ("SetBorderCenter", "minecraft:set_border_center"),
             ("SetBorderLerpSize", "minecraft:set_border_lerp_size"),
             ("SetBorderSize", "minecraft:set_border_size"),

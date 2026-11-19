@@ -1375,9 +1375,9 @@ Per-action payload:
 | Field | Type | Notes |
 |-------|------|-------|
 | Entity Id | [VarInt](./data-types#varint) | Target. |
-| Slots | Variable Array | Each entry is `(Slot Byte, Item Slot)`; the high bit (`0x80`) of `Slot` indicates more entries follow. Slot lo-bits encode the equipment slot ordinal (main hand, off hand, feet, legs, chest, head, body, saddle). |
+| Equipment | Array of (Byte, [Slot](./slot)) | No length prefix: each entry is a byte, then the item. The byte's low 7 bits are the equipment slot ordinal (`0` main hand, `1` off hand, `2` feet, `3` legs, `4` chest, `5` head, `6` body, `7` saddle); its high bit (`0x80`) is set on every entry but the last. |
 
-**Semantics.** Updates one or more equipment slots on an entity in a single packet.
+**Semantics.** Updates one or more equipment slots on an entity in a single packet; slots not listed keep what the client last knew. Vanilla sends a living entity's changed slots to the players tracking it, and its non-empty slots when it starts being tracked, but never a player's own equipment.
 
 ## 0x67 - Set Experience
 
