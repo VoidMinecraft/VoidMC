@@ -1,3 +1,4 @@
+mod atp_035_gameplay_events;
 mod commands;
 mod connection;
 mod inventory;
