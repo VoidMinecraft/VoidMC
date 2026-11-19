@@ -1,4 +1,6 @@
+mod atp_004_initial_world;
 mod atp_005_two_player_sync;
+mod atp_027_world_generation;
 mod atp_030_note_block_redstone;
 mod commands;
 mod connection;

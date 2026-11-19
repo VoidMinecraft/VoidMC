@@ -67,7 +67,7 @@ impl Plugin for GameSystemsPlugin {
                     (
                         position::broadcast_position,
                         position::update_previous_positions.after(position::broadcast_position),
-                        pose::broadcast_crouch,
+                        pose::broadcast_shared_flags,
                     )
                         .in_set(VoidSystems::PlayerBroadcast),
                     chunk::stream_chunks.in_set(VoidSystems::ChunkStreaming),
