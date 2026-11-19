@@ -2733,6 +2733,7 @@ version = "0.2.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
+ "ctrlc",
  "flume",
  "rand 0.8.6",
  "socket2 0.5.10",
@@ -2795,6 +2796,7 @@ dependencies = [
  "uuid",
  "voidmc",
  "voidmc-protocol",
+ "voidmc-world-io",
 ]
 
 [[package]]
@@ -2818,6 +2820,21 @@ dependencies = [
  "voidmc-codec",
  "voidmc-codec-macros",
  "voidmc-data",
+]
+
+[[package]]
+name = "voidmc-world-io"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_ecs",
+ "flate2",
+ "tracing",
+ "ussr-nbt",
+ "voidmc",
+ "voidmc-codec",
+ "voidmc-data",
+ "voidmc-protocol",
 ]
 
 [[package]]
