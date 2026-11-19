@@ -13,7 +13,7 @@ use voidmc_protocol::serverbound::SetCreativeModeSlot;
 use crate::components::ClientId;
 use crate::config::ServerConfigResource;
 use crate::events::{
-    PlayerFinishDiggingEvent, PlayerStartDiggingEvent, PlayerUseItemEvent,
+    ItemDropEvent, PlayerFinishDiggingEvent, PlayerStartDiggingEvent, PlayerUseItemEvent,
     PlayerUseItemOnBlockEvent,
 };
 use crate::inventory::Inventory;
@@ -132,14 +132,22 @@ fn queue_break(
 }
 
 /// Applies a creative-mode slot change to the server-side inventory; the slot
-/// is echoed back by the inventory sync like any other change.
+/// is echoed back by the inventory sync like any other change. A negative slot
+/// is the creative inventory throwing the stack into the world.
 fn handle_creative_slot(
     event: On<PacketEvent<SetCreativeModeSlot>>,
     mut inventories: Query<&mut Inventory>,
+    mut commands: Commands,
 ) {
     let slot = event.packet.slot;
     if slot < 0 {
-        // Negative slot = dropping into the world; handled with item drops later.
+        let stack = ItemStack::from_slot(&event.packet.item);
+        if !stack.is_empty() {
+            commands.trigger(ItemDropEvent {
+                dropper: event.entity,
+                stack,
+            });
+        }
         return;
     }
     if let Ok(mut inv) = inventories.get_mut(event.entity) {
