@@ -306,6 +306,9 @@ fn handle_tell(ctx: &mut CommandContext) {
     let target = *ctx.get::<Entity>("player").unwrap();
     let target_name = name_of(ctx, target);
     let message = ctx.get::<String>("message").unwrap().clone();
+    if refuse_illegal_characters(ctx, &message) {
+        return;
+    }
     let sender_name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
 
     ctx.with_world(|world| {
@@ -321,7 +324,25 @@ fn handle_tell(ctx: &mut CommandContext) {
 
 fn handle_broadcast(ctx: &mut CommandContext) {
     let message = ctx.get::<String>("message").unwrap().clone();
+    if refuse_illegal_characters(ctx, &message) {
+        return;
+    }
     ctx.broadcast(&format!("[Broadcast] {}", message));
+}
+
+/// Refuses, with a red reply to the sender, a message that other players
+/// would not see as typed: the client applies `§` formatting codes found in
+/// literal text, so they could restyle or hide part of the line, and control
+/// characters are not chat text. These are the characters a vanilla client
+/// cannot type and a vanilla server refuses (`StringUtil.isAllowedChatCharacter`).
+fn refuse_illegal_characters(ctx: &CommandContext, message: &str) -> bool {
+    let illegal = message
+        .chars()
+        .any(|c| c == '\u{a7}' || c < ' ' || c == '\u{7f}');
+    if illegal {
+        ctx.reply_error("Illegal characters in chat");
+    }
+    illegal
 }
 
 pub fn list_command() -> Command {

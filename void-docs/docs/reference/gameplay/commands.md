@@ -431,6 +431,27 @@ same way.
 connection itself, so a client that ignores the packet does not stay in the
 game (see [Kicking a player](/reference/server/sending-packets#kicking-a-player)).
 
+The player-management commands answer as follows. Every player counts as
+online once it is ready (it has loaded the world), the same set the tab list
+and the server-list player count show; a player still loading is not listed
+and cannot be named as a target. The default commands have no permission
+requirement: any player can run them. To restrict one, exclude it and register
+your own version with `requires`.
+
+| Command | Sender sees | Others see |
+|---|---|---|
+| `/list` | `There are 2 player(s) online: Alice, Bob` (`There are 0 player(s) online.` when empty) | nothing |
+| `/tell Bob hi` | `You whisper to Bob: hi` | Bob only: `Alice whispers to you: hi` (gray) |
+| `/broadcast hi` | `[Broadcast] hi` | every online player: `[Broadcast] hi` |
+| `/kick Bob [reason]` | `Kicked Bob (reason: ...)` | Bob is disconnected with the reason in red (default `Kicked by an operator`); the others see Bob leave the world and the tab list |
+
+Errors (unknown or missing player, missing text) go to the sender only, in
+red, followed by the usage line. `/tell` and `/broadcast` refuse a message
+containing a `§` formatting code or a control character (`Illegal characters
+in chat`), as a vanilla server does, so the line shows exactly as typed.
+Message words are joined by single spaces: runs of spaces and line breaks in
+the command become one space.
+
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
 either omit all three to use the executor position, or provide `x`, `y`, and
