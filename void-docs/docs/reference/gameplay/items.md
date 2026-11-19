@@ -61,11 +61,46 @@ the value it already holds sends nothing. While a [menu](menus.md) is open,
 main-inventory and hotbar changes go through the menu window instead; the rest
 is resent when the menu closes.
 
-The full vanilla click set is implemented server-authoritatively
-(`ClickContainer`): pickup (left/right split & merge), shift quick-move, number-
-key/offhand swap, creative clone, throw, multi-slot drag, and double-click
-pickup-all. A click carrying a stale state id is answered with a full resync,
-as in vanilla.
+### Clicks
+
+Container clicks on window 0 are applied server-side with vanilla's rules. A
+stack's max size is its item's, or its `max_stack_size` component if it has
+one.
+
+| Click | Effect |
+|---|---|
+| Left / right click | Picks up the whole stack / half of it (rounded up); places the whole cursor / one item; merges into the same item up to its max stack size, the rest staying on the cursor; swaps with a different item |
+| Click outside the window (slot `-999`) | Drops the cursor stack (left) or one item of it (right) as an `ItemDropEvent` |
+| Shift-click | Hotbar to main inventory and back; crafting grid, armor and off-hand slots to the main inventory then the hotbar; the crafting output to the hotbar from the right, then the main inventory from the bottom. Partial stacks fill first, then empty slots; what does not fit stays |
+| Number key 1–9 / F | Swaps the hovered slot with that hotbar slot / the off-hand |
+| Drag (left / right) | Spreads the cursor evenly over the dragged slots (the remainder stays on the cursor) / places one per slot. A slot holding another item is skipped, a slot named twice counts once, a drag never covers more slots than the cursor has items, and a packet out of order, an empty cursor or any other click cancels the drag |
+| Double-click | Fills the cursor with the same item from the whole window except the crafting output, partial stacks before full ones, in slot order (from the end with button 1), if the clicked slot is empty |
+| Drop key Q / Ctrl+Q over a slot | Drops one item / the whole stack, only with an empty cursor |
+| Creative clone (middle click), creative middle-drag | A full stack on the cursor / in each dragged slot, the cursor keeping its stack; only when the server's `game_mode` is creative |
+
+An unknown click type (decoded as a pickup), an unknown button, a slot index
+outside the window or a click on another window id changes nothing. Nothing
+can be placed into the crafting output (slot 0), which only gives its whole
+stack. Closing the inventory returns the cursor stack and the crafting grid
+to the inventory, dropping what does not fit.
+
+Not supported: the server has no equipment data for items, so armor and the
+off-hand slots accept any item, and shift-clicking armor or a shield moves it
+like any other item instead of equipping it. Nothing is crafted in the
+crafting grid. A vanilla client predicts these differently and is corrected
+by the resync below.
+
+The client sends what it expects each slot it changed and its cursor to hold
+(hashed). As in vanilla, the server compares that prediction with its own
+result: a correct prediction is not echoed, while a slot or cursor predicted
+wrong, or a slot the server changed but the client did not name, is resent
+with `SetContainerSlot` / `SetCursorItem`. The server does not compute
+component hashes, so a stack with data components is always resent. A click
+carrying a stale state id is answered with a full `SetContainerContent`.
+
+`SetCreativeModeSlot` is only honoured when the server's `game_mode` is
+creative, for slots 1–45 and stacks within their max size; otherwise the
+slot's true contents are resent.
 
 ### Held slot and cooldowns
 

@@ -129,8 +129,9 @@ content resync, as in vanilla.
 With `editable()` the click runs through the same server-authoritative engine
 as the player inventory (pickup, split, merge, shift-move, hotbar swap, drag,
 double-click, throw), across the menu slots and the player's main inventory
-and hotbar. Only the slots that actually changed are resent. Slot indices
-outside the window are ignored; thrown items become `ItemDropEvent`s. The
+and hotbar. The slots that changed are resent, and so are the slots (and the
+cursor) the client predicted differently. Slot indices outside the window are
+ignored; thrown items become `ItemDropEvent`s. The
 click event still fires, so you can react after the fact (validate a deposit,
 close the menu, etc.).
 
