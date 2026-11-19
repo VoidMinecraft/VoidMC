@@ -1,3 +1,4 @@
+mod atp_020_world_loader;
 mod commands;
 mod connection;
 mod inventory;
