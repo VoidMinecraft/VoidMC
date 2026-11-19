@@ -425,7 +425,7 @@ impl Telemetry {
         out.family(
             "voidmc_clients_kicked_total",
             MetricKind::Counter,
-            "Live connections the server closed itself: keep-alive timeouts and outbound queues that overflowed.",
+            "Live connections the server closed itself: kicks, keep-alive timeouts, outbound queues that overflowed and despawned client entities.",
         );
         out.sample(
             "voidmc_clients_kicked_total",

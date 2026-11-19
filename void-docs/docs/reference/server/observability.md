@@ -121,7 +121,7 @@ no sample rather than a made-up one.
 | Metric | Type | Meaning |
 |---|---|---|
 | `voidmc_connection_errors_total{kind}` | counter | Game connections closed by an error. `kind="io"`: socket error, including a client that vanished with a reset; `kind="frame"`: invalid framing or compression; `kind="decode"`: a packet the network thread could not decode. A client closing its connection normally is not an error. |
-| `voidmc_clients_kicked_total` | counter | Live connections the server closed itself: keep-alive timeouts (30 s) and outbound queues that overflowed. `/kick` only asks the client to leave and is not counted here. |
+| `voidmc_clients_kicked_total` | counter | Live connections the server closed itself: `/kick` and `Players::kick`, keep-alive timeouts (30 s), outbound queues that overflowed, and client entities despawned by game code. Players still online at shutdown are not counted. |
 | `voidmc_packets_unrecognized_total` | counter | Packets dropped because their id is unknown in the connection's state (logged as `Unrecognized packet`). |
 | `voidmc_packet_errors_total` | counter | Packets with a known id the game thread failed to decode (logged as `Failed to handle packet`). |
 

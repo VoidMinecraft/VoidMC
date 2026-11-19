@@ -571,6 +571,86 @@ async fn player_metrics_follow_clients_joining_and_leaving() {
     server.stop().await;
 }
 
+/// Since VMC-ATP-034 (#151) `/kick` and despawning a client entity close the
+/// connection on the server side, and players still online at shutdown leave
+/// in the last tick: each way out brings the players gauge back down, the
+/// first two count as kicks, and shutting down does not.
+#[tokio::test]
+async fn kicks_despawns_and_shutdown_bring_the_players_gauge_back_to_zero() {
+    let (release_tx, release_rx) = flume::bounded(1);
+    let server = observed()
+        .plugin(move |app| {
+            app.insert_resource(HoldShutdown(release_rx));
+        })
+        .start()
+        .await;
+    let address = endpoint(&server).await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let eve = server.join("Eve").await;
+    let three = scrape_until(&server, address, "three players online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 3.0
+    })
+    .await;
+    assert_eq!(three.counter("voidmc_clients_kicked_total"), 0.0);
+
+    alice.command("kick Bob Bye now").await;
+    let kicked = scrape_until(&server, address, "Bob kicked and gone", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") == 1.0
+            && scrape.gauge("voidmc_players_online") == 2.0
+    })
+    .await;
+    drop(bob);
+
+    let eve_entity = server.player_entity(eve.uuid()).await;
+    server
+        .with_world(move |world| {
+            world.despawn(eve_entity);
+        })
+        .await;
+    let despawned = scrape_until(&server, address, "Eve's connection closed", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") == 2.0
+            && scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    drop(eve);
+    assert_eq!(despawned.counter("voidmc_players_joined_total"), 3.0);
+    assert_counters_never_decrease(&three, &kicked);
+    assert_counters_never_decrease(&kicked, &despawned);
+
+    // Alice is still online when the server stops.
+    let ((), stopping) = tokio::join!(server.stop(), async {
+        health_until(address, "the shutdown to be reported", |response| {
+            response.health() == "stopping"
+        })
+        .await;
+        // The exit tick switches to `stopping` just before it stores the
+        // gauges, so give that tick a moment to finish.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut stopping = scrape(address).await;
+        while stopping.gauge("voidmc_players_online") != 0.0 && std::time::Instant::now() < deadline
+        {
+            tokio::task::yield_now().await;
+            stopping = scrape(address).await;
+        }
+        release_tx.send(()).unwrap();
+        stopping
+    });
+    assert_eq!(
+        stopping.gauge("voidmc_players_online"),
+        0.0,
+        "players online at shutdown leave in the exit tick"
+    );
+    assert_eq!(
+        stopping.counter("voidmc_clients_kicked_total"),
+        2.0,
+        "shutting down is not a kick"
+    );
+    assert_eq!(stopping.counter("voidmc_players_joined_total"), 3.0);
+    assert_counters_never_decrease(&despawned, &stopping);
+    drop(alice);
+}
+
 #[tokio::test]
 async fn error_counters_count_errors_that_clients_cause() {
     let server = observed().start().await;
