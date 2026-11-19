@@ -607,20 +607,30 @@ struct Window {
 struct Sample {
     at: Instant,
     game_time: i64,
-    game_thread_cpu_ms: Option<f64>,
-    server_threads_cpu_ms: Option<f64>,
+    /// The game thread's and the server threads' CPU time, in nanoseconds.
+    cpu_ns: Option<(u64, u64)>,
     process_cpu_ms: Option<f64>,
 }
 
 async fn sample(server: &TestServer) -> Sample {
-    let (game_time, game_thread_cpu_ms) = server
-        .with_world(|world| (world.resource::<GameTime>().0, system::thread_cpu_ms()))
+    // Both CPU readings come from one pass on the game thread, in integer
+    // nanoseconds, so the server threads' total holds exactly the game
+    // thread's time read here. Read apart, or summed in floating point, the
+    // total could grow less than the game thread's own time over the window
+    // when the game thread does nearly all of the server's work (the
+    // single-threaded executor).
+    let (game_time, cpu_ns) = server
+        .with_world(|world| {
+            (
+                world.resource::<GameTime>().0,
+                system::thread_and_threads_cpu_ns(&system::SERVER_THREADS),
+            )
+        })
         .await;
     Sample {
         at: Instant::now(),
         game_time,
-        game_thread_cpu_ms,
-        server_threads_cpu_ms: system::threads_cpu_ms(&system::SERVER_THREADS),
+        cpu_ns,
         process_cpu_ms: system::process_cpu_ms(),
     }
 }
@@ -643,8 +653,11 @@ async fn monitor(server: &TestServer, from: Instant, until: Instant) -> Window {
 
     let window_ms = (last.at - first.at).as_secs_f64() * 1e3;
     let delta = |a: Option<f64>, b: Option<f64>| Some(b? - a?);
-    let game_thread_cpu_ms = delta(first.game_thread_cpu_ms, last.game_thread_cpu_ms);
-    let server_threads_cpu_ms = delta(first.server_threads_cpu_ms, last.server_threads_cpu_ms);
+    let cpu_ms = |pick: fn((u64, u64)) -> u64| {
+        Some(system::ms_between(pick(first.cpu_ns?), pick(last.cpu_ns?)))
+    };
+    let game_thread_cpu_ms = cpu_ms(|(game, _)| game);
+    let server_threads_cpu_ms = cpu_ms(|(_, server)| server);
     Window {
         tick_rate: (last.game_time - first.game_time) as f64 / (window_ms / 1e3),
         resources: Resources {
