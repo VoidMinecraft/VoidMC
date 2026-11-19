@@ -39,6 +39,59 @@ pub fn mutate_block(
     face: BlockFace,
     mutation: BlockMutation,
 ) -> Option<i32> {
+    let old_state = set_block_state(world, dimension, position, new_state, Some(actor))?;
+
+    match mutation {
+        BlockMutation::Break => world.trigger(BlockBreakEvent {
+            entity: actor,
+            dimension,
+            position,
+            broken_state: old_state,
+        }),
+        BlockMutation::Place => {
+            let player_name = world
+                .get::<PlayerName>(actor)
+                .map(|name| name.0.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+            let client_id = world.get::<ClientId>(actor).map(|id| id.0);
+            tracing::info!(
+                player_name = %player_name,
+                client_id,
+                dimension = dimension.name(),
+                x = position.x,
+                y = position.y,
+                z = position.z,
+                block_state_id = new_state,
+                "Block placed"
+            );
+            world.trigger(BlockPlaceEvent {
+                entity: actor,
+                dimension,
+                position,
+                face,
+                placed_state: new_state,
+            });
+        }
+    }
+
+    Some(old_state)
+}
+
+/// Sets one block without a placing or breaking player: updates chunk data,
+/// marks the chunk dirty, broadcasts `BlockUpdate` to every ready player
+/// holding the chunk, and fires [`BlockChangeEvent`] with `source`.
+///
+/// Use it for state changes the world makes itself, such as a lever being
+/// toggled or redstone dust changing power. Returns the previous block-state
+/// id if the block changed, `None` if it was already `new_state` or the chunk
+/// is not loaded.
+pub fn set_block_state(
+    world: &mut World,
+    dimension: DimensionId,
+    position: BlockPosition,
+    new_state: i32,
+    source: Option<Entity>,
+) -> Option<i32> {
     let chunk_pos = ChunkPos::new(position.x >> 4, position.z >> 4);
 
     let chunk_entity = world
@@ -76,40 +129,8 @@ pub fn mutate_block(
         position,
         old_state,
         new_state,
-        source: Some(actor),
+        source,
     });
-    match mutation {
-        BlockMutation::Break => world.trigger(BlockBreakEvent {
-            entity: actor,
-            dimension,
-            position,
-            broken_state: old_state,
-        }),
-        BlockMutation::Place => {
-            let player_name = world
-                .get::<PlayerName>(actor)
-                .map(|name| name.0.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-            let client_id = world.get::<ClientId>(actor).map(|id| id.0);
-            tracing::info!(
-                player_name = %player_name,
-                client_id,
-                dimension = dimension.name(),
-                x = position.x,
-                y = position.y,
-                z = position.z,
-                block_state_id = new_state,
-                "Block placed"
-            );
-            world.trigger(BlockPlaceEvent {
-                entity: actor,
-                dimension,
-                position,
-                face,
-                placed_state: new_state,
-            });
-        }
-    }
 
     Some(old_state)
 }

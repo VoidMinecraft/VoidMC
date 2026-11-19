@@ -98,6 +98,7 @@ const SPECS: &[EnumSpec] = &[
             ("SpawnEntity", "minecraft:add_entity"),
             ("BlockChangedAck", "minecraft:block_changed_ack"),
             ("BlockEntityData", "minecraft:block_entity_data"),
+            ("BlockEvent", "minecraft:block_event"),
             ("BlockUpdate", "minecraft:block_update"),
             ("BossEvent", "minecraft:boss_event"),
             ("ChunksBiomes", "minecraft:chunks_biomes"),

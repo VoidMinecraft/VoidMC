@@ -24,6 +24,10 @@
 //! Behaviours run in an exclusive system with `&mut World`, so [`ItemUseContext`]
 //! exposes full world access — observers cannot take `&mut World`, hence the
 //! queue + drain pattern below (mirroring the command system).
+//!
+//! Blocks that react to a right-click themselves (a lever) implement
+//! [`BlockInteraction`] instead; it runs after the item's behaviour passed and
+//! before the default placement.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -33,7 +37,7 @@ use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound;
 use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 
-use crate::components::PlayerDimension;
+use crate::components::{PlayerDimension, Sneaking};
 use crate::inventory::Inventory;
 use crate::item::{ItemId, ItemStack};
 use crate::messages::TextColor;
@@ -250,6 +254,87 @@ impl ItemBehaviorRegistry {
     fn get(&self, item: ItemId) -> Option<Arc<dyn ItemBehavior>> {
         self.behaviors.get(&item).cloned()
     }
+}
+
+/// Implemented for blocks that react to a right-click, such as a lever or a
+/// button (see [`BlockInteractionRegistry`]).
+///
+/// It runs for a main-hand right-click on the block after the held item's
+/// [`ItemBehavior`] (if any) returned [`UseResult::Pass`], and before the
+/// default block placement. Like vanilla, it is skipped for an off-hand use
+/// and when the player is sneaking ([`Sneaking`]) with an item in either
+/// hand. Returning [`UseResult::Handled`] consumes the click: nothing is
+/// placed.
+pub trait BlockInteraction: Send + Sync + 'static {
+    /// The player right-clicked `state`, the block at `ctx.block.position`.
+    fn on_use(&self, ctx: &mut ItemUseContext, state: i32) -> UseResult;
+}
+
+/// Registry mapping blocks (every state of a block type) to their
+/// [`BlockInteraction`]. Empty by default: without a registration, a
+/// right-click on a block uses the held item.
+#[derive(Resource, Default)]
+pub struct BlockInteractionRegistry {
+    interactions: HashMap<&'static str, Arc<dyn BlockInteraction>>,
+}
+
+impl BlockInteractionRegistry {
+    /// Registers an interaction for a block by name, e.g. `"minecraft:lever"`.
+    /// Logs and ignores unknown names.
+    pub fn register_for(&mut self, block: &str, interaction: impl BlockInteraction) {
+        match voidmc_data::block_type(BLOCK_DATA_VERSION, block) {
+            Some(block) => {
+                self.interactions.insert(block.name, Arc::new(interaction));
+            }
+            None => {
+                tracing::warn!("BlockInteractionRegistry::register_for: unknown block '{block}'")
+            }
+        }
+    }
+
+    /// Whether a block, by name, has an interaction.
+    pub fn contains(&self, block: &str) -> bool {
+        self.interactions.contains_key(block)
+    }
+
+    fn get(&self, state: i32) -> Option<Arc<dyn BlockInteraction>> {
+        let block = voidmc_data::block_type_of_state(BLOCK_DATA_VERSION, state)?;
+        self.interactions.get(block.name).cloned()
+    }
+}
+
+const BLOCK_DATA_VERSION: voidmc_data::Version = voidmc_data::Version::V26_1_2;
+
+/// Runs the clicked block's [`BlockInteraction`], if the vanilla rules let
+/// the block react to this click.
+fn interact_with_block(ctx: &mut ItemUseContext, target: BlockUseTarget, hand: Hand) -> UseResult {
+    if hand != Hand::MainHand {
+        return UseResult::Pass;
+    }
+    let player = ctx.player;
+    // A player that has not sent any input yet has no `Sneaking`: not sneaking.
+    let sneaking = ctx.world.get::<Sneaking>(player).is_some_and(|s| s.0);
+    let secondary_use = sneaking
+        && ctx.world.get::<Inventory>(player).is_some_and(|inventory| {
+            !inventory.held().is_empty() || !inventory.get(Inventory::OFFHAND).is_empty()
+        });
+    if secondary_use {
+        return UseResult::Pass;
+    }
+    let Some(dimension) = ctx.world.get::<PlayerDimension>(player).map(|d| d.0) else {
+        return UseResult::Pass;
+    };
+    let Some(state) = block_state(ctx.world, dimension, target.position) else {
+        return UseResult::Pass;
+    };
+    let Some(interaction) = ctx
+        .world
+        .get_resource::<BlockInteractionRegistry>()
+        .and_then(|registry| registry.get(state))
+    else {
+        return UseResult::Pass;
+    };
+    interaction.on_use(ctx, state)
 }
 
 /// A queued player action needing exclusive world access.
@@ -477,6 +562,14 @@ pub fn drain_item_use_queue(world: &mut World) {
                     (Some(b), true) => b.on_use_on_block(&mut ctx),
                     (Some(b), false) => b.on_use(&mut ctx),
                     (None, _) => UseResult::Pass,
+                };
+
+                // Then the clicked block's own interaction (a lever toggles).
+                let result = match block {
+                    Some(target) if result == UseResult::Pass => {
+                        interact_with_block(&mut ctx, target, queued.hand)
+                    }
+                    _ => result,
                 };
 
                 // Default: a block item places its block when used on a block.

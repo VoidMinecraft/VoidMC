@@ -19,8 +19,9 @@ use crate::events::{
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
 use crate::item_behavior::{
-    BlockUseTarget, ItemBehaviorRegistry, ItemUseQueue, drain_item_use_queue, enqueue_break,
-    enqueue_start_break, enqueue_use_in_air, enqueue_use_on_block,
+    BlockInteractionRegistry, BlockUseTarget, ItemBehaviorRegistry, ItemUseQueue,
+    drain_item_use_queue, enqueue_break, enqueue_start_break, enqueue_use_in_air,
+    enqueue_use_on_block,
 };
 use crate::network::PacketEvent;
 use crate::schedule::VoidSystems;
@@ -30,6 +31,7 @@ pub struct ItemUsePlugin;
 impl Plugin for ItemUsePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ItemBehaviorRegistry>()
+            .init_resource::<BlockInteractionRegistry>()
             .init_resource::<ItemUseQueue>()
             .add_observer(queue_use_on_block)
             .add_observer(queue_use_in_air)
