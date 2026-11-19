@@ -82,6 +82,10 @@ fn handle_give(ctx: &mut CommandContext) {
     let item_name = item.name().unwrap_or("unknown").to_string();
     let count = ctx.get::<i32>("count").copied().unwrap_or(1).clamp(1, 64) as u8;
     let stack = ItemStack::new(item, count);
+    if stack.is_empty() {
+        ctx.reply_error(&format!("Cannot give {item_name}"));
+        return;
+    }
 
     let entity = ctx.entity;
     let leftover = ctx.with_world_mut(|world| {
