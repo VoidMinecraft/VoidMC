@@ -1,4 +1,5 @@
 mod atp_005_two_player_sync;
+mod atp_030_note_block_redstone;
 mod commands;
 mod connection;
 mod inventory;
