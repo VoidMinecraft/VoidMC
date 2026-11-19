@@ -74,6 +74,7 @@ struct Inbox {
     packets: VecDeque<ClientboundGamePacket>,
     received: BTreeMap<&'static str, usize>,
     loaded: bool,
+    hold_teleports: bool,
     view: ClientView,
     failure: Option<String>,
     closed: bool,
@@ -192,6 +193,12 @@ impl Bot {
             },
         })
         .await;
+    }
+
+    /// While held, position syncs are not answered: the test sends
+    /// `ServerboundAcceptTeleportation` itself, like a lagging client.
+    pub fn hold_teleports(&self, hold: bool) {
+        self.lock().hold_teleports = hold;
     }
 
     pub fn view<R>(&self, f: impl FnOnce(&ClientView) -> R) -> R {
@@ -538,7 +545,7 @@ fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<Serverbound
         ClientboundGamePacket::Ping(ping) if ping.id & BARRIER_BIT == 0 => {
             vec![ServerboundPong { id: ping.id }.into_variant()]
         }
-        ClientboundGamePacket::PlayerPosition(teleport) => {
+        ClientboundGamePacket::PlayerPosition(teleport) if !inbox.hold_teleports => {
             let mut replies = vec![
                 ServerboundAcceptTeleportation { id: teleport.id }.into_variant(),
                 ServerboundMovePlayerPosRot {

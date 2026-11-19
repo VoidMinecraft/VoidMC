@@ -418,7 +418,7 @@ The Description column is what `/help` shows.
 | `/kick` | | Kick a player | `<player:player> [reason:text]...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/ping` | | Pong! | (none) |
 | `/plugins` | `/pl` | List plugins | (none) |
-| `/tp` | | Teleport to coordinates | `<position:vec3>` (`~` and `^` forms) |
+| `/tp` | | Teleport to coordinates | `<position:vec3>` (`~` and `^` forms); keeps the look direction; rejects positions outside ±30,000,000 horizontally or ±20,000,000 vertically |
 | `/broadcast` | | Broadcast a message to all players | `<message:text>...` |
 | `/tell` | `/msg` | Send a private message to a player | `<player:player> <message:text>...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/list` | | List online players | (none) |

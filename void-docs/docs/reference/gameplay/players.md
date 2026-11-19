@@ -195,7 +195,8 @@ While the component is present:
 
 A client that never answers is released after `timeout_ticks` (default 600 =
 30 s) with `TeleportOutcome::TimedOut`; the position sync is still sent so it
-lands at the destination whenever it catches up. Removing the component
+lands at the destination whenever it catches up, and its position packets are
+ignored until it confirms (see [Raw handshake](#raw-handshake)). Removing the component
 yourself yields `TeleportOutcome::Cancelled`. If the player already carried
 `ServerControlledPosition` before the teleport (a vehicle seat, say) it is kept.
 A player who disconnects mid-teleport gets no `PlayerTeleportEvent` at all: the
@@ -224,10 +225,20 @@ The `/tp` command shows the underlying steps:
 
 1. **Update `TeleportState`**: Increment `next_id`, set `pending_id` to the new ID
 2. **Update `Position`**: Set the entity's position to target coordinates
-3. **Send `SynchronizePlayerPosition`**: Packet with teleport ID, target coordinates, and current rotation
+3. **Send `SynchronizePlayerPosition`**: Packet with teleport ID, target
+   coordinates, the current rotation and no relative flags
 4. **Client confirms**: `ConfirmTeleportation` packet clears `pending_id`
 
-While `pending_id` is `Some`, the server knows a teleportation is in-flight and the client has not yet acknowledged it.
+While `pending_id` is `Some`, the server knows a teleportation is in-flight and
+the client has not yet acknowledged it. Like vanilla, the movement handlers
+then ignore the position of `SetPlayerPos`/`SetPlayerPosAndRot` (no
+`PlayerMoveEvent`; the rotation still applies): the client sent them from its
+old position before it processed the teleport, and they would pull the player
+back. Only the latest id confirms; an older, unknown or repeated id is logged
+at `warn` and ignored. The first position packet after the confirmation (the
+client's echo of the destination) moves the player as usual. This also holds
+after a `Teleport` times out: the player stays at the destination until the
+client confirms.
 
 ## Abilities and Flight
 

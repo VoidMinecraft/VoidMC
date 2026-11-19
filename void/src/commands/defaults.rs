@@ -377,9 +377,23 @@ fn handle_list(ctx: &mut CommandContext) {
     }
 }
 
+/// Vanilla `Level.isInSpawnableBounds`, which `/tp` checks before moving
+/// anyone: within the ±30,000,000 world border limit horizontally and
+/// ±20,000,000 vertically. Non-finite values are out of bounds.
+fn in_teleport_bounds([x, y, z]: [f64; 3]) -> bool {
+    const HORIZONTAL: f64 = 30_000_000.0;
+    const VERTICAL: f64 = 20_000_000.0;
+    let horizontal = |v: f64| (-HORIZONTAL..HORIZONTAL).contains(&v.floor());
+    horizontal(x) && horizontal(z) && (-VERTICAL..VERTICAL).contains(&y.floor())
+}
+
 fn handle_tp(ctx: &mut CommandContext) {
     let [x, y, z] = *ctx.get::<[f64; 3]>("position").unwrap();
     let entity = ctx.entity;
+    if !in_teleport_bounds([x, y, z]) {
+        ctx.reply_error("Invalid position for teleport");
+        return;
+    }
 
     // Read current rotation to preserve yaw/pitch
     let (yaw, pitch) = ctx.with_world(|world| {

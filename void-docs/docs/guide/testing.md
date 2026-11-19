@@ -419,6 +419,8 @@ position, chunks, entities, tab list and inventory.
   client tolerates but that point at a server bug: an entity added twice, a
   block update for a chunk the client does not hold, a forget for a chunk it
   never received.
+- `hold_teleports(true)` stops answering position syncs, so a scenario can
+  play a lagging client and send `ServerboundAcceptTeleportation` itself.
 - `disconnect()` closes the connection like a player quitting.
 
 ### Waiting Without Sleeping
