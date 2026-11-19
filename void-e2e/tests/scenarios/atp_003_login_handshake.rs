@@ -149,6 +149,7 @@ async fn atp_003_handshake_reaches_the_ready_play_state() {
     let server_trace = ServerTrace::default();
     let recorder = server_trace.clone();
     let server = TestServer::builder()
+        .operators()
         .compression_threshold(None)
         .plugin(move |app| {
             record::<serverbound::Handshake>(app, &recorder, "handshake");

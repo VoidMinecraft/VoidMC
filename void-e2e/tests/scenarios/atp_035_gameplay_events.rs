@@ -384,7 +384,11 @@ fn record_events(app: &mut App) {
 /// A server running the recording plugin, with Alice and Bob in the world and
 /// the log recording from now on.
 async fn session() -> (TestServer, Bot, Bot) {
-    let server = TestServer::builder().plugin(record_events).start().await;
+    let server = TestServer::builder()
+        .operators()
+        .plugin(record_events)
+        .start()
+        .await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     alice.sync().await;

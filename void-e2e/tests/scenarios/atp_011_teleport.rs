@@ -112,7 +112,7 @@ fn system_chat(bot: &Bot) -> Vec<String> {
 
 #[tokio::test]
 async fn tp_lands_on_the_exact_coordinates_keeps_the_look_and_the_same_entity() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     skip_join_teleport(&alice).await;
     let bob = server.join("Bob").await;
@@ -284,7 +284,7 @@ async fn tp_lands_on_the_exact_coordinates_keeps_the_look_and_the_same_entity() 
 
 #[tokio::test]
 async fn stale_movement_cannot_undo_an_unconfirmed_teleport() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     skip_join_teleport(&alice).await;
     let bob = server.join("Bob").await;
@@ -397,7 +397,7 @@ async fn stale_movement_cannot_undo_an_unconfirmed_teleport() {
 
 #[tokio::test]
 async fn teleporting_far_streams_the_destination_and_back() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server
         .join_with("Alice", BotOptions { view_distance: 2 })
         .await;
@@ -456,7 +456,7 @@ async fn teleporting_far_streams_the_destination_and_back() {
 
 #[tokio::test]
 async fn invalid_tp_input_is_rejected_without_moving_anyone() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     skip_join_teleport(&alice).await;
     let bob = server.join("Bob").await;

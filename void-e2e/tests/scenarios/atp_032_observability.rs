@@ -579,6 +579,7 @@ async fn player_metrics_follow_clients_joining_and_leaving() {
 async fn kicks_despawns_and_shutdown_bring_the_players_gauge_back_to_zero() {
     let (release_tx, release_rx) = flume::bounded(1);
     let server = observed()
+        .operators()
         .plugin(move |app| {
             app.insert_resource(HoldShutdown(release_rx));
         })

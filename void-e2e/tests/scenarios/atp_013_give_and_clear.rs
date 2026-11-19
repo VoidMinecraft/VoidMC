@@ -225,7 +225,7 @@ fn set_slots(
 /// server inventory and the client's view after each.
 #[tokio::test]
 async fn give_stone_and_pearls_then_clear() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let alice_entity = server.player_entity(alice.uuid()).await;
@@ -304,7 +304,7 @@ async fn give_stone_and_pearls_then_clear() {
 #[tokio::test]
 async fn give_respects_stack_limits_and_fill_order() {
     use ItemKind::{DiamondSword, Dirt, EnderPearl, Stone};
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let entity = server.player_entity(alice.uuid()).await;
     let mut held: Vec<(usize, ItemKind, u8)> = Vec::new();
@@ -387,7 +387,7 @@ async fn give_respects_stack_limits_and_fill_order() {
 #[tokio::test]
 async fn give_beyond_capacity_keeps_counts_exact() {
     use ItemKind::{Dirt, Stone};
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let entity = server.player_entity(alice.uuid()).await;
 
@@ -434,7 +434,7 @@ async fn give_beyond_capacity_keeps_counts_exact() {
 /// error and leave the inventory and the client's view as they were.
 #[tokio::test]
 async fn give_rejects_bad_input_without_touching_inventory() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let entity = server.player_entity(alice.uuid()).await;
 
@@ -495,7 +495,7 @@ async fn clear_empties_every_slot_and_the_cursor() {
         DiamondBoots, DiamondChestplate, DiamondHelmet, DiamondLeggings, DiamondSword, Dirt,
         EnderPearl, OakPlanks, Shield, Stone,
     };
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let alice_entity = server.player_entity(alice.uuid()).await;
@@ -563,7 +563,7 @@ async fn clear_empties_every_slot_and_the_cursor() {
 /// After a reconnect the client's window again matches the server's.
 #[tokio::test]
 async fn rejoin_shows_the_server_inventory() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let old = server.player_entity(alice.uuid()).await;
     run(&alice, "give minecraft:stone 5").await;

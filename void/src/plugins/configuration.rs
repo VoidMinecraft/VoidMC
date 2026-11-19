@@ -5,6 +5,7 @@ use bevy_ecs::{
     entity::Entity,
     observer::On,
     system::{Commands, Query, Res},
+    world::World,
 };
 use voidmc_protocol::{
     State, clientbound,
@@ -12,7 +13,7 @@ use voidmc_protocol::{
 };
 
 use crate::{
-    CommandRegistry, RegistryDataStore, ServerConfigResource, WorldGen,
+    RegistryDataStore, ServerConfigResource, WorldGen,
     components::{
         ChunkStreamBacklog, ClientSettings, ConnectionState, CurrentChunkPos,
         EffectiveViewDistance, KeepAliveState, LoadedChunks, MinecraftEntityId, PlayerDimension,
@@ -102,7 +103,7 @@ fn build_update_tags(registries: &RegistryDataStore) -> clientbound::UpdateTags 
 fn handle_finish_configuration(
     event: On<PacketEvent<FinishConfigurationAcknowledged>>,
     mut commands: Commands,
-    command_registry: Res<CommandRegistry>,
+    world: &World,
     config: Res<ServerConfigResource>,
     world_gen: Res<WorldGen>,
     players: Players,
@@ -188,8 +189,9 @@ fn handle_finish_configuration(
         },
     );
 
-    // Send Commands packet (command tree for tab completion)
-    players.send(event.entity, command_registry.build_command_tree());
+    // The player's permission level, then the commands it may run (the tree
+    // drives the client's tab completion).
+    super::permissions::send_permissions(world, event.entity, minecraft_entity_id.0);
 
     // Send GameEvent (Start waiting for level chunks)
     players.send(

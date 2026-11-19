@@ -59,7 +59,9 @@ WorldEditPlugin::default()
 
 The example server (`cargo run -p voidmc-example`) gives operators the wand
 when they join, unless they already carry one; set `VOID_EXAMPLE_OPERATORS=1` to make every player an
-operator while testing locally.
+operator while testing locally. Nobody is an operator otherwise, so without it
+no player gets the wand or may run the operator-only default commands (see
+[Permissions](/reference/gameplay/commands#permissions)).
 
 ## Commands
 

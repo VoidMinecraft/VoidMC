@@ -20,7 +20,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `PlayerName(String)` | Username | Player's Minecraft username (set during Login) |
 | `PlayerUuid(Uuid)` | UUID | Player's UUID (set during Login) |
 | `MinecraftEntityId(i32)` | Entity ID | Server-assigned Minecraft entity ID (visible to all clients) |
-| `Operator` | (marker) | Marks a player as an operator/admin |
+| `Operator` | (marker) | Marks a player as an operator: it may run the operator-only default commands, and its client is sent permission level 4 (0 without it) |
 
 ### Player State
 

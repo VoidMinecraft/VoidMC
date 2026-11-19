@@ -182,7 +182,12 @@ CommandBuilder::new("stop")
     .build();
 ```
 
-The command tree is still sent to every player.
+A player is sent only the commands and subcommands whose requirements accept
+it, in its command tree and in `/help`, like on a vanilla server. The tree is
+built when the player joins and rebuilt when `Operator` is added to or removed
+from it (see [Permissions](#permissions)); a requirement that reads anything
+else applies at once to dispatch and completion, but the client's tree only
+follows at the next join or `Operator` change.
 
 ## CommandContext
 
@@ -407,6 +412,54 @@ Pass command names in the `exclude` slice to skip specific defaults:
 register_default_commands(&mut registry, &["kick", "gamemode"]);
 ```
 
+### Permissions
+
+The defaults that act on the world, the server or other players require the
+`Operator` component on the sender: `/broadcast`, `/clear`, `/gamemode`
+(`/gm`), `/give`, `/kick`, `/say`, `/stop`, `/summon` and `/tp`. `/help`,
+`/list`, `/ping`, `/plugins` (`/pl`) and `/tell` (`/msg`) are open to every
+player. A player without `Operator` who runs an operator command gets
+`You do not have permission to use this command` in red, and nothing else
+happens.
+
+Nobody is an operator by default. An application grants it by inserting the
+component on the player's entity and revokes it by removing it, at any time:
+
+```rust
+use voidmc::components::{Operator, PlayerName};
+use voidmc::events::PlayerJoinEvent;
+
+fn op_admins(event: On<PlayerJoinEvent>, names: Query<&PlayerName>, mut commands: Commands) {
+    if names.get(event.entity).is_ok_and(|name| name.0 == "Alice") {
+        commands.entity(event.entity).insert(Operator);
+    }
+}
+```
+
+`Operator` is a marker without a level. Like a vanilla server, VoidMC tells
+each client its permission level with the entity event `24 + level` on the
+client's own player: 4 (`28`) for an operator, 0 (`24`) for anyone else; the
+vanilla client uses it to decide, among other things, whether to offer entity
+selectors such as `@a`. The level and then the player's command tree are sent
+when it joins and again whenever `Operator` is added to or removed from it, so
+its tab completion and `/help` follow at once. Inserting `Operator` on a
+player that already has it sends nothing.
+
+To let other players run a default command, or to restrict it differently,
+exclude it and register your own command under the same name, with your own
+`requires` or none:
+
+```rust
+register_default_commands(&mut registry, &["tp"]);
+registry.register(
+    CommandBuilder::new("tp")
+        .description("Teleport to coordinates")
+        .arg("position", Arc::new(Vec3Arg))
+        .handler(|ctx| { /* ... */ })
+        .build(),
+);
+```
+
 ### Available Default Commands
 
 The Description column is what `/help` shows.
@@ -441,9 +494,9 @@ game (see [Kicking a player](/reference/server/sending-packets#kicking-a-player)
 The player-management commands answer as follows. Every player counts as
 online once it is ready (it has loaded the world), the same set the tab list
 and the server-list player count show; a player still loading is not listed
-and cannot be named as a target. The default commands have no permission
-requirement: any player can run them. To restrict one, exclude it and register
-your own version with `requires`.
+and cannot be named as a target. `/list` and `/tell` are open to every
+player; `/broadcast` and `/kick` require `Operator` (see
+[Permissions](#permissions)).
 
 | Command | Sender sees | Others see |
 |---|---|---|
@@ -550,10 +603,13 @@ and to nobody else.
   a command registered after the player joined is listed too. Each command
   appears once under its name; aliases are not listed, but they are in the
   client's command tree and `/help <alias>` shows their command. Commands whose
-  `requires` refuses the player are listed as well. There are no pages.
+  `requires` refuses the player are left out, such as the
+  [operator commands](#permissions) for a player without `Operator`. There
+  are no pages.
 - `/help <command>` (a name or an alias) shows `--- /name ---`, the
-  description and `  Usage: <usage>`. Any other word, a page number included,
-  gets `Unknown command: /<word>` in red.
+  description and `  Usage: <usage>`. Any other word, a page number or a
+  command the player may not run included, gets `Unknown command: /<word>` in
+  red.
 - `/ping` answers `Pong!`.
 
 Invalid input gets a reply and never disconnects the player:
@@ -590,7 +646,7 @@ stay local to `void-example`.
 
 ## Tab-Completion
 
-The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to each client as it enters the play state, right after the `Login` packet. This provides:
+The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to each client as it enters the play state, right after the `Login` packet and the client's permission level. Each player's tree holds only the commands it may run (see [Requirements](#requirements)). This provides:
 
 - Command name completion (typing `/` shows all commands)
 - Client-side validation and completion for every vanilla parser in the table
@@ -611,7 +667,8 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
 - Subcommand literals, completed locally by the client; `complete` walks the
   literals typed so far before picking the argument under the cursor
 
-The command tree is rebuilt from the registry each time a client joins.
+The command tree is rebuilt from the registry each time a client joins, and
+for one player whenever `Operator` is added to or removed from it.
 
 No default command has a `minecraft:ask_server` argument, so a vanilla client
 completes them without asking the server. When a client does send
