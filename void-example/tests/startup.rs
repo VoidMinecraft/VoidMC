@@ -3,9 +3,10 @@
 //! `127.0.0.1:25565`, generates its spawn area, keeps running and logs no
 //! error or panic.
 //!
-//! The example's address is not configurable, so this test needs port 25565
-//! free. It fails at once with a clear message when the port is taken, for
-//! instance by an example server left running in another terminal.
+//! The test runs the example with its default address (`VOID_LISTEN_ADDR`
+//! unset), so it needs port 25565 free. It fails at once with a clear message
+//! when the port is taken, for instance by an example server left running in
+//! another terminal.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -102,6 +103,8 @@ impl ExampleServer {
             .current_dir(&runtime_dir)
             // The default `info` filter is what prints the startup lines.
             .env_remove("RUST_LOG")
+            // The default address, not an override from the caller's shell.
+            .env_remove("VOID_LISTEN_ADDR")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

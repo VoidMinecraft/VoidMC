@@ -26,9 +26,10 @@ const TPS_HEADER: &str = "timestamp_ms,tps,window_ms,last_tick_ms,total_ticks";
 const TICK_RATE: f64 = 20.0;
 
 /// Every variable the example reads; each run starts without them.
-const VARIABLES: [&str; 8] = [
+const VARIABLES: [&str; 9] = [
     "RUST_LOG",
     "VOID_LISTEN_ADDR",
+    "VOID_OBSERVABILITY_ADDR",
     "VOID_METRICS_DEBUG",
     "VOID_TPS_OUTPUT",
     "VOID_METRICS_MODE",
