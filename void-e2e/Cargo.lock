@@ -2789,6 +2789,8 @@ dependencies = [
  "bevy_app",
  "bevy_ecs",
  "flume",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
