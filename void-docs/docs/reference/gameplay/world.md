@@ -76,6 +76,7 @@ The `stream_chunks` system (runs in `PostUpdate`) manages chunk loading and unlo
    - If the chunk entity exists in `ChunkIndex`, send its data.
    - If not, generate it on-demand using the `WorldGenerator`, spawn a chunk entity, and send the data.
    - New chunks are sent in nearest-first order (from `chunks_in_radius` sorting).
+   - The chunks sent to a player in one tick are framed by `ChunkBatchStart` and `ChunkBatchFinished`, like vanilla.
 6. **Throttle**: A player with a `ChunkSendBudget(n)` receives at most `n` chunk packets per tick (cached ones included). When the budget, the `max_chunk_generations_per_tick` cap or a chunk still pending spawn leaves chunks unsent, the unsent tail is stored nearest-first in `ChunkStreamBacklog` and drained on the following ticks without recomputing the range or the unload set (steps 4–5 only rerun when the chunk column or view distance changes); the component is removed once the range is complete. Players without a budget receive their whole range at once.
 
 ## Spawn Area Pre-Generation
@@ -93,6 +94,20 @@ fn init_world(commands, chunk_index, world_gen, loader, registries, config) {
 ```
 
 This ensures the spawn area is ready before any player connects. The radius is controlled by `ServerConfig::spawn_chunk_radius` (default: 10). The spawn area, chunks streamed later and the spawn height all come from the `WorldGen` resource, the generator passed to `ServerConfigBuilder::world_generator`.
+
+A joining player is sent the chunks within `initial_chunk_radius` that are already in the spawn area. If that radius reaches past the spawn area, chunk streaming generates the missing chunks on the player's first pass, even when the player's view distance equals `initial_chunk_radius`.
+
+### Generation Cost Controls
+
+Three settings decide when chunks are generated, never what they contain:
+
+| Setting | Effect |
+|---|---|
+| `spawn_chunk_radius` | Chunks generated at startup instead of when a player first needs them |
+| `max_chunk_generations_per_tick` | Caps the chunks streaming generates per tick (default 8, `0` = no cap); the rest wait in `ChunkStreamBacklog` |
+| `ChunkIndex` | Every chunk is generated once, then served from its entity to every player and on every revisit |
+
+A chunk is the same, byte for byte, whether it was generated at startup, streamed later under the budget, or generated again by a fresh `WorldGenerator`. The end-to-end scenarios in `void-e2e/tests/scenarios/atp_027_world_generation.rs` check this against a terrain fixture for `DefaultWorldGenerator`.
 
 ## WorldGenerator Trait
 

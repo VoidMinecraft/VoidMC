@@ -61,6 +61,8 @@ pub struct JoinTranscript {
     pub compression_threshold: Option<i32>,
     pub known_packs: Vec<String>,
     pub registries: Vec<String>,
+    /// The registry entries as Azalea decoded them, for checks on their data.
+    pub registry_data: RegistryHolder,
     pub tags_received: bool,
 }
 
@@ -469,6 +471,7 @@ async fn login(
         }
     }
 
+    transcript.registry_data = registries.clone();
     (connection.game(), transcript, registries)
 }
 
