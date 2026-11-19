@@ -189,7 +189,7 @@ inside one schedule.
 | `EntitySimulation` | `Update` | Settle spawns, wander, physics. After `KeepAlive`. |
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
 | `EntityBroadcast` | `PostUpdate` | Spawn / movement / motion / metadata packets for non-player entities. |
-| `PlayerBroadcast` | `PostUpdate` | Other players' movement and head rotation. |
+| `PlayerBroadcast` | `PostUpdate` | Other players' movement, head rotation and crouch. |
 | `BlockEntitySync` | `PostUpdate` | Block Entity Data packets for changed block entities; before `ChunkStreaming` (see [Block Entities](../gameplay/block-entities.md)). |
 | `ChunkStreaming` | `PostUpdate` | Chunk load/unload packets; updates `LoadedChunks`. |
 | `InventorySync` | `PostUpdate` | Container packets for changed inventories and open menus (slot, cursor, held slot). |

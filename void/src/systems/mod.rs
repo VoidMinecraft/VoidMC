@@ -3,6 +3,7 @@ pub mod entities;
 pub mod keep_alive;
 pub mod physics;
 pub mod player;
+pub mod pose;
 pub mod position;
 pub mod settle;
 pub mod wander;
@@ -66,6 +67,7 @@ impl Plugin for GameSystemsPlugin {
                     (
                         position::broadcast_position,
                         position::update_previous_positions.after(position::broadcast_position),
+                        pose::broadcast_shared_flags,
                     )
                         .in_set(VoidSystems::PlayerBroadcast),
                     chunk::stream_chunks.in_set(VoidSystems::ChunkStreaming),

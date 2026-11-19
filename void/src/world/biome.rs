@@ -217,9 +217,14 @@ impl Attribute {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BiomeError {
     UnqualifiedName(String),
+    /// Not a valid identifier: the client would fail to read the registry.
+    InvalidName(String),
     AlreadyRegistered(String),
     NotSyncable(String),
     NoBiomeRegistry,
+    /// A client already received the registries: its biome ids would no
+    /// longer match the server's.
+    RegistriesAlreadySent(String),
 }
 
 impl fmt::Display for BiomeError {
@@ -231,6 +236,11 @@ impl fmt::Display for BiomeError {
                     "biome name {name:?} needs a namespace (e.g. myserver:{name})"
                 )
             }
+            BiomeError::InvalidName(name) => write!(
+                f,
+                "biome name {name:?} is not a valid identifier: use namespace:path with \
+                 lowercase letters, digits, '_', '-', '.' (and '/' in the path)"
+            ),
             BiomeError::AlreadyRegistered(name) => {
                 write!(f, "biome {name:?} is already registered")
             }
@@ -239,6 +249,11 @@ impl fmt::Display for BiomeError {
                 "attribute {id:?} is not sent to clients; only visual/audio syncable attributes belong in a biome"
             ),
             BiomeError::NoBiomeRegistry => write!(f, "the registry store has no {BIOME_REGISTRY}"),
+            BiomeError::RegistriesAlreadySent(name) => write!(
+                f,
+                "biome {name:?} registered after a client received the registries; \
+                 register custom biomes in ServerConfigBuilder::configure_registries"
+            ),
         }
     }
 }
@@ -440,8 +455,16 @@ impl BiomeBuilder {
     }
 
     pub fn validate(&self) -> Result<(), BiomeError> {
-        if !self.name.contains(':') {
+        let Some((namespace, path)) = self.name.split_once(':') else {
             return Err(BiomeError::UnqualifiedName(self.name.clone()));
+        };
+        let allowed = |c: char| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.');
+        if namespace.is_empty()
+            || path.is_empty()
+            || !namespace.chars().all(allowed)
+            || !path.chars().all(|c| allowed(c) || c == '/')
+        {
+            return Err(BiomeError::InvalidName(self.name.clone()));
         }
         for (id, _) in &self.attributes {
             if !BIOME_SYNCABLE_ATTRIBUTES.contains(&id.as_str()) {
@@ -453,12 +476,12 @@ impl BiomeBuilder {
 
     /// Appends the biome to the registry sent at login and returns its index.
     /// Only valid before any client has received registries: a client that
-    /// already logged in would disagree with every later chunk palette.
+    /// already logged in would disagree with every later chunk palette, so a
+    /// later call fails with [`BiomeError::RegistriesAlreadySent`].
     pub fn register(self, store: &mut RegistryDataStore) -> Result<BiomeId, BiomeError> {
-        debug_assert!(
-            !store.sent_to_clients(),
-            "BiomeBuilder::register after registries were sent to a client"
-        );
+        if store.sent_to_clients() {
+            return Err(BiomeError::RegistriesAlreadySent(self.name));
+        }
         self.validate()?;
         if store.biome(&self.name).is_some() {
             return Err(BiomeError::AlreadyRegistered(self.name));
@@ -703,6 +726,19 @@ mod tests {
     }
 
     #[test]
+    fn registration_after_registries_were_sent_is_refused() {
+        let mut store = RegistryDataStore::default();
+        let before = store.biome_count();
+        store.mark_sent();
+        assert_eq!(
+            BiomeBuilder::new("myserver:late").register(&mut store),
+            Err(BiomeError::RegistriesAlreadySent("myserver:late".into()))
+        );
+        assert_eq!(store.biome_count(), before);
+        assert_eq!(store.biome("myserver:late"), None);
+    }
+
+    #[test]
     fn minimal_builder_only_carries_required_fields() {
         let nbt = BiomeBuilder::new("myserver:plain").nbt();
         let keys: Vec<String> = nbt.compound.tags.iter().map(|(k, _)| key(k)).collect();
@@ -729,6 +765,26 @@ mod tests {
         assert_eq!(
             BiomeBuilder::new("crimson").register(&mut store),
             Err(BiomeError::UnqualifiedName("crimson".into()))
+        );
+        for name in [
+            "MyServer:crimson",
+            "myserver:Crimson",
+            "myserver:crimson sky",
+            "myserver:",
+            ":crimson",
+            "myserver:crimson:sky",
+            "my/server:crimson",
+        ] {
+            assert_eq!(
+                BiomeBuilder::new(name).register(&mut store),
+                Err(BiomeError::InvalidName(name.into())),
+                "{name}"
+            );
+        }
+        assert!(
+            BiomeBuilder::new("my-server.2:sky/red_1")
+                .register(&mut store)
+                .is_ok()
         );
         assert_eq!(
             BiomeBuilder::new("myserver:raid")
