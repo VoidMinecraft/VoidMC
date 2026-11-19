@@ -14,6 +14,11 @@ pub enum VoidSystems {
     ItemUseDrain,
     /// `Update`: `MenuClickEvent` and menu `on_click` handlers run here.
     MenuClickDrain,
+    /// `Update`, after `ItemUseDrain`, `CommandDrain` and `MenuClickDrain`
+    /// (only with [`crate::plugins::redstone::RedstonePlugin`]): button
+    /// releases, then dust power and note blocks for the block changes of the
+    /// tick.
+    Redstone,
     /// `Update`, after `CommandDrain`.
     KeepAlive,
     /// `Update`, after `KeepAlive`: settle, wander, physics.
