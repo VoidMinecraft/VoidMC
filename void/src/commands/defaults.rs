@@ -252,11 +252,9 @@ fn handle_kick(ctx: &mut CommandContext) {
         .cloned()
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
-    let reason_nbt = crate::messages::Text::truncated(&reason).component(TextColor::Red);
-    ctx.players().send(
-        target,
-        voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
-    );
+    // Sends the Disconnect and has the server close the connection, so a
+    // client that ignores the packet does not stay in the game.
+    ctx.players().kick(target, &reason);
 
     ctx.reply(&format!("Kicked {} (reason: {})", target_name, reason));
 }
