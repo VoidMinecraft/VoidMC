@@ -13,6 +13,7 @@ use voidmc_protocol::serverbound;
 use crate::components::{Client, ClientId, ConnectionState, PlayerReady};
 use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
+use crate::observability::TelemetryHandle;
 use crate::schedule::VoidSystems;
 
 pub struct IncomingPacket {
@@ -207,6 +208,9 @@ pub fn ingest_network_packets(world: &mut World) {
     let mut backlog = 0usize;
 
     world.resource_mut::<ClientSenders>().sync();
+    let telemetry = world
+        .get_resource::<TelemetryHandle>()
+        .map(|handle| handle.0.clone());
 
     let packets: Vec<IncomingPacket> =
         world.resource_scope(|_world, channels: Mut<NetworkChannels>| {
@@ -265,7 +269,15 @@ pub fn ingest_network_packets(world: &mut World) {
             client_entity,
             incoming_packet.packet,
         ) {
-            if matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_)) {
+            let unrecognized = matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_));
+            if let Some(telemetry) = &telemetry {
+                if unrecognized {
+                    telemetry.packet_unrecognized();
+                } else {
+                    telemetry.packet_failed();
+                }
+            }
+            if unrecognized {
                 // Unrecognized packet (e.g. one we don't handle yet): expected and
                 // non-fatal, so warn instead of error.
                 tracing::warn!(
@@ -719,6 +731,11 @@ mod tests {
         });
         let mut bytes = Vec::new();
         packet.encode(&mut bytes);
+        raw_packet(bytes)
+    }
+
+    /// A packet whose id and body are `bytes`, as the network thread hands it over.
+    fn raw_packet(bytes: Vec<u8>) -> Packet {
         let mut frame = Vec::new();
         VarI32(bytes.len() as i32).encode(&mut frame);
         frame.extend(bytes);
@@ -775,6 +792,46 @@ mod tests {
 
     #[derive(Resource, Default)]
     struct Handshakes(Vec<(u32, Entity)>);
+
+    #[test]
+    fn telemetry_counts_unrecognized_and_undecodable_packets() {
+        let mut h = harness();
+        let telemetry = std::sync::Arc::new(crate::observability::Telemetry::new(
+            Duration::from_secs(1),
+            20,
+            100,
+        ));
+        h.app.insert_resource(TelemetryHandle(telemetry.clone()));
+        let _rx = h.connect(1);
+        let _rx2 = h.connect(2);
+        let _rx3 = h.connect(3);
+        // No handshake packet has id 0x7f.
+        h.incoming_tx
+            .send(IncomingPacket {
+                client_id: 1,
+                packet: raw_packet(vec![0x7f]),
+            })
+            .unwrap();
+        // A handshake (id 0) cut short after its protocol version.
+        for client_id in [2, 3] {
+            h.incoming_tx
+                .send(IncomingPacket {
+                    client_id,
+                    packet: raw_packet(vec![0x00, 0x01]),
+                })
+                .unwrap();
+        }
+        let logs = captured(|| h.app.update());
+
+        assert!(logs.contains(tracing::Level::WARN, "Unrecognized packet from client 1"));
+        assert_eq!(logs.errors().len(), 2);
+        let text = telemetry.render_metrics(Instant::now());
+        assert!(
+            text.contains("\nvoidmc_packets_unrecognized_total 1\n"),
+            "{text}"
+        );
+        assert!(text.contains("\nvoidmc_packet_errors_total 2\n"), "{text}");
+    }
 
     #[test]
     fn first_packet_spawns_a_registered_client_entity() {

@@ -19,6 +19,7 @@ pub mod menu;
 pub mod messages;
 mod metrics;
 pub mod network;
+mod observability;
 pub mod particles;
 pub mod players;
 pub mod plugins;
@@ -69,6 +70,7 @@ pub use menu::{
     MenuClosedEvent, MenuSlot, MenuType, Menus, OpenMenu, WorldMenus,
 };
 pub use messages::{MessageRequest, Messages, Text, TextColor, TextTooLong, WorldMessages};
+pub use observability::{DEFAULT_OBSERVABILITY_HOST, ObservabilityAddress, ObservabilityConfig};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
 pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
