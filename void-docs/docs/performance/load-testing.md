@@ -132,7 +132,7 @@ The JSON report (`report_format` `voidmc.load.report.v1`) has these sections:
 | Key | Content |
 |---|---|
 | `workload` | `id`, every parameter and threshold, and the actions in words |
-| `conditions` | start time (UTC), wall-clock duration, commit and whether the tree had uncommitted changes, build profile, host cores, OS and architecture, endpoint kind (`in-process` or `operator-endpoint`) and address, in-process server settings |
+| `conditions` | start time (UTC), wall-clock duration, commit and whether the tree had uncommitted changes, build profile, CPU cores available to the run (`host_cores`), OS and architecture, endpoint kind (`in-process` or `operator-endpoint`) and address, in-process server settings |
 | `measurements` | smoke checks with their outcome and detail, whether the load ran, connections, latency, tick rate, errors, resources |
 | `unavailable` | each measurement the run could not make, and why |
 | `verdicts` | each threshold with its rule, limit, observed value and outcome (`pass`, `fail`, `not_applicable`) |

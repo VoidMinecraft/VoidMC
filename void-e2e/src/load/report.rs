@@ -50,6 +50,8 @@ pub struct Conditions {
     pub tree_dirty: Option<bool>,
     pub build_profile: &'static str,
     pub debug_assertions: bool,
+    /// CPU cores available to this process (its affinity and cgroup quota
+    /// included), which may be fewer than the host has.
     pub host_cores: usize,
     pub os: &'static str,
     pub arch: &'static str,
@@ -162,7 +164,7 @@ impl Report {
             "\n\n{}\n\n## Run conditions\n\n\
              - started {} UTC, {} ms wall clock\n\
              - commit {}{}\n\
-             - {} build (debug assertions {}), {} cores, {}/{}\n\
+             - {} build (debug assertions {}), {} cores available, {}/{}\n\
              - endpoint: {} ({})\n",
             self.workload.definition.description,
             c.started_at_utc,
