@@ -1,3 +1,4 @@
+mod atp_029_biomes_weather;
 mod commands;
 mod connection;
 mod inventory;
