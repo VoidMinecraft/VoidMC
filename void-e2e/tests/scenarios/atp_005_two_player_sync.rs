@@ -5,8 +5,14 @@
 //! Spawning and listing each other (including a player already online), one
 //! walk seen by the second player, and the first player's departure are
 //! covered by `players::players_see_each_other_move_and_leave`.
+//!
+//! The crouch shares the shared-flags byte with glowing and invisibility:
+//! the last scenarios check that every update of that byte carries all of
+//! them, whichever one changed.
 
 use azalea_entity::{EntityDataValue, LookDirection, Pose};
+use bevy_ecs::world::EntityWorldMut;
+use voidmc::{Effect, EffectDuration, Glowing, Invisible, StatusEffects};
 use voidmc_e2e::core::position::Vec3;
 use voidmc_e2e::protocol::common::movements::MoveFlags;
 use voidmc_e2e::protocol::packets::game::{
@@ -18,7 +24,10 @@ use voidmc_e2e::{Bot, TestServer};
 /// Shared entity flags (byte) and pose metadata indices of every entity.
 const SHARED_FLAGS: u8 = 0;
 const POSE: u8 = 6;
+/// Bits of the shared flags byte.
 const CROUCHING_FLAG: u8 = 0x02;
+const INVISIBLE_FLAG: u8 = 0x20;
+const GLOWING_FLAG: u8 = 0x40;
 
 /// The look sent in the scenarios, and its protocol angle bytes
 /// (`floor(degrees * 256 / 360)`): 135° is 96, -30° is -22.
@@ -125,6 +134,67 @@ async fn wait_for_crouch(observer: &Bot, actor: &Bot, crouching: bool) {
             .await;
         flags = new_flags.or(flags);
         pose = new_pose.or(pose);
+    }
+}
+
+/// The shared flags and pose one client knows for one player, accumulated
+/// from the metadata updates it received (an update may carry either).
+#[derive(Default)]
+struct SharedData {
+    flags: Option<u8>,
+    pose: Option<Pose>,
+}
+
+/// Consumes `actor`'s metadata updates on `observer` into `seen` until the
+/// shared flags are exactly `flags` and the pose is `pose`. Every flags
+/// update on the way must keep the `kept` bits: a byte that drops one of them,
+/// even for one update, makes the vanilla client stop rendering it.
+async fn wait_for_shared_data(
+    observer: &Bot,
+    actor: &Bot,
+    seen: &mut SharedData,
+    (flags, pose): (u8, Pose),
+    kept: u8,
+) {
+    let what = format!("{}'s flags {flags:#04x} and pose {pose:?}", actor.name());
+    while seen.flags != Some(flags) || seen.pose != Some(pose) {
+        let (new_flags, new_pose) = observer
+            .expect(&what, |packet| {
+                crouch_metadata_of(actor.entity_id(), packet)
+            })
+            .await;
+        if let Some(new_flags) = new_flags {
+            assert_eq!(
+                new_flags & kept,
+                kept,
+                "{} got flags {new_flags:#04x} for {}, which drop bits of {kept:#04x}, \
+                 while waiting for {what}",
+                observer.name(),
+                actor.name()
+            );
+        }
+        seen.flags = new_flags.or(seen.flags);
+        seen.pose = new_pose.or(seen.pose);
+    }
+}
+
+/// Lets the server finish everything `actor` and `observer` sent, then
+/// checks that `observer` holds no other shared-flags update for `actor`
+/// (one that would undo the state just reached), and that no client was
+/// sent its own player's shared flags (vanilla clients own their crouch).
+async fn assert_settled(actor: &Bot, observer: &Bot) {
+    actor.sync().await;
+    observer.sync().await;
+    let pending = observer.queued(|packet| crouch_metadata_of(actor.entity_id(), packet));
+    assert!(
+        pending.is_empty(),
+        "{} has unexpected updates for {}: {pending:?}",
+        observer.name(),
+        actor.name()
+    );
+    for bot in [actor, observer] {
+        let own = bot.queued(|packet| crouch_metadata_of(bot.entity_id(), packet));
+        assert!(own.is_empty(), "{} got its own flags: {own:?}", bot.name());
     }
 }
 
@@ -346,5 +416,144 @@ async fn each_player_stays_one_entity_that_follows_many_moves_and_long_hops() {
         .await;
 
     alice.assert_healthy();
+    server.stop().await;
+}
+
+/// Runs `f` on the server-side entity of `bot`'s player, the way an
+/// application changes a player's components.
+async fn on_player(
+    server: &TestServer,
+    bot: &Bot,
+    f: impl FnOnce(&mut EntityWorldMut) + Send + 'static,
+) {
+    let entity = server.player_entity(bot.uuid()).await;
+    server
+        .with_world(move |world| f(&mut world.entity_mut(entity)))
+        .await;
+}
+
+#[tokio::test]
+async fn glowing_and_invisible_players_keep_those_flags_while_they_crouch() {
+    use Pose::{Crouching, Standing};
+
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    for (viewer, target) in [(&alice, &bob), (&bob, &alice)] {
+        viewer
+            .wait_until("the other player spawned", |view| {
+                view.entity_by_uuid(target.uuid()).is_some()
+            })
+            .await;
+    }
+    let mut bob_sees_alice = SharedData::default();
+    let mut alice_sees_bob = SharedData::default();
+
+    // Both public ways to set the bits: a marker component and an effect.
+    on_player(&server, &alice, |alice| {
+        alice.insert(Glowing);
+    })
+    .await;
+    on_player(&server, &bob, |bob| {
+        bob.insert(StatusEffects::new().with(Effect::Invisibility, 0, EffectDuration::Infinite));
+    })
+    .await;
+    let glowing = (GLOWING_FLAG, Standing);
+    wait_for_shared_data(&bob, &alice, &mut bob_sees_alice, glowing, 0).await;
+    let invisible = (INVISIBLE_FLAG, Standing);
+    wait_for_shared_data(&alice, &bob, &mut alice_sees_bob, invisible, 0).await;
+
+    // Crouching and standing up keep glowing and invisibility.
+    for (actor, observer, seen, bit) in [
+        (&alice, &bob, &mut bob_sees_alice, GLOWING_FLAG),
+        (&bob, &alice, &mut alice_sees_bob, INVISIBLE_FLAG),
+    ] {
+        sneak(actor, true).await;
+        wait_for_shared_data(
+            observer,
+            actor,
+            seen,
+            (bit | CROUCHING_FLAG, Crouching),
+            bit,
+        )
+        .await;
+        sneak(actor, false).await;
+        wait_for_shared_data(observer, actor, seen, (bit, Standing), bit).await;
+        assert_settled(actor, observer).await;
+    }
+
+    // Glowing and invisibility changing while crouching keep the crouch.
+    sneak(&alice, true).await;
+    let glowing_crouch = (GLOWING_FLAG | CROUCHING_FLAG, Crouching);
+    wait_for_shared_data(
+        &bob,
+        &alice,
+        &mut bob_sees_alice,
+        glowing_crouch,
+        GLOWING_FLAG,
+    )
+    .await;
+    on_player(&server, &alice, |alice| {
+        alice.remove::<Glowing>();
+    })
+    .await;
+    let crouch = (CROUCHING_FLAG, Crouching);
+    wait_for_shared_data(&bob, &alice, &mut bob_sees_alice, crouch, CROUCHING_FLAG).await;
+    on_player(&server, &alice, |alice| {
+        alice.insert(StatusEffects::new().with(Effect::Glowing, 0, EffectDuration::Infinite));
+    })
+    .await;
+    wait_for_shared_data(
+        &bob,
+        &alice,
+        &mut bob_sees_alice,
+        glowing_crouch,
+        CROUCHING_FLAG,
+    )
+    .await;
+    on_player(&server, &alice, |alice| {
+        alice.insert(Invisible);
+    })
+    .await;
+    let everything = (GLOWING_FLAG | INVISIBLE_FLAG | CROUCHING_FLAG, Crouching);
+    let kept = glowing_crouch.0;
+    wait_for_shared_data(&bob, &alice, &mut bob_sees_alice, everything, kept).await;
+    on_player(&server, &alice, |alice| {
+        alice.remove::<StatusEffects>();
+    })
+    .await;
+    let invisible_crouch = (INVISIBLE_FLAG | CROUCHING_FLAG, Crouching);
+    let kept = invisible_crouch.0;
+    wait_for_shared_data(&bob, &alice, &mut bob_sees_alice, invisible_crouch, kept).await;
+    assert_settled(&alice, &bob).await;
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn a_joining_player_sees_the_complete_flags_of_a_glowing_crouching_player() {
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    on_player(&server, &alice, |alice| {
+        alice.insert(Glowing);
+    })
+    .await;
+    sneak(&alice, true).await;
+    alice.sync().await;
+
+    let bob = server.join("Bob").await;
+    bob.wait_until("Alice spawned", |view| {
+        view.entity_by_uuid(alice.uuid()).is_some()
+    })
+    .await;
+    let mut seen = SharedData::default();
+    let everything = (GLOWING_FLAG | CROUCHING_FLAG, Pose::Crouching);
+    wait_for_shared_data(&bob, &alice, &mut seen, everything, 0).await;
+    assert_settled(&alice, &bob).await;
+
+    alice.assert_healthy();
+    bob.assert_healthy();
     server.stop().await;
 }
