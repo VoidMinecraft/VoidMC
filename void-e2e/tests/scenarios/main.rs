@@ -1,3 +1,4 @@
+mod atp_008_discover_commands;
 mod commands;
 mod connection;
 mod inventory;
