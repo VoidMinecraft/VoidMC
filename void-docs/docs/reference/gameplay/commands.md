@@ -56,7 +56,12 @@ The client sends commands via two different packets:
 
 Both are routed through the same `handle_command()` function, so the server treats them identically.
 
-A third path exists: if the client types a command that is **not in its local command tree** (i.e. a command the server registered after the client received the tree), it sends a **`ChatMessage` (0x09)** prefixed with `/`. `handle_chat_message` intercepts that case and routes it through `handle_command()` as well.
+A third path exists: a **`ChatMessage` (0x09)** whose text starts with `/` is
+not broadcast as chat; `handle_chat_message` strips the `/` and routes the rest
+through `handle_command()`, so it gets the same reply as the `ChatCommand`. The
+vanilla client sends every line typed with `/` as `ChatCommand` or
+`SignedChatCommand`, even for a command missing from its tree; this path serves
+clients and bots that send commands as chat lines.
 
 ### Key types at a glance
 
@@ -76,7 +81,7 @@ Build commands using the fluent `CommandBuilder`:
 
 ```rust
 use std::sync::Arc;
-use voidmc::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg};
+use voidmc::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg, StringArg};
 
 let command = CommandBuilder::new("greet")
     .description("Greet a player with a custom message")
@@ -404,28 +409,55 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 
 ### Available Default Commands
 
+The Description column is what `/help` shows.
+
 | Command | Aliases | Description | Arguments |
 |---|---|---|---|
-| `/help` | | List commands or show command details | `[command:string]` |
+| `/help` | | List available commands | `[command:string]` |
 | `/gamemode` | `/gm` | Change game mode | `<mode:gamemode>` |
 | `/kick` | | Kick a player | `<player:player> [reason:text]...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/ping` | | Pong! | (none) |
-| `/plugins` | `/pl` | List loaded plugins | (none) |
+| `/plugins` | `/pl` | List plugins | (none) |
 | `/tp` | | Teleport to coordinates | `<position:vec3>` (`~` and `^` forms); keeps the look direction; rejects positions outside ±30,000,000 horizontally or ±20,000,000 vertically |
-| `/broadcast` | | Broadcast to all players | `<message:text>...` |
-| `/tell` | `/msg` | Private message a player | `<player:player> <message:text>...` (selectors: `@s`, `@p`, `@r`, name) |
-| `/list` | | Show online players | (none) |
+| `/broadcast` | | Broadcast a message to all players | `<message:text>...` |
+| `/tell` | `/msg` | Send a private message to a player | `<player:player> <message:text>...` (selectors: `@s`, `@p`, `@r`, name) |
+| `/list` | | List online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
-| `/summon` | | Spawn a non-player entity | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]` |
+| `/summon` | | Summon an entity at a position | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]` |
 | `/give` | | Give yourself an item | `<item:item> [count:integer(1..64)]` |
-| `/clear` | | Empty your inventory | (none) |
+| `/clear` | | Clear your inventory | (none) |
 | `/stop` | | Gracefully stop the server | (none) |
 
 `/stop` emits an `AppExit`, so the server finishes the current tick and shuts
 down cleanly. Plugins that clean up on shutdown — such as
 [world serialization](/reference/server/world-serialization), which flushes
-dirty chunks — react to the same signal. Ctrl-C / SIGTERM stop the server the
-same way.
+dirty chunks — react to the same signal. Ctrl-C (SIGINT), SIGTERM and SIGHUP
+stop the server the same way.
+
+`/kick` sends the reason in a `Disconnect` packet, then the server closes the
+connection itself, so a client that ignores the packet does not stay in the
+game (see [Kicking a player](/reference/server/sending-packets#kicking-a-player)).
+
+The player-management commands answer as follows. Every player counts as
+online once it is ready (it has loaded the world), the same set the tab list
+and the server-list player count show; a player still loading is not listed
+and cannot be named as a target. The default commands have no permission
+requirement: any player can run them. To restrict one, exclude it and register
+your own version with `requires`.
+
+| Command | Sender sees | Others see |
+|---|---|---|
+| `/list` | `There are 2 player(s) online: Alice, Bob` (`There are 0 player(s) online.` when empty) | nothing |
+| `/tell Bob hi` | `You whisper to Bob: hi` | Bob only: `Alice whispers to you: hi` (gray) |
+| `/broadcast hi` | `[Broadcast] hi` | every online player: `[Broadcast] hi` |
+| `/kick Bob [reason]` | `Kicked Bob (reason: ...)` | Bob is disconnected with the reason in red (default `Kicked by an operator`); the others see Bob leave the world and the tab list |
+
+Errors (unknown or missing player, missing text) go to the sender only, in
+red, followed by the usage line. `/tell` and `/broadcast` refuse a message
+containing a `§` formatting code or a control character (`Illegal characters
+in chat`), as a vanilla server does, so the line shows exactly as typed.
+Message words are joined by single spaces: runs of spaces and line breaks in
+the command become one space.
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
@@ -439,9 +471,56 @@ and `--block-checks` enables world block collision checks for that physics
 step. These flags are stored as ECS movement components and synchronized by the
 non-player entity lifecycle.
 
+`/give` tops up matching stacks first, then fills empty slots (hotbar before
+the main inventory), never past the item's maximum stack size: 20 ender pearls
+become 16 + 4. Items that do not fit are not given, and the reply says how many
+did not fit. `minecraft:air` is refused. `/clear` empties every slot of the
+player inventory (crafting grid, armor, main inventory, hotbar, offhand) and the
+carried item, then resends the whole window.
+
+### `/gamemode`
+
+`/gamemode <mode>` changes only the game mode the sender's client displays,
+nothing the server enforces. `mode` is `survival`, `creative`, `adventure` or
+`spectator` (any case) or the legacy id `0`-`3`. On success the server:
+
+- sends the sender a Game Event `change_game_mode` with the mode id, so the
+  client switches its local mode. The vanilla client derives flight and
+  instant break from that mode itself; no Player Abilities packet is sent;
+- sets the sender's `TabEntry::game_mode`, so every player, the sender
+  included, receives a Player Info Update with `UPDATE_GAME_MODE` (a
+  spectator shows greyed out in the tab list);
+- replies `Game mode set to <name> (<id>)`, for example
+  `Game mode set to creative (1)`.
+
+There is no teleport and no respawn. Any other value (`4`, `-1`, `99`,
+`hardcore`, a missing mode or an extra argument) is a parse error: the
+sender gets the error in red, such as `Invalid value '4' for <mode>: expected
+gamemode ('4' is not a valid game mode (expected survival, creative, adventure
+or spectator))`, `Missing required argument <mode> (expected gamemode)` or
+`Too many arguments: expected 1, got 2`, followed by
+`Usage: /gamemode <mode:gamemode>` in gray, and nothing changes.
+
+The argument is advertised as `minecraft:gamemode`, so the vanilla client
+shows anything but the four names in red as you type, the numeric ids `0`-`3`
+included, since vanilla only knows the names. Pressing Enter still sends the
+command, and the server accepts those ids.
+
+The server keeps applying the rules of the configured
+[`game_mode`](../server/configuration.md) to every player: block
+breaking and the creative-only inventory clicks (cloning a stack,
+middle-button drags) follow it, not `/gamemode`. On a Survival
+server, a player shown Creative removes a block locally when it starts digging,
+but the server treats that as the start of a survival dig, so the block comes
+back. The mode is not stored either: a player who reconnects starts in the
+configured mode again.
+
 ### PluginList Resource
 
-The `/plugins` command reads from an optional `PluginList` resource. Insert it in your plugin to make plugin names visible:
+`/plugins` (alias `/pl`) lists the names in the optional `PluginList`
+resource, in the order given. VoidMC neither fills it nor discovers plugins:
+the plugins an application adds with `add_plugin` are not listed unless it
+names them here. Insert it to show players the names you choose:
 
 ```rust
 use voidmc::PluginList;
@@ -454,6 +533,41 @@ VoidServer::new(config)
         ]));
     })
 ```
+
+| `PluginList` | `/plugins` reply |
+|---|---|
+| not inserted, or empty | `No plugins loaded.` |
+| `["MyPlugin", "AnotherPlugin"]` | `Plugins (2): MyPlugin, AnotherPlugin` |
+
+### Replies and Invalid Input
+
+Every reply is a system chat message sent to the player who ran the command,
+and to nobody else.
+
+- `/help` answers with one message: a `--- Available Commands ---` header, then
+  one line per command, `  /name - description` (`  /name` without a
+  description), sorted by name. It reads the `CommandRegistry` when it runs, so
+  a command registered after the player joined is listed too. Each command
+  appears once under its name; aliases are not listed, but they are in the
+  client's command tree and `/help <alias>` shows their command. Commands whose
+  `requires` refuses the player are listed as well. There are no pages.
+- `/help <command>` (a name or an alias) shows `--- /name ---`, the
+  description and `  Usage: <usage>`. Any other word, a page number included,
+  gets `Unknown command: /<word>` in red.
+- `/ping` answers `Pong!`.
+
+Invalid input gets a reply and never disconnects the player:
+
+| Input | Reply |
+|---|---|
+| A name that is neither a command nor an alias; names are case-sensitive, so `/HELP` is one | `Unknown command: /<name>` in red |
+| `/` alone, or only whitespace | `Unknown command: /` in red |
+| A missing, invalid or extra argument | each error in red, then `Usage: <usage>` in gray |
+| A command whose `requires` refuses the player | `You do not have permission to use this command` in red |
+
+Whitespace around and between words is ignored: `/ help  ping ` runs
+`/help ping`. An unknown name is echoed as typed, at any length the packet
+allows; a vanilla client shows `§` codes in it as formatting.
 
 ### Example-only Commands
 
@@ -476,7 +590,7 @@ stay local to `void-example`.
 
 ## Tab-Completion
 
-The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to clients during the configuration phase. This provides:
+The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to each client as it enters the play state, right after the `Login` packet. This provides:
 
 - Command name completion (typing `/` shows all commands)
 - Client-side validation and completion for every vanilla parser in the table
@@ -489,12 +603,31 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
   calls its parser's `suggestions`, and the reply is a
   `CommandSuggestionsResponse` covering just the partial token. `GameProfileArg`
   (ready player names) and `EnumArg` (variant names) use it out of the box.
-- Summon entity suggestions for `SummonableEntityArg` arguments (via `minecraft:summonable_entities`)
+- Summon entity suggestions for `SummonableEntityArg` arguments (via
+  `minecraft:summonable_entities`), completed by the client from its own list
+- Player names for `PlayerArg` and `PlayersArg` (`minecraft:entity`), completed
+  by the client from its player list
 - Alias support (aliases appear as separate entries pointing to the same argument chain)
 - Subcommand literals, completed locally by the client; `complete` walks the
   literals typed so far before picking the argument under the cursor
 
 The command tree is rebuilt from the registry each time a client joins.
+
+No default command has a `minecraft:ask_server` argument, so a vanilla client
+completes them without asking the server. When a client does send
+`CommandSuggestionsRequest`, the server answers it as follows:
+
+- The line may start with `/` or not. It is answered only when it names a
+  registered command or alias followed by a space; an empty line, a bare name
+  (`/he`) or an unknown command gets no reply.
+- Otherwise the reply echoes the transaction id and always comes, with an
+  empty list when the argument under the cursor does not ask the server, or
+  when the line is past the last argument.
+- The built-in parsers (`EnumArg`, `GameProfileArg`, subcommand literals)
+  match a prefix ignoring ASCII case; flags match it exactly. Matches keep the
+  parser's order and are not sorted.
+- Every player in the play state is answered, ready or not; `GameProfileArg`
+  offers the ready players only, the requester included.
 
 ## Registration Methods
 
