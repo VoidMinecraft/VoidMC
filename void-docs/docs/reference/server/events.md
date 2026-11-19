@@ -6,7 +6,7 @@ struct with `#[derive(Event)]`, fired with `world.trigger(..)` (or
 `On<T>` observer registered through `app.add_observer(..)`.
 
 ```rust
-use voidmc::{On, events::PlayerJoinEvent};
+use voidmc::{On, VoidServer, events::PlayerJoinEvent};
 
 fn on_join(event: On<PlayerJoinEvent>) {
     println!("Player joined: client_id={}", event.client_id);
@@ -56,7 +56,64 @@ There is no `write_message` / `MessageReader` path; the types
 
 All events live in `voidmc::events`. Unless stated otherwise they are fired by
 the framework after the ECS state has been updated, and `entity` is the acting
-player. None of them derive `Clone` or `Debug`.
+player. Apart from `PlayerTeleportEvent`, none of them derive `Clone` or
+`Debug`.
+
+The movement, input and interaction events report what a client sent, at most
+one event of each kind per packet the server accepts. They are observations of
+client input, not gameplay the server applies: VoidMC has no combat, damage,
+health, hunger or mob AI, and an event such as `PlayerInteractEntityEvent`
+changes nothing unless your own observer does.
+
+### Observing gameplay from a plugin
+
+An application observes these events with public API only. The event carries
+the player's `Entity`; the rest (name, UUID, inventory, world) is read from the
+ECS inside the observer:
+
+```rust
+use voidmc::components::PlayerName;
+use voidmc::events::{BlockPlaceEvent, PlayerMoveEvent, PlayerUseItemEvent};
+use voidmc::{Inventory, On, Query, VoidServer};
+
+fn on_move(event: On<PlayerMoveEvent>, names: Query<&PlayerName>) {
+    if let Ok(name) = names.get(event.entity) {
+        tracing::info!(
+            player = %name.0,
+            from = ?(event.old_x, event.old_y, event.old_z),
+            to = ?(event.new_x, event.new_y, event.new_z),
+            "moved"
+        );
+    }
+}
+
+fn on_place(event: On<BlockPlaceEvent>, names: Query<&PlayerName>) {
+    if let Ok(name) = names.get(event.entity) {
+        tracing::info!(player = %name.0, position = ?event.position, state = event.placed_state, "placed");
+    }
+}
+
+// The use events carry the hand, not the item: read it from the inventory.
+fn on_use(event: On<PlayerUseItemEvent>, inventories: Query<&Inventory>) {
+    if let Ok(inventory) = inventories.get(event.entity) {
+        let item = match event.hand {
+            voidmc::Hand::MainHand => inventory.held(),
+            voidmc::Hand::OffHand => inventory.get(Inventory::OFFHAND),
+        };
+        tracing::info!(item = ?item.item.name(), "used");
+    }
+}
+
+VoidServer::new(config).add_plugin(|app| {
+    app.add_observer(on_move)
+        .add_observer(on_place)
+        .add_observer(on_use);
+});
+```
+
+The end-to-end scenario `void-e2e/tests/scenarios/atp_035_gameplay_events.rs`
+records the movement, input, chat, block and item events this way while two
+clients play, and checks that each action produced exactly its events.
 
 ### Connection lifecycle
 
@@ -70,11 +127,11 @@ player. None of them derive `Clone` or `Debug`.
 
 | Event | Fields | When |
 |---|---|---|
-| `PlayerMoveEvent` | `entity`, `old_x/y/z`, `new_x/y/z` | Position packet received; `Position` already updated. |
-| `PlayerRotateEvent` | `entity`, `yaw`, `pitch` | Rotation packet received; `Rotation` already updated. |
+| `PlayerMoveEvent` | `entity`, `old_x/y/z`, `new_x/y/z` | One per position packet the server accepts (`SetPlayerPos`, or the position of `SetPlayerPosAndRot`), even when it repeats the current position (`old` = `new`; clients resend it periodically). Absolute block coordinates; `Position` already holds `new_*`. Not fired while the player rides (`Mount`) or carries `ServerControlledPosition`, whose position packets are ignored, nor for server-side moves (`Teleport`, `/tp`, writing `Position`). |
+| `PlayerRotateEvent` | `entity`, `yaw`, `pitch` | One per rotation packet (`SetPlayerRotation`, or the rotation of `SetPlayerPosAndRot`), also unchanged, mounted or server-controlled. Degrees exactly as sent: yaw is not wrapped into ±180. `Rotation` already updated. A `SetPlayerPosAndRot` fires a move and a rotate event. |
 | `PlayerInputEvent` | `entity`, `forward`, `backward`, `left`, `right`, `jump`, `sneak`, `sprint` | Movement-key state changed; each field is whether the key is held. |
-| `PlayerSneakEvent` | `entity`, `sneaking` | Sneak started/stopped. |
-| `PlayerSprintEvent` | `entity`, `sprinting` | Sprint started/stopped. |
+| `PlayerSneakEvent` | `entity`, `sneaking` | The sneak key in Player Input changed (clients report sneaking there since 1.21.2), right after that packet's `PlayerInputEvent`. |
+| `PlayerSprintEvent` | `entity`, `sprinting` | Player Command start/stop sprinting. |
 | `PlayerToggleFlyEvent` | `entity`, `flying` | Client toggled flight. |
 | `PlayerTeleportEvent` | `entity`, `outcome` | A `Teleport` left the player: `Confirmed`, `TimedOut` or `Cancelled` (see [Players](../gameplay/players.md#teleportation)). |
 
@@ -82,18 +139,18 @@ player. None of them derive `Clone` or `Debug`.
 
 | Event | Fields | When |
 |---|---|---|
-| `ChatMessageEvent` | `entity`, `client_id`, `message` | A non-command chat line, after it was broadcast. |
-| `ChatCommandEvent` | `entity`, `client_id`, `command`, `args` | A command was enqueued (found or not). Execution happens later in `VoidSystems::CommandDrain`. |
+| `ChatMessageEvent` | `entity`, `client_id`, `message` | A chat line not starting with `/`, after `<name> message` was broadcast: an observer sees it but cannot cancel or rewrite it. `message` is the text exactly as sent. |
+| `ChatCommandEvent` | `entity`, `client_id`, `command`, `args` | A command was enqueued (found or not), from a command packet or a chat line starting with `/` (which fires no `ChatMessageEvent`). Execution happens later in `VoidSystems::CommandDrain`. |
 
 ### Interaction
 
 | Event | Fields | When |
 |---|---|---|
 | `PlayerSwingArmEvent` | `entity`, `hand` | Arm swing animation. |
-| `PlayerInteractEntityEvent` | `entity`, `target_id`, `attack`, `hand`, `target_pos`, `sneaking` | Click on an entity. `attack` is true for a left click. Not consumed by the framework. |
-| `PlayerStartDiggingEvent` / `PlayerCancelDiggingEvent` / `PlayerFinishDiggingEvent` | `entity`, `position`, `face`, `sequence` | Block digging state machine. Finish is what leads to a break. |
-| `PlayerUseItemEvent` | `entity`, `hand`, `sequence` | Right click in the air. |
-| `PlayerUseItemOnBlockEvent` | `entity`, `hand`, `position`, `face`, `cursor_x/y/z`, `inside_block`, `sequence` | Right click on a block. |
+| `PlayerInteractEntityEvent` | `entity`, `target_id`, `attack`, `hand`, `target_pos`, `sneaking` | The client sent an Interact packet for an entity. Input only: nothing consumes it, and no attack, damage or knockback is applied. The decoder still expects the pre-26.1 Interact layout (26.1.2 clients send attacks as a separate Attack packet), so `attack`, `hand` and `target_pos` do not yet reflect what a 26.1.2 client clicked. |
+| `PlayerStartDiggingEvent` / `PlayerCancelDiggingEvent` / `PlayerFinishDiggingEvent` | `entity`, `position`, `face`, `sequence` | Block digging state machine, one per packet, whether or not a block is there. Finish (or, in creative, start) is what leads to a break. |
+| `PlayerUseItemEvent` | `entity`, `hand`, `sequence` | Right click in the air, whatever the hand holds (an empty hand too). Fired when the packet arrives, before the use runs in `VoidSystems::ItemUseDrain`; the item is not in the payload, read it from `Inventory` (`held()` or `get(Inventory::OFFHAND)`). |
+| `PlayerUseItemOnBlockEvent` | `entity`, `hand`, `position`, `face`, `cursor_x/y/z`, `inside_block`, `sequence` | Right click on a block, fired like `PlayerUseItemEvent`. `position` is the clicked block, `face` the clicked face, `cursor_*` the hit point on that face (0 to 1). A placement that follows fires `BlockPlaceEvent`. |
 | `PlayerChangeSlotEvent` | `entity`, `slot` | Hotbar selection changed. |
 | `PlayerSwapHandsEvent` | `entity` | Swap main/off hand. |
 | `PlayerDropItemEvent` | `entity`, `drop_stack` | Drop key pressed (`drop_stack` = whole stack). |
@@ -112,9 +169,9 @@ player. None of them derive `Clone` or `Debug`.
 
 | Event | Fields | When |
 |---|---|---|
-| `BlockChangeEvent` | `dimension`, `position`, `old_state`, `new_state`, `source: Option<Entity>` | Any committed block mutation, after `BlockUpdate` was broadcast. |
-| `BlockBreakEvent` | `entity`, `dimension`, `position`, `broken_state` | A player broke a block (also fires `BlockChangeEvent`). |
-| `BlockPlaceEvent` | `entity`, `dimension`, `position`, `face`, `placed_state` | A player placed a block (also fires `BlockChangeEvent`). |
+| `BlockChangeEvent` | `dimension`, `position`, `old_state`, `new_state`, `source: Option<Entity>` | A block changed through a player break or placement (including `ItemUseContext::place_block`/`set_block`), after the chunk was updated and `BlockUpdate` broadcast: the world already holds `new_state`. Fired just before the matching break or place event. Edits that write chunk data directly (world edit, generators) do not fire it. |
+| `BlockBreakEvent` | `entity`, `dimension`, `position`, `broken_state` | A player broke a block; `broken_state` is the block it had, the world already holds air. Not fired for a dig on air or when an item's `before_break_block` keeps the block. |
+| `BlockPlaceEvent` | `entity`, `dimension`, `position`, `face`, `placed_state` | A block was placed for a player: `position` is where it went (the clicked block offset by `face`) and the world already holds `placed_state`. Also fired by `ItemUseContext::place_block` and `set_block` (with `face` `Top`). Not fired when nothing changes: an empty hand, an item that is not a block, an unloaded chunk or the same state. |
 
 ## Firing events from your code
 
