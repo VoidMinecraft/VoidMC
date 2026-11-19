@@ -1,3 +1,4 @@
+mod atp_034_lifecycle_plugin;
 mod commands;
 mod connection;
 mod inventory;
