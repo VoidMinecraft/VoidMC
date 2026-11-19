@@ -13,6 +13,7 @@ pub mod item_use;
 pub mod login;
 pub mod movement;
 pub mod play;
+pub mod redstone;
 pub mod scoreboard;
 pub mod sidebar;
 pub mod status;

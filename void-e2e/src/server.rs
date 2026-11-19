@@ -315,6 +315,17 @@ impl TestServer {
     /// it could not recognise.
     pub async fn stop(mut self) {
         self.shutdown().await;
+        self.assert_no_failures();
+    }
+
+    /// Waits for the server to stop on its own, for example after a player
+    /// ran `/stop`, without asking it to; then fails like [`TestServer::stop`].
+    pub async fn wait_for_exit(mut self) {
+        self.join_thread().await;
+        self.assert_no_failures();
+    }
+
+    fn assert_no_failures(&self) {
         let failures: Vec<String> = self
             .logs
             .records()
@@ -330,17 +341,30 @@ impl TestServer {
         );
     }
 
-    async fn shutdown(&mut self) {
+    fn request_exit(&self) {
         let _ = self.handle.jobs.send(Box::new(|world: &mut World| {
             world.write_message(AppExit::Success);
         }));
+    }
+
+    async fn shutdown(&mut self) {
+        self.request_exit();
+        self.join_thread().await;
+    }
+
+    async fn join_thread(&mut self) {
         if let Some(thread) = self.thread.take() {
             let joined = tokio::task::spawn_blocking(move || thread.join());
             match tokio::time::timeout(Duration::from_secs(10), joined).await {
                 Ok(Ok(Ok(()))) => {}
                 Ok(Ok(Err(panic))) => std::panic::resume_unwind(panic),
                 Ok(Err(error)) => panic!("failed to join the server thread: {error}"),
-                Err(_) => panic!("the server did not stop within 10s"),
+                Err(_) => {
+                    // The join is still blocking the test runtime: stop the
+                    // server so the runtime can shut down after the panic.
+                    self.request_exit();
+                    panic!("the server did not stop within 10s");
+                }
             }
         }
     }
@@ -351,9 +375,7 @@ impl Drop for TestServer {
         let Some(thread) = self.thread.take() else {
             return;
         };
-        let _ = self.handle.jobs.send(Box::new(|world: &mut World| {
-            world.write_message(AppExit::Success);
-        }));
+        self.request_exit();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !thread.is_finished() && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
