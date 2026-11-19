@@ -1,3 +1,4 @@
+mod atp_023_plugin_hook;
 mod commands;
 mod connection;
 mod inventory;
