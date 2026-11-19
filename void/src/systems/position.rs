@@ -2,10 +2,17 @@ use bevy_ecs::prelude::*;
 use tracing::instrument;
 use voidmc_protocol::clientbound;
 
-use crate::components::{MinecraftEntityId, PlayerReady, Position, PreviousPosition, Rotation};
+use crate::components::{
+    Grounded, MinecraftEntityId, PlayerReady, Position, PreviousPosition, Rotation,
+};
 use crate::entity::Mount;
 use crate::players::Players;
 use crate::systems::entities::relative_delta;
+
+/// The client-reported on-ground flag; a player that never sent one stands.
+fn on_ground(grounded: Option<&Grounded>) -> bool {
+    grounded.is_none_or(|grounded| grounded.0)
+}
 
 #[instrument(level = "info", skip(players, moved_query, dismounted, resync_query))]
 pub fn broadcast_position(
@@ -17,6 +24,7 @@ pub fn broadcast_position(
             &Position,
             &PreviousPosition,
             Ref<Rotation>,
+            Option<&Grounded>,
             Has<Mount>,
         ),
         (
@@ -26,17 +34,20 @@ pub fn broadcast_position(
     >,
     mut dismounted: RemovedComponents<Mount>,
     resync_query: Query<
-        (&MinecraftEntityId, &Position, &Rotation),
+        (&MinecraftEntityId, &Position, &Rotation, Option<&Grounded>),
         (With<PlayerReady>, Without<Mount>),
     >,
 ) {
     let ready = players.ready();
     let mut resynced = Vec::new();
     for rider in dismounted.read() {
-        let Ok((mc_entity_id, pos, rotation)) = resync_query.get(rider) else {
+        let Ok((mc_entity_id, pos, rotation, grounded)) = resync_query.get(rider) else {
             continue;
         };
-        ready.send_except(rider, sync_packet(mc_entity_id.0, pos, rotation));
+        ready.send_except(
+            rider,
+            sync_packet(mc_entity_id.0, pos, rotation, on_ground(grounded)),
+        );
         ready.send_except(
             rider,
             clientbound::SetHeadRotation {
@@ -47,13 +58,14 @@ pub fn broadcast_position(
         resynced.push(rider);
     }
 
-    for (mover, mc_entity_id, pos, prev_pos, rotation, mounted) in moved_query.iter() {
+    for (mover, mc_entity_id, pos, prev_pos, rotation, grounded, mounted) in moved_query.iter() {
         if resynced.contains(&mover) {
             continue;
         }
 
         let yaw = angle_to_byte(rotation.yaw);
         let pitch = angle_to_byte(rotation.pitch);
+        let on_ground = on_ground(grounded);
 
         if mounted {
             if !rotation.is_changed() {
@@ -91,11 +103,11 @@ pub fn broadcast_position(
                     delta_z,
                     yaw,
                     pitch,
-                    on_ground: true,
+                    on_ground,
                 },
             )
         } else {
-            sync_packet(mc_entity_id.0, pos, &rotation)
+            sync_packet(mc_entity_id.0, pos, &rotation, on_ground)
         };
 
         ready.send_except(mover, packet);
@@ -109,7 +121,12 @@ pub fn broadcast_position(
     }
 }
 
-fn sync_packet(entity_id: i32, pos: &Position, rotation: &Rotation) -> clientbound::PlayPacket {
+fn sync_packet(
+    entity_id: i32,
+    pos: &Position,
+    rotation: &Rotation,
+    on_ground: bool,
+) -> clientbound::PlayPacket {
     clientbound::PlayPacket::EntityPositionSync(clientbound::EntityPositionSync {
         entity_id,
         x: pos.x,
@@ -120,7 +137,7 @@ fn sync_packet(entity_id: i32, pos: &Position, rotation: &Rotation) -> clientbou
         vz: 0.0,
         yaw: rotation.yaw,
         pitch: rotation.pitch,
-        on_ground: true,
+        on_ground,
     })
 }
 
@@ -418,5 +435,48 @@ mod tests {
         assert_eq!(teleport.y, 65.0);
         let prev = app.world().get::<PreviousPosition>(rider).unwrap();
         assert_eq!(prev.y, 65.0);
+    }
+
+    #[test]
+    fn movement_carries_the_client_on_ground_flag() {
+        let (mut app, rx) = test_app();
+        let jumper = app
+            .world_mut()
+            .spawn((
+                ClientId(1),
+                MinecraftEntityId(7),
+                Position {
+                    x: 0.0,
+                    y: 64.0,
+                    z: 0.0,
+                },
+                PreviousPosition {
+                    x: 0.0,
+                    y: 64.0,
+                    z: 0.0,
+                },
+                Rotation::default(),
+                PlayerReady,
+            ))
+            .id();
+        app.world_mut().spawn((ClientId(2), PlayerReady));
+        app.update();
+        let _ = packets(&rx);
+
+        let on_ground = |sent: &[clientbound::PlayPacket]| match &sent[0] {
+            clientbound::PlayPacket::UpdateEntityPositionAndRotation(moved) => moved.on_ground,
+            clientbound::PlayPacket::EntityPositionSync(synced) => synced.on_ground,
+            other => panic!("expected a movement packet, got {other:?}"),
+        };
+        let mut jump = |y: f64, x: f64, grounded: bool| {
+            app.world_mut()
+                .entity_mut(jumper)
+                .insert((Position { x, y, z: 0.0 }, Grounded(grounded)));
+            app.update();
+            on_ground(&packets(&rx))
+        };
+        assert!(!jump(65.25, 0.0, false), "a jump leaves the ground");
+        assert!(jump(64.0, 0.0, true), "and lands on it");
+        assert!(!jump(65.0, 100.0, false), "absolute syncs carry it too");
     }
 }

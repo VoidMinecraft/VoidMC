@@ -144,6 +144,7 @@ pub fn stream_chunks(
         let dim_id = dimension.0;
         let budget = send_budget.map_or(usize::MAX, |b| b.0.max(1));
         let mut sent = 0usize;
+        let batch_start = outbox.len();
         pending.retain(|pos| {
             if loaded_chunks.0.contains(pos) {
                 return false;
@@ -189,6 +190,21 @@ pub fn stream_chunks(
             false
         });
 
+        // Frame this tick's chunks in a batch, as the vanilla client expects.
+        if sent > 0 {
+            outbox.insert(
+                batch_start,
+                (player, clientbound::ChunkBatchStart {}.into()),
+            );
+            outbox.push((
+                player,
+                clientbound::ChunkBatchFinished {
+                    batch_size: sent as i32,
+                }
+                .into(),
+            ));
+        }
+
         match (pending.is_empty(), backlog) {
             (true, Some(_)) => {
                 commands.entity(player).remove::<ChunkStreamBacklog>();
@@ -220,7 +236,9 @@ pub fn stream_chunks(
 #[cfg(test)]
 mod tests {
     use bevy_app::{App, PostUpdate};
-    use voidmc_protocol::clientbound::{Chunk, ChunkBuilder, ClientboundPacket, ManualPlayPacket};
+    use voidmc_protocol::clientbound::{
+        Chunk, ChunkBuilder, ClientboundPacket, ManualPlayPacket, PlayPacket,
+    };
 
     use super::*;
     use crate::WorldGenerator;
@@ -398,6 +416,45 @@ mod tests {
         );
         let loaded = &app.world().get::<LoadedChunks>(entity).unwrap().0;
         assert!(loaded.iter().all(|p| (p.x - 10).abs() <= 1));
+    }
+
+    #[test]
+    fn each_tick_of_chunks_is_framed_as_one_batch() {
+        let (mut app, receiver) = test_app(ServerConfig {
+            view_distance: 1,
+            max_chunk_generations_per_tick: 0,
+            ..Default::default()
+        });
+        let entity = player(&mut app, 1);
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(ChunkSendBudget(4));
+
+        for expected in [4, 4, 1] {
+            app.update();
+            let frames: Vec<String> = receiver
+                .drain()
+                .filter(|p| p.client_id == 1)
+                .filter_map(|p| match p.packet {
+                    ClientboundPacket::Play(PlayPacket::ChunkBatchStart(_)) => {
+                        Some("start".to_string())
+                    }
+                    ClientboundPacket::ManualPlay(ManualPlayPacket::ChunkDataAndLight(_)) => {
+                        Some("chunk".to_string())
+                    }
+                    ClientboundPacket::Play(PlayPacket::ChunkBatchFinished(finished)) => {
+                        Some(format!("finished {}", finished.batch_size))
+                    }
+                    _ => None,
+                })
+                .collect();
+            let mut framed = vec!["start".to_string()];
+            framed.extend(std::iter::repeat_n("chunk".to_string(), expected));
+            framed.push(format!("finished {expected}"));
+            assert_eq!(frames, framed);
+        }
+        app.update();
+        assert!(receiver.drain().next().is_none(), "no empty batch is sent");
     }
 
     #[test]

@@ -81,7 +81,7 @@ Build commands using the fluent `CommandBuilder`:
 
 ```rust
 use std::sync::Arc;
-use voidmc::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg};
+use voidmc::{CommandBuilder, GameProfileArg, GreedyStringArg, IntegerArg, StringArg};
 
 let command = CommandBuilder::new("greet")
     .description("Greet a player with a custom message")
@@ -431,8 +431,8 @@ The Description column is what `/help` shows.
 `/stop` emits an `AppExit`, so the server finishes the current tick and shuts
 down cleanly. Plugins that clean up on shutdown — such as
 [world serialization](/reference/server/world-serialization), which flushes
-dirty chunks — react to the same signal. Ctrl-C / SIGTERM stop the server the
-same way.
+dirty chunks — react to the same signal. Ctrl-C (SIGINT), SIGTERM and SIGHUP
+stop the server the same way.
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
