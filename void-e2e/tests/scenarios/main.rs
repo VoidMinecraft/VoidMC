@@ -12,6 +12,7 @@ mod atp_023_plugin_hook;
 mod atp_026_graceful_stop;
 mod atp_027_world_generation;
 mod atp_030_note_block_redstone;
+mod atp_031_load;
 mod commands;
 mod connection;
 mod inventory;
