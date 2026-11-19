@@ -170,21 +170,20 @@ struct Trace {
     samples: Vec<Sample>,
 }
 
+type Recorded<'a> = (
+    &'a MinecraftEntityId,
+    &'a Position,
+    &'a Grounded,
+    &'a MovementConfig,
+    &'a EntityCollider,
+    &'a EntityDimension,
+);
+
 fn record(
     mut trace: ResMut<Trace>,
     index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
-    entities: Query<
-        (
-            &MinecraftEntityId,
-            &Position,
-            &Grounded,
-            &MovementConfig,
-            &EntityCollider,
-            &EntityDimension,
-        ),
-        With<SpawnedEntity>,
-    >,
+    entities: Query<Recorded, With<SpawnedEntity>>,
 ) {
     trace.tick += 1;
     let tick = trace.tick;
@@ -303,7 +302,7 @@ async fn steer(server: &TestServer, id: i32, yaw: f32) {
 }
 
 /// A height a client was sent for an entity.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Seen {
     y: f64,
     delta_y: f64,
@@ -427,9 +426,7 @@ async fn summoned_pig_falls_onto_the_floor_and_rests_grounded() {
             resting.then_some(())
         })
         .await;
-    let (near_rest, rested_at) = settled(&server, near).await;
-    let (far_rest, _) = settled(&server, far).await;
-    let rest = [near_rest, far_rest];
+    let rest = [settled(&server, near).await, settled(&server, far).await];
     server.wait_ticks(100).await;
     for bot in [&alice, &bob] {
         bot.sync().await;
@@ -470,7 +467,9 @@ async fn summoned_pig_falls_onto_the_floor_and_rests_grounded() {
     );
 
     // At rest for 100 ticks: no jitter, no sinking.
-    for (id, samples, rest) in [(near, &near_samples, rest[0]), (far, &far_samples, rest[1])] {
+    for (id, samples, (rest, rested_at)) in
+        [(near, &near_samples, rest[0]), (far, &far_samples, rest[1])]
+    {
         let resting: Vec<_> = samples
             .iter()
             .filter(|sample| sample.tick >= rested_at)
@@ -485,29 +484,33 @@ async fn summoned_pig_falls_onto_the_floor_and_rests_grounded() {
     // Bob, another player: the fall arrives as relative moves flagged in the
     // air, the landing and everything after it flagged on the ground.
     let moves = seen_moves(&bob, far);
-    assert!(moves.iter().all(|seen| seen.delta_y <= 0.0), "{moves:?}");
+    let rising = moves.iter().find(|seen| seen.delta_y > 0.0);
+    assert_eq!(rising, None, "the falling pig moved up");
     let landing = moves
         .iter()
         .position(|seen| seen.y == ground)
         .expect("Bob was sent the landing");
-    assert!(landing >= 30, "Bob saw the fall tick by tick: {moves:?}");
+    assert!(landing >= 30, "Bob saw the fall in {landing} moves");
     assert!(
-        moves[..landing].iter().all(|seen| !seen.on_ground),
-        "in the air: {moves:?}"
+        moves[..landing].iter().any(|seen| seen.delta_y < -3.0),
+        "Bob saw the fast part of the fall"
     );
-    assert!(
-        moves[landing..]
-            .iter()
-            .all(|seen| seen.on_ground && seen.y == ground),
-        "on the ground: {moves:?}"
+    let grounded_in_the_air = moves[..landing].iter().find(|seen| seen.on_ground);
+    assert_eq!(
+        grounded_in_the_air, None,
+        "flagged on the ground in the air"
     );
+    let after = moves[landing..]
+        .iter()
+        .find(|seen| !seen.on_ground || seen.y != ground);
+    assert_eq!(after, None, "after the landing");
     let moves = seen_moves(&bob, near);
-    assert!(
-        moves.iter().all(|seen| seen.on_ground && seen.y == ground),
-        "{moves:?}"
-    );
-    assert_seen_at(&bob, near, rest[0]);
-    assert_seen_at(&bob, far, rest[1]);
+    let off = moves
+        .iter()
+        .find(|seen| !seen.on_ground || seen.y != ground);
+    assert_eq!(off, None, "the settled pig left the ground");
+    assert_seen_at(&bob, near, rest[0].0);
+    assert_seen_at(&bob, far, rest[1].0);
 
     alice.assert_healthy();
     bob.assert_healthy();
@@ -607,12 +610,10 @@ async fn pig_steps_onto_a_rise_and_cannot_pass_or_climb_a_wall() {
         moves[step..].iter().any(|seen| !seen.on_ground),
         "the drop off the rise"
     );
-    assert!(
-        moves
-            .iter()
-            .all(|seen| (ground..=ground + 1.0).contains(&seen.y)),
-        "{moves:?}"
-    );
+    let out_of_range = moves
+        .iter()
+        .find(|seen| !(ground..=ground + 1.0).contains(&seen.y));
+    assert_eq!(out_of_range, None, "below the floor or above the rise");
     let last = moves.last().unwrap();
     assert!(last.on_ground && last.y == ground, "{last:?}");
     assert_seen_at(&bob, pig, corner);
