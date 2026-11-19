@@ -434,6 +434,18 @@ down cleanly. Plugins that clean up on shutdown — such as
 dirty chunks — react to the same signal. Ctrl-C (SIGINT), SIGTERM and SIGHUP
 stop the server the same way.
 
+`/summon` accepts only full namespaced entity IDs and validates them against
+the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
+either omit all three to use the executor position, or provide `x`, `y`, and
+`z` together. Partial coordinate input is rejected instead of being silently
+ignored.
+
+The optional `--wander` flag attaches the demo random-walk behavior to the
+summoned entity. `--gravity` enables the simple server-side vertical physics,
+and `--block-checks` enables world block collision checks for that physics
+step. These flags are stored as ECS movement components and synchronized by the
+non-player entity lifecycle.
+
 ### `/gamemode`
 
 `/gamemode <mode>` changes only the game mode the sender's client displays,
@@ -455,7 +467,7 @@ sender gets the error in red, such as `Invalid value '4' for <mode>: expected
 gamemode ('4' is not a valid game mode (expected survival, creative, adventure
 or spectator))`, `Missing required argument <mode> (expected gamemode)` or
 `Too many arguments: expected 1, got 2`, followed by
-`Usage: /gamemode <mode:gamemode>` in grey, and nothing changes.
+`Usage: /gamemode <mode:gamemode>` in gray, and nothing changes.
 
 The argument is advertised as `minecraft:gamemode`, so the vanilla client
 shows anything but the four names in red as you type, the numeric ids `0`-`3`
@@ -470,18 +482,6 @@ server, a player shown Creative removes a block locally when it starts digging,
 but the server treats that as the start of a survival dig, so the block comes
 back. The mode is not stored either: a player who reconnects starts in the
 configured mode again.
-
-`/summon` accepts only full namespaced entity IDs and validates them against
-the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
-either omit all three to use the executor position, or provide `x`, `y`, and
-`z` together. Partial coordinate input is rejected instead of being silently
-ignored.
-
-The optional `--wander` flag attaches the demo random-walk behavior to the
-summoned entity. `--gravity` enables the simple server-side vertical physics,
-and `--block-checks` enables world block collision checks for that physics
-step. These flags are stored as ECS movement components and synchronized by the
-non-player entity lifecycle.
 
 ### PluginList Resource
 
