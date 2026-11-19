@@ -172,7 +172,10 @@ pub trait ItemBehavior: Send + Sync + 'static {
     fn on_use_on_block(&self, _ctx: &mut ItemUseContext) -> UseResult {
         UseResult::Pass
     }
-    /// Right-click while not pointing at a block.
+    /// Right-click while not pointing at a block. A vanilla client also sends
+    /// one right after a right-click on a block that it expects the item to do
+    /// nothing with, so this can follow [`Self::on_use_on_block`] for the same
+    /// click.
     fn on_use(&self, _ctx: &mut ItemUseContext) -> UseResult {
         UseResult::Pass
     }
@@ -238,13 +241,14 @@ pub struct ItemBehaviorRegistry {
 }
 
 impl ItemBehaviorRegistry {
-    /// Registers a behaviour for an item id.
+    /// Registers a behaviour for an item id, replacing any earlier one.
     pub fn register(&mut self, item: ItemId, behavior: impl ItemBehavior) {
         self.behaviors.insert(item, Arc::new(behavior));
     }
 
-    /// Registers a behaviour by item name, e.g. `"minecraft:stick"`. Logs and
-    /// ignores unknown names.
+    /// Registers a behaviour by item name, e.g. `"minecraft:stick"`, replacing
+    /// any earlier one. Logs a warning and registers nothing for an unknown
+    /// name.
     pub fn register_for(&mut self, name: &str, behavior: impl ItemBehavior) {
         match ItemId::from_name(name) {
             Some(item) => self.register(item, behavior),
@@ -364,9 +368,9 @@ struct QueuedUse {
     hand: Hand,
     sequence: i32,
     action: UseAction,
-    /// For a use: the slot and stack in `hand` when the packet arrived. Later
-    /// packets of the same tick, such as a hotbar change, must not alter what
-    /// this action uses.
+    /// The slot and stack in `hand` when the packet arrived (the main hand for
+    /// a break). Later packets of the same tick, such as a hotbar change, must
+    /// not alter what this action uses.
     held: Option<(usize, ItemStack)>,
 }
 
@@ -432,7 +436,8 @@ pub fn enqueue_use_in_air(
     });
 }
 
-/// Enqueues a block-break (dig-finished) action.
+/// Enqueues a block-break (dig-finished) action with the item `inventory`
+/// holds in the main hand now.
 pub fn enqueue_break(
     queue: &mut ItemUseQueue,
     player: Entity,
@@ -440,6 +445,7 @@ pub fn enqueue_break(
     sequence: i32,
     position: BlockPosition,
     face: BlockFace,
+    inventory: Option<&Inventory>,
 ) {
     queue.0.push_back(QueuedUse {
         player,
@@ -447,7 +453,7 @@ pub fn enqueue_break(
         hand: Hand::MainHand,
         sequence,
         action: UseAction::BreakBlock { position, face },
-        held: None,
+        held: held_in(inventory, Hand::MainHand),
     });
 }
 
@@ -455,13 +461,11 @@ fn break_cancelled(
     world: &mut World,
     player: Entity,
     client_id: u32,
+    held: &ItemStack,
     dimension: DimensionId,
     position: BlockPosition,
 ) -> bool {
-    let held = world
-        .get::<Inventory>(player)
-        .map(|inv| inv.held().clone())
-        .unwrap_or(ItemStack::EMPTY);
+    let held = held.clone();
     let Some(behavior) = world.resource::<ItemBehaviorRegistry>().get(held.item) else {
         return false;
     };
@@ -501,13 +505,15 @@ fn block_state(world: &World, dimension: DimensionId, position: BlockPosition) -
 }
 
 /// Enqueues the start of a survival dig, which only consults
-/// [`ItemBehavior::before_break_block`].
+/// [`ItemBehavior::before_break_block`], with the item `inventory` holds in the
+/// main hand now.
 pub fn enqueue_start_break(
     queue: &mut ItemUseQueue,
     player: Entity,
     client_id: u32,
     sequence: i32,
     position: BlockPosition,
+    inventory: Option<&Inventory>,
 ) {
     queue.0.push_back(QueuedUse {
         player,
@@ -515,7 +521,7 @@ pub fn enqueue_start_break(
         hand: Hand::MainHand,
         sequence,
         action: UseAction::StartBreak { position },
-        held: None,
+        held: held_in(inventory, Hand::MainHand),
     });
 }
 
@@ -528,15 +534,33 @@ pub fn drain_item_use_queue(world: &mut World) {
             continue;
         }
 
+        let (held_slot, held) = match queued.held {
+            Some((slot, stack)) => (Some(slot), stack),
+            None => (None, ItemStack::EMPTY),
+        };
         match queued.action {
             UseAction::StartBreak { position } => {
                 if let Some(dimension) = world.get::<PlayerDimension>(queued.player).map(|d| d.0) {
-                    break_cancelled(world, queued.player, queued.client_id, dimension, position);
+                    break_cancelled(
+                        world,
+                        queued.player,
+                        queued.client_id,
+                        &held,
+                        dimension,
+                        position,
+                    );
                 }
             }
             UseAction::BreakBlock { position, face } => {
                 if let Some(dimension) = world.get::<PlayerDimension>(queued.player).map(|d| d.0)
-                    && !break_cancelled(world, queued.player, queued.client_id, dimension, position)
+                    && !break_cancelled(
+                        world,
+                        queued.player,
+                        queued.client_id,
+                        &held,
+                        dimension,
+                        position,
+                    )
                     && let Some(broken_state) = mutate_block(
                         world,
                         queued.player,
@@ -547,10 +571,6 @@ pub fn drain_item_use_queue(world: &mut World) {
                         BlockMutation::Break,
                     )
                 {
-                    let held = world
-                        .get::<Inventory>(queued.player)
-                        .map(|inv| inv.held().clone())
-                        .unwrap_or(ItemStack::EMPTY);
                     if let Some(behavior) = world.resource::<ItemBehaviorRegistry>().get(held.item)
                     {
                         let mut ctx = BlockBreakContext {
@@ -569,10 +589,6 @@ pub fn drain_item_use_queue(world: &mut World) {
                 let block = match queued.action {
                     UseAction::UseOnBlock(target) => Some(target),
                     _ => None,
-                };
-                let (held_slot, held) = match queued.held {
-                    Some((slot, stack)) => (Some(slot), stack),
-                    None => (None, ItemStack::EMPTY),
                 };
                 let behavior = world.resource::<ItemBehaviorRegistry>().get(held.item);
 
@@ -616,5 +632,139 @@ pub fn drain_item_use_queue(world: &mut World) {
         // Acknowledge the client's predicted sequence exactly once.
         send_ack(world, queued.player, queued.sequence);
         world.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData};
+
+    use super::*;
+    use crate::components::{ClientId, LoadedChunks, PlayerReady};
+    use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
+
+    type Calls = Arc<Mutex<Vec<(&'static str, &'static str)>>>;
+
+    /// Records which item's break hooks ran.
+    struct Tag(&'static str, Calls);
+
+    impl ItemBehavior for Tag {
+        fn before_break_block(&self, _ctx: &mut BlockBreakContext) -> UseResult {
+            self.1.lock().unwrap().push((self.0, "before"));
+            UseResult::Pass
+        }
+        fn on_break_block(&self, _ctx: &mut BlockBreakContext) -> UseResult {
+            self.1.lock().unwrap().push((self.0, "after"));
+            UseResult::Pass
+        }
+    }
+
+    const POSITION: BlockPosition = BlockPosition { x: 1, y: 64, z: 1 };
+
+    /// A world with one stone block and a player holding a stick in the
+    /// selected first hotbar slot and a blaze rod in the second.
+    fn world() -> (World, Entity, Calls, flume::Receiver<OutgoingPacket>) {
+        let mut world = World::new();
+        let (_incoming_tx, incoming) = flume::unbounded::<IncomingPacket>();
+        let (outgoing, outgoing_rx) = flume::unbounded::<OutgoingPacket>();
+        let (_disconnect_tx, disconnect) = flume::unbounded::<u32>();
+        let (kick, _kick_rx) = flume::unbounded::<u32>();
+        world.insert_resource(NetworkChannels {
+            incoming,
+            outgoing,
+            disconnect,
+            kick,
+        });
+        world.init_resource::<ItemUseQueue>();
+
+        let calls = Calls::default();
+        let mut registry = ItemBehaviorRegistry::default();
+        registry.register_for("minecraft:stick", Tag("stick", calls.clone()));
+        registry.register_for("minecraft:blaze_rod", Tag("blaze_rod", calls.clone()));
+        world.insert_resource(registry);
+
+        let mut chunk = ChunkData::new(
+            (0..24).map(|_| ChunkSection::empty()).collect(),
+            ChunkHeightmaps::empty(),
+            LightData::empty(),
+        );
+        chunk.set_block(1, 64, 1, 1);
+        let chunk = world.spawn(chunk).id();
+        let mut index = ChunkIndex::default();
+        index
+            .0
+            .insert((DimensionId::Overworld, ChunkPos::new(0, 0)), chunk);
+        world.insert_resource(index);
+
+        let mut inventory = Inventory::new();
+        inventory.set(
+            Inventory::hotbar_slot_index(0),
+            ItemStack::of("minecraft:stick", 1).unwrap(),
+        );
+        inventory.set(
+            Inventory::hotbar_slot_index(1),
+            ItemStack::of("minecraft:blaze_rod", 1).unwrap(),
+        );
+        let player = world
+            .spawn((
+                ClientId(1),
+                PlayerDimension(DimensionId::Overworld),
+                LoadedChunks(HashSet::from([ChunkPos::new(0, 0)])),
+                PlayerReady,
+                inventory,
+            ))
+            .id();
+        (world, player, calls, outgoing_rx)
+    }
+
+    /// Queues an action with the player's inventory as it is, then selects the
+    /// second hotbar slot before the queue drains, as a hotbar change arriving
+    /// later in the same tick does.
+    fn queue_then_switch(
+        world: &mut World,
+        player: Entity,
+        enqueue: impl FnOnce(&mut ItemUseQueue, Option<&Inventory>),
+    ) {
+        let inventory = world.get::<Inventory>(player).unwrap().clone();
+        enqueue(&mut world.resource_mut::<ItemUseQueue>(), Some(&inventory));
+        world
+            .get_mut::<Inventory>(player)
+            .unwrap()
+            .set_selected_hotbar(1);
+        drain_item_use_queue(world);
+    }
+
+    #[test]
+    fn break_hooks_run_for_the_item_held_when_the_break_arrived() {
+        let (mut world, player, calls, _outgoing) = world();
+        queue_then_switch(&mut world, player, |queue, inventory| {
+            enqueue_break(queue, player, 1, 7, POSITION, BlockFace::Top, inventory);
+        });
+
+        assert_eq!(
+            block_state(&world, DimensionId::Overworld, POSITION),
+            Some(0)
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [("stick", "before"), ("stick", "after")]
+        );
+    }
+
+    #[test]
+    fn a_survival_dig_start_consults_the_item_held_when_it_arrived() {
+        let (mut world, player, calls, _outgoing) = world();
+        queue_then_switch(&mut world, player, |queue, inventory| {
+            enqueue_start_break(queue, player, 1, 7, POSITION, inventory);
+        });
+
+        assert_eq!(
+            block_state(&world, DimensionId::Overworld, POSITION),
+            Some(1)
+        );
+        assert_eq!(*calls.lock().unwrap(), [("stick", "before")]);
     }
 }

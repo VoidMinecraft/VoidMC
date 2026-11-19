@@ -91,9 +91,9 @@ fn queue_creative_break(
     event: On<PlayerStartDiggingEvent>,
     config: Res<ServerConfigResource>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     // Creative clients remove the block on start and do not send FinishedDigging.
@@ -104,6 +104,7 @@ fn queue_creative_break(
             client_id.0,
             event.sequence,
             event.position,
+            inventory,
         );
         return;
     }
@@ -114,15 +115,16 @@ fn queue_creative_break(
         event.sequence,
         event.position,
         event.face,
+        inventory,
     );
 }
 
 fn queue_break(
     event: On<PlayerFinishDiggingEvent>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     enqueue_break(
@@ -132,6 +134,7 @@ fn queue_break(
         event.sequence,
         event.position,
         event.face,
+        inventory,
     );
 }
 
