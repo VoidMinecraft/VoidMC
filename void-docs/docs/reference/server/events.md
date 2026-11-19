@@ -6,15 +6,19 @@ struct with `#[derive(Event)]`, fired with `world.trigger(..)` (or
 `On<T>` observer registered through `app.add_observer(..)`.
 
 ```rust
-use voidmc::{On, events::PlayerJoinEvent};
+use voidmc::{On, ServerConfig, VoidServer, events::PlayerJoinEvent};
 
 fn on_join(event: On<PlayerJoinEvent>) {
-    println!("Player joined: client_id={}", event.client_id);
+    tracing::info!(client_id = event.client_id, "Player joined");
 }
 
-VoidServer::new(config).add_plugin(|app| {
-    app.add_observer(on_join);
-});
+fn main() {
+    VoidServer::new(ServerConfig::default())
+        .add_plugin(|app| {
+            app.add_observer(on_join);
+        })
+        .run();
+}
 ```
 
 Observers run synchronously at the trigger site. The framework calls
@@ -62,9 +66,25 @@ player. None of them derive `Clone` or `Debug`.
 
 | Event | Fields | When |
 |---|---|---|
-| `PlayerJoinEvent` | `client_id`, `entity` | Configuration finished; player components inserted, initial chunks and teleport sent. `PlayerReady` is **not** set yet. |
-| `PlayerReadyEvent` | `client_id`, `entity` | Client sent `PlayerLoaded`. `PlayerReady` was inserted just before. Built-in observers spawn the player for others, replay entities, sync inventory. |
-| `PlayerQuitEvent` | `client_id`, `entity` | A ready player disconnected. Observers broadcast `RemoveEntities`/`PlayerInfoRemove`. The entity is despawned after the event. |
+| `PlayerJoinEvent` | `client_id`, `entity` | Configuration finished: the client's `FinishConfigurationAcknowledged` moved it to `ConnectionState(Play)`; player components inserted, initial chunks and teleport sent. `PlayerReady` is **not** set yet. Once per session. |
+| `PlayerReadyEvent` | `client_id`, `entity` | Client sent `PlayerLoaded`. `PlayerReady` was inserted just before. Built-in observers spawn the player for others, replay entities, sync inventory. Once per session: a repeated `PlayerLoaded` is ignored, and a client that never sends it never becomes ready. |
+| `PlayerQuitEvent` | `client_id`, `entity` | A player who joined left, whether or not it became ready. The entity and its components can still be read; `PlayerReady` is present if it was ready. Observers broadcast `RemoveEntities`/`PlayerInfoRemove` for a ready player. The entity is despawned after the event. Once per session. |
+
+Each session (one connection) sees `PlayerJoinEvent`, then `PlayerReadyEvent`
+if the client loads, then `PlayerQuitEvent`, each at most once and on the same
+entity; a player reconnecting with the same name is a new entity and a new
+sequence. A client that leaves during login or configuration fires none of
+them. `PlayerQuitEvent` fires however the player leaves:
+
+| Way out | When the quit event fires |
+|---|---|
+| The client closes the connection, or it drops | When the network thread reports the closed connection, at the next ingest. |
+| Kick (`/kick`, `Players::kick`) | After the `Disconnect` is written and the server has closed the connection, even if the client ignores the packet. |
+| Keep-alive timeout, outbound queue overflow | Same as a kick. |
+| Server shutdown (`/stop`, Ctrl-C, `AppExit`) | In the last tick, for every player still connected. |
+
+A client entity despawned by game code gets no quit event; kick it instead (see
+[Kicking a player](./sending-packets.md#kicking-a-player)).
 
 ### Movement and input
 

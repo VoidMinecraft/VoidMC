@@ -40,10 +40,14 @@ with a non-blocking `try_send`.
 
 If a queue is full the client is not keeping up; the game thread never blocks
 and never drops individual packets (which would desync the client). Instead it
-sends the client id through `kick`, the network thread aborts that client's
-task (closing the socket even while its writer is stalled), the usual
-`disconnect` notification follows, and the entity is despawned like any other
-disconnect.
+sends the client id through `kick`, the usual `disconnect` notification
+follows, and the entity is despawned like any other disconnect.
+
+On a kick (a full queue, a keep-alive timeout, `/kick`, `Players::kick`) the
+network thread closes the connection gracefully: the client task writes what is
+already queued (a `Disconnect` with the reason, typically) and ends. A client
+whose socket does not drain is aborted after 2 seconds, which closes the
+socket even while its writer is stalled.
 
 ## Tick Loop
 

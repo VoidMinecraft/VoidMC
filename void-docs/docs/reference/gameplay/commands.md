@@ -427,6 +427,10 @@ down cleanly. Plugins that clean up on shutdown — such as
 dirty chunks — react to the same signal. Ctrl-C / SIGTERM stop the server the
 same way.
 
+`/kick` sends the reason in a `Disconnect` packet, then the server closes the
+connection itself, so a client that ignores the packet does not stay in the
+game (see [Kicking a player](/reference/server/sending-packets#kicking-a-player)).
+
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
 either omit all three to use the executor position, or provide `x`, `y`, and
