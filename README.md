@@ -119,10 +119,11 @@ The example server also supports environment variables for diagnostics:
 | Variable | Purpose |
 |---|---|
 | `RUST_LOG` | Controls tracing filters, for example `info` or `voidmc::network=debug`. |
-| `VOID_METRICS_DEBUG` | Enables TPS metrics output. |
-| `VOID_TPS_OUTPUT` | Sets the TPS CSV output path. |
-| `VOID_METRICS_MODE=flame` | Enables flame trace output. |
-| `VOID_FLAME_OUTPUT` | Sets the flame trace output path. |
+| `VOID_LISTEN_ADDR` | Overrides the listen address (default `127.0.0.1:25565`; port `0` picks a free port). |
+| `VOID_METRICS_DEBUG` | Enables TPS metrics output (default file `logs/tps-<unix-ms>.csv`). |
+| `VOID_TPS_OUTPUT` | Sets the TPS CSV output path (needs `VOID_METRICS_DEBUG`). |
+| `VOID_METRICS_MODE=flame` | Enables flame trace output (default file `logs/trace-<unix-ms>.folded`). |
+| `VOID_FLAME_OUTPUT` | Sets the flame trace output path (also enables flame output). |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time in the flame trace to show server utilization. |
 | `VOID_PACKET_DEBUG` | Adds packet-level network debug logs. |
 | `VOID_OBSERVABILITY_ADDR` | Serves `/health` and Prometheus `/metrics`: a bare port binds `127.0.0.1`, or give `host:port`. Off when unset. |
