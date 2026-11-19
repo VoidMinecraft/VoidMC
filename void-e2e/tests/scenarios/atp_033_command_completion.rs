@@ -266,7 +266,7 @@ const DEFAULT_LITERALS: [&str; 17] = [
 
 #[tokio::test]
 async fn default_command_tree_reaches_the_client_complete_and_typed() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let tree = Tree::received_by(&alice).await;
     tree.assert_well_formed();
@@ -437,7 +437,7 @@ async fn default_command_tree_reaches_the_client_complete_and_typed() {
 /// asked, and answers nothing if a client asks anyway.
 #[tokio::test]
 async fn command_names_complete_from_the_tree_and_root_requests_get_no_reply() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let tree = Tree::received_by(&alice).await;
 

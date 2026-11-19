@@ -47,7 +47,7 @@ fn assert_valid_tree(nodes: &[BrigadierNodeStub], root: usize) {
 
 #[tokio::test]
 async fn command_tree_is_well_formed_and_commands_run() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
 

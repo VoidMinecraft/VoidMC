@@ -5,7 +5,8 @@ use voidmc::{Inventory, On, Query};
 use voidmc_worldedit::WorldEditConfig;
 
 /// Operators get the wand on join unless they already carry one. Setting `VOID_EXAMPLE_OPERATORS=1` makes
-/// every player an operator, for local testing only.
+/// every player an operator, for local testing only: otherwise nobody is one, so nobody may run the
+/// operator-only default commands either.
 pub(super) fn grant_wand(
     event: On<PlayerReadyEvent>,
     config: Res<WorldEditConfig>,

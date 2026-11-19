@@ -197,6 +197,7 @@ fn help_entries(listing: &str) -> Vec<(String, String)> {
 #[tokio::test]
 async fn help_lists_every_command_once_like_the_registry_and_the_tree() {
     let server = TestServer::builder()
+        .operators()
         .command(greet_command)
         .command(quiet_command)
         .start()
@@ -299,7 +300,11 @@ async fn help_lists_every_command_once_like_the_registry_and_the_tree() {
 
 #[tokio::test]
 async fn help_for_one_command_resolves_aliases_and_has_no_pages() {
-    let server = TestServer::builder().command(quiet_command).start().await;
+    let server = TestServer::builder()
+        .operators()
+        .command(quiet_command)
+        .start()
+        .await;
     let mut bots = join_all(&server, &["Alice", "Bob"]).await;
     let (bob, _) = bots.pop().unwrap();
     let (alice, _) = bots.pop().unwrap();
@@ -483,7 +488,7 @@ fn unknown(name: &str) -> Vec<Line> {
 
 #[tokio::test]
 async fn invalid_input_gets_one_controlled_reply() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let mut bots = join_all(&server, &["Alice", "Bob"]).await;
     let (bob, _) = bots.pop().unwrap();
     let (alice, _) = bots.pop().unwrap();

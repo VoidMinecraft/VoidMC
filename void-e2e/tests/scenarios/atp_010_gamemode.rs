@@ -106,7 +106,7 @@ async fn server_mode(server: &TestServer, bot: &Bot) -> Option<u8> {
 #[tokio::test]
 async fn every_valid_mode_reaches_the_client_and_every_tab_list() {
     // The default configuration, like the example server: Creative.
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     alice.sync().await;
@@ -176,7 +176,7 @@ async fn every_valid_mode_reaches_the_client_and_every_tab_list() {
 
 #[tokio::test]
 async fn invalid_modes_are_rejected_by_parsing_and_change_nothing() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     alice.sync().await;
@@ -269,6 +269,7 @@ async fn invalid_modes_are_rejected_by_parsing_and_change_nothing() {
 #[tokio::test]
 async fn the_server_keeps_its_configured_mode_and_rejoins_reset_to_it() {
     let server = TestServer::builder()
+        .operators()
         .config(|config| config.game_mode(0))
         .start()
         .await;

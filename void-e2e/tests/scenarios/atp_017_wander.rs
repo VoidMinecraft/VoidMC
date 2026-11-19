@@ -65,6 +65,7 @@ fn record(mut trace: ResMut<Trace>, entities: Query<Sampled, With<SpawnedEntity>
 
 async fn traced_server() -> TestServer {
     TestServer::builder()
+        .operators()
         .plugin(|app| {
             app.init_resource::<Trace>().add_systems(Last, record);
         })
