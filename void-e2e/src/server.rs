@@ -117,6 +117,7 @@ impl TestServerBuilder {
         self
     }
 
+    /// Boots the server and returns once its first tick has started.
     pub async fn start(self) -> TestServer {
         assert_eq!(
             azalea_protocol::packets::PROTOCOL_VERSION,
@@ -194,11 +195,16 @@ fn run_control(world: &mut World) {
     let address = world.resource::<ListenAddress>().0;
     let jobs: Vec<Job> = {
         let mut control = world.resource_mut::<Control>();
+        control.ticks.send_modify(|tick| *tick += 1);
+        let jobs = control.jobs.try_iter().collect();
+        // Signalled only once this tick's jobs are collected, so a job sent
+        // after `start` returns never runs in the first tick: it waits for the
+        // second, after the first has run to its end (its `PostUpdate`
+        // schedule, for one, has run and been initialized).
         if let Some(ready) = control.ready.take() {
             let _ = ready.send(address);
         }
-        control.ticks.send_modify(|tick| *tick += 1);
-        control.jobs.try_iter().collect()
+        jobs
     };
     for job in jobs {
         job(world);
@@ -249,7 +255,8 @@ impl TestServer {
     }
 
     /// Runs `f` on the game thread at the start of the next tick and returns
-    /// its result.
+    /// its result. That is never the first tick: by the time `f` runs, the
+    /// first tick has run to its end.
     pub async fn with_world<R: Send + 'static>(
         &self,
         f: impl FnOnce(&mut World) -> R + Send + 'static,
@@ -385,5 +392,34 @@ impl Drop for TestServer {
                 "void-e2e: the server did not stop within 10s; its later logs may be attributed to the next test"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Resource, Default)]
+    struct CompletedTicks(u64);
+
+    fn count_completed_tick(mut completed: ResMut<CompletedTicks>) {
+        completed.0 += 1;
+    }
+
+    #[tokio::test]
+    async fn a_world_closure_sent_right_after_start_runs_after_the_first_tick() {
+        let server = TestServer::builder()
+            .plugin(|app| {
+                app.init_resource::<CompletedTicks>()
+                    .add_systems(Last, count_completed_tick);
+            })
+            .start()
+            .await;
+
+        let completed = server
+            .with_world(|world| world.resource::<CompletedTicks>().0)
+            .await;
+        assert!(completed >= 1, "ran during tick {}", completed + 1);
+        server.stop().await;
     }
 }
