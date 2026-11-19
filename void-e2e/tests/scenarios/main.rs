@@ -1,3 +1,4 @@
+mod atp_024_server_config;
 mod commands;
 mod connection;
 mod inventory;
