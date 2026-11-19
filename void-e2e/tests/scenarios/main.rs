@@ -1,3 +1,4 @@
+mod atp_025_tps_diagnostics;
 mod commands;
 mod connection;
 mod inventory;
