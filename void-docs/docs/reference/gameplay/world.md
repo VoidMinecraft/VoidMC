@@ -93,6 +93,20 @@ fn init_world(commands, chunk_index, world_gen, config) {
 
 This ensures the spawn area is ready before any player connects. The radius is controlled by `ServerConfig::spawn_chunk_radius` (default: 10).
 
+A joining player is sent the chunks within `initial_chunk_radius` that are already in the spawn area. If that radius reaches past the spawn area, chunk streaming generates the missing chunks on the player's first pass, even when the player's view distance equals `initial_chunk_radius`.
+
+### Generation Cost Controls
+
+Three settings decide when chunks are generated, never what they contain:
+
+| Setting | Effect |
+|---|---|
+| `spawn_chunk_radius` | Chunks generated at startup instead of when a player first needs them |
+| `max_chunk_generations_per_tick` | Caps the chunks streaming generates per tick (default 8, `0` = no cap); the rest wait in `ChunkStreamBacklog` |
+| `ChunkIndex` | Every chunk is generated once, then served from its entity to every player and on every revisit |
+
+A chunk is the same, byte for byte, whether it was generated at startup, streamed later under the budget, or generated again by a fresh `WorldGenerator`. The end-to-end scenarios in `void-e2e/tests/scenarios/atp_027_world_generation.rs` check this against a terrain fixture for `DefaultWorldGenerator`.
+
 ## WorldGenerator Trait
 
 ```rust
