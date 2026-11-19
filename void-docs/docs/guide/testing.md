@@ -397,6 +397,8 @@ On a running server:
 - `wait_ticks(n)`, `status()` (the server-list ping) and `player_entity(uuid)`.
 - `stop()` shuts the server down and fails the test if VoidMC logged an
   error, or an unrecognised packet, on any thread.
+- `wait_for_exit()` waits for the server to stop on its own, for example
+  after a bot ran `/stop`, and fails the test like `stop()`.
 
 Only one `TestServer` runs at a time in a test process; the others wait for it
 to stop. That is what lets `stop()` attribute every log line to the right
@@ -417,6 +419,8 @@ position, chunks, entities, tab list and inventory.
   client tolerates but that point at a server bug: an entity added twice, a
   block update for a chunk the client does not hold, a forget for a chunk it
   never received.
+- `hold_teleports(true)` stops answering position syncs, so a scenario can
+  play a lagging client and send `ServerboundAcceptTeleportation` itself.
 - `disconnect()` closes the connection like a player quitting.
 
 ### Waiting Without Sleeping
@@ -448,6 +452,14 @@ with a `Ping` carrying the same id at the end of the tick.
 - **No sleeps.** Wait for an observable condition, or `sync()` before a
   negative assertion.
 
+### Functional and Load Runs
+
+The crate also ships `voidmc-load`, which runs a named workload's smoke checks
+and full-protocol load clients against an in-process server or an
+operator-supplied endpoint, and writes a report with a PASS or FAIL decision.
+The `smoke@1` workload runs as part of this suite. See
+[Load Testing](/performance/load-testing).
+
 ### What the Scenarios Cover
 
 Each regression below was injected into the server, one at a time, and made at
@@ -465,6 +477,14 @@ least one scenario fail.
 | Suggestion ranges in bytes instead of UTF-16 units | `server_suggestions_use_utf16_ranges` |
 | Joining player not announced to others | `players_see_each_other_move_and_leave` |
 | Quitting player not removed for others | `players_see_each_other_move_and_leave` |
+| Streamed chunks generated at swapped coordinates | `optimized_generation_matches_the_fixture_at_spawn_and_across_a_chunk_boundary` |
+| Revisited chunks regenerated instead of read from `ChunkIndex` | `optimized_generation_matches_the_fixture_at_spawn_and_across_a_chunk_boundary` |
+| `max_chunk_generations_per_tick` ignored | `optimized_generation_matches_the_fixture_at_spawn_and_across_a_chunk_boundary` |
+| Spawn area not generated at startup | `optimized_generation_matches_the_fixture_at_spawn_and_across_a_chunk_boundary` |
+| Spawn Y one block above the surface | every `atp_027_world_generation` scenario |
+| Terrain generated from chunk-local coordinates | `optimized_and_reference_paths_generate_identical_terrain` |
+| One more dirt layer in `DefaultWorldGenerator` | `optimized_and_reference_paths_generate_identical_terrain` |
+| Join radius larger than the spawn area leaves holes | `the_whole_view_arrives_when_the_spawn_area_is_smaller_than_the_join_radius` |
 
 ## Testing Best Practices
 

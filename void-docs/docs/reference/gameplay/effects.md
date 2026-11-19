@@ -86,8 +86,10 @@ The routing follows vanilla:
   particle list and the ambience flag (`true` when every effect that shows
   particles is ambient), and `Effect::Glowing` / `Effect::Invisibility` set the
   entity flags exactly like the `Glowing` / `Invisible` marker components do.
-  Players have no `EntityMetadata`, so a player's effects are not shown to
-  other players.
+  Players have no `EntityMetadata`, so other players do not see a player's
+  effect particles; its glowing and invisibility do reach them, in the shared
+  flags byte sent with its crouch (see
+  [ECS: `Sneaking`](../server/ecs.md)).
 - The particle list and ambience flag are `LivingEntity` metadata: they are
   only projected for players and kinds with `EntityKind::is_living()`; a
   `StatusEffects` on a boat, item or display entity logs a warning and only

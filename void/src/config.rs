@@ -3,6 +3,7 @@ use std::time::Duration;
 use bevy_ecs::prelude::*;
 use voidmc_net::socket::{DEFAULT_COMPRESSION_THRESHOLD, FrameLimits};
 
+use crate::observability::ObservabilityConfig;
 use crate::registry::RegistryDataStore;
 use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
 
@@ -22,6 +23,24 @@ impl Default for SpawnPosition {
             y: None,
         }
     }
+}
+
+/// How the game thread runs a tick.
+///
+/// Available as a resource on the running server.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Every system, and every region of region-partitioned work, runs one
+    /// after another on the game thread. The baseline, and the default.
+    #[default]
+    SingleThreaded,
+    /// Bevy's multi-threaded executor runs systems whose data access does not
+    /// conflict at the same time on the compute task pool, and
+    /// region-partitioned work (the entity physics and spawn-settling steps)
+    /// processes independent regions concurrently. Produces the same world
+    /// state as [`ExecutionMode::SingleThreaded`] as long as systems that
+    /// write the same data are ordered.
+    MultiThreaded,
 }
 
 /// Full server configuration. Consumed once by `VoidServer::new`.
@@ -47,8 +66,13 @@ pub struct ServerConfig {
     /// Packets of at least this many bytes are zlib-compressed after login;
     /// `None` disables compression. Defaults to vanilla's 256.
     pub compression_threshold: Option<u32>,
+    /// Health and Prometheus metrics endpoints; `None` (the default) serves
+    /// nothing.
+    pub observability: Option<ObservabilityConfig>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
+    /// Single- or multi-threaded tick execution. Defaults to single-threaded.
+    pub execution_mode: ExecutionMode,
 }
 
 impl ServerConfig {
@@ -85,8 +109,10 @@ impl Default for ServerConfig {
             slow_tick_ms: 200,
             frame_limits: FrameLimits::default(),
             compression_threshold: Some(DEFAULT_COMPRESSION_THRESHOLD),
+            observability: None,
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
+            execution_mode: ExecutionMode::default(),
         }
     }
 }
@@ -210,6 +236,13 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Serves `/health` and `/metrics` over HTTP as `config` says. Off unless
+    /// called; bind it to a loopback or private interface only.
+    pub fn observability(mut self, config: ObservabilityConfig) -> Self {
+        self.config.observability = Some(config);
+        self
+    }
+
     pub fn world_generator(mut self, generator: impl WorldGenerator + 'static) -> Self {
         self.config.world_generator = Box::new(generator);
         self
@@ -217,6 +250,14 @@ impl ServerConfigBuilder {
 
     pub fn configure_registries(mut self, f: impl FnOnce(&mut RegistryDataStore)) -> Self {
         f(&mut self.config.registries);
+        self
+    }
+
+    /// Runs systems and independent regions concurrently
+    /// ([`ExecutionMode::MultiThreaded`]) or one after another on the game
+    /// thread ([`ExecutionMode::SingleThreaded`], the default).
+    pub fn execution_mode(mut self, mode: ExecutionMode) -> Self {
+        self.config.execution_mode = mode;
         self
     }
 
@@ -293,6 +334,21 @@ impl From<&ServerConfig> for ServerConfigResource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observability_is_off_unless_enabled() {
+        assert_eq!(ServerConfig::default().observability, None);
+        assert_eq!(ServerConfigBuilder::new().build().observability, None);
+        let config = ServerConfigBuilder::new()
+            .observability(ObservabilityConfig::localhost(9464))
+            .build();
+        assert_eq!(
+            config
+                .observability
+                .map(|observability| observability.address),
+            Some("127.0.0.1:9464".to_string())
+        );
+    }
 
     #[test]
     fn builder_replaces_a_zero_tick_rate_with_one() {

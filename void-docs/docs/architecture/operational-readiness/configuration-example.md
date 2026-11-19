@@ -59,12 +59,14 @@ This shape mirrors the defaults while making the reliability budgets visible.
 | Variable | Example | Purpose |
 |---|---|---|
 | `RUST_LOG` | `info` | Controls tracing filters. |
+| `VOID_LISTEN_ADDR` | `127.0.0.1:0` | Overrides the listen address (default `127.0.0.1:25565`; port `0` picks a free port). |
 | `VOID_METRICS_DEBUG` | `1` | Enables TPS collection. |
-| `VOID_TPS_OUTPUT` | `logs/tps-demo.csv` | Selects TPS CSV output. |
-| `VOID_METRICS_MODE` | `flame` | Enables flame trace mode. |
-| `VOID_FLAME_OUTPUT` | `logs/trace.folded` | Selects flame trace output. |
+| `VOID_TPS_OUTPUT` | `logs/tps-demo.csv` | Selects TPS CSV output (needs `VOID_METRICS_DEBUG`; default `logs/tps-<unix-ms>.csv`). |
+| `VOID_METRICS_MODE` | `flame` | Enables flame trace mode (default output `logs/trace-<unix-ms>.folded`). |
+| `VOID_FLAME_OUTPUT` | `logs/trace.folded` | Selects flame trace output (also enables flame mode). |
 | `VOID_FLAME_INCLUDE_IDLE` | `1` | Includes idle time to show server utilization. |
 | `VOID_PACKET_DEBUG` | `1` | Adds network packet debug logging. |
+| `VOID_OBSERVABILITY_ADDR` | `9464` | Serves `/health` and Prometheus `/metrics` ([reference](/reference/server/observability)): a bare port binds `127.0.0.1`, or give `host:port`. Off when unset. |
 
 ## Configuration Reference
 

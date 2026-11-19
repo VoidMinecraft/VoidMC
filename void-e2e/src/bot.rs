@@ -8,6 +8,7 @@ use azalea_core::registry_holder::RegistryHolder;
 use azalea_entity::LookDirection;
 use azalea_protocol::common::client_information::ClientInformation;
 use azalea_protocol::common::movements::MoveFlags;
+use azalea_protocol::common::tags::TagMap;
 use azalea_protocol::connect::{Connection, ReadConnection, WriteConnection};
 use azalea_protocol::packets::config::{
     ClientboundConfigPacket, s_client_information,
@@ -61,7 +62,11 @@ pub struct JoinTranscript {
     pub compression_threshold: Option<i32>,
     pub known_packs: Vec<String>,
     pub registries: Vec<String>,
+    /// The registry entries as Azalea decoded them, for checks on their data.
+    pub registry_data: RegistryHolder,
     pub tags_received: bool,
+    /// The tags of the last Update Tags packet, as Azalea decoded them.
+    pub tags: Option<TagMap>,
 }
 
 #[derive(Default)]
@@ -69,6 +74,7 @@ struct Inbox {
     packets: VecDeque<ClientboundGamePacket>,
     received: BTreeMap<&'static str, usize>,
     loaded: bool,
+    hold_teleports: bool,
     view: ClientView,
     failure: Option<String>,
     closed: bool,
@@ -187,6 +193,12 @@ impl Bot {
             },
         })
         .await;
+    }
+
+    /// While held, position syncs are not answered: the test sends
+    /// `ServerboundAcceptTeleportation` itself, like a lagging client.
+    pub fn hold_teleports(&self, hold: bool) {
+        self.lock().hold_teleports = hold;
     }
 
     pub fn view<R>(&self, f: impl FnOnce(&ClientView) -> R) -> R {
@@ -446,7 +458,10 @@ async fn login(
                 transcript.registries.push(packet.registry_id.to_string());
                 registries.append(packet.registry_id, packet.entries);
             }
-            Ok(ClientboundConfigPacket::UpdateTags(_)) => transcript.tags_received = true,
+            Ok(ClientboundConfigPacket::UpdateTags(packet)) => {
+                transcript.tags_received = true;
+                transcript.tags = Some(packet.tags);
+            }
             Ok(ClientboundConfigPacket::KeepAlive(packet)) => connection
                 .write(ConfigKeepAlive { id: packet.id })
                 .await
@@ -469,6 +484,7 @@ async fn login(
         }
     }
 
+    transcript.registry_data = registries.clone();
     (connection.game(), transcript, registries)
 }
 
@@ -529,7 +545,7 @@ fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<Serverbound
         ClientboundGamePacket::Ping(ping) if ping.id & BARRIER_BIT == 0 => {
             vec![ServerboundPong { id: ping.id }.into_variant()]
         }
-        ClientboundGamePacket::PlayerPosition(teleport) => {
+        ClientboundGamePacket::PlayerPosition(teleport) if !inbox.hold_teleports => {
             let mut replies = vec![
                 ServerboundAcceptTeleportation { id: teleport.id }.into_variant(),
                 ServerboundMovePlayerPosRot {

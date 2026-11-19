@@ -21,6 +21,7 @@ Use this order during a review:
 | Channel handoff throughput | Millions of messages per second in micro-benchmarks | Criterion benchmark in `void/benches/channel_handoff.rs` | Validates network-to-ECS communication cost |
 | Chunk packet serialization | Low microseconds for representative superflat chunk packets | Criterion benchmark in `void-protocol/benches/packet_chunk.rs` | Covers one of the heaviest clientbound packet paths |
 | TCP connection acceptance | 100% success in local stress POC at documented client counts | `pocs/performance` TCP connect tool | Validates listener responsiveness under bursts |
+| Functional and load run | PASS against the thresholds of a named workload | `voidmc-load` in `void-e2e/`, see [Load Testing](./load-testing.md) | Full-protocol clients join, move, chat and run commands |
 | Memory footprint | Track with `/usr/bin/time -v` during release runs | Manual profiling command | Prevents hidden growth as systems are added |
 
 ## Runtime Controls
@@ -29,12 +30,21 @@ The example server exposes performance-oriented environment variables:
 
 | Variable | Purpose |
 | --- | --- |
-| `VOID_METRICS_DEBUG=1` | Enables TPS metrics collection in `void-example` |
-| `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Writes TPS samples to a chosen CSV file |
-| `VOID_METRICS_MODE=flame` | Enables flame tracing mode in the example logging setup |
-| `VOID_FLAME_OUTPUT=logs/void-flame.folded` | Selects the folded flame-trace output path |
+| `VOID_METRICS_DEBUG=1` | Enables TPS sampling and the TPS CSV in `void-example` (`true` and `yes` also work). Without it nothing is sampled and no CSV is written |
+| `VOID_TPS_OUTPUT=logs/tps-demo.csv` | Writes TPS samples to a chosen CSV file; needs `VOID_METRICS_DEBUG=1`. Default: `logs/tps-<unix-ms>.csv` |
+| `VOID_METRICS_MODE=flame` | Writes a folded flame trace (setting `VOID_FLAME_OUTPUT` does too). Independent of TPS sampling |
+| `VOID_FLAME_OUTPUT=logs/void-flame.folded` | Selects the folded flame-trace output path. Default: `logs/trace-<unix-ms>.folded` |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time so the trace shows overall utilization |
 | `VOID_PACKET_DEBUG=1` | Enables verbose packet logging for protocol debugging |
+| `VOID_OBSERVABILITY_ADDR=9464` | Serves `/health` and Prometheus `/metrics` on `127.0.0.1:9464` ([reference](../reference/server/observability.md)) |
+
+Relative paths are resolved against the working directory. Missing parent
+directories are created and an existing file is replaced. When a file cannot
+be created (the path is a directory, lies under a regular file, or is not
+writable), the server logs a warning that names the path and the reason, and
+runs without that output. Otherwise it logs `Writing TPS samples to <path>` or
+`Writing flame trace to <path>`. See [Benchmarking](./benchmarking.md) for the
+file formats.
 
 Generated `logs/`, raw Criterion output, flame traces, and `target/` artifacts stay out of git. Commit summarized Markdown tables instead.
 

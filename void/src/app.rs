@@ -1,16 +1,21 @@
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 
-use bevy_app::{App, ScheduleRunnerPlugin, Startup, TaskPoolPlugin, TerminalCtrlCHandlerPlugin};
+use bevy_app::{
+    App, ScheduleRunnerPlugin, Startup, TaskPoolOptions, TaskPoolPlugin,
+    TaskPoolThreadAssignmentPolicy, TerminalCtrlCHandlerPlugin,
+};
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::ExecutorKind;
 use socket2::{Domain, Socket, Type};
 
 use crate::Server;
 use crate::commands::plugin::CommandPlugin;
 use crate::commands::{Command, CommandRegistry};
-use crate::config::{ServerConfig, ServerConfigResource};
+use crate::config::{ExecutionMode, ServerConfig, ServerConfigResource};
 use crate::metrics::MetricsPlugin;
 use crate::network::{ClientConnected, IncomingPacket, NetworkPlugin, OutgoingPacket};
+use crate::observability::Observability;
 use crate::plugins::DefaultPlugins;
 use crate::registry::RegistryDataStore;
 use crate::server_status::ServerStatusSnapshot;
@@ -68,8 +73,28 @@ impl VoidServer {
                 .local_addr()
                 .expect("a bound listener has a local address"),
         );
+        let observability = self.config.observability.as_ref().map(|config| {
+            let listener = bind_listener(&config.address).unwrap_or_else(|error| {
+                panic!(
+                    "Failed to bind the observability endpoint {}: {error}",
+                    config.address
+                )
+            });
+            Observability::start(
+                config,
+                listener,
+                tick_duration,
+                self.config.tick_rate,
+                self.config.max_players,
+            )
+        });
+        let (_observability_guard, observability_plugin, telemetry) = match observability {
+            Some(o) => (Some(o.guard), Some(o.plugin), Some(o.telemetry)),
+            None => (None, None, None),
+        };
         let frame_limits = self.config.frame_limits;
         let compression_threshold = self.config.compression_threshold;
+        let execution_mode = self.config.execution_mode;
 
         let world_gen = WorldGen(self.config.world_generator);
 
@@ -91,7 +116,8 @@ impl VoidServer {
                 let listener = tokio::net::TcpListener::from_std(listener)
                     .expect("Failed to register the listener with Tokio");
                 let mut server = Server::from_listener(listener, frame_limits)
-                    .with_compression_threshold(compression_threshold);
+                    .with_compression_threshold(compression_threshold)
+                    .with_telemetry(telemetry);
                 server
                     .run_with_status(
                         incoming_tx,
@@ -107,10 +133,13 @@ impl VoidServer {
         let mut app = App::new();
 
         app.add_plugins((
-            TaskPoolPlugin::default(),
+            TaskPoolPlugin {
+                task_pool_options: task_pool_options(),
+            },
             ScheduleRunnerPlugin::run_loop(tick_duration),
-            // Ctrl-C / SIGTERM emits AppExit so the server stops gracefully
-            // (the same signal `/stop` uses).
+            // Ctrl-C / SIGTERM / SIGHUP emit AppExit so the server stops
+            // gracefully (the same signal `/stop` uses). SIGTERM and SIGHUP
+            // need the `termination` feature of `ctrlc`, see Cargo.toml.
             TerminalCtrlCHandlerPlugin,
         ))
         .add_plugins(NetworkPlugin::new(
@@ -127,9 +156,13 @@ impl VoidServer {
         if self.config.metrics_debug {
             app.add_plugins(MetricsPlugin::new(self.config.metrics_tps_output.clone()));
         }
+        if let Some(plugin) = observability_plugin {
+            app.add_plugins(plugin);
+        }
 
         app.insert_resource(self.config.registries)
             .insert_resource(config_resource)
+            .insert_resource(execution_mode)
             .insert_resource(server_status)
             .insert_resource(listen_address)
             .insert_resource(world_gen)
@@ -149,8 +182,45 @@ impl VoidServer {
             }
         }
 
+        apply_execution_mode(&mut app, execution_mode);
         app.run();
+        // `_observability_guard` drops here: `/health` reports `stopping` until
+        // the observability listener is closed, which happens before `run`
+        // returns.
     }
+}
+
+/// Task pools sized as Bevy's defaults, except that the compute pool, which
+/// runs systems and region tasks under [`ExecutionMode::MultiThreaded`], always
+/// has at least two threads so that two independent systems or regions can be
+/// in flight at once even on a two-core machine. The pools are process-wide,
+/// so they are sized the same whatever the execution mode.
+fn task_pool_options() -> TaskPoolOptions {
+    let defaults = TaskPoolOptions::default();
+    TaskPoolOptions {
+        compute: TaskPoolThreadAssignmentPolicy {
+            min_threads: 2,
+            ..defaults.compute
+        },
+        ..defaults
+    }
+}
+
+/// Sets the executor of every schedule registered so far.
+///
+/// [`ExecutionMode::SingleThreaded`] forces every schedule onto Bevy's
+/// single-threaded executor. [`ExecutionMode::MultiThreaded`] keeps Bevy's
+/// defaults: the multi-threaded executor for the schedules that hold systems,
+/// and the single-threaded one for `Main` and `FixedMain`, which only run
+/// other schedules.
+fn apply_execution_mode(app: &mut App, mode: ExecutionMode) {
+    if mode == ExecutionMode::SingleThreaded {
+        let mut schedules = app.world_mut().resource_mut::<Schedules>();
+        for (_, schedule) in schedules.iter_mut() {
+            schedule.set_executor_kind(ExecutorKind::SingleThreaded);
+        }
+    }
+    tracing::info!(?mode, "Game tick execution mode");
 }
 
 const LISTEN_BACKLOG: i32 = 1024;
@@ -212,7 +282,9 @@ fn init_world(
 mod tests {
     use std::io::{Read, Write};
 
-    use super::bind_listener;
+    use bevy_app::{PostUpdate, Update};
+
+    use super::*;
 
     #[tokio::test]
     async fn binds_port_zero_from_inside_a_tokio_runtime() {
@@ -238,5 +310,43 @@ mod tests {
         let first = bind_listener("127.0.0.1:0").unwrap();
         let taken = first.local_addr().unwrap().to_string();
         assert!(bind_listener(&taken).is_err());
+    }
+
+    fn executors(mode: ExecutionMode) -> Vec<(String, ExecutorKind)> {
+        let mut app = App::new();
+        app.add_systems(Update, || {})
+            .add_systems(PostUpdate, || {});
+        apply_execution_mode(&mut app, mode);
+        let schedules = app.world().resource::<Schedules>();
+        schedules
+            .iter()
+            .map(|(label, schedule)| (format!("{label:?}"), schedule.get_executor_kind()))
+            .collect()
+    }
+
+    #[test]
+    fn single_threaded_mode_runs_every_schedule_on_the_single_threaded_executor() {
+        let executors = executors(ExecutionMode::SingleThreaded);
+        assert!(executors.len() > 3, "{executors:?}");
+        for (label, kind) in executors {
+            assert_eq!(kind, ExecutorKind::SingleThreaded, "{label}");
+        }
+    }
+
+    #[test]
+    fn multi_threaded_mode_runs_system_schedules_on_the_multi_threaded_executor() {
+        let executors = executors(ExecutionMode::MultiThreaded);
+        for wanted in ["Update", "PostUpdate"] {
+            let (_, kind) = executors
+                .iter()
+                .find(|(label, _)| label == wanted)
+                .unwrap_or_else(|| panic!("no {wanted} schedule in {executors:?}"));
+            assert_eq!(*kind, ExecutorKind::MultiThreaded, "{wanted}");
+        }
+    }
+
+    #[test]
+    fn the_compute_pool_always_has_room_for_two_systems() {
+        assert!(task_pool_options().compute.min_threads >= 2);
     }
 }

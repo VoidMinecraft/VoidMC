@@ -166,17 +166,19 @@ pub enum PlayerActionStatus {
     SwapItemInHand = 6,
 }
 
+/// The action of a Player Command packet, numbered as in protocol 775.
+///
+/// Sneaking is not a Player Command since 1.21.2: clients report the sneak key
+/// in Player Input instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 #[codec(varint32)]
 #[repr(i32)]
 pub enum PlayerCommandAction {
-    StartSneaking = 0,
-    StopSneaking = 1,
-    LeaveBed = 2,
-    StartSprinting = 3,
-    StopSprinting = 4,
-    StartJumpWithHorse = 5,
-    StopJumpWithHorse = 6,
-    OpenVehicleInventory = 7,
-    StartFlyingWithElytra = 8,
+    LeaveBed = 0,
+    StartSprinting = 1,
+    StopSprinting = 2,
+    StartJumpWithHorse = 3,
+    StopJumpWithHorse = 4,
+    OpenVehicleInventory = 5,
+    StartFlyingWithElytra = 6,
 }

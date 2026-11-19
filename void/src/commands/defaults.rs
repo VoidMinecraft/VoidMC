@@ -82,6 +82,10 @@ fn handle_give(ctx: &mut CommandContext) {
     let item_name = item.name().unwrap_or("unknown").to_string();
     let count = ctx.get::<i32>("count").copied().unwrap_or(1).clamp(1, 64) as u8;
     let stack = ItemStack::new(item, count);
+    if stack.is_empty() {
+        ctx.reply_error(&format!("Cannot give {item_name}"));
+        return;
+    }
 
     let entity = ctx.entity;
     let leftover = ctx.with_world_mut(|world| {
@@ -252,11 +256,9 @@ fn handle_kick(ctx: &mut CommandContext) {
         .cloned()
         .unwrap_or_else(|| "Kicked by an operator".to_string());
 
-    let reason_nbt = crate::messages::Text::truncated(&reason).component(TextColor::Red);
-    ctx.players().send(
-        target,
-        voidmc_protocol::clientbound::Disconnect { reason: reason_nbt },
-    );
+    // Sends the Disconnect and has the server close the connection, so a
+    // client that ignores the packet does not stay in the game.
+    ctx.players().kick(target, &reason);
 
     ctx.reply(&format!("Kicked {} (reason: {})", target_name, reason));
 }
@@ -265,16 +267,19 @@ fn handle_ping(ctx: &mut CommandContext) {
     ctx.reply("Pong!");
 }
 
+/// Replies with the names in `PluginList`; a server without the resource has
+/// listed no plugins, so it gets the same explicit empty answer.
 fn handle_plugins(ctx: &mut CommandContext) {
-    if let Some(plugin_list) = ctx.with_world(|world| world.get_resource::<PluginList>().cloned()) {
-        if plugin_list.0.is_empty() {
-            ctx.reply("No plugins loaded.");
-        } else {
-            let list = plugin_list.0.join(", ");
-            ctx.reply(&format!("Plugins ({}): {}", plugin_list.0.len(), list));
-        }
+    let names = ctx.with_world(|world| {
+        world
+            .get_resource::<PluginList>()
+            .map(|list| list.0.clone())
+            .unwrap_or_default()
+    });
+    if names.is_empty() {
+        ctx.reply("No plugins loaded.");
     } else {
-        ctx.reply("No plugin list available.");
+        ctx.reply(&format!("Plugins ({}): {}", names.len(), names.join(", ")));
     }
 }
 
@@ -308,6 +313,9 @@ fn handle_tell(ctx: &mut CommandContext) {
     let target = *ctx.get::<Entity>("player").unwrap();
     let target_name = name_of(ctx, target);
     let message = ctx.get::<String>("message").unwrap().clone();
+    if refuse_illegal_characters(ctx, &message) {
+        return;
+    }
     let sender_name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
 
     ctx.with_world(|world| {
@@ -323,7 +331,25 @@ fn handle_tell(ctx: &mut CommandContext) {
 
 fn handle_broadcast(ctx: &mut CommandContext) {
     let message = ctx.get::<String>("message").unwrap().clone();
+    if refuse_illegal_characters(ctx, &message) {
+        return;
+    }
     ctx.broadcast(&format!("[Broadcast] {}", message));
+}
+
+/// Refuses, with a red reply to the sender, a message that other players
+/// would not see as typed: the client applies `§` formatting codes found in
+/// literal text, so they could restyle or hide part of the line, and control
+/// characters are not chat text. These are the characters a vanilla client
+/// cannot type and a vanilla server refuses (`StringUtil.isAllowedChatCharacter`).
+fn refuse_illegal_characters(ctx: &CommandContext, message: &str) -> bool {
+    let illegal = message
+        .chars()
+        .any(|c| c == '\u{a7}' || c < ' ' || c == '\u{7f}');
+    if illegal {
+        ctx.reply_error("Illegal characters in chat");
+    }
+    illegal
 }
 
 pub fn list_command() -> Command {
@@ -351,9 +377,23 @@ fn handle_list(ctx: &mut CommandContext) {
     }
 }
 
+/// Vanilla `Level.isInSpawnableBounds`, which `/tp` checks before moving
+/// anyone: within the ±30,000,000 world border limit horizontally and
+/// ±20,000,000 vertically. Non-finite values are out of bounds.
+fn in_teleport_bounds([x, y, z]: [f64; 3]) -> bool {
+    const HORIZONTAL: f64 = 30_000_000.0;
+    const VERTICAL: f64 = 20_000_000.0;
+    let horizontal = |v: f64| (-HORIZONTAL..HORIZONTAL).contains(&v.floor());
+    horizontal(x) && horizontal(z) && (-VERTICAL..VERTICAL).contains(&y.floor())
+}
+
 fn handle_tp(ctx: &mut CommandContext) {
     let [x, y, z] = *ctx.get::<[f64; 3]>("position").unwrap();
     let entity = ctx.entity;
+    if !in_teleport_bounds([x, y, z]) {
+        ctx.reply_error("Invalid position for teleport");
+        return;
+    }
 
     // Read current rotation to preserve yaw/pitch
     let (yaw, pitch) = ctx.with_world(|world| {
@@ -512,7 +552,9 @@ fn handle_stop(ctx: &mut CommandContext) {
     });
 }
 
-/// Optional resource listing plugin names — can be inserted by the user.
+/// The names `/plugins` lists, in order. VoidMC never fills it: the
+/// application inserts the names it wants players to see, and plugins added
+/// with `add_plugin` are not listed unless it names them here.
 #[derive(Clone, bevy_ecs::prelude::Resource)]
 pub struct PluginList(pub Vec<String>);
 

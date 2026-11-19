@@ -82,10 +82,18 @@ The NBT schema is the *network codec* of each registry's element (which can diff
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `attributes` | [Compound](./data-types#compound) (optional) | Environment attribute overrides; defaults to empty. |
-| `effects` | [Compound](./data-types#compound) | Visual/audio effects: `fog_color`, `water_color`, `water_fog_color`, `sky_color`, optional `foliage_color`, `grass_color`, optional `grass_color_modifier`, optional `particle`, optional `ambient_sound`, optional `mood_sound`, optional `additions_sound`, optional `music`. |
+| `has_precipitation` | [Boolean](./data-types#boolean) | Whether rain or snow falls. |
+| `temperature` | [Float](./data-types#float) | Snow instead of rain below `0.15`. |
+| `temperature_modifier` | [String](./data-types#string) (optional) | `none` (default) or `frozen`. |
+| `downfall` | [Float](./data-types#float) | Used for grass and foliage colours. |
+| `attributes` | [Compound](./data-types#compound) (optional) | Syncable environment attributes (`minecraft:visual/sky_color`, `minecraft:visual/fog_color`, `minecraft:visual/water_fog_color`, `minecraft:audio/background_music`, `minecraft:audio/ambient_sounds`, `minecraft:visual/ambient_particles`, ...), as a value or a `{modifier, argument}` compound; defaults to empty. |
+| `effects` | [Compound](./data-types#compound) | `water_color`, optional `foliage_color`, `dry_foliage_color`, `grass_color` (colours as `"#rrggbb"` strings), optional `grass_color_modifier` (`none`, `dark_forest`, `swamp`). |
 
-The non-network (data-pack) codec also has `has_precipitation`, `temperature`, `temperature_modifier`, `downfall`, `spawners`, `spawn_costs`, `carvers`, and `features`, but these are not sent over the wire.
+Every vanilla biome carries `has_precipitation`, `temperature`, `downfall` and
+`effects.water_color`. The data-pack codec also has `spawners`, `spawn_costs`,
+`carvers`, `features`, `creature_spawn_probability` and non-syncable
+(`minecraft:gameplay/...`) attributes, which are not sent. A biome that is in
+no known pack, such as a server's custom biome, must be sent with its data.
 
 ### `minecraft:dimension_type`
 

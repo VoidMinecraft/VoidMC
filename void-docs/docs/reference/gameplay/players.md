@@ -27,10 +27,12 @@ The server sends a burst of packets to set up the client:
 2. **Commands** — Protocol command tree for tab-completion
 3. **GameEvent(StartWaitingForLevelChunks)** — Tells the client to show the loading screen
 4. **SetCenterChunk** — Sets the client's chunk loading center
-5. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`)
-6. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
+5. **ChunkBatchStart** — Opens the batch of initial chunks
+6. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready
+7. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
+8. **ChunkBatchFinished** — Closes the batch with its chunk count
 
-An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive.
+An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive. The vanilla client answers the batch with `ChunkBatchReceived`, which the server accepts and ignores.
 
 ### 3. PlayerJoinEvent
 
@@ -43,6 +45,10 @@ When the client finishes loading chunks and sends `PlayerLoaded`:
 1. The `PlayerReady` marker component is inserted
 2. `PlayerReadyEvent` is triggered
 3. The observer broadcasts the new player to all other ready players
+
+This happens once per session: a repeated `PlayerLoaded` is ignored. A client
+that never sends it stays joined but not ready, and never gets
+`PlayerReadyEvent`.
 
 ## Player Ready State
 
@@ -84,13 +90,22 @@ When a client disconnects:
 1. The network thread detects the TCP connection closed
 2. Client ID is sent through the `disconnect` channel
 3. `ingest_network_packets` drains the disconnect channel
-4. The entity is removed from `ClientToEntityMap` and its sender from `ClientSenders`
-5. If the player was ready (`PlayerReady` present):
-   - `PlayerQuitEvent` is triggered
-   - The `on_player_quit` observer broadcasts to all remaining ready players:
+4. The entity is removed from `ClientToEntityMap`
+5. If the player joined (`ConnectionState(Play)`, so `PlayerJoinEvent` fired),
+   whether or not it became ready:
+   - `PlayerQuitEvent` is triggered while the entity and its components can
+     still be read
+   - If it was ready, the `on_player_quit` observer broadcasts to all
+     remaining ready players:
      - `RemoveEntities` — Removes the entity from the world
      - `PlayerInfoRemove` — Removes the player from the tab list
-6. The entity is despawned
+6. The entity is despawned and its sender dropped from `ClientSenders`
+
+A kick (`/kick`, `Players::kick`, keep-alive timeout) closes the connection
+from the server side after the `Disconnect` is written, then follows the same
+path. On shutdown (`AppExit`) every player still connected goes through steps
+4 to 6 in the last tick. See
+[Connection lifecycle](../server/events.md#connection-lifecycle).
 
 ## Position & Rotation Broadcasting
 
@@ -180,7 +195,8 @@ While the component is present:
 
 A client that never answers is released after `timeout_ticks` (default 600 =
 30 s) with `TeleportOutcome::TimedOut`; the position sync is still sent so it
-lands at the destination whenever it catches up. Removing the component
+lands at the destination whenever it catches up, and its position packets are
+ignored until it confirms (see [Raw handshake](#raw-handshake)). Removing the component
 yourself yields `TeleportOutcome::Cancelled`. If the player already carried
 `ServerControlledPosition` before the teleport (a vehicle seat, say) it is kept.
 A player who disconnects mid-teleport gets no `PlayerTeleportEvent` at all: the
@@ -209,10 +225,20 @@ The `/tp` command shows the underlying steps:
 
 1. **Update `TeleportState`**: Increment `next_id`, set `pending_id` to the new ID
 2. **Update `Position`**: Set the entity's position to target coordinates
-3. **Send `SynchronizePlayerPosition`**: Packet with teleport ID, target coordinates, and current rotation
+3. **Send `SynchronizePlayerPosition`**: Packet with teleport ID, target
+   coordinates, the current rotation and no relative flags
 4. **Client confirms**: `ConfirmTeleportation` packet clears `pending_id`
 
-While `pending_id` is `Some`, the server knows a teleportation is in-flight and the client has not yet acknowledged it.
+While `pending_id` is `Some`, the server knows a teleportation is in-flight and
+the client has not yet acknowledged it. Like vanilla, the movement handlers
+then ignore the position of `SetPlayerPos`/`SetPlayerPosAndRot` (no
+`PlayerMoveEvent`; the rotation still applies): the client sent them from its
+old position before it processed the teleport, and they would pull the player
+back. Only the latest id confirms; an older, unknown or repeated id is logged
+at `warn` and ignored. The first position packet after the confirmation (the
+client's echo of the destination) moves the player as usual. This also holds
+after a `Teleport` times out: the player stays at the destination until the
+client confirms.
 
 ## Abilities and Flight
 
@@ -242,8 +268,18 @@ round trip. If flight is not allowed the component is left with
 
 When a player sends a chat message:
 
-1. The server formats it as `<PlayerName> message`
-2. A `SystemChat` packet (NBT text component) is broadcast to all ready players
+1. The server formats it as `<PlayerName> message`, keeping the text exactly as typed
+2. A `SystemChat` packet (one literal text component, shown in the chat box) is broadcast to all ready players, the sender included
 3. `ChatMessageEvent` is triggered for plugin observers
+
+A line a vanilla server would refuse is not broadcast and fires no event; the sender alone gets a red
+`Illegal characters in chat` or `Chat message too long` message and stays connected (a vanilla server
+disconnects them). Illegal characters are `§`, which the client would apply as formatting, and the
+control characters below U+0020 and U+007F, a line break among them, which would let a player forge a
+line in another player's name. Too long means over 256 UTF-16 code units, the most a vanilla client sends.
+A vanilla client never sends either.
+
+The chat signature, the last-seen acknowledgements of a signed chat line, the chat session a signed-in
+client sends after joining (`ChatSessionUpdate`) and its `ChatAck` are decoded and otherwise ignored.
 
 Messages starting with `/` are intercepted and routed to the command system, even if sent as `ChatMessage` rather than `ChatCommand` (this handles commands the client doesn't recognize from the command tree).

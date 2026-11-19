@@ -1,21 +1,26 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{
     change_detection::DetectChangesMut,
+    component::{Component, Mutable},
     entity::Entity,
     observer::On,
     system::Commands,
     world::{EntityWorldMut, World},
 };
 use voidmc_protocol::serverbound::{
-    ConfirmTeleportation, PlayerAbilities, SetPlayerPos, SetPlayerPosAndRot, SetPlayerRotation,
+    ConfirmTeleportation, PlayerAbilities, PlayerInput, SetPlayerPos, SetPlayerPosAndRot,
+    SetPlayerRotation,
 };
 
 use crate::{
-    components::{Position, Rotation, ServerControlledPosition, TeleportState},
+    components::{Grounded, Position, Rotation, ServerControlledPosition, Sneaking, TeleportState},
     entity::Mount,
     events::{PlayerMoveEvent, PlayerRotateEvent, PlayerToggleFlyEvent},
     network::PacketEvent,
 };
+
+/// Bit of the movement packets' flags byte set while the client stands on the ground.
+const ON_GROUND: u8 = 0x01;
 
 pub struct MovementPlugin;
 
@@ -26,7 +31,35 @@ impl Plugin for MovementPlugin {
         app.add_observer(handle_set_player_pos_and_rot);
         app.add_observer(handle_set_player_rotation);
         app.add_observer(handle_player_abilities);
+        app.add_observer(handle_player_input);
     }
+}
+
+/// Inserts `value`, or overwrites it only when it differs, so change
+/// detection fires on real changes only.
+fn set_if_changed<C: Component<Mutability = Mutable> + PartialEq>(
+    commands: &mut Commands,
+    entity: Entity,
+    value: C,
+) {
+    commands
+        .entity(entity)
+        .queue(move |mut e: EntityWorldMut| match e.get_mut::<C>() {
+            Some(mut current) => {
+                current.set_if_neq(value);
+            }
+            None => {
+                e.insert(value);
+            }
+        });
+}
+
+fn apply_on_ground(commands: &mut Commands, entity: Entity, flags: u8) {
+    set_if_changed(commands, entity, Grounded(flags & ON_GROUND != 0));
+}
+
+fn handle_player_input(event: On<PacketEvent<PlayerInput>>, mut commands: Commands) {
+    set_if_changed(&mut commands, event.entity, Sneaking(event.packet.sneak()));
 }
 
 fn handle_confirm_teleportation(
@@ -51,9 +84,14 @@ fn handle_confirm_teleportation(
     }
 }
 
+/// Like vanilla, positions are ignored while a position sync is unconfirmed:
+/// they were sent before the client processed the teleport and would undo it.
 fn apply_position(world: &World, commands: &mut Commands, entity: Entity, new: Position) {
     if world.get::<Mount>(entity).is_some()
         || world.get::<ServerControlledPosition>(entity).is_some()
+        || world
+            .get::<TeleportState>(entity)
+            .is_some_and(|state| state.pending_id.is_some())
     {
         return;
     }
@@ -78,16 +116,7 @@ fn apply_position(world: &World, commands: &mut Commands, entity: Entity, new: P
 }
 
 fn apply_rotation(commands: &mut Commands, entity: Entity, new: Rotation) {
-    commands
-        .entity(entity)
-        .queue(move |mut e: EntityWorldMut| match e.get_mut::<Rotation>() {
-            Some(mut r) => {
-                r.set_if_neq(new);
-            }
-            None => {
-                e.insert(new);
-            }
-        });
+    set_if_changed(commands, entity, new);
     commands.trigger(PlayerRotateEvent {
         entity,
         yaw: new.yaw,
@@ -100,6 +129,7 @@ fn handle_set_player_pos(
     world: &World,
     mut commands: Commands,
 ) {
+    apply_on_ground(&mut commands, event.entity, event.packet.flags);
     apply_position(
         world,
         &mut commands,
@@ -117,6 +147,7 @@ fn handle_set_player_pos_and_rot(
     world: &World,
     mut commands: Commands,
 ) {
+    apply_on_ground(&mut commands, event.entity, event.packet.flags);
     apply_position(
         world,
         &mut commands,
@@ -138,6 +169,7 @@ fn handle_set_player_pos_and_rot(
 }
 
 fn handle_set_player_rotation(event: On<PacketEvent<SetPlayerRotation>>, mut commands: Commands) {
+    apply_on_ground(&mut commands, event.entity, event.packet.flags);
     apply_rotation(
         &mut commands,
         event.entity,
@@ -381,6 +413,47 @@ mod tests {
     }
 
     #[test]
+    fn positions_sent_before_a_teleport_is_confirmed_are_ignored() {
+        let mut app = test_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                Position {
+                    x: 100.0,
+                    y: 80.0,
+                    z: 100.0,
+                },
+                TeleportState {
+                    next_id: 6,
+                    pending_id: Some(5),
+                },
+            ))
+            .id();
+
+        move_to(&mut app, entity, 1.0, 1.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 100.0);
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: ConfirmTeleportation { teleport_id: 4 },
+        });
+        app.world_mut().flush();
+        move_to(&mut app, entity, 1.0, 1.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 100.0);
+        assert_eq!(app.world().resource::<Moves>().0, 0);
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: ConfirmTeleportation { teleport_id: 5 },
+        });
+        app.world_mut().flush();
+        move_to(&mut app, entity, 101.0, 100.0);
+        assert_eq!(app.world().get::<Position>(entity).unwrap().x, 101.0);
+        assert_eq!(app.world().resource::<Moves>().0, 1);
+    }
+
+    #[test]
     fn free_player_movement_is_unchanged() {
         let mut app = App::new();
         app.add_plugins(MovementPlugin);
@@ -388,5 +461,41 @@ mod tests {
         move_to(&mut app, entity, 5.0, -5.0);
         let position = app.world().get::<Position>(entity).unwrap();
         assert_eq!((position.x, position.y, position.z), (5.0, 80.0, -5.0));
+    }
+
+    #[test]
+    fn movement_flags_and_input_record_ground_and_sneak() {
+        let mut app = App::new();
+        app.add_plugins(MovementPlugin);
+        let entity = app.world_mut().spawn(Position::default()).id();
+        let grounded = |app: &App| app.world().get::<Grounded>(entity).unwrap().0;
+        let sneaking = |app: &App| app.world().get::<Sneaking>(entity).unwrap().0;
+
+        move_to(&mut app, entity, 0.0, 0.0);
+        assert!(!grounded(&app), "flags 0 is airborne");
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: SetPlayerRotation {
+                yaw: 0.0,
+                pitch: 0.0,
+                flags: ON_GROUND,
+            },
+        });
+        app.world_mut().flush();
+        assert!(grounded(&app));
+
+        for (flags, sneak) in [
+            (PlayerInput::SNEAK | PlayerInput::FORWARD, true),
+            (PlayerInput::FORWARD, false),
+        ] {
+            app.world_mut().trigger(PacketEvent {
+                client_id: 1,
+                entity,
+                packet: PlayerInput { flags },
+            });
+            app.world_mut().flush();
+            assert_eq!(sneaking(&app), sneak);
+        }
     }
 }

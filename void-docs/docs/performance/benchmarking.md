@@ -71,6 +71,14 @@ The CSV columns are:
 | `last_tick_ms` | Duration of the latest completed tick |
 | `total_ticks` | Total ticks since startup |
 
+The file starts with the header line
+`timestamp_ms,tps,window_ms,last_tick_ms,total_ticks`. A row is written and
+flushed each time a measurement window of at least one second closes, so the
+partial window in progress when the server stops is not recorded. An existing
+file at the path is replaced, not appended to. Without `VOID_TPS_OUTPUT`, the
+file is `logs/tps-<unix-ms>.csv`. `VOID_TPS_OUTPUT` has no effect unless
+`VOID_METRICS_DEBUG=1` is set.
+
 For a short local sample without committing generated files:
 
 ```bash
@@ -102,6 +110,13 @@ Run the example server with flame output:
 ```bash
 VOID_METRICS_MODE=flame VOID_FLAME_OUTPUT=logs/void-flame.folded cargo run --release -p voidmc-example
 ```
+
+Setting `VOID_FLAME_OUTPUT` alone also enables flame mode; with
+`VOID_METRICS_MODE=flame` alone, the trace goes to
+`logs/trace-<unix-ms>.folded`. Flame mode does not enable TPS sampling. Each
+line of the trace is a folded stack, `all-threads; span; span <nanoseconds>`.
+The trace is buffered and completed when the server stops cleanly (`/stop` or
+Ctrl-C); a killed process leaves the end of it unwritten.
 
 Or use the root Makefile, which renders both SVG variants after the server
 exits (including Ctrl-C):

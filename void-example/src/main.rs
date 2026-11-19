@@ -1,15 +1,19 @@
 use std::env;
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
 
 use bevy_app::Update;
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_flame::FlameLayer;
+use tracing_flame::{FlameLayer, FlushGuard};
 use tracing_subscriber::prelude::*;
 use voidmc::components::PlayerName;
 use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
 use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
+use voidmc::plugins::redstone::RedstonePlugin;
 use voidmc::{
-    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, On, Query,
-    ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
+    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, ObservabilityConfig,
+    On, Query, ServerConfig, ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
 };
 use voidmc_navigation::{NavRemotePlugin, NavigationPlugin, RemoteAccess};
 use voidmc_vanilla_commands::{Access, VanillaCommandsPlugin};
@@ -19,12 +23,15 @@ use voidmc_worldedit::WorldEditPlugin;
 mod biome;
 mod boss_bar;
 mod circle;
+#[cfg(test)]
+mod diagnostics_tests;
 mod effects;
 mod entities;
 mod environment;
 mod menu;
 mod navigation;
 mod particle;
+mod redstone;
 mod sidebar;
 mod sign;
 mod sound;
@@ -36,8 +43,11 @@ mod worldedit;
 
 struct LogGuards {
     _file: WorkerGuard,
-    _flame: Option<tracing_flame::FlushGuard<std::io::BufWriter<std::fs::File>>>,
+    _flame: Option<FlushGuard<TraceFile>>,
 }
+
+/// Where the flame layer writes its folded stacks.
+type TraceFile = BufWriter<File>;
 
 struct MetricsEnv {
     metrics_debug: bool,
@@ -50,12 +60,20 @@ struct MetricsEnv {
 
 impl MetricsEnv {
     fn from_env() -> Self {
-        let metrics_debug = env_flag("VOID_METRICS_DEBUG");
-        let tps_output = env_string("VOID_TPS_OUTPUT");
-        let flame_output = env_string("VOID_FLAME_OUTPUT");
-        let flame_include_idle = env_flag("VOID_FLAME_INCLUDE_IDLE");
-        let packet_debug = env_flag("VOID_PACKET_DEBUG");
-        let metrics_mode = env::var("VOID_METRICS_MODE").ok();
+        Self::from_lookup(env_var)
+    }
+
+    /// Reads the diagnostics settings through `var`, which returns a
+    /// variable's value if it is set.
+    fn from_lookup(var: impl Fn(&str) -> Option<String>) -> Self {
+        let flag = |name| is_on(var(name));
+        let string = |name| non_empty(var(name));
+        let metrics_debug = flag("VOID_METRICS_DEBUG");
+        let tps_output = string("VOID_TPS_OUTPUT");
+        let flame_output = string("VOID_FLAME_OUTPUT");
+        let flame_include_idle = flag("VOID_FLAME_INCLUDE_IDLE");
+        let packet_debug = flag("VOID_PACKET_DEBUG");
+        let metrics_mode = var("VOID_METRICS_MODE");
         let flame_enabled =
             matches!(metrics_mode.as_deref(), Some("flame")) || flame_output.is_some();
 
@@ -68,32 +86,13 @@ impl MetricsEnv {
             packet_debug,
         }
     }
-
-    fn enabled(&self) -> bool {
-        self.metrics_debug || self.flame_enabled
-    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics_env = MetricsEnv::from_env();
     let _log_guards = setup_logging(&metrics_env)?;
 
-    let mut config_builder = ServerConfigBuilder::new()
-        .spawn_chunk_radius(4)
-        .initial_chunk_radius(4)
-        .motd("Void Example Server")
-        .max_players(100)
-        .configure_registries(biome::register_crimson_sky);
-
-    if metrics_env.enabled() {
-        config_builder = config_builder.metrics_debug(true);
-    }
-
-    if let Some(tps_output) = metrics_env.tps_output.clone() {
-        config_builder = config_builder.metrics_tps_output(tps_output);
-    }
-
-    VoidServer::new(config_builder.build())
+    VoidServer::new(server_config(&metrics_env, env_var))
         .add_plugin(|app| {
             // Persist modified chunks to ./world and reload them on restart.
             app.add_plugins(WorldPersistencePlugin::new(
@@ -159,6 +158,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.add_observer(worldedit::grant_wand);
         })
         .add_plugin(|app| {
+            // Levers, buttons, flat redstone dust and note blocks; `/circuit`
+            // builds a test circuit next to the player.
+            app.add_plugins(RedstonePlugin);
+            app.world_mut()
+                .resource_mut::<CommandRegistry>()
+                .register(redstone::circuit_command());
+        })
+        .add_plugin(|app| {
             // Demo of the item-behaviour API: a stick becomes a "glowstone wand",
             // overriding the default right-click action.
             app.world_mut()
@@ -180,6 +187,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .run();
 
     Ok(())
+}
+
+/// The configuration the example server runs with. `var` looks up the
+/// address variables, as [`MetricsEnv::from_lookup`] does the diagnostics.
+fn server_config(metrics_env: &MetricsEnv, var: impl Fn(&str) -> Option<String>) -> ServerConfig {
+    let mut config_builder = ServerConfigBuilder::new()
+        .spawn_chunk_radius(4)
+        .initial_chunk_radius(4)
+        .motd("Welcome to Void Server!")
+        .max_players(100)
+        .configure_registries(biome::register_crimson_sky);
+
+    if metrics_env.metrics_debug {
+        config_builder = config_builder.metrics_debug(true);
+    }
+
+    if let Some(tps_output) = metrics_env.tps_output.clone() {
+        config_builder = config_builder.metrics_tps_output(tps_output);
+    }
+
+    // `VOID_LISTEN_ADDR=127.0.0.1:0` picks a free port, as the diagnostics
+    // tests do. Unset: the default `127.0.0.1:25565`.
+    if let Some(address) = non_empty(var("VOID_LISTEN_ADDR")) {
+        config_builder = config_builder.address(address);
+    }
+
+    // `VOID_OBSERVABILITY_ADDR=9464` serves /health and /metrics on
+    // 127.0.0.1:9464; a full `host:port` picks the interface. Unset: off.
+    if let Some(address) = non_empty(var("VOID_OBSERVABILITY_ADDR")) {
+        config_builder = config_builder.observability(observability_config(&address));
+    }
+
+    config_builder.build()
 }
 
 fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::error::Error>> {
@@ -210,23 +250,18 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
         .with_file(true)
         .with_writer(non_blocking);
 
-    let flame_setup = if metrics_env.flame_enabled {
-        let flame_path = metrics_env
-            .flame_output
-            .clone()
-            .unwrap_or_else(|| format!("logs/trace-{timestamp}.folded"));
-        // Idle samples are hidden by default so the SVG focuses on server work.
-        // They can be included to show overall utilization.
-        let (flame_layer, flame_guard) = FlameLayer::with_file(&flame_path)?;
-        let flame_layer = flame_layer
-            .with_empty_samples(metrics_env.flame_include_idle)
-            .with_threads_collapsed(true)
-            .with_module_path(false)
-            .with_file_and_line(false);
-        Some((flame_layer, flame_guard))
-    } else {
-        None
-    };
+    // An unusable trace path turns flame profiling off instead of stopping the
+    // server; the warning is logged once the subscriber below is installed.
+    let flame_setup = metrics_env.flame_enabled.then(|| {
+        let flame_path = PathBuf::from(
+            metrics_env
+                .flame_output
+                .clone()
+                .unwrap_or_else(|| format!("logs/trace-{timestamp}.folded")),
+        );
+        let flame = flame_layer(&flame_path, metrics_env.flame_include_idle);
+        (flame_path, flame)
+    });
 
     let mut env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -242,12 +277,25 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
         .with(console_layer)
         .with(file_layer);
 
-    let flame_guard = if let Some((flame_layer, flame_guard)) = flame_setup {
-        registry.with(flame_layer).init();
-        Some(flame_guard)
-    } else {
-        registry.init();
-        None
+    let flame_guard = match flame_setup {
+        Some((path, Ok((flame_layer, flame_guard)))) => {
+            registry.with(flame_layer).init();
+            tracing::info!(path = %path.display(), "Writing flame trace to {}", path.display());
+            Some(flame_guard)
+        }
+        Some((path, Err(error))) => {
+            registry.init();
+            tracing::warn!(
+                error = %error,
+                path = %path.display(),
+                "Cannot write the flame trace; flame profiling is off"
+            );
+            None
+        }
+        None => {
+            registry.init();
+            None
+        }
     };
 
     Ok(LogGuards {
@@ -256,16 +304,54 @@ fn setup_logging(metrics_env: &MetricsEnv) -> Result<LogGuards, Box<dyn std::err
     })
 }
 
-fn env_flag(name: &str) -> bool {
+/// The folded-stack layer writing to `path`, creating missing parent
+/// directories, and the guard that flushes it when dropped.
+fn flame_layer<S>(
+    path: &Path,
+    include_idle: bool,
+) -> std::io::Result<(FlameLayer<S, TraceFile>, FlushGuard<TraceFile>)>
+where
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+{
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let flame_layer = FlameLayer::new(BufWriter::new(File::create(path)?));
+    let flame_guard = flame_layer.flush_on_drop();
+    // Idle samples are hidden by default so the SVG focuses on server work.
+    // They can be included to show overall utilization.
+    let flame_layer = flame_layer
+        .with_empty_samples(include_idle)
+        .with_threads_collapsed(true)
+        .with_module_path(false)
+        .with_file_and_line(false);
+    Ok((flame_layer, flame_guard))
+}
+
+fn observability_config(address: &str) -> ObservabilityConfig {
+    match address.parse::<u16>() {
+        Ok(port) => ObservabilityConfig::localhost(port),
+        Err(_) => ObservabilityConfig::new(address),
+    }
+}
+
+/// The value of the environment variable `name`, if it is set.
+fn env_var(name: &str) -> Option<String> {
+    env::var(name).ok()
+}
+
+fn is_on(value: Option<String>) -> bool {
     matches!(
-        env::var(name).as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        value.as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES")
     )
 }
 
-fn env_string(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
@@ -331,4 +417,58 @@ fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>) 
         event.position.y,
         event.position.z,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_list_shows_the_welcome_motd_and_room_for_100_players() {
+        let config = server_config(
+            &MetricsEnv {
+                metrics_debug: false,
+                flame_enabled: false,
+                tps_output: None,
+                flame_output: None,
+                flame_include_idle: false,
+                packet_debug: false,
+            },
+            |_| None,
+        );
+
+        assert_eq!(config.motd, "Welcome to Void Server!");
+        assert_eq!(config.max_players, 100);
+        assert_eq!(config.address, "127.0.0.1:25565");
+    }
+
+    #[test]
+    fn listen_and_observability_addresses_come_from_their_variables() {
+        let metrics_env = MetricsEnv::from_lookup(|_| None);
+
+        let defaults = server_config(&metrics_env, |_| None);
+        assert_eq!(defaults.address, "127.0.0.1:25565");
+        assert!(defaults.observability.is_none(), "the endpoint is opt-in");
+
+        let overridden = server_config(&metrics_env, |name| match name {
+            "VOID_LISTEN_ADDR" => Some(" 127.0.0.1:0 ".to_string()),
+            "VOID_OBSERVABILITY_ADDR" => Some("9464".to_string()),
+            _ => None,
+        });
+        assert_eq!(overridden.address, "127.0.0.1:0");
+        assert_eq!(
+            overridden.observability.map(|config| config.address),
+            Some("127.0.0.1:9464".to_string())
+        );
+
+        let blank = server_config(&metrics_env, |_| Some("  ".to_string()));
+        assert_eq!(blank.address, "127.0.0.1:25565");
+        assert!(blank.observability.is_none());
+    }
+
+    #[test]
+    fn observability_address_defaults_to_loopback_for_a_bare_port() {
+        assert_eq!(observability_config("9464").address, "127.0.0.1:9464");
+        assert_eq!(observability_config("[::1]:9464").address, "[::1]:9464");
+    }
 }

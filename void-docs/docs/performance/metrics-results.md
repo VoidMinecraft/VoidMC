@@ -102,7 +102,7 @@ cargo run --manifest-path pocs/performance/Cargo.toml --release --bin tcp_connec
 | Minimum latency | 0.076 ms |
 | Maximum latency | 0.502 ms |
 
-Conclusion: the local TCP listener accepted a 64-client burst without failures. This POC validates TCP accept responsiveness only; full Minecraft handshake/login stress remains future work.
+Conclusion: the local TCP listener accepted a 64-client burst without failures. This POC validates TCP accept responsiveness only; full-protocol multi-client runs use the [load-testing tool](./load-testing.md).
 
 ## Memory Tracking
 

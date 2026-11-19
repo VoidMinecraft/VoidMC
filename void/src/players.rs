@@ -12,10 +12,14 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryEntityError;
 use bevy_ecs::system::SystemParam;
 use flume::{Sender, TrySendError};
-use voidmc_protocol::clientbound::ClientboundPacket;
+use voidmc_protocol::State;
+use voidmc_protocol::clientbound::{self, ClientboundPacket};
 
-use crate::components::{ClientId, LoadedChunks, PlayerDimension, PlayerReady};
-use crate::network::{ClientSenders, NetworkChannels, OUTBOUND_QUEUE_CAPACITY, OutgoingPacket};
+use crate::components::{ClientId, ConnectionState, LoadedChunks, PlayerDimension, PlayerReady};
+use crate::messages::{Text, TextColor};
+use crate::network::{
+    ClientSender, ClientSenders, NetworkChannels, OUTBOUND_QUEUE_CAPACITY, OutgoingPacket,
+};
 use crate::world::{ChunkPos, DimensionId};
 
 static CHANNEL_CLOSED_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -236,6 +240,34 @@ impl Outbox<'_> {
             }
         }
     }
+
+    /// Queues `disconnect` (if any) and asks the network thread to close the
+    /// connection once what is queued has been written. Nothing is sent to
+    /// the client afterwards.
+    fn kick(&self, entity: Entity, client_id: u32, disconnect: Option<ClientboundPacket>) {
+        if let Some(packet) = disconnect {
+            self.deliver(entity, client_id, packet);
+        }
+        let first = self
+            .direct
+            .and_then(|senders| senders.get(entity))
+            .is_none_or(ClientSender::mark_kicked);
+        if first {
+            let _ = self.kick.send(client_id);
+        }
+    }
+}
+
+/// The play-state `Disconnect` carrying `reason`, unless the client is known
+/// to be in another state: those have no disconnect packet in
+/// `voidmc-protocol`, so their connection is just closed.
+fn disconnect_packet(state: Option<&ConnectionState>, reason: &str) -> Option<ClientboundPacket> {
+    state.is_none_or(|state| state.0 == State::Play).then(|| {
+        clientbound::Disconnect {
+            reason: Text::truncated(reason).component(TextColor::Red),
+        }
+        .into()
+    })
 }
 
 fn resolve_client(world: &World, entity: Entity) -> Option<u32> {
@@ -259,6 +291,7 @@ pub struct Players<'w, 's> {
     channels: Res<'w, NetworkChannels>,
     senders: Option<Res<'w, ClientSenders>>,
     clients: Query<'w, 's, &'static ClientId>,
+    states: Query<'w, 's, &'static ConnectionState>,
     ready: Query<
         'w,
         's,
@@ -290,6 +323,29 @@ impl Players<'_, '_> {
             }
             Err(_) => {
                 tracing::warn!(?entity, "Cannot send packet: entity has no ClientId");
+            }
+        }
+    }
+
+    /// Disconnects a client: a play-state client is sent a `Disconnect` with
+    /// `reason` (shown in red), then the server closes the connection once
+    /// the packets queued before it are written, whether or not the client
+    /// cooperates. Nothing else is sent to it. The disconnect is then handled
+    /// like any other: a player who joined gets its `PlayerQuitEvent` and its
+    /// entity is despawned at the next network ingest. Calling it again for
+    /// the same client does nothing.
+    pub fn kick(&self, entity: Entity, reason: &str) {
+        match self.clients.get(entity) {
+            Ok(client_id) => self.outbox().kick(
+                entity,
+                client_id.0,
+                disconnect_packet(self.states.get(entity).ok(), reason),
+            ),
+            Err(QueryEntityError::NotSpawned(_)) => {
+                tracing::debug!(?entity, "Cannot kick: entity no longer exists");
+            }
+            Err(_) => {
+                tracing::warn!(?entity, "Cannot kick: entity has no ClientId");
             }
         }
     }
@@ -367,6 +423,15 @@ impl<'w> WorldPlayers<'w> {
     pub fn send(&self, entity: Entity, packet: impl Into<ClientboundPacket>) {
         if let Some(client_id) = resolve_client(self.world, entity) {
             self.outbox().deliver(entity, client_id, packet.into());
+        }
+    }
+
+    /// See [`Players::kick`].
+    pub fn kick(&self, entity: Entity, reason: &str) {
+        if let Some(client_id) = resolve_client(self.world, entity) {
+            let state = self.world.get::<ConnectionState>(entity);
+            self.outbox()
+                .kick(entity, client_id, disconnect_packet(state, reason));
         }
     }
 
@@ -782,6 +847,50 @@ mod tests {
             vec![(2, 2), (2, 3), (2, 4), (2, 5), (2, 6), (2, 7)]
         );
         assert_eq!(drain(&fallback), vec![(3, 2), (3, 4)]);
+    }
+
+    #[test]
+    fn kick_sends_the_reason_once_then_closes_and_silences_the_client() {
+        let (mut app, _fallback) = test_app();
+        let kick_rx = with_registry(&mut app);
+        let (player, player_rx) = direct_client(&mut app, 1, 64);
+        let (loading, loading_rx) = direct_client(&mut app, 2, 64);
+        app.world_mut()
+            .entity_mut(player)
+            .insert(ConnectionState(State::Play));
+        app.world_mut()
+            .entity_mut(loading)
+            .insert(ConnectionState(State::Configuration));
+
+        app.add_systems(Update, move |players: Players| {
+            players.kick(player, "bye");
+            players.kick(player, "again");
+            players.send(player, keep_alive(1));
+            players.kick(loading, "bye");
+        });
+        app.update();
+        WorldPlayers::new(app.world()).kick(player, "once more");
+
+        let sent: Vec<_> = player_rx.try_iter().map(|out| out.packet).collect();
+        assert_eq!(sent.len(), 1, "only the first Disconnect: {sent:?}");
+        let ClientboundPacket::Play(clientbound::PlayPacket::Disconnect(disconnect)) = &sent[0]
+        else {
+            panic!("expected a Disconnect, got {:?}", sent[0]);
+        };
+        let reason = format!("{:?}", disconnect.reason);
+        assert!(
+            reason.contains("\"bye\""),
+            "the first reason is sent: {reason}"
+        );
+        assert!(
+            loading_rx.is_empty(),
+            "no play packet for a configuring client"
+        );
+        assert_eq!(
+            kick_rx.try_iter().collect::<Vec<_>>(),
+            vec![1, 2],
+            "one close request per client"
+        );
     }
 
     #[test]
