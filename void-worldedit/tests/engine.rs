@@ -554,26 +554,54 @@ fn edits_larger_than_the_history_budget_are_not_recorded() {
 
 #[test]
 fn the_wand_checks_permission_before_claiming_the_off_hand() {
+    // An off-hand use is the item in the off hand, so the wand (a block item
+    // here) is held there; the main hand is empty, as when the client falls
+    // through to the off hand.
+    fn use_off_hand(server: &mut Server, x: i32, sequence: i32) {
+        server.packet(UseItemOn {
+            hand: Hand::OffHand,
+            location: BlockPosition { x, y: 63, z: 3 },
+            face: BlockFace::Top,
+            cursor_x: 0.5,
+            cursor_y: 1.0,
+            cursor_z: 0.5,
+            inside_block: false,
+            world_border_hit: false,
+            sequence,
+        });
+        server.tick();
+    }
     let mut server = Server::new(plugin().wand("minecraft:stone"));
+    server
+        .app
+        .world_mut()
+        .get_mut::<Inventory>(server.player)
+        .unwrap()
+        .set(
+            Inventory::OFFHAND,
+            ItemStack::of("minecraft:stone", 1).unwrap(),
+        );
+
+    // An operator's off-hand wand is claimed: no corner, nothing placed.
+    use_off_hand(&mut server, 3, 1);
+    assert_eq!(server.block(3, 64, 3), BlockState::AIR);
+    assert_eq!(
+        server
+            .app
+            .world()
+            .get::<EditSession>(server.player)
+            .and_then(|session| session.selection.pos2()),
+        None
+    );
+
+    // Without permission the wand is a plain item and the click places it.
     server
         .app
         .world_mut()
         .entity_mut(server.player)
         .remove::<Operator>();
-    server.hold("minecraft:stone");
-    server.packet(UseItemOn {
-        hand: Hand::OffHand,
-        location: BlockPosition { x: 3, y: 63, z: 3 },
-        face: BlockFace::Top,
-        cursor_x: 0.5,
-        cursor_y: 1.0,
-        cursor_z: 0.5,
-        inside_block: false,
-        world_border_hit: false,
-        sequence: 1,
-    });
-    server.tick();
-    assert_eq!(server.block(3, 64, 3), stone());
+    use_off_hand(&mut server, 5, 2);
+    assert_eq!(server.block(5, 64, 3), stone());
 }
 
 #[test]

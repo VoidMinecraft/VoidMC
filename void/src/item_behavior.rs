@@ -71,10 +71,12 @@ pub struct ItemUseContext<'a> {
     pub player: Entity,
     pub client_id: u32,
     pub hand: Hand,
-    /// Snapshot of the item in hand when the action was queued.
+    /// Snapshot of the item in `hand` when the action was queued.
     pub held: ItemStack,
     /// The targeted block, or `None` for a use-in-air.
     pub block: Option<BlockUseTarget>,
+    /// The inventory slot `held` was taken from.
+    held_slot: Option<usize>,
 }
 
 impl ItemUseContext<'_> {
@@ -116,10 +118,13 @@ impl ItemUseContext<'_> {
         .is_some()
     }
 
-    /// Removes `n` from the held stack (server-authoritative).
+    /// Removes `n` from the stack in the slot the item was used from
+    /// (server-authoritative).
     pub fn consume(&mut self, n: u8) {
+        let Some(idx) = self.held_slot else {
+            return;
+        };
         if let Some(mut inv) = self.world.get_mut::<Inventory>(self.player) {
-            let idx = Inventory::hotbar_slot_index(inv.selected_hotbar());
             let mut stack = inv.get(idx).clone();
             if !stack.is_empty() {
                 stack.count = stack.count.saturating_sub(n);
@@ -359,6 +364,20 @@ struct QueuedUse {
     hand: Hand,
     sequence: i32,
     action: UseAction,
+    /// For a use: the slot and stack in `hand` when the packet arrived. Later
+    /// packets of the same tick, such as a hotbar change, must not alter what
+    /// this action uses.
+    held: Option<(usize, ItemStack)>,
+}
+
+/// The slot and stack in `hand`: the selected hotbar slot or the off hand.
+fn held_in(inventory: Option<&Inventory>, hand: Hand) -> Option<(usize, ItemStack)> {
+    let inventory = inventory?;
+    let slot = match hand {
+        Hand::MainHand => Inventory::hotbar_slot_index(inventory.selected_hotbar()),
+        Hand::OffHand => Inventory::OFFHAND,
+    };
+    Some((slot, inventory.get(slot).clone()))
 }
 
 /// Pending item/block actions, drained each tick with `&mut World`.
@@ -372,7 +391,8 @@ impl ItemUseQueue {
     }
 }
 
-/// Enqueues a "use item on block" action.
+/// Enqueues a "use item on block" action with the item `inventory` holds in
+/// `hand` now.
 pub fn enqueue_use_on_block(
     queue: &mut ItemUseQueue,
     player: Entity,
@@ -380,6 +400,7 @@ pub fn enqueue_use_on_block(
     hand: Hand,
     sequence: i32,
     target: BlockUseTarget,
+    inventory: Option<&Inventory>,
 ) {
     queue.0.push_back(QueuedUse {
         player,
@@ -387,16 +408,19 @@ pub fn enqueue_use_on_block(
         hand,
         sequence,
         action: UseAction::UseOnBlock(target),
+        held: held_in(inventory, hand),
     });
 }
 
-/// Enqueues a "use item in air" action.
+/// Enqueues a "use item in air" action with the item `inventory` holds in
+/// `hand` now.
 pub fn enqueue_use_in_air(
     queue: &mut ItemUseQueue,
     player: Entity,
     client_id: u32,
     hand: Hand,
     sequence: i32,
+    inventory: Option<&Inventory>,
 ) {
     queue.0.push_back(QueuedUse {
         player,
@@ -404,6 +428,7 @@ pub fn enqueue_use_in_air(
         hand,
         sequence,
         action: UseAction::UseInAir,
+        held: held_in(inventory, hand),
     });
 }
 
@@ -422,6 +447,7 @@ pub fn enqueue_break(
         hand: Hand::MainHand,
         sequence,
         action: UseAction::BreakBlock { position, face },
+        held: None,
     });
 }
 
@@ -489,6 +515,7 @@ pub fn enqueue_start_break(
         hand: Hand::MainHand,
         sequence,
         action: UseAction::StartBreak { position },
+        held: None,
     });
 }
 
@@ -543,10 +570,10 @@ pub fn drain_item_use_queue(world: &mut World) {
                     UseAction::UseOnBlock(target) => Some(target),
                     _ => None,
                 };
-                let held = world
-                    .get::<Inventory>(queued.player)
-                    .map(|inv| inv.held().clone())
-                    .unwrap_or(ItemStack::EMPTY);
+                let (held_slot, held) = match queued.held {
+                    Some((slot, stack)) => (Some(slot), stack),
+                    None => (None, ItemStack::EMPTY),
+                };
                 let behavior = world.resource::<ItemBehaviorRegistry>().get(held.item);
 
                 let mut ctx = ItemUseContext {
@@ -556,6 +583,7 @@ pub fn drain_item_use_queue(world: &mut World) {
                     hand: queued.hand,
                     held: held.clone(),
                     block,
+                    held_slot,
                 };
 
                 let result = match (&behavior, block.is_some()) {
@@ -573,8 +601,11 @@ pub fn drain_item_use_queue(world: &mut World) {
                 };
 
                 // Default: a block item places its block when used on a block.
+                // An empty hand places nothing (the air item maps to the air
+                // block, which would erase what is there).
                 if result == UseResult::Pass
                     && block.is_some()
+                    && !held.is_empty()
                     && let Some(state) = held.item.default_block_state()
                 {
                     ctx.place_block(state);

@@ -119,6 +119,14 @@ VoidServer::new(config)
 in an exclusive system (the same queue + drain pattern as commands), so they can
 mutate anything.
 
+A right-click runs the behaviour of the item in the hand that was used
+(`ctx.hand`): the selected hotbar slot for the main hand, slot 45 for the off
+hand. `ctx.held` is that item as it was when the packet arrived, and `consume`
+takes from that slot. The client tries the main hand first and the off hand
+next, unless it expects the main-hand item to do something. A main-hand
+behaviour the client does not know about can therefore be followed by an
+off-hand use of the same click, which runs the off-hand item.
+
 Four hooks are available:
 
 | Method | Fires on |
