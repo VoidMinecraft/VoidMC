@@ -16,7 +16,7 @@
 //! matching packets each tick, so nothing else has to remember to resync.
 
 use bevy_ecs::prelude::*;
-use voidmc_protocol::serverbound::ContainerInput;
+use voidmc_protocol::serverbound::{ChangedSlot, ContainerInput, HashedStack};
 use voidmc_protocol::slot::Slot;
 
 use bevy_ecs::system::SystemParam;
@@ -200,6 +200,53 @@ impl Inventory {
         }
     }
 
+    /// Compares the client's prediction of a click on window 0 with the
+    /// server's result, as vanilla does: a slot the client named, or the
+    /// cursor, is resent when the prediction differs and left alone when it
+    /// matches. Slots the server changed but the client did not name stay
+    /// marked.
+    pub(crate) fn reconcile_prediction(&mut self, changed: &[ChangedSlot], carried: &HashedStack) {
+        let (mut matched, mut mismatched) = (0u64, 0u64);
+        for prediction in changed {
+            let Some(index) = usize::try_from(prediction.slot)
+                .ok()
+                .filter(|&index| index < Self::SIZE)
+            else {
+                continue;
+            };
+            if prediction_matches(&prediction.item, &self.slots[index]) {
+                matched |= 1 << index;
+            } else {
+                mismatched |= 1 << index;
+            }
+        }
+        self.dirty.slots = (self.dirty.slots & !matched) | mismatched;
+        self.dirty.cursor = !prediction_matches(carried, &self.cursor);
+    }
+
+    /// The client closed its own inventory screen: like vanilla, the cursor
+    /// stack and the crafting grid go back into the inventory. Returns what
+    /// did not fit, for the caller to drop.
+    pub(crate) fn close_player_window(&mut self) -> Vec<ItemStack> {
+        self.drag = None;
+        let mut returned = vec![std::mem::replace(&mut self.cursor, ItemStack::EMPTY)];
+        if !returned[0].is_empty() {
+            self.dirty.cursor = true;
+        }
+        for index in Self::CRAFTING_GRID_START..Self::ARMOR_HEAD {
+            let stack = std::mem::replace(&mut self.slots[index], ItemStack::EMPTY);
+            if !stack.is_empty() {
+                self.dirty.slots |= 1 << index;
+                returned.push(stack);
+            }
+        }
+        returned
+            .into_iter()
+            .map(|stack| self.give(stack))
+            .filter(|leftover| !leftover.is_empty())
+            .collect()
+    }
+
     pub(crate) fn slots(&self) -> &[ItemStack; Self::SIZE] {
         &self.slots
     }
@@ -248,6 +295,23 @@ impl Inventory {
 impl Default for Inventory {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Whether a client's hashed prediction is exactly `stack`. The server does
+/// not compute component hashes, so a stack with components never matches
+/// and is always resent.
+pub(crate) fn prediction_matches(predicted: &HashedStack, stack: &ItemStack) -> bool {
+    match predicted {
+        None => stack.is_empty(),
+        Some(item) => {
+            !stack.is_empty()
+                && item.item_id == stack.item.0
+                && item.count == i32::from(stack.count)
+                && item.added.is_empty()
+                && item.removed.is_empty()
+                && stack.components.is_empty()
+        }
     }
 }
 

@@ -13,7 +13,7 @@ use voidmc_protocol::slot::Slot;
 
 use crate::config::ServerConfigResource;
 use crate::events::{ItemDropEvent, PlayerChangeSlotEvent, PlayerQuitEvent, PlayerReadyEvent};
-use crate::inventory::Inventory;
+use crate::inventory::{Inventory, prediction_matches};
 use crate::item::ItemStack;
 use crate::menu::{
     ContainerIds, MenuClickContext, MenuClickEvent, MenuClickQueue, MenuCloseReason,
@@ -106,10 +106,11 @@ fn handle_container_click(
         if open.is_some() {
             return;
         }
+        let dropped = inv.apply_click(packet.slot, packet.button, packet.input, creative);
+        inv.reconcile_prediction(&packet.changed_slots, &packet.carried);
         if packet.state_id != inv.state_id() {
             inv.mark_full();
         }
-        let dropped = inv.apply_click(packet.slot, packet.button, packet.input, creative);
         drop_all(&mut commands, event.entity, dropped);
         return;
     }
@@ -133,6 +134,7 @@ fn handle_container_click(
 
     if open.is_editable() {
         let dropped = apply_menu_click(&mut inv, &mut open, &layout, packet, creative);
+        resend_mispredicted(&mut inv, &mut open, &layout, packet);
         drop_all(&mut commands, event.entity, dropped);
     } else {
         for changed in &packet.changed_slots {
@@ -196,6 +198,35 @@ fn apply_menu_click(
     dropped
 }
 
+/// Marks the menu-window slots (and the cursor) whose client prediction
+/// differs from the server's result, so the client is corrected even where
+/// the server changed nothing.
+fn resend_mispredicted(
+    inv: &mut Inventory,
+    open: &mut OpenMenu,
+    layout: &Layout,
+    packet: &ClickContainer,
+) {
+    for predicted in &packet.changed_slots {
+        match MenuSlot::from_window(layout, predicted.slot) {
+            Some(MenuSlot::Menu(index))
+                if !prediction_matches(&predicted.item, open.get(index)) =>
+            {
+                open.mark_slot(index)
+            }
+            Some(MenuSlot::Inventory(index))
+                if !prediction_matches(&predicted.item, inv.get(index)) =>
+            {
+                inv.mark_slot(index)
+            }
+            _ => {}
+        }
+    }
+    if !prediction_matches(&packet.carried, inv.cursor()) {
+        inv.mark_cursor();
+    }
+}
+
 fn drop_all(commands: &mut Commands, dropper: Entity, dropped: Vec<ItemStack>) {
     for stack in dropped {
         commands.trigger(ItemDropEvent { dropper, stack });
@@ -204,10 +235,17 @@ fn drop_all(commands: &mut Commands, dropper: Entity, dropped: Vec<ItemStack>) {
 
 fn handle_close_container(
     event: On<PacketEvent<CloseContainer>>,
-    mut open: Query<&mut OpenMenu>,
+    mut players: Query<(&mut Inventory, Option<&mut OpenMenu>)>,
     mut commands: Commands,
 ) {
-    let Ok(mut open) = open.get_mut(event.entity) else {
+    let Ok((mut inv, open)) = players.get_mut(event.entity) else {
+        return;
+    };
+    let Some(mut open) = open else {
+        if event.packet.container_id == PLAYER_WINDOW_ID {
+            let leftovers = inv.close_player_window();
+            drop_all(&mut commands, event.entity, leftovers);
+        }
         return;
     };
     if open.container_id != Some(event.packet.container_id) {
@@ -435,7 +473,9 @@ mod tests {
     use bevy_app::App;
     use flume::Receiver;
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
-    use voidmc_protocol::serverbound::{ChangedSlot, ContainerInput};
+    use voidmc_protocol::serverbound::{
+        ChangedSlot, ContainerInput, HashedComponent, HashedItem, HashedStack,
+    };
 
     use super::*;
     use crate::components::{ClientId, PlayerReady};
@@ -652,8 +692,43 @@ mod tests {
         );
     }
 
+    fn hashed(stack: &ItemStack) -> HashedStack {
+        (!stack.is_empty()).then(|| HashedItem {
+            item_id: stack.item.0,
+            count: i32::from(stack.count),
+            added: Vec::new(),
+            removed: Vec::new(),
+        })
+    }
+
+    fn predicted_click(
+        app: &mut App,
+        entity: Entity,
+        state_id: i32,
+        slot: i16,
+        changed_slots: Vec<(i16, HashedStack)>,
+        carried: HashedStack,
+    ) {
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: ClickContainer {
+                container_id: 0,
+                state_id,
+                slot,
+                button: 0,
+                input: ContainerInput::Pickup,
+                changed_slots: changed_slots
+                    .into_iter()
+                    .map(|(slot, item)| ChangedSlot { slot, item })
+                    .collect(),
+                carried,
+            },
+        });
+    }
+
     #[test]
-    fn player_window_click_answers_with_changed_slots_and_cursor() {
+    fn player_window_click_resends_only_what_the_client_mispredicted() {
         let (mut app, rx) = test_app();
         let p = player(&mut app, 1);
         app.world_mut()
@@ -661,27 +736,100 @@ mod tests {
             .unwrap()
             .set(Inventory::HOTBAR_START, stone(5));
         app.update();
-        drain(&rx);
+        assert_eq!(
+            drain(&rx),
+            vec![Sent::SlotSet(0, 1, 36, stone(5).to_slot())]
+        );
 
-        click(&mut app, p, 0, 1, Inventory::HOTBAR_START as i16);
+        // Right slot, wrong cursor: only the cursor is corrected.
+        predicted_click(&mut app, p, 1, 36, vec![(36, None)], None);
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Cursor(stone(5).to_slot())]);
+
+        // A correct prediction is not echoed; a slot the client claims but
+        // the server never touched is resent with its true contents.
+        let diamonds = ItemStack::of("minecraft:diamond", 64).unwrap();
+        predicted_click(
+            &mut app,
+            p,
+            1,
+            9,
+            vec![(9, hashed(&stone(5))), (20, hashed(&diamonds))],
+            None,
+        );
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::SlotSet(0, 2, 20, Slot::EMPTY)]);
+        let inv = app.world().get::<Inventory>(p).unwrap();
+        assert_eq!(inv.get(Inventory::MAIN_START), &stone(5));
+        assert!(inv.get(20).is_empty() && inv.cursor().is_empty());
+
+        // A stale state id gets the full window, whatever the prediction.
+        predicted_click(&mut app, p, 99, 9, vec![(9, None)], hashed(&stone(5)));
         app.update();
         assert_eq!(
             drain(&rx),
-            vec![
-                Sent::SlotSet(0, 2, 36, Slot::EMPTY),
-                Sent::Cursor(stone(5).to_slot()),
-            ]
+            vec![Sent::Content(0, 3, 46, stone(5).to_slot())]
         );
-
-        click(&mut app, p, 0, 99, Inventory::MAIN_START as i16);
-        app.update();
-        assert_eq!(drain(&rx), vec![Sent::Content(0, 3, 46, Slot::EMPTY)]);
-        assert_eq!(
+        assert!(
             app.world()
                 .get::<Inventory>(p)
                 .unwrap()
-                .get(Inventory::MAIN_START),
-            &stone(5)
+                .get(Inventory::MAIN_START)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn components_are_always_resent_and_close_returns_cursor_and_grid() {
+        let (mut app, rx) = test_app();
+        let p = player(&mut app, 1);
+        let named = stone(3).with_max_stack_size(16);
+        {
+            let mut inv = app.world_mut().get_mut::<Inventory>(p).unwrap();
+            inv.set(Inventory::HOTBAR_START, named.clone());
+            inv.set(Inventory::CRAFTING_GRID_START, stone(2));
+        }
+        app.update();
+        drain(&rx);
+
+        // The client's hash of a stack with components cannot be checked.
+        let mut prediction = hashed(&named);
+        if let Some(item) = prediction.as_mut() {
+            item.added.push(HashedComponent {
+                type_id: 1,
+                hash: 7,
+            });
+        }
+        predicted_click(
+            &mut app,
+            p,
+            2,
+            Inventory::HOTBAR_START as i16,
+            vec![(36, None)],
+            prediction,
+        );
+        app.update();
+        assert_eq!(drain(&rx), vec![Sent::Cursor(named.to_slot())]);
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity: p,
+            packet: CloseContainer { container_id: 0 },
+        });
+        app.update();
+        let inv = app.world().get::<Inventory>(p).unwrap();
+        assert!(inv.cursor().is_empty());
+        assert!(inv.get(Inventory::CRAFTING_GRID_START).is_empty());
+        assert_eq!(inv.get(Inventory::HOTBAR_START), &named);
+        assert_eq!(inv.get(Inventory::HOTBAR_START + 1), &stone(2));
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::SlotSet(0, 3, 1, Slot::EMPTY),
+                Sent::SlotSet(0, 4, 36, named.to_slot()),
+                Sent::SlotSet(0, 5, 37, stone(2).to_slot()),
+                Sent::Cursor(Slot::EMPTY),
+            ]
         );
     }
 
@@ -869,6 +1017,53 @@ mod tests {
         click_with(&mut app, p, 1, 3, 9, ContainerInput::QuickMove, vec![]);
         app.update();
         assert_eq!(app.world().get::<OpenMenu>(p).unwrap().get(0), &stone(5));
+    }
+
+    #[test]
+    fn editable_menu_resends_slots_the_client_mispredicted() {
+        let (mut app, rx) = test_app();
+        let p = player(&mut app, 1);
+        WorldMenus::new(app.world_mut()).open(p, Menu::chest(1, "E").slot(0, stone(5)).editable());
+        app.update();
+        drain(&rx);
+
+        // Picks up slot 0 but claims slot 4 and the main inventory changed too.
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity: p,
+            packet: ClickContainer {
+                container_id: 1,
+                state_id: 1,
+                slot: 0,
+                button: 0,
+                input: ContainerInput::Pickup,
+                changed_slots: vec![
+                    ChangedSlot {
+                        slot: 0,
+                        item: None,
+                    },
+                    ChangedSlot {
+                        slot: 4,
+                        item: hashed(&stone(64)),
+                    },
+                    ChangedSlot {
+                        slot: 9,
+                        item: hashed(&stone(64)),
+                    },
+                ],
+                carried: hashed(&stone(5)),
+            },
+        });
+        app.update();
+        assert_eq!(
+            drain(&rx),
+            vec![
+                Sent::SlotSet(1, 2, 0, Slot::EMPTY),
+                Sent::SlotSet(1, 3, 4, Slot::EMPTY),
+                Sent::SlotSet(1, 4, 9, Slot::EMPTY),
+                Sent::Cursor(stone(5).to_slot()),
+            ]
+        );
     }
 
     #[test]
