@@ -391,7 +391,9 @@ On a running server:
 - `join(name)` and `join_with(name, BotOptions { view_distance })` log a bot
   in and return once the server lists it.
 - `with_world(|world| ...)` runs a closure on the game thread at the start of
-  the next tick and returns its result.
+  the next tick and returns its result. That is never the first tick, so
+  even right after `start()` the closure sees a world in which every system
+  of the first tick has run.
 - `wait_for(what, |world| Option<T>)` polls once per tick until the closure
   returns `Some`.
 - `wait_ticks(n)`, `status()` (the server-list ping) and `player_entity(uuid)`.

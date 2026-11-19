@@ -161,7 +161,15 @@ async fn an_unusable_tps_path_is_a_warning_and_the_server_runs_on() {
     // A directory cannot be opened as the CSV file.
     let output = dir.0.display().to_string();
     let server = TestServer::builder()
-        .config(|config| config.metrics_debug(true).metrics_tps_output(output))
+        .config(|config| {
+            config
+                .metrics_debug(true)
+                .metrics_tps_output(output)
+                // On a loaded machine a tick can exceed the slow-tick
+                // threshold, and that warning has the same target; the
+                // slow-tick warning is covered by atp_024.
+                .slow_tick_ms(0)
+        })
         .start()
         .await;
 
