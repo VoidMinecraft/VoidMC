@@ -1,3 +1,4 @@
+mod atp_007_chat;
 mod commands;
 mod connection;
 mod inventory;
