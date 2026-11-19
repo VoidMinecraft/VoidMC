@@ -25,6 +25,7 @@ mod atp_028_parallel_regions;
 mod atp_029_biomes_weather;
 mod atp_030_note_block_redstone;
 mod atp_031_load;
+mod atp_032_observability;
 mod atp_033_command_completion;
 mod atp_034_lifecycle_plugin;
 mod atp_035_gameplay_events;

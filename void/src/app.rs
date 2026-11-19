@@ -15,6 +15,7 @@ use crate::commands::{Command, CommandRegistry};
 use crate::config::{ExecutionMode, ServerConfig, ServerConfigResource};
 use crate::metrics::MetricsPlugin;
 use crate::network::{ClientConnected, IncomingPacket, NetworkPlugin, OutgoingPacket};
+use crate::observability::Observability;
 use crate::plugins::DefaultPlugins;
 use crate::registry::RegistryDataStore;
 use crate::server_status::ServerStatusSnapshot;
@@ -72,6 +73,25 @@ impl VoidServer {
                 .local_addr()
                 .expect("a bound listener has a local address"),
         );
+        let observability = self.config.observability.as_ref().map(|config| {
+            let listener = bind_listener(&config.address).unwrap_or_else(|error| {
+                panic!(
+                    "Failed to bind the observability endpoint {}: {error}",
+                    config.address
+                )
+            });
+            Observability::start(
+                config,
+                listener,
+                tick_duration,
+                self.config.tick_rate,
+                self.config.max_players,
+            )
+        });
+        let (_observability_guard, observability_plugin, telemetry) = match observability {
+            Some(o) => (Some(o.guard), Some(o.plugin), Some(o.telemetry)),
+            None => (None, None, None),
+        };
         let frame_limits = self.config.frame_limits;
         let compression_threshold = self.config.compression_threshold;
         let execution_mode = self.config.execution_mode;
@@ -96,7 +116,8 @@ impl VoidServer {
                 let listener = tokio::net::TcpListener::from_std(listener)
                     .expect("Failed to register the listener with Tokio");
                 let mut server = Server::from_listener(listener, frame_limits)
-                    .with_compression_threshold(compression_threshold);
+                    .with_compression_threshold(compression_threshold)
+                    .with_telemetry(telemetry);
                 server
                     .run_with_status(
                         incoming_tx,
@@ -135,6 +156,9 @@ impl VoidServer {
         if self.config.metrics_debug {
             app.add_plugins(MetricsPlugin::new(self.config.metrics_tps_output.clone()));
         }
+        if let Some(plugin) = observability_plugin {
+            app.add_plugins(plugin);
+        }
 
         app.insert_resource(self.config.registries)
             .insert_resource(config_resource)
@@ -160,6 +184,9 @@ impl VoidServer {
 
         apply_execution_mode(&mut app, execution_mode);
         app.run();
+        // `_observability_guard` drops here: `/health` reports `stopping` until
+        // the observability listener is closed, which happens before `run`
+        // returns.
     }
 }
 

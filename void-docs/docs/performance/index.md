@@ -36,6 +36,7 @@ The example server exposes performance-oriented environment variables:
 | `VOID_FLAME_OUTPUT=logs/void-flame.folded` | Selects the folded flame-trace output path |
 | `VOID_FLAME_INCLUDE_IDLE=1` | Includes idle time so the trace shows overall utilization |
 | `VOID_PACKET_DEBUG=1` | Enables verbose packet logging for protocol debugging |
+| `VOID_OBSERVABILITY_ADDR=9464` | Serves `/health` and Prometheus `/metrics` on `127.0.0.1:9464` ([reference](../reference/server/observability.md)) |
 
 Generated `logs/`, raw Criterion output, flame traces, and `target/` artifacts stay out of git. Commit summarized Markdown tables instead.
 

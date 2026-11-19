@@ -3,6 +3,7 @@ use std::time::Duration;
 use bevy_ecs::prelude::*;
 use voidmc_net::socket::{DEFAULT_COMPRESSION_THRESHOLD, FrameLimits};
 
+use crate::observability::ObservabilityConfig;
 use crate::registry::RegistryDataStore;
 use crate::world::generation::{DefaultWorldGenerator, WorldGenerator};
 
@@ -65,6 +66,9 @@ pub struct ServerConfig {
     /// Packets of at least this many bytes are zlib-compressed after login;
     /// `None` disables compression. Defaults to vanilla's 256.
     pub compression_threshold: Option<u32>,
+    /// Health and Prometheus metrics endpoints; `None` (the default) serves
+    /// nothing.
+    pub observability: Option<ObservabilityConfig>,
     pub world_generator: Box<dyn WorldGenerator>,
     pub registries: RegistryDataStore,
     /// Single- or multi-threaded tick execution. Defaults to single-threaded.
@@ -105,6 +109,7 @@ impl Default for ServerConfig {
             slow_tick_ms: 200,
             frame_limits: FrameLimits::default(),
             compression_threshold: Some(DEFAULT_COMPRESSION_THRESHOLD),
+            observability: None,
             world_generator: Box::new(DefaultWorldGenerator::default()),
             registries: RegistryDataStore::default(),
             execution_mode: ExecutionMode::default(),
@@ -224,6 +229,13 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Serves `/health` and `/metrics` over HTTP as `config` says. Off unless
+    /// called; bind it to a loopback or private interface only.
+    pub fn observability(mut self, config: ObservabilityConfig) -> Self {
+        self.config.observability = Some(config);
+        self
+    }
+
     pub fn world_generator(mut self, generator: impl WorldGenerator + 'static) -> Self {
         self.config.world_generator = Box::new(generator);
         self
@@ -306,6 +318,21 @@ impl From<&ServerConfig> for ServerConfigResource {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observability_is_off_unless_enabled() {
+        assert_eq!(ServerConfig::default().observability, None);
+        assert_eq!(ServerConfigBuilder::new().build().observability, None);
+        let config = ServerConfigBuilder::new()
+            .observability(ObservabilityConfig::localhost(9464))
+            .build();
+        assert_eq!(
+            config
+                .observability
+                .map(|observability| observability.address),
+            Some("127.0.0.1:9464".to_string())
+        );
+    }
 
     #[test]
     fn builder_replaces_a_zero_tick_rate_with_one() {

@@ -11,6 +11,11 @@
   },
   {
     "type": "file",
+    "name": "observability",
+    "label": "Health & Metrics Endpoints"
+  },
+  {
+    "type": "file",
     "name": "ecs",
     "label": "ECS Components & Resources"
   },

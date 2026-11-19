@@ -5,7 +5,7 @@
 `ServerConfigBuilder` provides a fluent API for constructing a `ServerConfig`:
 
 ```rust
-use voidmc::{FrameLimits, ServerConfigBuilder, SpawnPosition};
+use voidmc::{FrameLimits, ObservabilityConfig, ServerConfigBuilder, SpawnPosition};
 
 let config = ServerConfigBuilder::new()
     .address("0.0.0.0:25565")
@@ -21,6 +21,7 @@ let config = ServerConfigBuilder::new()
     .hardcore(false)
     .frame_limits(FrameLimits::default())
     .compression_threshold(Some(256))
+    .observability(ObservabilityConfig::localhost(9464))
     .world_generator(MyGenerator::new())
     .configure_registries(|registries| {
         // Modify registry data before server starts
@@ -51,6 +52,7 @@ let config = ServerConfigBuilder::new()
 | `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms) |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
 | `compression_threshold` | `Option<u32>` | `Some(256)` | Packets of at least this many bytes are zlib-compressed after login; `None` disables compression (vanilla's negative threshold) |
+| `observability` | `Option<ObservabilityConfig>` | `None` | Serves `/health` and Prometheus `/metrics` over HTTP; see [Health and Metrics Endpoints](./observability.md) |
 | `world_generator` | `Box<dyn WorldGenerator>` | `DefaultWorldGenerator` | Terrain generation implementation |
 | `registries` | `RegistryDataStore` | `RegistryDataStore::default()` | Minecraft registry data sent during configuration |
 | `execution_mode` | `ExecutionMode` | `SingleThreaded` | Run systems and independent regions concurrently (`MultiThreaded`) or one after another on the game thread; see [Execution mode](#execution-mode) |
