@@ -73,7 +73,7 @@ Each state has specific packets that can be sent/received.
 
 ### Async-First Design
 
-All I/O operations are non-blocking using Tokio, enabling thousands of concurrent connections.
+All I/O operations are non-blocking using Tokio, so a slow connection does not hold up the others. How the server behaves under a defined multi-client workload is measured with the [load-testing tool](/performance/load-testing); its reports are not capacity claims.
 
 ### Type Safety
 
