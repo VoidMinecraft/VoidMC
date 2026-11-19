@@ -191,6 +191,15 @@ impl PaletteData {
 
 pub const BIOME_CELLS_PER_SECTION: usize = 64;
 const BIOME_MAX_INDIRECT_BITS: u8 = 3;
+/// Widest indirect block-state palette the client reads; beyond it, a
+/// section carries global ids.
+const BLOCK_MAX_INDIRECT_BITS: u8 = 8;
+
+/// Bits per entry of a direct block-state palette: `ceil(log2(block state
+/// count))`, which the client uses for any width above 8.
+pub fn block_direct_bits() -> u8 {
+    ceil_log2(voidmc_data::block_state_count(voidmc_data::Version::V26_1_2) as usize)
+}
 
 /// Bits per entry of a direct biome palette: `ceil(log2(registry size))`.
 pub fn biome_direct_bits(registry_size: usize) -> u8 {
@@ -362,6 +371,21 @@ impl ChunkSection {
         }
 
         let bits_per_entry = ((palette.len() as f64).log2().ceil() as u8).max(4);
+        if bits_per_entry > BLOCK_MAX_INDIRECT_BITS {
+            let bits = block_direct_bits();
+            let mut data = vec![0u64; packed_len(bits, block_array.len())];
+            for (index, &block) in block_array.iter().enumerate() {
+                packed_set(&mut data, bits, index, block as u64);
+            }
+            return Self {
+                block_count,
+                block_state: PaletteData::Direct {
+                    bits_per_entry: bits,
+                    data,
+                },
+                biome: PaletteData::SingleValue(biome_id),
+            };
+        }
         let entries_per_long = 64 / bits_per_entry as usize;
         let total_longs = 4096_usize.div_ceil(entries_per_long);
 
@@ -1399,6 +1423,33 @@ mod biome_tests {
         assert_eq!(truncated.get_block_state(0, 0, 0), 1);
         assert_eq!(truncated.get_block_state(1, 0, 0), 0);
         assert_eq!(truncated.get_block_state(0, 15, 15), 1);
+    }
+
+    #[test]
+    fn sections_with_more_than_256_states_use_global_ids() {
+        assert_eq!(block_direct_bits(), 15);
+        let blocks: [i32; 4096] = std::array::from_fn(|index| 1000 + (index % 300) as i32);
+        let section = ChunkSection::from_block_array(&blocks, 5, 4096);
+        assert_eq!(section.block_state.bits_per_entry(), 15);
+        assert!(matches!(section.block_state, PaletteData::Direct { .. }));
+        for (index, &block) in blocks.iter().enumerate() {
+            let (x, y, z) = (index % 16, index / 256, (index / 16) % 16);
+            assert_eq!(section.get_block_state(x as u8, y as u8, z as u8), block);
+        }
+
+        // Header, bits, then 4096 entries packed four per long with no
+        // palette and no length prefix, then the biome container.
+        let bytes = section.encode_to_bytes();
+        assert_eq!(&bytes[..5], [0x10, 0x00, 0x00, 0x00, 15]);
+        let first = u64::from_be_bytes(bytes[5..13].try_into().unwrap());
+        assert_eq!(first, 1000 | 1001 << 15 | 1002 << 30 | 1003 << 45);
+        assert_eq!(bytes.len(), 5 + 1024 * 8 + 2);
+        assert_eq!(&bytes[bytes.len() - 2..], [0, 5]);
+
+        let below: [i32; 4096] = std::array::from_fn(|index| 1000 + (index % 255) as i32);
+        let section = ChunkSection::from_block_array(&below, 5, 4096);
+        assert_eq!(section.block_state.bits_per_entry(), 8);
+        assert!(matches!(section.block_state, PaletteData::Indirect { .. }));
     }
 
     #[test]
