@@ -22,6 +22,7 @@ use voidmc::{
     BlockFace, BlockPosition, ChunkData, ChunkIndex, ChunkPos as ServerChunkPos, DimensionId, Hand,
     Inventory, ItemStack as ServerItemStack, On,
 };
+use voidmc_e2e::core::delta::LpVec3;
 use voidmc_e2e::core::direction::Direction;
 use voidmc_e2e::core::entity_id::MinecraftEntityId;
 use voidmc_e2e::core::position::{BlockPos, Vec3};
@@ -29,7 +30,8 @@ use voidmc_e2e::inventory::{ItemStack, ItemStackData};
 use voidmc_e2e::protocol::common::movements::MoveFlags;
 use voidmc_e2e::protocol::packets::game::{
     ClientboundGamePacket,
-    s_interact::InteractionHand,
+    s_attack::ServerboundAttack,
+    s_interact::{InteractionHand, ServerboundInteract},
     s_move_player_pos::ServerboundMovePlayerPos,
     s_move_player_pos_rot::ServerboundMovePlayerPosRot,
     s_move_player_rot::ServerboundMovePlayerRot,
@@ -134,6 +136,14 @@ enum Seen {
     Sprint {
         player: String,
         sprinting: bool,
+    },
+    InteractEntity {
+        player: String,
+        target_id: i32,
+        attack: bool,
+        hand: Option<Hand>,
+        target_pos: Option<(f32, f32, f32)>,
+        sneaking: bool,
     },
     Other {
         player: String,
@@ -358,6 +368,17 @@ fn record_events(app: &mut App) {
                 sprinting: event.sprinting,
             };
             rec.push(seen);
+        })
+        .add_observer(|event: On<PlayerInteractEntityEvent>, mut rec: Recorder| {
+            let seen = Seen::InteractEntity {
+                player: rec.name(event.entity),
+                target_id: event.target_id,
+                attack: event.attack,
+                hand: event.hand,
+                target_pos: event.target_pos,
+                sneaking: event.sneaking,
+            };
+            rec.push(seen);
         });
 
     // Events no step should produce: any of them in the log fails the step.
@@ -372,9 +393,6 @@ fn record_events(app: &mut App) {
     }
     app.add_observer(other("swing arm", |e: &PlayerSwingArmEvent| e.entity))
         .add_observer(other("change slot", |e: &PlayerChangeSlotEvent| e.entity))
-        .add_observer(other("interact entity", |e: &PlayerInteractEntityEvent| {
-            e.entity
-        }))
         .add_observer(other("toggle fly", |e: &PlayerToggleFlyEvent| e.entity))
         .add_observer(other("drop item", |e: &PlayerDropItemEvent| e.entity))
         .add_observer(other("swap hands", |e: &PlayerSwapHandsEvent| e.entity))
@@ -1023,6 +1041,108 @@ async fn sneak_and_sprint_events_follow_what_the_client_reports() {
         ],
     )
     .await;
+
+    assert_step(&server, "the end of the session", vec![]).await;
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+fn attacked(player: &str, target_id: i32) -> Seen {
+    Seen::InteractEntity {
+        player: player.into(),
+        target_id,
+        attack: true,
+        hand: None,
+        target_pos: None,
+        sneaking: false,
+    }
+}
+
+fn right_clicked(
+    player: &str,
+    target_id: i32,
+    hand: Hand,
+    target_pos: (f32, f32, f32),
+    sneaking: bool,
+) -> Seen {
+    Seen::InteractEntity {
+        player: player.into(),
+        target_id,
+        attack: false,
+        hand: Some(hand),
+        target_pos: Some(target_pos),
+        sneaking,
+    }
+}
+
+#[tokio::test]
+async fn attacking_and_right_clicking_an_entity_fire_one_interact_event_each() {
+    let (server, alice, bob) = session().await;
+    let bob_id = bob.entity_id();
+    let alice_id = alice.entity_id();
+
+    alice
+        .send(ServerboundAttack {
+            entity_id: MinecraftEntityId(bob_id),
+        })
+        .await;
+    alice.sync().await;
+    assert_step(
+        &server,
+        "Alice attacking Bob",
+        vec![attacked("Alice", bob_id)],
+    )
+    .await;
+
+    bob.send(ServerboundAttack {
+        entity_id: MinecraftEntityId(alice_id),
+    })
+    .await;
+    bob.sync().await;
+    assert_step(
+        &server,
+        "Bob attacking Alice",
+        vec![attacked("Bob", alice_id)],
+    )
+    .await;
+
+    // Low-precision vectors round each axis; these offsets survive the
+    // encoding exactly, so the event can be compared field by field.
+    let clicks = [
+        (InteractionHand::MainHand, (0.0, 1.0, 0.0), false),
+        (InteractionHand::OffHand, (-1.0, 1.0, 1.0), false),
+        (InteractionHand::MainHand, (1.0, 0.0, -1.0), true),
+        (InteractionHand::OffHand, (0.0, 0.0, 0.0), true),
+    ];
+    for (hand, (x, y, z), sneaking) in clicks {
+        let offset = Vec3 { x, y, z };
+        alice
+            .send(ServerboundInteract {
+                entity_id: MinecraftEntityId(bob_id),
+                hand,
+                location: LpVec3::from_vec3(offset),
+                using_secondary_action: sneaking,
+            })
+            .await;
+        alice.sync().await;
+        let server_hand = match hand {
+            InteractionHand::MainHand => Hand::MainHand,
+            InteractionHand::OffHand => Hand::OffHand,
+        };
+        assert_step(
+            &server,
+            &format!("Alice right-clicking Bob with {hand:?}, sneaking: {sneaking}"),
+            vec![right_clicked(
+                "Alice",
+                bob_id,
+                server_hand,
+                (x as f32, y as f32, z as f32),
+                sneaking,
+            )],
+        )
+        .await;
+    }
 
     assert_step(&server, "the end of the session", vec![]).await;
     alice.assert_healthy();
