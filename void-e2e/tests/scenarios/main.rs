@@ -5,6 +5,7 @@ mod atp_005_two_player_sync;
 mod atp_006_shared_blocks;
 mod atp_009_world_restart;
 mod atp_016_summon;
+mod atp_017_wander;
 mod atp_020_world_loader;
 mod atp_021_custom_command;
 mod atp_022_item_behavior;
