@@ -257,8 +257,18 @@ round trip. If flight is not allowed the component is left with
 
 When a player sends a chat message:
 
-1. The server formats it as `<PlayerName> message`
-2. A `SystemChat` packet (NBT text component) is broadcast to all ready players
+1. The server formats it as `<PlayerName> message`, keeping the text exactly as typed
+2. A `SystemChat` packet (one literal text component, shown in the chat box) is broadcast to all ready players, the sender included
 3. `ChatMessageEvent` is triggered for plugin observers
+
+A line a vanilla server would refuse is not broadcast and fires no event; the sender alone gets a red
+`Illegal characters in chat` or `Chat message too long` message and stays connected (a vanilla server
+disconnects them). Illegal characters are `§`, which the client would apply as formatting, and the
+control characters below U+0020 and U+007F, a line break among them, which would let a player forge a
+line in another player's name. Too long means over 256 UTF-16 code units, the most a vanilla client sends.
+A vanilla client never sends either.
+
+The chat signature, the last-seen acknowledgements of a signed chat line, the chat session a signed-in
+client sends after joining (`ChatSessionUpdate`) and its `ChatAck` are decoded and otherwise ignored.
 
 Messages starting with `/` are intercepted and routed to the command system, even if sent as `ChatMessage` rather than `ChatCommand` (this handles commands the client doesn't recognize from the command tree).

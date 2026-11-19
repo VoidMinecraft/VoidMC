@@ -3,6 +3,7 @@ mod atp_003_login_handshake;
 mod atp_004_initial_world;
 mod atp_005_two_player_sync;
 mod atp_006_shared_blocks;
+mod atp_007_chat;
 mod atp_008_discover_commands;
 mod atp_009_world_restart;
 mod atp_010_gamemode;

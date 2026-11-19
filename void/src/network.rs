@@ -516,12 +516,22 @@ fn dispatch_packet(
             tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
 
             match packet {
+                serverbound::PlayPacket::ChatAck(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
                 serverbound::PlayPacket::ChatCommand(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
                     packet,
                 }),
                 serverbound::PlayPacket::ChatMessage(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
+                serverbound::PlayPacket::ChatSessionUpdate(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
                     packet,

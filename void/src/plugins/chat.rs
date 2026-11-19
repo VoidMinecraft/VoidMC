@@ -14,7 +14,7 @@ use crate::{
     commands::{CommandEnqueueSequence, CommandQueue, enqueue_command},
     components::PlayerName,
     events::{ChatCommandEvent, ChatMessageEvent},
-    messages::Messages,
+    messages::{Messages, TextColor},
     network::PacketEvent,
     players::Players,
 };
@@ -123,6 +123,21 @@ fn handle_chat_message(
         .map(|n| n.0.clone())
         .unwrap_or_else(|_| "Unknown".to_string());
 
+    if let Some(reason) = refusal(&event.packet.message) {
+        tracing::info!(
+            player_name = %player_name,
+            client_id = event.client_id,
+            message = ?event.packet.message,
+            reason,
+            "Chat message refused"
+        );
+        messages
+            .message(event.entity, reason)
+            .color(TextColor::Red)
+            .send();
+        return;
+    }
+
     tracing::info!(
         player_name = %player_name,
         client_id = event.client_id,
@@ -139,6 +154,29 @@ fn handle_chat_message(
         client_id: event.client_id,
         message: event.packet.message.to_string(),
     });
+}
+
+/// The longest chat line a vanilla client sends, in UTF-16 code units. A
+/// vanilla server cannot decode a longer one.
+const MAX_CHAT_MESSAGE_LENGTH: usize = 256;
+
+/// Why a chat line is not broadcast. A vanilla client never sends these
+/// lines; a vanilla server disconnects whoever does. Here only the line is
+/// dropped: `§` would restyle the sender's line and a line break would let
+/// them forge a line in another player's name.
+fn refusal(message: &str) -> Option<&'static str> {
+    if message.encode_utf16().count() > MAX_CHAT_MESSAGE_LENGTH {
+        Some("Chat message too long")
+    } else if !message.chars().all(is_allowed_chat_character) {
+        Some("Illegal characters in chat")
+    } else {
+        None
+    }
+}
+
+/// Vanilla's `StringUtil.isAllowedChatCharacter`.
+fn is_allowed_chat_character(c: char) -> bool {
+    c != '§' && c >= ' ' && c != '\u{7f}'
 }
 
 fn handle_command_suggestions(
@@ -163,4 +201,52 @@ fn handle_command_suggestions(
             matches: completion.matches,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vanilla_chat_lines_are_accepted() {
+        for message in [
+            "hello",
+            "",
+            "   ",
+            "  two  spaces  ",
+            "Grüße 你好 😀",
+            "{\"text\":\"x\"} <Bob> hi %s",
+            "\u{80}\u{9f}\u{a0}",
+        ] {
+            assert_eq!(refusal(message), None, "{message:?}");
+        }
+    }
+
+    #[test]
+    fn the_length_limit_counts_utf16_units() {
+        assert_eq!(refusal(&"a".repeat(256)), None);
+        assert_eq!(refusal(&"é".repeat(256)), None);
+        assert_eq!(refusal(&"😀".repeat(128)), None);
+        for message in ["a".repeat(257), "é".repeat(257), "😀".repeat(128) + "a"] {
+            assert_eq!(refusal(&message), Some("Chat message too long"));
+        }
+    }
+
+    #[test]
+    fn section_signs_and_control_characters_are_refused() {
+        for message in [
+            "§cred",
+            "hi\n<Bob> forged",
+            "tab\there",
+            "\0",
+            "\u{1f}",
+            "del\u{7f}",
+        ] {
+            assert_eq!(
+                refusal(message),
+                Some("Illegal characters in chat"),
+                "{message:?}"
+            );
+        }
+    }
 }
