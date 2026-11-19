@@ -61,37 +61,19 @@ The `data` field contains an NBT compound (`ussr_nbt::owned::Nbt`) whose tags va
 Use `ServerConfigBuilder::configure_registries` to modify registries before the server starts:
 
 ```rust
-use voidmc::ServerConfigBuilder;
-use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
-use ussr_nbt::owned::{Nbt, Tag, Compound};
+use voidmc::{BiomeBuilder, ServerConfigBuilder};
 
 let config = ServerConfigBuilder::new()
     .configure_registries(|registries| {
-        // Add a custom biome
-        registries.add_entry(
-            "minecraft:worldgen/biome",
-            RegistryEntry {
-                entry_id: "mymod:cherry_grove".to_string(),
-                data: Some(Nbt {
-                    name: Default::default(),
-                    compound: Compound {
-                        tags: vec![
-                            ("has_precipitation".into(), Tag::Byte(1)),
-                            ("temperature".into(), Tag::Float(0.7)),
-                            ("downfall".into(), Tag::Float(0.8)),
-                            ("effects".into(), Tag::Compound(Compound {
-                                tags: vec![
-                                    ("sky_color".into(), Tag::Int(12390624)),
-                                    ("water_fog_color".into(), Tag::Int(329011)),
-                                    ("fog_color".into(), Tag::Int(12638463)),
-                                    ("water_color".into(), Tag::Int(6141935)),
-                                ].into(),
-                            })),
-                        ].into(),
-                    },
-                }),
-            },
-        );
+        // Add a custom biome (sent with its data inline)
+        BiomeBuilder::new("mymod:cherry_grove")
+            .temperature(0.7)
+            .downfall(0.8)
+            .sky_color(0xbd10e0)
+            .fog_color(0xc0d8ff)
+            .water_color(0x5db7ef)
+            .register(registries)
+            .expect("a new, valid biome");
 
         // Remove a default registry
         registries.remove_registry("minecraft:pig_variant");
@@ -106,6 +88,11 @@ let config = ServerConfigBuilder::new()
     })
     .build();
 ```
+
+Prefer [`BiomeBuilder`](./biomes.md#custom-biomes) to a raw `add_entry` for
+biomes: it writes the 26.1 network form (sky and fog colours are environment
+attributes, colours are `#rrggbb` strings), validates the name, and refuses to
+register once a client has received the registries.
 
 ### At Runtime (via Plugin)
 
