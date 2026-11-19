@@ -21,6 +21,7 @@ use crate::{
     events::PlayerJoinEvent,
     network::PacketEvent,
     players::Players,
+    systems::chunk::effective_view_distance,
     world::{ChunkData, ChunkIndex, ChunkPos, ChunkPosition, DimensionId},
 };
 
@@ -107,7 +108,14 @@ fn handle_finish_configuration(
     players: Players,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
+    settings: Query<&ClientSettings>,
 ) {
+    // The join never sends chunks the player's effective view distance would
+    // forget on the first streaming pass.
+    let join_radius = config.initial_chunk_radius.min(effective_view_distance(
+        settings.get(event.entity).ok(),
+        config.view_distance,
+    ));
     // Determine spawn position
     let spawn_y = config.spawn_y.unwrap_or_else(|| {
         world_gen
@@ -143,7 +151,7 @@ fn handle_finish_configuration(
         },
         KeepAliveState::default(),
         CurrentChunkPos(spawn_chunk),
-        EffectiveViewDistance(config.initial_chunk_radius),
+        EffectiveViewDistance(join_radius),
         LoadedChunks(HashSet::new()),
         PlayerDimension(DimensionId::Overworld),
         crate::inventory::Inventory::new(),
@@ -207,7 +215,7 @@ fn handle_finish_configuration(
     let mut loaded = HashSet::new();
     let mut teleport_sent = false;
 
-    let join_chunks = spawn_chunk.chunks_in_radius(config.initial_chunk_radius);
+    let join_chunks = spawn_chunk.chunks_in_radius(join_radius);
     let join_chunk_count = join_chunks.len();
     for pos in join_chunks {
         let key = (DimensionId::Overworld, pos);

@@ -11,6 +11,7 @@ mod atp_015_item_drop;
 mod atp_016_summon;
 mod atp_017_wander;
 mod atp_018_physics;
+mod atp_019_chunk_streaming;
 mod atp_020_world_loader;
 mod atp_021_custom_command;
 mod atp_022_item_behavior;

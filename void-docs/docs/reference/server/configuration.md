@@ -40,7 +40,7 @@ let config = ServerConfigBuilder::new()
 | `game_mode` | `u8` | `1` (Creative) | Game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) every player joins in and whose rules the server applies; [`/gamemode`](../gameplay/commands.md#gamemode) only changes what a client shows |
 | `spawn_position` | `SpawnPosition` | `{ x: 0.0, z: 0.0, y: None }` | World spawn location |
 | `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn |
-| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over) |
+| `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over), capped by the player's effective view distance |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
 | `metrics_debug` | `bool` | `false` | Enable TPS metrics collection and file output |
