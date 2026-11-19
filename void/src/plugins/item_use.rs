@@ -19,8 +19,9 @@ use crate::events::{
 use crate::inventory::Inventory;
 use crate::item::ItemStack;
 use crate::item_behavior::{
-    BlockUseTarget, ItemBehaviorRegistry, ItemUseQueue, drain_item_use_queue, enqueue_break,
-    enqueue_start_break, enqueue_use_in_air, enqueue_use_on_block,
+    BlockInteractionRegistry, BlockUseTarget, ItemBehaviorRegistry, ItemUseQueue,
+    drain_item_use_queue, enqueue_break, enqueue_start_break, enqueue_use_in_air,
+    enqueue_use_on_block,
 };
 use crate::network::PacketEvent;
 use crate::schedule::VoidSystems;
@@ -30,6 +31,7 @@ pub struct ItemUsePlugin;
 impl Plugin for ItemUsePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ItemBehaviorRegistry>()
+            .init_resource::<BlockInteractionRegistry>()
             .init_resource::<ItemUseQueue>()
             .add_observer(queue_use_on_block)
             .add_observer(queue_use_in_air)
@@ -46,9 +48,9 @@ impl Plugin for ItemUsePlugin {
 fn queue_use_on_block(
     event: On<PlayerUseItemOnBlockEvent>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     enqueue_use_on_block(
@@ -63,15 +65,16 @@ fn queue_use_on_block(
             cursor: (event.cursor_x, event.cursor_y, event.cursor_z),
             inside_block: event.inside_block,
         },
+        inventory,
     );
 }
 
 fn queue_use_in_air(
     event: On<PlayerUseItemEvent>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     enqueue_use_in_air(
@@ -80,6 +83,7 @@ fn queue_use_in_air(
         client_id.0,
         event.hand,
         event.sequence,
+        inventory,
     );
 }
 
@@ -87,9 +91,9 @@ fn queue_creative_break(
     event: On<PlayerStartDiggingEvent>,
     config: Res<ServerConfigResource>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     // Creative clients remove the block on start and do not send FinishedDigging.
@@ -100,6 +104,7 @@ fn queue_creative_break(
             client_id.0,
             event.sequence,
             event.position,
+            inventory,
         );
         return;
     }
@@ -110,15 +115,16 @@ fn queue_creative_break(
         event.sequence,
         event.position,
         event.face,
+        inventory,
     );
 }
 
 fn queue_break(
     event: On<PlayerFinishDiggingEvent>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     enqueue_break(
@@ -128,6 +134,7 @@ fn queue_break(
         event.sequence,
         event.position,
         event.face,
+        inventory,
     );
 }
 
@@ -338,6 +345,119 @@ mod tests {
             ] if update.position == position && update.block_state_id == 1 && ack.sequence == 9
         ));
         assert!(packets.iter().all(|outgoing| outgoing.client_id == 2));
+    }
+
+    #[test]
+    fn a_hotbar_change_later_in_the_tick_does_not_change_the_placed_block() {
+        let mut server = MultiplayerHarness::new();
+        let planks = ItemStack::of("minecraft:oak_planks", 1).unwrap();
+        let planks_state = planks.item.default_block_state().unwrap();
+        server
+            .app
+            .world_mut()
+            .get_mut::<Inventory>(server.players[0])
+            .unwrap()
+            .set(Inventory::hotbar_slot_index(4), planks);
+        let position = BlockPosition { x: 6, y: 64, z: 6 };
+        // Stands in for the inventory plugin's slot tracking.
+        server.app.add_observer(
+            |event: On<crate::events::PlayerChangeSlotEvent>,
+             mut inventories: Query<&mut Inventory>| {
+                inventories
+                    .get_mut(event.entity)
+                    .unwrap()
+                    .set_selected_hotbar(event.slot as u8);
+            },
+        );
+
+        // The click and the scroll to another slot arrive in the same tick.
+        server.app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity: server.players[0],
+            packet: UseItemOn {
+                hand: Hand::MainHand,
+                location: BlockPosition { y: 63, ..position },
+                face: BlockFace::Top,
+                cursor_x: 0.5,
+                cursor_y: 1.0,
+                cursor_z: 0.5,
+                inside_block: false,
+                world_border_hit: false,
+                sequence: 1,
+            },
+        });
+        server.app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity: server.players[0],
+            packet: voidmc_protocol::serverbound::SetHeldItem { slot: 4 },
+        });
+        server.app.update();
+        assert_eq!(
+            server
+                .app
+                .world()
+                .get::<Inventory>(server.players[0])
+                .unwrap()
+                .selected_hotbar(),
+            4
+        );
+
+        server.assert_block(position, 1);
+        assert_ne!(planks_state, 1);
+    }
+
+    #[test]
+    fn an_empty_hand_places_nothing() {
+        let mut server = MultiplayerHarness::new();
+        let position = BlockPosition { x: 7, y: 64, z: 7 };
+        server.place(0, position);
+        // Player two's hands are empty.
+        server
+            .app
+            .world_mut()
+            .get_mut::<Inventory>(server.players[1])
+            .unwrap()
+            .set(Inventory::HOTBAR_START, ItemStack::EMPTY);
+
+        // A vanilla click: main hand, then off hand, on the face the stone
+        // covers (as with water or grass there, or a lagging client view).
+        for (hand, sequence) in [(Hand::MainHand, 30), (Hand::OffHand, 31)] {
+            server.app.world_mut().trigger(PacketEvent {
+                client_id: 2,
+                entity: server.players[1],
+                packet: UseItemOn {
+                    hand,
+                    location: BlockPosition { y: 63, ..position },
+                    face: BlockFace::Top,
+                    cursor_x: 0.5,
+                    cursor_y: 1.0,
+                    cursor_z: 0.5,
+                    inside_block: false,
+                    world_border_hit: false,
+                    sequence,
+                },
+            });
+        }
+        server.app.update();
+
+        server.assert_block(position, 1);
+        let packets: Vec<_> = server.outgoing.try_iter().collect();
+        assert!(!packets.iter().any(|outgoing| matches!(
+            &outgoing.packet,
+            voidmc_protocol::clientbound::ClientboundPacket::Play(
+                voidmc_protocol::clientbound::PlayPacket::BlockUpdate(_)
+            )
+        )));
+        let acks: Vec<i32> = packets
+            .iter()
+            .filter_map(|outgoing| match &outgoing.packet {
+                voidmc_protocol::clientbound::ClientboundPacket::Play(
+                    voidmc_protocol::clientbound::PlayPacket::BlockChangedAck(ack),
+                ) if outgoing.client_id == 2 => Some(ack.sequence),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(acks, [30, 31]);
     }
 
     struct MultiplayerHarness {
