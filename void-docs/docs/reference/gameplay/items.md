@@ -200,9 +200,34 @@ after a main-hand use it did not consume, never reaches the block.
 
 ## Dropped items
 
-Throwing from the inventory or the drop key spawns a `minecraft:item` entity
-that falls and can be picked up by nearby players. Emit a `voidmc::events::
-ItemDropEvent { dropper, stack }` to drop an item from your own code.
+The drop key (`Q` for one item, `Ctrl+Q` for the stack), a throw click in the
+inventory, a stack clicked outside the inventory window, and a stack thrown out
+of the creative inventory each spawn one `minecraft:item` entity carrying
+exactly what left the inventory. Emit a `voidmc::events::ItemDropEvent {
+dropper, stack }` to drop an item from your own code; it is thrown the same
+way.
+
+- **Throw.** The item leaves 1.32 blocks above the dropper's feet (0.3 below a
+  standing player's eyes) at 0.3 blocks per tick in the direction they look,
+  plus 0.1 upwards, like vanilla without its random spread. Looking straight
+  down drops it at the feet.
+- **Flight.** It falls with the entity physics of `--gravity --block-checks`
+  summons, keeps 98% of its horizontal speed per tick in the air and 58.8% on
+  the ground, and comes to rest on the block top. A throw on flat ground lands
+  about two blocks ahead.
+- **Rendering.** Every viewer, including players who come into range later, is
+  sent the add-entity and the entity metadata holding the stack.
+- **Pickup delay.** `voidmc::plugins::item_drops::PICKUP_DELAY_TICKS` (40, vanilla's two seconds). An item
+  thrown during tick `T` can be collected from tick `T + 40` on, also by the
+  player who threw it.
+- **Pickup.** A ready player whose feet are within `PICKUP_RADIUS` (1.5 blocks)
+  of the item's position collects it. The stack goes in with `Inventory::give`:
+  onto matching stacks first, then into empty slots, hotbar before main. Viewers
+  are sent the pickup animation (Take Item Entity) with the amount taken. A
+  player whose inventory is full takes nothing and leaves the item to the
+  next player in range; one with room for part of it takes that part and the
+  rest stays on the ground, with its metadata updated. Players in range in the
+  same tick take in turn, so one item is never given twice.
 
 ## Events
 

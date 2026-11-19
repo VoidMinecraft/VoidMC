@@ -48,6 +48,7 @@ mod sound;
 mod spawn_entity;
 mod synchronize_player_position;
 mod system_chat;
+mod take_item_entity;
 mod teleport_entity;
 mod tracked_waypoint;
 mod unload_chunk;
@@ -111,6 +112,7 @@ pub use sound::*;
 pub use spawn_entity::*;
 pub use synchronize_player_position::*;
 pub use system_chat::*;
+pub use take_item_entity::*;
 pub use teleport_entity::*;
 pub use tracked_waypoint::*;
 pub use unload_chunk::*;
@@ -238,6 +240,8 @@ pub enum PlayPacket {
     SystemChat(SystemChat),
     #[codec(packet_id = 0x7A)]
     SetTabListHeaderFooter(SetTabListHeaderFooter),
+    #[codec(packet_id = 0x7C)]
+    TakeItemEntity(TakeItemEntity),
     #[codec(packet_id = 0x7D)]
     TeleportEntity(TeleportEntity),
     #[codec(packet_id = 0x83)]

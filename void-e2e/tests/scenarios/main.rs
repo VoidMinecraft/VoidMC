@@ -7,6 +7,7 @@ mod atp_008_discover_commands;
 mod atp_009_world_restart;
 mod atp_010_gamemode;
 mod atp_013_give_and_clear;
+mod atp_015_item_drop;
 mod atp_016_summon;
 mod atp_017_wander;
 mod atp_018_physics;
