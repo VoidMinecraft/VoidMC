@@ -50,8 +50,10 @@ Client                              Server
   |<-- Commands -----------------------|  (command tree for tab-completion)
   |<-- GameEvent(StartWaiting) --------|
   |<-- SetCenterChunk -----------------|
+  |<-- ChunkBatchStart ----------------|
   |<-- ChunkDataAndLight (xN) --------|  (initial_chunk_radius)
-  |<-- SynchronizePlayerPosition ------|  (teleport to spawn)
+  |<-- SynchronizePlayerPosition ------|  (teleport to spawn, after the 3x3 centre)
+  |<-- ChunkBatchFinished(N) ----------|
   |                                    |  Trigger PlayerJoinEvent
   |                                    |
   |--- ConfirmTeleportation ---------->|  Clear TeleportState.pending_id
@@ -62,7 +64,8 @@ Client                              Server
   |<== Keep-alive (periodic) =========|
   |=== Keep-alive response ==========>|
   |                                    |
-  |<== Chunk streaming ===============|  (as player moves)
+  |--- ChunkBatchReceived ------------>|  (once per batch; rate ignored)
+  |<== Chunk streaming ===============|  (as player moves, one batch per tick)
   |<== Position broadcasts ===========|  (from other players)
 ```
 

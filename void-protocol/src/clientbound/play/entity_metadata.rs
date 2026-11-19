@@ -24,6 +24,12 @@ pub mod entity_flag {
     pub const FALL_FLYING: u8 = 1 << 7;
 }
 
+/// Values of the [`entity_index::POSE`] entry (`Pose` ordinals).
+pub mod pose {
+    pub const STANDING: i32 = 0;
+    pub const CROUCHING: i32 = 5;
+}
+
 pub mod living_entity_index {
     pub const LIVING_FLAGS: u8 = 8;
     pub const HEALTH: u8 = 9;
