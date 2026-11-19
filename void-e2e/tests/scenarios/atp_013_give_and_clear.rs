@@ -570,7 +570,7 @@ async fn clear_empties_every_slot_and_the_cursor() {
 #[tokio::test]
 async fn others_see_given_and_cleared_items_in_hand_and_armor() {
     use ItemKind::{DiamondBoots, DiamondHelmet, DiamondSword, Shield, Stone};
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let alice_entity = server.player_entity(alice.uuid()).await;
