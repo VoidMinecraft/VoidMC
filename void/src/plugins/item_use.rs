@@ -46,9 +46,9 @@ impl Plugin for ItemUsePlugin {
 fn queue_use_on_block(
     event: On<PlayerUseItemOnBlockEvent>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     enqueue_use_on_block(
@@ -63,15 +63,16 @@ fn queue_use_on_block(
             cursor: (event.cursor_x, event.cursor_y, event.cursor_z),
             inside_block: event.inside_block,
         },
+        inventory,
     );
 }
 
 fn queue_use_in_air(
     event: On<PlayerUseItemEvent>,
     mut queue: ResMut<ItemUseQueue>,
-    clients: Query<&ClientId>,
+    clients: Query<(&ClientId, Option<&Inventory>)>,
 ) {
-    let Ok(client_id) = clients.get(event.entity) else {
+    let Ok((client_id, inventory)) = clients.get(event.entity) else {
         return;
     };
     enqueue_use_in_air(
@@ -80,6 +81,7 @@ fn queue_use_in_air(
         client_id.0,
         event.hand,
         event.sequence,
+        inventory,
     );
 }
 
@@ -330,6 +332,65 @@ mod tests {
             ] if update.position == position && update.block_state_id == 1 && ack.sequence == 9
         ));
         assert!(packets.iter().all(|outgoing| outgoing.client_id == 2));
+    }
+
+    #[test]
+    fn a_hotbar_change_later_in_the_tick_does_not_change_the_placed_block() {
+        let mut server = MultiplayerHarness::new();
+        let planks = ItemStack::of("minecraft:oak_planks", 1).unwrap();
+        let planks_state = planks.item.default_block_state().unwrap();
+        server
+            .app
+            .world_mut()
+            .get_mut::<Inventory>(server.players[0])
+            .unwrap()
+            .set(Inventory::hotbar_slot_index(4), planks);
+        let position = BlockPosition { x: 6, y: 64, z: 6 };
+        // Stands in for the inventory plugin's slot tracking.
+        server.app.add_observer(
+            |event: On<crate::events::PlayerChangeSlotEvent>,
+             mut inventories: Query<&mut Inventory>| {
+                inventories
+                    .get_mut(event.entity)
+                    .unwrap()
+                    .set_selected_hotbar(event.slot as u8);
+            },
+        );
+
+        // The click and the scroll to another slot arrive in the same tick.
+        server.app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity: server.players[0],
+            packet: UseItemOn {
+                hand: Hand::MainHand,
+                location: BlockPosition { y: 63, ..position },
+                face: BlockFace::Top,
+                cursor_x: 0.5,
+                cursor_y: 1.0,
+                cursor_z: 0.5,
+                inside_block: false,
+                world_border_hit: false,
+                sequence: 1,
+            },
+        });
+        server.app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity: server.players[0],
+            packet: voidmc_protocol::serverbound::SetHeldItem { slot: 4 },
+        });
+        server.app.update();
+        assert_eq!(
+            server
+                .app
+                .world()
+                .get::<Inventory>(server.players[0])
+                .unwrap()
+                .selected_hotbar(),
+            4
+        );
+
+        server.assert_block(position, 1);
+        assert_ne!(planks_state, 1);
     }
 
     struct MultiplayerHarness {
