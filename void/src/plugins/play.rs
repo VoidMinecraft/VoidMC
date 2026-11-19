@@ -2,7 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy_app::{App, Plugin};
 use bevy_ecs::{observer::On, system::Commands, world::World};
-use voidmc_protocol::serverbound::{ClientInformation, KeepAlive, PlayerLoaded, Pong, TickEnd};
+use voidmc_protocol::serverbound::{
+    ChunkBatchReceived, ClientInformation, KeepAlive, PlayerLoaded, Pong, TickEnd,
+};
 
 use crate::{
     components::{ClientSettings, KeepAliveState, PlayerReady},
@@ -16,6 +18,7 @@ impl Plugin for PlayPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(handle_player_loaded);
         app.add_observer(handle_tick_end);
+        app.add_observer(handle_chunk_batch_received);
         app.add_observer(handle_pong);
         app.add_observer(handle_keep_alive);
         app.add_observer(handle_client_information);
@@ -31,6 +34,10 @@ fn handle_player_loaded(event: On<PacketEvent<PlayerLoaded>>, mut commands: Comm
 }
 
 fn handle_tick_end(_event: On<PacketEvent<TickEnd>>) {}
+
+/// The client acknowledges every chunk batch with the rate it would like.
+/// Chunk sends are paced by `ChunkSendBudget` instead, so the rate is unused.
+fn handle_chunk_batch_received(_event: On<PacketEvent<ChunkBatchReceived>>) {}
 
 fn handle_pong(_event: On<PacketEvent<Pong>>) {}
 
