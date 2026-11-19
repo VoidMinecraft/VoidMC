@@ -129,7 +129,7 @@ pub fn help_command() -> Command {
 
 pub fn gamemode_command() -> Command {
     CommandBuilder::new("gamemode")
-        .description("Change the game mode your client shows")
+        .description("Change game mode")
         .alias("gm")
         .arg("mode", Arc::new(GameModeArg))
         .handler(handle_gamemode)

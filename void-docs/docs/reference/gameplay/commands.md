@@ -407,7 +407,7 @@ register_default_commands(&mut registry, &["kick", "gamemode"]);
 | Command | Aliases | Description | Arguments |
 |---|---|---|---|
 | `/help` | | List commands or show command details | `[command:string]` |
-| `/gamemode` | `/gm` | Change the game mode your client shows ([details](#gamemode)) | `<mode:gamemode>` |
+| `/gamemode` | `/gm` | Change game mode | `<mode:gamemode>` |
 | `/kick` | | Kick a player | `<player:player> [reason:text]...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/ping` | | Pong! | (none) |
 | `/plugins` | `/pl` | List loaded plugins | (none) |
@@ -429,7 +429,7 @@ same way.
 
 ### `/gamemode`
 
-`/gamemode <mode>` changes the game mode the sender's client displays, and
+`/gamemode <mode>` changes only the game mode the sender's client displays,
 nothing the server enforces. `mode` is `survival`, `creative`, `adventure` or
 `spectator` (any case) or the legacy id `0`-`3`. On success the server:
 
