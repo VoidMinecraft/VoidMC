@@ -114,6 +114,44 @@ state whatever it was shown before. A viewer leaving the audience, or losing
 the component to a despawn or removal, is reset to clear (End Raining, both
 levels `0`) when the last synced state was not already clear.
 
+### Weather over an area
+
+A `Weather` has no position. To give an area its own weather, keep an
+explicit audience in step with the players standing in it; the world weather
+hands them over and takes them back as described under
+[Precedence](#precedence-explicit-viewers-win):
+
+```rust
+#[derive(Component)]
+struct ArenaStorm;
+
+fn storm_over_arena(
+    players: Query<(Entity, &Position), With<PlayerReady>>,
+    mut storms: Query<&mut Weather, With<ArenaStorm>>,
+) {
+    let inside: HashSet<Entity> = players
+        .iter()
+        .filter(|(_, p)| (100.0..124.0).contains(&p.x) && (-12.0..12.0).contains(&p.z))
+        .map(|(entity, _)| entity)
+        .collect();
+    for mut storm in &mut storms {
+        storm.audience = Audience::Explicit(inside.clone());
+    }
+}
+```
+
+Whether a client draws that rain as rain, snow or nothing depends on the
+biome at each position (`has_precipitation` and `temperature` of the synced
+biome registry, see [Biomes](./biomes.md)), not on the server.
+
+### What is not simulated
+
+Weather changes only when your code changes a `Weather`. There is no vanilla
+weather cycle (no random clear, rain or thunder durations) and `transition`
+is the only fade. Thunder is the sky level sent to clients: no lightning bolt
+is spawned. Nothing reacts to precipitation on the server: no snow layers or
+ice form, and nothing else in the world depends on the weather.
+
 ## Precedence: explicit viewers win
 
 Several components may cover the same player: a per-dimension clock plus a
