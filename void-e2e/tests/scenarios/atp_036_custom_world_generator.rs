@@ -500,14 +500,23 @@ async fn an_explicit_spawn_height_wins_over_the_generator_surface() {
     );
     alice.sync().await;
     assert_eq!(alice.position(), Vec3::new(SPAWN_X, 150.0, SPAWN_Z));
+    assert_eq!(
+        surface_calls(&calls),
+        [],
+        "the generator's surface is not needed"
+    );
+    assert!(
+        !generated(&calls).is_empty(),
+        "the custom generator still shapes the world"
+    );
 
     alice.assert_healthy();
     server.stop().await;
 }
 
 /// The example of `void-docs/docs/reference/gameplay/world.md`, "Custom World
-/// Generators", copied verbatim: it must compile against the real API and
-/// work.
+/// Generators", copied verbatim except for the last statement, which becomes
+/// `configure`: it must compile against the real API and work.
 mod documented_example {
     use voidmc::{ChunkPos, ServerConfigBuilder, WorldGenerator};
     use voidmc_protocol::clientbound::chunk::{Chunk, ChunkBuilder, blocks};
