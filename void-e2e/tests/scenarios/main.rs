@@ -1,3 +1,4 @@
+mod atp_027_world_generation;
 mod commands;
 mod connection;
 mod inventory;
