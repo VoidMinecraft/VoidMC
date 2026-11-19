@@ -1,3 +1,4 @@
+mod atp_014_inventory_clicks;
 mod commands;
 mod connection;
 mod inventory;
