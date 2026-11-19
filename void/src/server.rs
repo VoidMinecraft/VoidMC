@@ -171,6 +171,12 @@ impl Server {
                 }
 
                 Ok(client_id) = ended_rx.recv_async() => {
+                    // A kick requested before the connection ended still
+                    // counts: despawning a client entity asks for one, then
+                    // drops the client's sender, which can end the task first.
+                    while let Ok(kicked) = kick_rx.try_recv() {
+                        self.kick(kicked);
+                    }
                     self.connections.remove(&client_id);
                     let _ = disconnect_tx.send(client_id);
                 }
@@ -180,23 +186,26 @@ impl Server {
                         info!("Kick channel closed; shutting down network server");
                         break;
                     };
-
-                    if let Some(connection) = self.connections.remove(&client_id) {
-                        // Dropping the signal closes the connection once the
-                        // packets queued before the kick are written; a client
-                        // that does not read them is cut off after a delay.
-                        let Connection { abort, close } = connection;
-                        drop(close);
-                        tokio::spawn(async move {
-                            tokio::time::sleep(KICK_FLUSH_TIMEOUT).await;
-                            abort.abort();
-                        });
-                        info!(client_id = client_id, "Kicked client");
-                        if let Some(telemetry) = &self.telemetry {
-                            telemetry.client_kicked();
-                        }
-                    }
+                    self.kick(client_id);
                 }
+            }
+        }
+    }
+
+    fn kick(&mut self, client_id: u32) {
+        if let Some(connection) = self.connections.remove(&client_id) {
+            // Dropping the signal closes the connection once the packets
+            // queued before the kick are written; a client that does not read
+            // them is cut off after a delay.
+            let Connection { abort, close } = connection;
+            drop(close);
+            tokio::spawn(async move {
+                tokio::time::sleep(KICK_FLUSH_TIMEOUT).await;
+                abort.abort();
+            });
+            info!(client_id = client_id, "Kicked client");
+            if let Some(telemetry) = &self.telemetry {
+                telemetry.client_kicked();
             }
         }
     }
@@ -206,7 +215,7 @@ impl Server {
 mod tests {
     use std::time::Duration;
 
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
     use super::*;
@@ -335,5 +344,56 @@ mod tests {
             .await
             .expect("server should exit when the kick channel closes")
             .unwrap();
+    }
+
+    /// Despawning a client entity asks for a kick, then drops the client's
+    /// sender, which ends the connection task without waiting for the kick.
+    /// The kick and the end can then reach the loop together, in either
+    /// order; the kick still counts. The loop is driven by hand so that both
+    /// are pending each time it runs.
+    #[tokio::test]
+    async fn a_kick_requested_before_the_connection_ended_counts() {
+        const CLIENTS: u32 = 16;
+        let telemetry = Arc::new(Telemetry::new(Duration::from_secs(1), 20, 100));
+        let mut server = Server::new("127.0.0.1:0")
+            .await
+            .unwrap()
+            .with_telemetry(Some(telemetry.clone()));
+        let address = server.socket.local_addr().unwrap();
+        let (incoming_tx, _incoming_rx) = flume::unbounded();
+        let (connected_tx, connected_rx) = flume::unbounded();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded();
+        let (kick_tx, kick_rx) = flume::unbounded();
+        let mut running =
+            std::pin::pin!(server.run(incoming_tx, connected_tx, disconnect_tx, kick_rx));
+
+        for _ in 0..CLIENTS {
+            let mut peer = TcpStream::connect(address).await.unwrap();
+            let connected = tokio::select! {
+                () = &mut running => panic!("the server stopped"),
+                connected = connected_rx.recv_async() => connected.unwrap(),
+            };
+
+            // What `close_despawned_client` does, in its order.
+            kick_tx.send(connected.client_id).unwrap();
+            drop(connected.outgoing);
+            let mut rest = Vec::new();
+            tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut rest))
+                .await
+                .expect("dropping the sender ends the connection")
+                .unwrap();
+            // Let the task's watcher report the end before the loop runs.
+            tokio::task::yield_now().await;
+
+            let ended = tokio::select! {
+                () = &mut running => panic!("the server stopped"),
+                ended = disconnect_rx.recv_async() => ended.unwrap(),
+            };
+            assert_eq!(ended, connected.client_id);
+        }
+
+        let text = telemetry.render_metrics(std::time::Instant::now());
+        let line = format!("voidmc_clients_kicked_total {CLIENTS}\n");
+        assert!(text.contains(&line), "missing {line:?} in\n{text}");
     }
 }

@@ -386,8 +386,11 @@ fn close_despawned_client(
         return;
     }
     map.0.remove(&client_id);
-    senders.detach(client_id, Some(entity));
+    // Ask for the kick before dropping the sender: dropping it can end the
+    // connection task at once, and the network thread counts the kick only if
+    // it was requested before it learns that the connection ended.
     let _ = channels.kick.send(client_id);
+    senders.detach(client_id, Some(entity));
     tracing::debug!(
         client_id,
         ?entity,
