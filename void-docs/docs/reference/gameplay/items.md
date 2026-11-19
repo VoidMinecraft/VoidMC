@@ -136,7 +136,9 @@ behaviour the client does not know about can therefore be followed by an
 off-hand use of the same click, which runs the off-hand item. Before that, the
 client follows the use on the block with a use in the air of the same hand, so a
 behaviour that implements both `on_use_on_block` and `on_use` runs both for one
-click on a block. An empty hand runs nothing and places nothing.
+click on a block. An empty hand runs no item behaviour and places nothing; the
+clicked block's own interaction ([below](#blocks-that-react-to-a-right-click))
+still runs, so an empty hand toggles a lever.
 
 Four hooks are available:
 
