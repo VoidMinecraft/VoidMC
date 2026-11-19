@@ -1,4 +1,5 @@
 mod atp_006_shared_blocks;
+mod atp_022_item_behavior;
 mod commands;
 mod connection;
 mod inventory;
