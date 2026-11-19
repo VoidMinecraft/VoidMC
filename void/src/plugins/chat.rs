@@ -38,12 +38,13 @@ fn handle_command(
     sequence: &mut CommandEnqueueSequence,
     mut commands: Commands,
 ) {
+    // A line with no command name (`/` alone, or only spaces) still goes
+    // through the queue, so the player gets the same "Unknown command" reply
+    // as for any other name, in order with their other commands.
     let parts: Vec<String> = command.split_whitespace().map(String::from).collect();
     let (command_name, args) = match parts.split_first() {
         Some((name, rest)) => (name.clone(), rest.to_vec()),
-        None => {
-            return;
-        }
+        None => (String::new(), Vec::new()),
     };
 
     enqueue_command(

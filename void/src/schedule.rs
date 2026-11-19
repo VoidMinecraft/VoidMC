@@ -14,6 +14,11 @@ pub enum VoidSystems {
     ItemUseDrain,
     /// `Update`: `MenuClickEvent` and menu `on_click` handlers run here.
     MenuClickDrain,
+    /// `Update`, after `ItemUseDrain`, `CommandDrain` and `MenuClickDrain`
+    /// (only with [`crate::plugins::redstone::RedstonePlugin`]): button
+    /// releases, then dust power and note blocks for the block changes of the
+    /// tick.
+    Redstone,
     /// `Update`, after `CommandDrain`.
     KeepAlive,
     /// `Update`, after `KeepAlive`: settle, wander, physics.
@@ -30,7 +35,7 @@ pub enum VoidSystems {
     /// `PostUpdate`, after `EntityMetadataSync`: viewer diff — `SpawnEntity` /
     /// `RemoveEntities` as players start or stop seeing an entity's chunk.
     EntityVisibility,
-    /// `PostUpdate`: other players' movement and head rotation.
+    /// `PostUpdate`: other players' movement, head rotation and crouch.
     PlayerBroadcast,
     /// `PostUpdate`, before `ChunkStreaming`: Block Entity Data packets for changed block entities.
     BlockEntitySync,
