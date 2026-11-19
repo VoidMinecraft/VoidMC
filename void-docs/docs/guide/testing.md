@@ -397,6 +397,8 @@ On a running server:
 - `wait_ticks(n)`, `status()` (the server-list ping) and `player_entity(uuid)`.
 - `stop()` shuts the server down and fails the test if VoidMC logged an
   error, or an unrecognised packet, on any thread.
+- `wait_for_exit()` waits for the server to stop on its own, for example
+  after a bot ran `/stop`, and fails the test like `stop()`.
 
 Only one `TestServer` runs at a time in a test process; the others wait for it
 to stop. That is what lets `stop()` attribute every log line to the right

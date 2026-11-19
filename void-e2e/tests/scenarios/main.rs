@@ -1,3 +1,4 @@
+mod atp_026_graceful_stop;
 mod commands;
 mod connection;
 mod inventory;
