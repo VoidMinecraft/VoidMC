@@ -8,6 +8,7 @@ use azalea_core::registry_holder::RegistryHolder;
 use azalea_entity::LookDirection;
 use azalea_protocol::common::client_information::ClientInformation;
 use azalea_protocol::common::movements::MoveFlags;
+use azalea_protocol::common::tags::TagMap;
 use azalea_protocol::connect::{Connection, ReadConnection, WriteConnection};
 use azalea_protocol::packets::config::{
     ClientboundConfigPacket, s_client_information,
@@ -61,7 +62,11 @@ pub struct JoinTranscript {
     pub compression_threshold: Option<i32>,
     pub known_packs: Vec<String>,
     pub registries: Vec<String>,
+    /// The registry entries as Azalea decoded them, for checks on their data.
+    pub registry_data: RegistryHolder,
     pub tags_received: bool,
+    /// The tags of the last Update Tags packet, as Azalea decoded them.
+    pub tags: Option<TagMap>,
 }
 
 #[derive(Default)]
@@ -446,7 +451,10 @@ async fn login(
                 transcript.registries.push(packet.registry_id.to_string());
                 registries.append(packet.registry_id, packet.entries);
             }
-            Ok(ClientboundConfigPacket::UpdateTags(_)) => transcript.tags_received = true,
+            Ok(ClientboundConfigPacket::UpdateTags(packet)) => {
+                transcript.tags_received = true;
+                transcript.tags = Some(packet.tags);
+            }
             Ok(ClientboundConfigPacket::KeepAlive(packet)) => connection
                 .write(ConfigKeepAlive { id: packet.id })
                 .await
@@ -469,6 +477,7 @@ async fn login(
         }
     }
 
+    transcript.registry_data = registries.clone();
     (connection.game(), transcript, registries)
 }
 
