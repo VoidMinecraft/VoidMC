@@ -226,6 +226,10 @@ fn packed_set(data: &mut [u64], bits: u8, index: usize, value: u64) {
 
 /// Biome container for 64 cells: single value, indirect at 1..=3 bits, or
 /// direct at `biome_direct_bits(registry_size)` — the only widths the client accepts.
+/// A direct palette is widened to hold an id beyond `registry_size` rather
+/// than truncate it, so that a registry size set too low (a custom biome
+/// appended after the builder was configured) loses no cell; the server
+/// re-encodes such a section at the synced width before sending it.
 pub fn biome_palette(cells: &[i32; BIOME_CELLS_PER_SECTION], registry_size: usize) -> PaletteData {
     let mut palette: Vec<i32> = Vec::new();
     for &id in cells {
@@ -249,7 +253,8 @@ pub fn biome_palette(cells: &[i32; BIOME_CELLS_PER_SECTION], registry_size: usiz
             data,
         }
     } else {
-        let bits = biome_direct_bits(registry_size);
+        let largest = palette.iter().copied().max().unwrap_or(0).max(0) as usize;
+        let bits = biome_direct_bits(registry_size.max(largest + 1));
         let mut data = vec![0u64; packed_len(bits, BIOME_CELLS_PER_SECTION)];
         for (index, &id) in cells.iter().enumerate() {
             packed_set(&mut data, bits, index, id as u64);
@@ -900,8 +905,10 @@ impl ChunkBuilder {
         self
     }
 
-    /// Number of entries in the synced biome registry; only needed when custom
-    /// biomes were added, since it fixes the width of direct biome palettes.
+    /// Number of entries in the synced biome registry, which fixes the width
+    /// of direct biome palettes. Optional: no id is truncated when it is too
+    /// low, and the server re-encodes direct palettes at the synced width
+    /// when it generates or loads a chunk.
     pub fn biome_registry_size(mut self, size: usize) -> Self {
         self.biome_registry_size = size;
         self
@@ -1348,6 +1355,18 @@ mod biome_tests {
             assert_eq!(section.biome_cells(), expected);
             assert_eq!(section.get_biome(3, 2, 1), expected[2 * 16 + 4 + 3]);
         }
+    }
+
+    #[test]
+    fn direct_palettes_never_truncate_ids_beyond_the_registry_size() {
+        let expected = cells(|i| if i % 9 == 8 { 128 } else { (i % 9) as i32 });
+        let palette = biome_palette(&expected, 65);
+        assert_eq!(palette.bits_per_entry(), 8);
+        let mut section = ChunkSection::empty();
+        section.biome = palette;
+        assert_eq!(section.biome_cells(), expected);
+        assert_eq!(biome_palette(&expected, 129).bits_per_entry(), 8);
+        assert_eq!(biome_palette(&expected, 300).bits_per_entry(), 9);
     }
 
     #[test]
