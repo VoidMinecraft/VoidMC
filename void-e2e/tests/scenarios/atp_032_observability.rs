@@ -585,6 +585,9 @@ async fn kicks_despawns_and_shutdown_bring_the_players_gauge_back_to_zero() {
         })
         .start()
         .await;
+    // Declared after the server, so a failing assertion releases the
+    // shutdown before the server is dropped and waits for it.
+    let release = ReleaseShutdown(release_tx);
     let address = endpoint(&server).await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
@@ -634,7 +637,7 @@ async fn kicks_despawns_and_shutdown_bring_the_players_gauge_back_to_zero() {
             tokio::task::yield_now().await;
             stopping = scrape(address).await;
         }
-        release_tx.send(()).unwrap();
+        drop(release);
         stopping
     });
     assert_eq!(
@@ -791,6 +794,15 @@ struct HoldShutdown(flume::Receiver<()>);
 impl Drop for HoldShutdown {
     fn drop(&mut self) {
         let _ = self.0.recv_timeout(WAIT);
+    }
+}
+
+/// Releases a [`HoldShutdown`] when dropped, also when the test panics.
+struct ReleaseShutdown(flume::Sender<()>);
+
+impl Drop for ReleaseShutdown {
+    fn drop(&mut self) {
+        let _ = self.0.try_send(());
     }
 }
 
