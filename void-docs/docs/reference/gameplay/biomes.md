@@ -62,6 +62,16 @@ custom biomes registered should call `ChunkBuilder::biome_registry_size(n)`;
 the framework also re-widens direct palettes to the synced registry size when a
 chunk is loaded or generated.
 
+## What clients do with biomes
+
+Biomes are stored and sent, never simulated. The client uses them to render:
+grass, foliage and water colours, sky and fog, ambient sounds and music, and
+whether [weather](./time-and-weather.md#weather) falls as rain, as snow (where
+the biome `temperature` is below `0.15`) or not at all
+(`has_precipitation: false`). The server does nothing with them: no
+temperature effects, no snow or ice forming in cold biomes, and no
+biome-dependent mob spawning or crop growth.
+
 ## Custom biomes
 
 `BiomeBuilder` produces the network form of a biome (climate, `effects`,
