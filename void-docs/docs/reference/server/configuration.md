@@ -141,10 +141,11 @@ packets sent by two unordered systems to the same client is not fixed either.
 VoidMC's own `Update` sets are not all ordered with each other yet: Bevy's
 ambiguity detection reports unordered conflicting pairs among `CommandDrain`,
 `ItemUseDrain`, `MenuClickDrain`, `TeleportBarrier`, `ItemPickup`,
-`KeepAlive` and `EntitySimulation`. Their order within a tick can differ
-from the single-threaded one, which only shows when two of them act on the
-same thing in the same tick, for example an item picked up on the tick its
-physics step moves it.
+`KeepAlive`, `EntitySimulation` and, with `RedstonePlugin`, `Redstone`.
+Their order within a tick can differ from the single-threaded one, which
+only shows when two of them act on the same thing in the same tick, for
+example an item used on the tick another item is picked up into the same
+inventory.
 
 The compute task pool always has at least two threads, so two systems or
 regions can be in flight at once on a two-core machine. The running mode is
