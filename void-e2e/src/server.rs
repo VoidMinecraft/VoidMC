@@ -4,9 +4,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use bevy_app::{App, AppExit, First, Last};
+use bevy_ecs::lifecycle::Add;
 use bevy_ecs::prelude::*;
 use tokio::sync::{Mutex, OwnedMutexGuard, oneshot, watch};
-use voidmc::components::PlayerUuid;
+use voidmc::components::{Operator, PlayerUuid};
 use voidmc::network::PacketEvent;
 use voidmc::{
     Command, CommandRegistry, ListenAddress, ServerConfig, ServerConfigBuilder, VoidServer,
@@ -117,6 +118,14 @@ impl TestServerBuilder {
         self
     }
 
+    /// Makes every player an [`Operator`] from the moment it logs in, so the
+    /// command tree and permission level it gets at join are an operator's.
+    pub fn operators(self) -> Self {
+        self.plugin(|app| {
+            app.add_observer(make_operator);
+        })
+    }
+
     /// Boots the server and returns once its first tick has started.
     pub async fn start(self) -> TestServer {
         assert_eq!(
@@ -189,6 +198,10 @@ impl TestServerBuilder {
             _turn: turn,
         }
     }
+}
+
+fn make_operator(event: On<Add, PlayerUuid>, mut commands: Commands) {
+    commands.entity(event.entity).insert(Operator);
 }
 
 fn run_control(world: &mut World) {
@@ -312,6 +325,24 @@ impl TestServer {
                 .map(|(entity, _)| entity)
         })
         .await
+    }
+
+    /// Grants [`Operator`] to the bot's player while it is connected.
+    pub async fn op(&self, bot: &Bot) {
+        let player = self.player_entity(bot.uuid()).await;
+        self.with_world(move |world| {
+            world.entity_mut(player).insert(Operator);
+        })
+        .await;
+    }
+
+    /// Removes [`Operator`] from the bot's player while it is connected.
+    pub async fn deop(&self, bot: &Bot) {
+        let player = self.player_entity(bot.uuid()).await;
+        self.with_world(move |world| {
+            world.entity_mut(player).remove::<Operator>();
+        })
+        .await;
     }
 
     pub fn logs(&self) -> Vec<LogRecord> {

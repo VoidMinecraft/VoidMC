@@ -234,11 +234,17 @@ async fn wave_is_absent(server: &TestServer) -> BTreeSet<String> {
 async fn restarting_without_the_registration_removes_the_command() {
     let with_command = |builder: TestServerBuilder| builder.plugin(waves_app).command(wave_command);
 
-    let server = with_command(TestServer::builder()).start().await;
+    let server = with_command(TestServer::builder().operators())
+        .start()
+        .await;
     let registered = wave_is_registered(&server).await;
     server.stop().await;
 
-    let server = TestServer::builder().plugin(waves_app).start().await;
+    let server = TestServer::builder()
+        .operators()
+        .plugin(waves_app)
+        .start()
+        .await;
     let unregistered = wave_is_absent(&server).await;
     server.stop().await;
 
@@ -260,6 +266,7 @@ async fn restarting_without_the_registration_removes_the_command() {
 #[tokio::test]
 async fn command_registered_from_a_plugin_is_discovered_and_runs() {
     let server = TestServer::builder()
+        .operators()
         .plugin(waves_app_with_command)
         .start()
         .await;

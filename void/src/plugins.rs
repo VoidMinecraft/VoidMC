@@ -12,6 +12,7 @@ pub mod item_drops;
 pub mod item_use;
 pub mod login;
 pub mod movement;
+pub mod permissions;
 pub mod play;
 pub mod redstone;
 pub mod scoreboard;
@@ -52,7 +53,11 @@ impl Plugin for DefaultPlugins {
             crate::entity::EntityPlugin,
             block_entity::BlockEntityPlugin,
         ));
-        app.add_plugins((abilities::AbilitiesPlugin, teleport::TeleportPlugin));
+        app.add_plugins((
+            abilities::AbilitiesPlugin,
+            teleport::TeleportPlugin,
+            permissions::PermissionsPlugin,
+        ));
     }
 }
 

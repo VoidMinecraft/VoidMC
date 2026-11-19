@@ -244,6 +244,7 @@ fn record_despawn(
 
 async fn recorded_server() -> TestServer {
     TestServer::builder()
+        .operators()
         .plugin(|app| {
             app.init_resource::<Trace>()
                 .init_resource::<Despawned>()

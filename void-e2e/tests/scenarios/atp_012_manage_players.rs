@@ -606,7 +606,7 @@ async fn atp_012_tell_reaches_only_its_recipient() {
 /// start a new one.
 #[tokio::test]
 async fn atp_012_broadcast_reaches_every_player_once() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let carol = server.join("Carol").await;
@@ -679,7 +679,7 @@ async fn atp_012_broadcast_reaches_every_player_once() {
 /// player can come back as a normal player.
 #[tokio::test]
 async fn atp_012_kick_disconnects_the_player_and_others_see_it_leave() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let carol = server.join("Carol").await;
     let mut bob = Raw::join(&server, "Bob", true).await;

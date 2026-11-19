@@ -271,6 +271,7 @@ fn lifecycle_plugin(journal: Journal) -> impl FnOnce(&mut App) + Send + 'static 
 
 async fn start(journal: &Journal) -> TestServer {
     TestServer::builder()
+        .operators()
         .plugin(lifecycle_plugin(journal.clone()))
         .start()
         .await

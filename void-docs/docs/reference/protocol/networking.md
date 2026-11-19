@@ -47,7 +47,8 @@ Client                              Server
   |                                    |  Allocate MinecraftEntityId
   |                                    |  Insert all player components
   |<-- Play Login ---------------------|  (game settings, dimensions)
-  |<-- Commands -----------------------|  (command tree for tab-completion)
+  |<-- EntityEvent --------------------|  (permission level: 28 operator, 24 not)
+  |<-- Commands -----------------------|  (the commands this player may run)
   |<-- GameEvent(StartWaiting) --------|
   |<-- SetCenterChunk -----------------|
   |<-- ChunkBatchStart ----------------|

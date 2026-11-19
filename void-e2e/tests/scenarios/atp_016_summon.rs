@@ -121,7 +121,7 @@ fn seen(bot: &Bot, id: i32) -> Option<SeenEntity> {
 
 #[tokio::test]
 async fn summoned_pig_is_visible_with_a_stable_identity_to_every_player() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let before = server_entities(&server).await;
@@ -297,7 +297,7 @@ async fn summoned_pig_is_visible_with_a_stable_identity_to_every_player() {
 
 #[tokio::test]
 async fn invalid_summons_are_rejected_without_spawning_anything() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     alice.sync().await;

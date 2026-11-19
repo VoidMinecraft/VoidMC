@@ -74,6 +74,13 @@ impl Command {
             .collect::<Vec<_>>()
             .join("|")
     }
+
+    /// Whether this command's own requirement, if any, accepts `executor`.
+    fn permits(&self, world: &World, executor: Entity) -> bool {
+        self.requirement
+            .as_ref()
+            .is_none_or(|requirement| requirement(world, executor))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +230,11 @@ impl CommandBuilder {
     }
 
     /// Who may run this command (and its subcommands): checked before any
-    /// argument is parsed or completed, like brigadier's `requires`.
+    /// argument is parsed or completed, like brigadier's `requires`. A player
+    /// it refuses does not find the command in its command tree nor in
+    /// `/help`; the tree is built at join and when `Operator` is added or
+    /// removed, so a requirement on anything else is not re-sent when that
+    /// changes.
     pub fn requires(
         mut self,
         requirement: impl Fn(&World, Entity) -> bool + Send + Sync + 'static,
@@ -633,12 +644,14 @@ fn literal_node(name: &str, is_executable: bool, children: Vec<i32>) -> CommandN
     }
 }
 
-/// Appends `command`'s literal, argument chain and subcommands; returns the
-/// literal node indices (name then aliases) for the parent to adopt.
+/// Appends `command`'s literal, argument chain and the subcommands `permits`
+/// accepts; returns the literal node indices (name then aliases) for the
+/// parent to adopt.
 fn append_command(
     nodes: &mut Vec<CommandNode>,
     command: &Command,
     inherited_flags: &[FlagDefinition],
+    permits: &dyn Fn(&Command) -> bool,
 ) -> Vec<i32> {
     let flags: Vec<FlagDefinition> = inherited_flags
         .iter()
@@ -681,8 +694,8 @@ fn append_command(
         tail = index;
     }
 
-    for subcommand in &command.subcommands {
-        let literals = append_command(nodes, subcommand, &flags);
+    for subcommand in command.subcommands.iter().filter(|sub| permits(sub)) {
+        let literals = append_command(nodes, subcommand, &flags, permits);
         nodes[tail as usize].children.extend(literals);
     }
 
@@ -983,8 +996,29 @@ impl CommandRegistry {
             .map(|c| c.usage.clone().unwrap_or_else(|| auto_usage(&[c])))
     }
 
-    /// Build the clientbound Commands packet from the registry.
+    /// Build the clientbound Commands packet from the registry: every
+    /// command, whoever may run it. What a player is sent is
+    /// [`CommandRegistry::build_command_tree_for`].
     pub fn build_command_tree(&self) -> Commands {
+        self.command_tree(&|_| true)
+    }
+
+    /// The Commands packet for `executor`: only the commands and subcommands
+    /// whose [`CommandBuilder::requires`] accepts it, like the tree a vanilla
+    /// server sends each player.
+    pub fn build_command_tree_for(&self, world: &World, executor: Entity) -> Commands {
+        self.command_tree(&|command| command.permits(world, executor))
+    }
+
+    /// Whether `executor` may run the command named `name` (or an alias of
+    /// it): `false` for an unknown command.
+    pub fn can_use(&self, name: &str, world: &World, executor: Entity) -> bool {
+        self.resolve(name)
+            .and_then(|name| self.commands.get(name))
+            .is_some_and(|command| command.permits(world, executor))
+    }
+
+    fn command_tree(&self, permits: &dyn Fn(&Command) -> bool) -> Commands {
         let mut nodes: Vec<CommandNode> = vec![CommandNode {
             node_type: 0, // root
             is_executable: false,
@@ -996,8 +1030,8 @@ impl CommandRegistry {
         }];
 
         let mut root_children: Vec<i32> = Vec::new();
-        for cmd in self.commands.values() {
-            root_children.extend(append_command(&mut nodes, cmd, &[]));
+        for cmd in self.commands.values().filter(|cmd| permits(cmd)) {
+            root_children.extend(append_command(&mut nodes, cmd, &[], permits));
         }
         nodes[0].children = root_children;
 
@@ -2165,6 +2199,53 @@ mod tests {
             registry.complete("/gate ", &world, player).unwrap().matches,
             vec!["open"]
         );
+    }
+
+    #[test]
+    fn a_player_tree_holds_only_the_commands_and_subcommands_it_may_run() {
+        let gate = CommandBuilder::new("gate")
+            .alias("g")
+            .subcommand(CommandBuilder::new("open").handler(|_| {}))
+            .subcommand(
+                CommandBuilder::new("admin")
+                    .requires(|_, _| false)
+                    .handler(|_| {}),
+            )
+            .build();
+        let (mut world, player) = echo_world(gate);
+        world.resource_mut::<CommandRegistry>().register(
+            CommandBuilder::new("secret")
+                .alias("s")
+                .requires(|_, _| false)
+                .handler(|_| {})
+                .build(),
+        );
+        let registry = world.resource::<CommandRegistry>();
+        let names = |tree: &Commands, parent: i32| -> Vec<String> {
+            let mut names: Vec<String> = tree.nodes[parent as usize]
+                .children
+                .iter()
+                .filter_map(|child| tree.nodes[*child as usize].name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let full = registry.build_command_tree();
+        assert!(names(&full, 0).contains(&"secret".to_string()));
+        assert_eq!(
+            names(&full, child_named(&full, 0, "gate")),
+            ["admin", "open"]
+        );
+
+        let own = registry.build_command_tree_for(&world, player);
+        assert!(!names(&own, 0).contains(&"secret".to_string()));
+        assert!(!names(&own, 0).contains(&"s".to_string()));
+        assert_eq!(names(&own, child_named(&own, 0, "gate")), ["open"]);
+        assert_eq!(names(&own, child_named(&own, 0, "g")), ["open"]);
+        assert!(registry.can_use("g", &world, player));
+        assert!(!registry.can_use("s", &world, player));
+        assert!(!registry.can_use("nope", &world, player));
     }
 
     fn with_flags(mut builder: CommandBuilder, letters: &str) -> CommandBuilder {
