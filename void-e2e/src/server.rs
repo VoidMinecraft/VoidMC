@@ -15,6 +15,7 @@ use voidmc::{
 };
 use voidmc_protocol::{clientbound, serverbound};
 
+use azalea_protocol::common::client_information::ClientInformation;
 use azalea_protocol::packets::status::c_status_response::ClientboundStatusResponse;
 
 use crate::bot::{Bot, BotOptions, ConfiguringClient, LoginRefused, SilentPlayer};
@@ -308,6 +309,13 @@ impl TestServer {
 
     pub async fn join_with(&self, name: &str, options: BotOptions) -> Bot {
         Bot::join(self.address, name, options).await
+    }
+
+    /// Like [`TestServer::join`], but the bot sends `information` as its
+    /// client settings during configuration (language, view distance, chat
+    /// visibility, ...).
+    pub async fn join_with_information(&self, name: &str, information: ClientInformation) -> Bot {
+        Bot::join_as(self.address, name, information).await
     }
 
     /// Like [`TestServer::join`], but a login the server refuses returns its

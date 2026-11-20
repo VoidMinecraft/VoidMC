@@ -3,7 +3,9 @@
 use std::sync::Arc;
 
 use bevy_app::{App, Last, Plugin, PostUpdate};
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use voidmc::ChunkLoaderResource;
+use voidmc::schedule::VoidSystems;
 
 use crate::config::PersistenceConfig;
 use crate::region::RegionChunkStore;
@@ -65,6 +67,10 @@ impl Plugin for WorldPersistencePlugin {
         // `AppExit`; `flush_on_exit` saves remaining dirty chunks before exit.
         // Chunks fail to load at startup and while streaming; their events
         // are triggered at the end of the tick.
+        // The periodic save runs after the block-entity sync, which marks the
+        // chunks whose block entities changed: otherwise the save's clearing
+        // of a marker could be applied after that tick's mark, leaving a
+        // change unsaved.
         app.insert_resource(self.config.clone())
             .insert_resource(ChunkStoreResource(store.clone()))
             .insert_resource(LoadFailuresResource(Arc::clone(&failures)))
@@ -72,7 +78,10 @@ impl Plugin for WorldPersistencePlugin {
                 store, failures,
             ))))
             .insert_resource(SaveTicker::default())
-            .add_systems(PostUpdate, save_dirty_chunks)
+            .add_systems(
+                PostUpdate,
+                save_dirty_chunks.after(VoidSystems::BlockEntitySync),
+            )
             .add_systems(Last, (flush_on_exit, report_load_failures));
     }
 }

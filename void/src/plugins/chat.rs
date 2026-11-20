@@ -5,14 +5,17 @@ use bevy_ecs::{
     system::{Commands, Query, ResMut},
     world::World,
 };
-use voidmc_protocol::serverbound::{
-    ChatCommand, ChatMessage, CommandSuggestionsRequest, SignedChatCommand,
+use voidmc_protocol::{
+    State,
+    serverbound::{
+        ChatCommand, ChatMessage, ChatMode, CommandSuggestionsRequest, SignedChatCommand,
+    },
 };
 
 use crate::{
     CommandRegistry,
     commands::{CommandEnqueueSequence, CommandQueue, enqueue_command},
-    components::PlayerName,
+    components::{ClientSettings, ConnectionState, PlayerName},
     events::{ChatCommandEvent, ChatMessageEvent},
     messages::{Messages, TextColor},
     network::PacketEvent,
@@ -102,7 +105,9 @@ fn handle_chat_message(
     queue: ResMut<CommandQueue>,
     sequence: ResMut<CommandEnqueueSequence>,
     messages: Messages,
+    players: Players,
     player_names: Query<&PlayerName>,
+    recipients: Query<(Entity, &ConnectionState, Option<&ClientSettings>)>,
 ) {
     // If the client doesn't recognise a command in its tree, it sends
     // "/command args" as a ChatMessage instead of ChatCommand.  Intercept that.
@@ -145,15 +150,35 @@ fn handle_chat_message(
         "Chat message"
     );
 
-    messages
-        .broadcast(format!("<{}> {}", player_name, event.packet.message))
-        .send();
+    // Like vanilla: every connection in the play state, loaded or not, whose
+    // chat visibility is "Shown". A client that never sent its settings is
+    // treated as "Shown", the vanilla default.
+    let line = messages
+        .message(
+            event.entity,
+            format!("<{}> {}", player_name, event.packet.message),
+        )
+        .packet();
+    players.send_to(
+        recipients
+            .iter()
+            .filter(|(_, state, settings)| {
+                state.0 == State::Play && settings.is_none_or(accepts_player_chat)
+            })
+            .map(|(entity, ..)| entity),
+        line,
+    );
 
     commands.trigger(ChatMessageEvent {
         entity: event.entity,
         client_id: event.client_id,
         message: event.packet.message.to_string(),
     });
+}
+
+/// Vanilla's `ServerPlayer.acceptsChatMessages`.
+fn accepts_player_chat(settings: &ClientSettings) -> bool {
+    settings.chat_mode == ChatMode::Enabled
 }
 
 /// The longest chat line a vanilla client sends, in UTF-16 code units. A

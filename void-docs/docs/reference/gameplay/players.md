@@ -273,7 +273,7 @@ round trip. If flight is not allowed the component is left with
 When a player sends a chat message:
 
 1. The server formats it as `<PlayerName> message`, keeping the text exactly as typed
-2. A `SystemChat` packet (one literal text component, shown in the chat box) is broadcast to all ready players, the sender included
+2. A `SystemChat` packet (one literal text component, shown in the chat box) is sent, like on a vanilla server, to every connection in the play state whose chat visibility (`ClientSettings::chat_mode`) is `ChatMode::Enabled` ("Shown"), the sender included. A player still loading the world (no `PlayerReady` yet) gets it too; a client on "Commands Only" or "Hidden" does not. A client that never sent its settings is treated as "Shown". Command feedback and the server's own messages (`Messages`) are not filtered by this setting.
 3. `ChatMessageEvent` is triggered for plugin observers
 
 A line a vanilla server would refuse is not broadcast and fires no event; the sender alone gets a red

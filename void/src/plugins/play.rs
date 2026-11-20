@@ -7,12 +7,10 @@ use bevy_ecs::{
     system::{Commands, Query},
     world::World,
 };
-use voidmc_protocol::serverbound::{
-    ChunkBatchReceived, ClientInformation, KeepAlive, PlayerLoaded, Pong, TickEnd,
-};
+use voidmc_protocol::serverbound::{ChunkBatchReceived, KeepAlive, PlayerLoaded, Pong, TickEnd};
 
 use crate::{
-    components::{ClientSettings, KeepAliveState, PlayerReady},
+    components::{KeepAliveState, PlayerReady},
     events::PlayerReadyEvent,
     network::PacketEvent,
 };
@@ -26,7 +24,6 @@ impl Plugin for PlayPlugin {
         app.add_observer(handle_chunk_batch_received);
         app.add_observer(handle_pong);
         app.add_observer(handle_keep_alive);
-        app.add_observer(handle_client_information);
     }
 }
 
@@ -76,13 +73,6 @@ fn round_trip_millis(sent_at: i64) -> i32 {
         .unwrap_or_default()
         .as_millis() as i64;
     (now - sent_at).clamp(0, i32::MAX as i64) as i32
-}
-
-fn handle_client_information(event: On<PacketEvent<ClientInformation>>, mut commands: Commands) {
-    commands.entity(event.entity).insert(ClientSettings {
-        locale: event.packet.locale.clone(),
-        view_distance: event.packet.view_distance,
-    });
 }
 
 #[cfg(test)]
