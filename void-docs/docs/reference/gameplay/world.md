@@ -97,7 +97,7 @@ fn init_world(commands, chunk_index, world_gen, loader, registries, config) {
 
 This ensures the spawn area is ready before any player connects. The radius is controlled by `ServerConfig::spawn_chunk_radius` (default: 10). The spawn area, chunks streamed later and the spawn height all come from the `WorldGen` resource, the generator passed to `ServerConfigBuilder::world_generator`.
 
-A joining player is sent the chunks within the join radius (`initial_chunk_radius` capped by the effective view distance, see [Chunk Streaming](#chunk-streaming)) that are already in the spawn area. If that radius reaches past the spawn area, chunk streaming generates the missing chunks on the player's first pass, even when the player's view distance equals the join radius.
+A joining player is sent the chunks within the join radius (`initial_chunk_radius` capped by the effective view distance, see [Chunk Streaming](#chunk-streaming)) that are already in the spawn area, and always the chunk it stands in: when that one is not loaded (the spawn was moved after startup, or the spawn area is empty), the join loads or generates it through `load_or_generate` and adds it to `ChunkIndex`. If that radius reaches past the spawn area, chunk streaming generates the missing chunks on the player's first pass, even when the player's view distance equals the join radius.
 
 ### Generation Cost Controls
 
