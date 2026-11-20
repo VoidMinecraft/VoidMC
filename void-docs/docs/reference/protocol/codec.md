@@ -178,7 +178,7 @@ not tell an unknown packet from a malformed one. The `Decode` derive therefore
 also implements `Tagged`, whose `variant_name(packet_id)` returns the name of
 the variant a tag decodes to, or `None` for a tag the enum does not know; the
 server uses it to decide what to do with a packet that fails to decode (see
-[networking](networking.md#undecodable-packets)).
+[networking](./networking.md#undecodable-packets)).
 
 The `Encode` derive also emits `From<Inner> for Enum` for every variant. With
 `#[codec(tagged, wrap = ClientboundPacket::Play)]` it additionally emits
