@@ -534,13 +534,14 @@ async fn invalid_input_gets_one_controlled_reply() {
         ("héllo".into(), unknown("héllo")),
         ("💎 x".into(), unknown("💎")),
         ("コマンド".into(), unknown("コマンド")),
-        ("pi\0ng".into(), unknown("pi\0ng")),
-        ("\0".into(), unknown("\0")),
-        ("\u{7}bell".into(), unknown("\u{7}bell")),
-        ("\u{1b}[31mred".into(), unknown("\u{1b}[31mred")),
-        ("del\u{7f}".into(), unknown("del\u{7f}")),
-        // The name is echoed as typed, and the client reads `§c` in it as a
-        // legacy colour code like the vanilla client does: it shows `/ping`.
+        // Control characters are not chat text: the echoed name drops them.
+        ("pi\0ng".into(), unknown("ping")),
+        ("\0".into(), unknown("")),
+        ("\u{7}bell".into(), unknown("bell")),
+        ("\u{1b}[31mred".into(), unknown("[31mred")),
+        ("del\u{7f}".into(), unknown("del")),
+        // The echoed name drops the `§c` formatting code (see
+        // `unknown_names_are_echoed_without_formatting_codes`).
         ("\u{a7}cping".into(), unknown("ping")),
     ];
     // The vanilla chat box stops at 256 characters, `/` included; longer
@@ -570,6 +571,66 @@ async fn invalid_input_gets_one_controlled_reply() {
 
     // The player is still connected and the server still answers.
     assert_eq!(replies_to(&alice, "ping").await, pong);
+    assert_nothing_received(&bob).await;
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// A chat line with its text, its colour, and whether it is one plain
+/// component: the client turns each `§` code it applies into a component of
+/// its own.
+fn styled_system_chat(packet: &ClientboundGamePacket) -> Option<(String, String, bool)> {
+    let (text, color) = system_chat(packet)?;
+    let ClientboundGamePacket::SystemChat(chat) = packet else {
+        return None;
+    };
+    Some((text, color, chat.content.get_base().siblings.is_empty()))
+}
+
+/// An unknown name is echoed back without the `§` formatting codes and the
+/// control characters in it, by the dispatcher and by `/help <name>`: the
+/// client would apply the codes to the reply. The reply is still sent, to
+/// the sender only.
+#[tokio::test]
+async fn unknown_names_are_echoed_without_formatting_codes() {
+    let server = TestServer::start().await;
+    let mut bots = join_all(&server, &["Alice", "Bob"]).await;
+    let (bob, _) = bots.pop().unwrap();
+    let (alice, _) = bots.pop().unwrap();
+
+    for (input, echoed) in [
+        ("§knope", "nope"),
+        ("§4§lred§r alert", "red"),
+        ("no§ape", "nope"),
+        ("§§knope", "knope"),
+        ("trailing§", "trailing"),
+        ("help §knope", "nope"),
+        ("help §4§lred§r", "red"),
+        ("help no\0pe\u{7}", "nope"),
+        ("help §§knope", "knope"),
+    ] {
+        for as_chat in [false, true] {
+            if as_chat {
+                alice.chat(&format!("/{input}")).await;
+            } else {
+                alice.command(input).await;
+            }
+            alice.sync().await;
+            let reply = alice.queued(styled_system_chat);
+            alice.clear();
+            assert_eq!(
+                reply,
+                [(
+                    format!("Unknown command: /{echoed}"),
+                    "red".to_string(),
+                    true
+                )],
+                "/{input:?} (as chat: {as_chat}) is answered with one plain red line"
+            );
+        }
+    }
+
     assert_nothing_received(&bob).await;
     alice.assert_healthy();
     bob.assert_healthy();
