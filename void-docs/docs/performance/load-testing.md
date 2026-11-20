@@ -81,10 +81,13 @@ five ticks.
 
 The in-process server shares its process with the load clients, so the
 process-wide CPU and memory figures include both; the per-thread figures cover
-the server alone. The in-process server is the end-to-end harness's (view and
-simulation distance 4) started at the nominal tick rate, with a running
-overworld clock so that clients receive world-time updates as they would from a
-vanilla world.
+the server alone. They find the server's threads by name: the network runtime
+keeps Tokio's default worker name (`tokio-rt-worker`, or `tokio-runtime-worker`
+in older Tokio versions), and the load clients run on the test's own thread or,
+in `voidmc-load`, on threads named `load-client`. The in-process server is the
+end-to-end harness's (view and simulation distance 4) started at the nominal
+tick rate, with a running overworld clock so that clients receive world-time
+updates as they would from a vanilla world.
 
 `min_tick_rate` is judged on the server's own count when the server runs
 in-process, otherwise on the slowest client's. Against an endpoint that sends

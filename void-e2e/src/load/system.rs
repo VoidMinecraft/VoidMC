@@ -12,12 +12,17 @@ pub(crate) fn thread_cpu_ms() -> Option<f64> {
 /// Thread names (as the kernel truncates them, to 15 bytes) of an
 /// in-process server: its game thread and network driver, which inherit the
 /// harness's `void-e2e-server` name, its Tokio network runtime, and Bevy's
-/// task pools, where the multi-threaded executor runs most systems. The load
-/// clients never run on threads with these names: in a test they run on the
-/// test thread, and the `voidmc-load` binary names its own runtime threads
-/// `load-client`.
-pub(crate) const SERVER_THREADS: [&str; 5] = [
+/// task pools, where the multi-threaded executor runs most systems. The
+/// network runtime keeps Tokio's default thread name, `tokio-rt-worker` in
+/// the locked Tokio and `tokio-runtime-worker` before it; both are listed.
+/// The load clients never run on threads with these names: in a test they
+/// run on the test thread, and the `voidmc-load` binary names its own
+/// runtime threads `load-client`. A test runtime's blocking pool does take
+/// Tokio's default name, but the in-process run only uses it to stop the
+/// server, after the measured window.
+pub(crate) const SERVER_THREADS: [&str; 6] = [
     "void-e2e-server",
+    "tokio-rt-worker",
     "tokio-runtime-w",
     "Compute Task Po",
     "Async Compute T",
