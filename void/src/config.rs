@@ -176,8 +176,11 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Radius, in chunks, of the area around spawn generated at startup. A
+    /// negative radius is replaced by `0`, which still generates the spawn
+    /// chunk.
     pub fn spawn_chunk_radius(mut self, radius: i32) -> Self {
-        self.config.spawn_chunk_radius = radius;
+        self.config.spawn_chunk_radius = non_negative_distance("spawn_chunk_radius", radius);
         self
     }
 
@@ -372,6 +375,15 @@ mod tests {
             .build();
         assert_eq!(config.view_distance, 0);
         assert_eq!(config.simulation_distance, 7);
+    }
+
+    #[test]
+    fn builder_replaces_a_negative_spawn_chunk_radius_with_zero() {
+        let config = ServerConfigBuilder::new().spawn_chunk_radius(-1).build();
+        assert_eq!(config.spawn_chunk_radius, 0);
+
+        let config = ServerConfigBuilder::new().spawn_chunk_radius(2).build();
+        assert_eq!(config.spawn_chunk_radius, 2);
     }
 
     #[test]
