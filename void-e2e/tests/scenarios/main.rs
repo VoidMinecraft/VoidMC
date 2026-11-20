@@ -42,6 +42,9 @@ mod world;
 
 use voidmc_e2e::Bot;
 use voidmc_e2e::core::position::BlockPos;
+use voidmc_e2e::inventory::ItemStack;
+use voidmc_e2e::inventory::components::EquipmentSlot;
+use voidmc_e2e::registry::builtin::ItemKind;
 
 fn feet(bot: &Bot) -> BlockPos {
     BlockPos::from(bot.position())
@@ -51,4 +54,66 @@ fn ground(bot: &Bot) -> BlockPos {
     let feet = feet(bot);
     bot.view(|view| view.ground_below(feet))
         .unwrap_or_else(|| panic!("{} holds no chunk under its feet", bot.name()))
+}
+
+/// The six slots a player is shown with, in Set Equipment order.
+const PLAYER_EQUIPMENT: [EquipmentSlot; 6] = [
+    EquipmentSlot::Mainhand,
+    EquipmentSlot::Offhand,
+    EquipmentSlot::Feet,
+    EquipmentSlot::Legs,
+    EquipmentSlot::Chest,
+    EquipmentSlot::Head,
+];
+
+/// What `observer` is shown `actor` holding and wearing: `(kind, count)` per
+/// slot of [`PLAYER_EQUIPMENT`], `None` for an empty slot.
+fn shown_equipment(observer: &Bot, actor: &Bot) -> [Option<(ItemKind, i32)>; 6] {
+    let id = actor.entity_id();
+    observer.view(|view| {
+        PLAYER_EQUIPMENT.map(|slot| match view.equipment_of(id, slot) {
+            ItemStack::Empty => None,
+            ItemStack::Present(data) => Some((data.kind, data.count)),
+        })
+    })
+}
+
+/// Waits until `observer` is shown `actor` with exactly `expected` (every
+/// slot not listed empty).
+async fn wait_for_equipment(
+    observer: &Bot,
+    actor: &Bot,
+    expected: &[(EquipmentSlot, ItemKind, i32)],
+) {
+    let wanted = PLAYER_EQUIPMENT.map(|slot| {
+        expected
+            .iter()
+            .find(|(listed, ..)| *listed == slot)
+            .map(|&(_, kind, count)| (kind, count))
+    });
+    let id = actor.entity_id();
+    let description = format!("{} with {wanted:?}", actor.name());
+    let reached = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        observer
+            .wait_until(&description, |view| {
+                PLAYER_EQUIPMENT.iter().zip(&wanted).all(|(slot, wanted)| {
+                    match (view.equipment_of(id, *slot), wanted) {
+                        (ItemStack::Empty, None) => true,
+                        (ItemStack::Present(data), Some((kind, count))) => {
+                            data.kind == *kind && data.count == *count
+                        }
+                        _ => false,
+                    }
+                })
+            })
+            .await
+    })
+    .await;
+    if reached.is_err() {
+        panic!(
+            "{} was never shown {description}; it is shown {:?}",
+            observer.name(),
+            shown_equipment(observer, actor)
+        );
+    }
 }

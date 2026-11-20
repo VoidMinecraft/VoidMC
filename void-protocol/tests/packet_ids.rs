@@ -132,6 +132,7 @@ const SPECS: &[EnumSpec] = &[
             ("SoundEffect", "minecraft:sound"),
             ("StopSound", "minecraft:stop_sound"),
             ("SetEntityMotion", "minecraft:set_entity_motion"),
+            ("SetEquipment", "minecraft:set_equipment"),
             ("SetBorderCenter", "minecraft:set_border_center"),
             ("SetBorderLerpSize", "minecraft:set_border_lerp_size"),
             ("SetBorderSize", "minecraft:set_border_size"),
@@ -186,6 +187,7 @@ const SPECS: &[EnumSpec] = &[
         direction: "serverbound",
         names: &[
             ("ConfirmTeleportation", "minecraft:accept_teleportation"),
+            ("Attack", "minecraft:attack"),
             ("ChatAck", "minecraft:chat_ack"),
             ("ChatCommand", "minecraft:chat_command"),
             ("SignedChatCommand", "minecraft:chat_command_signed"),

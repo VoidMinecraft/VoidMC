@@ -1,3 +1,4 @@
+mod attack;
 mod chat_ack;
 mod chat_command;
 mod chat_message;
@@ -27,6 +28,7 @@ mod tick_end;
 mod use_item;
 mod use_item_on;
 
+pub use attack::*;
 pub use chat_ack::*;
 pub use chat_command::*;
 pub use chat_message::*;
@@ -62,6 +64,8 @@ use voidmc_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x00)]
     ConfirmTeleportation(ConfirmTeleportation),
+    #[codec(packet_id = 0x01)]
+    Attack(Attack),
     #[codec(packet_id = 0x06)]
     ChatAck(ChatAck),
     #[codec(packet_id = 0x07)]
