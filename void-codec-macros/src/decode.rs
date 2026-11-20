@@ -144,6 +144,17 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                     })
                     .collect::<Result<Vec<_>>>()?;
 
+                let variant_names = data
+                    .variants
+                    .iter()
+                    .filter_map(|v| {
+                        // A variant without an id was refused just above.
+                        let packet_id = parse_variant_attrs(&v.attrs).ok()?.packet_id?;
+                        let variant_name = v.ident.to_string();
+                        Some(quote! { #packet_id => Some(#variant_name), })
+                    })
+                    .collect::<Vec<_>>();
+
                 let expanded = quote! {
                     impl voidmc_codec::Decode for #name {
                         fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, voidmc_codec::DecodeError> {
@@ -152,6 +163,15 @@ pub fn derive_decode(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
                                 #(#decode_variants),*
                                 _ => return Err(voidmc_codec::DecodeError::InvalidPacketId(u8::try_from(packet_id).ok())),
                             })
+                        }
+                    }
+
+                    impl voidmc_codec::Tagged for #name {
+                        fn variant_name(packet_id: i32) -> Option<&'static str> {
+                            match packet_id {
+                                #(#variant_names)*
+                                _ => None,
+                            }
                         }
                     }
                 };
