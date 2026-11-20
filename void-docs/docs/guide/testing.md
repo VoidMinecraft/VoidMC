@@ -431,10 +431,22 @@ server.
 
 A `Bot` answers keep-alives and pings, accepts teleports like the vanilla
 client, and keeps a `ClientView` of what a vanilla client would remember: its
-position, chunks, entities, tab list and inventory.
+position, chunks, entities, tab list, game mode and inventory.
 
 - `send(packet)` sends any serverbound play packet; `command`, `chat` and
   `move_to` are shortcuts.
+- `click(slot, button, mode)` clicks in the player inventory like a vanilla
+  client: it predicts the result with vanilla's click rules, shows the
+  prediction in the view at once, and sends the click with the predicted
+  slots and cursor and the last state id received. It returns the `Click` as
+  sent (its predicted slots, cursor and thrown stacks). The server does not
+  resend a slot the client predicted right, so after a click and `sync()`
+  the view's inventory is what the player sees, and a scenario can assert
+  that it equals the server's `Inventory`. `click_with(slot, button, mode,
+  |click| ...)` lets the scenario change the click first (a wrong prediction,
+  a stale state id); the view shows what was sent.
+- `set_creative_slot(slot, item)` sets a slot from the creative inventory:
+  the view shows it at once, as the vanilla client does.
 - `expect(what, matcher)` removes and returns the oldest received packet the
   matcher accepts, waiting for it if needed. Packets that do not match stay
   queued, so expectations do not have to follow the order of packets.
@@ -447,6 +459,14 @@ position, chunks, entities, tab list and inventory.
 - `hold_teleports(true)` stops answering position syncs, so a scenario can
   play a lagging client and send `ServerboundAcceptTeleportation` itself.
 - `disconnect()` closes the connection like a player quitting.
+
+The click rules live in `voidmc_e2e::clicks`: `InventoryMenu` is an
+independent transcription of vanilla's `AbstractContainerMenu.doClick` and
+`InventoryMenu.quickMoveStack` for the player inventory, with each item's
+maximum stack size and equipment slot read from Azalea's default components.
+Stacks are a kind and a count; components are not modelled. A scenario can
+run its own `InventoryMenu` as the state it expects the server to reach, as
+`atp_014_inventory_clicks` does.
 
 ### Waiting Without Sleeping
 
@@ -515,6 +535,24 @@ least one scenario fail.
 | Client Information not stored | `client_settings_are_stored_from_configuration_and_from_play` |
 | Player chat sent to clients on "Commands Only" or "Hidden" | `players_who_hide_chat_are_sent_no_player_chat_but_still_command_feedback`, `a_chat_setting_changed_while_playing_applies_to_the_next_line` |
 | Player chat sent to ready players only | `a_player_still_loading_the_world_is_sent_chat` |
+| Observability left out under `ExecutionMode::MultiThreaded` | `the_endpoints_describe_a_multi_threaded_server` |
+| Tick duration measured from `Update` instead of from the start of the tick | `the_endpoints_describe_a_multi_threaded_server` |
+| An outbound queue overflow not reported to the network thread | `a_client_whose_outbound_queue_overflows_is_kicked_and_counted_once` |
+| The end of a kicked connection counted as a second kick | `a_client_whose_outbound_queue_overflows_is_kicked_and_counted_once` |
+| A client that never reported loaded counted as online or as joined | `a_client_that_never_reports_loaded_is_a_connection_and_never_a_player` |
+| `packet_ingest_budget_ms` ignored | `the_packet_ingest_budget_spreads_a_flood_over_several_ticks` |
+| The whole-fall landing check skipped under multi-threading | `fast_falls_land_on_a_one_block_floor_in_every_region_under_multi_threading` |
+| A mispredicted slot the click did not change left uncorrected | `wrong_predictions_are_corrected_and_right_ones_are_not_echoed` |
+
+Two such regressions are pinned outside the scenarios. Despawning a client
+entity that drops the client's sender before it asks the network thread for
+the kick loses the kick from `voidmc_clients_kicked_total` only when the
+threads interleave badly; the unit test
+`network::tests::a_despawned_client_is_kicked_before_its_sender_is_dropped`
+checks the order itself. `void-example/tests/diagnostics.rs` runs the example
+with `VOID_OBSERVABILITY_ADDR` and the diagnostics variables together
+(`observability_serves_while_the_tps_csv_and_flame_trace_are_written`), and
+fails if either is left out.
 
 ## Testing Best Practices
 

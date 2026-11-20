@@ -8,6 +8,12 @@
 //! `ExecutionMode::MultiThreaded`; every run must end in the same world state.
 //! Under multi-threading the two builders must meet inside their bodies on
 //! every tick, which only happens if they really run at the same time.
+//!
+//! A second scenario drops pigs from 99 blocks onto a floor one block thick in
+//! both regions: fast enough to pass the floor between two ticks, so only the
+//! physics step's check of the whole fall stops them. Under multi-threading
+//! the two regions are stepped concurrently, and every fall must still end on
+//! the floor, tick for tick as on the single-threaded baseline.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,7 +22,7 @@ use std::time::Duration;
 use bevy_app::{App, Last, Update};
 use bevy_ecs::prelude::*;
 use voidmc::ExecutionMode;
-use voidmc::components::{Grounded, Position, Velocity, VerticalVelocity};
+use voidmc::components::{Grounded, Position, SpawnedEntity, Velocity, VerticalVelocity};
 use voidmc::entity::{EntityBuilder, EntityKind};
 use voidmc::schedule::VoidSystems;
 use voidmc::world::{ChunkData, ChunkIndex, ChunkPos, DimensionId, RegionPos};
@@ -517,5 +523,180 @@ async fn regions_and_systems_run_in_parallel_and_match_the_single_thread_baselin
             );
         }
         assert_eq!(parallel.state, baseline.state, "run {run}");
+    }
+}
+
+/// Height of the floor, one block thick, laid over each region's chunk.
+const THIN_FLOOR_Y: i32 = 100;
+/// The feet height of a pig standing on that floor.
+const ON_THE_FLOOR: f64 = (THIN_FLOOR_Y + 1) as f64;
+/// How far above the floor the pigs start: beyond the 64-block scan of spawn
+/// settling, so that the physics step carries the whole fall.
+const DROP: f64 = 99.0;
+/// A pig's height plus the floor's thickness: a fall faster than this per
+/// tick can carry the box past the floor, unless the whole fall is checked.
+const PASSABLE_PER_TICK: f64 = 1.9;
+const FALLERS_PER_REGION: u32 = 4;
+
+/// Orders the falling pigs between runs.
+#[derive(Component, Clone, Copy)]
+struct Faller(u32);
+
+/// One faller in one tick, after the simulation: height and grounded state,
+/// the height as raw bits so runs compare exactly.
+type FallSample = (u32, u64, bool);
+
+#[derive(Resource, Clone, Default)]
+struct FallTrace(Arc<Mutex<Vec<Vec<FallSample>>>>);
+
+/// Records every faller once per tick, from the tick they were spawned in.
+fn record_fallers(trace: Res<FallTrace>, fallers: Query<(&Faller, &Position, &Grounded)>) {
+    let mut tick: Vec<FallSample> = fallers
+        .iter()
+        .map(|(faller, position, grounded)| (faller.0, position.y.to_bits(), grounded.0))
+        .collect();
+    if tick.is_empty() {
+        return;
+    }
+    tick.sort_by_key(|(faller, ..)| *faller);
+    trace.0.lock().unwrap().push(tick);
+}
+
+/// Lays the floor over each region's chunk and spawns the fallers above it,
+/// in one closure, so both regions start falling on the same tick.
+fn lay_floors_and_drop_pigs(world: &mut World) {
+    let mut id = 0;
+    for side in [Side::A, Side::B] {
+        let entity = world.resource::<ChunkIndex>().0[&(DimensionId::Overworld, side.chunk())];
+        let mut chunk = world
+            .get_mut::<ChunkData>(entity)
+            .expect("the region's chunk is in the spawn area");
+        for x in 0..16 {
+            for z in 0..16 {
+                chunk.set_block(x, THIN_FLOOR_Y, z, blocks::STONE);
+            }
+        }
+        let origin_x = f64::from(side.chunk().x * 16);
+        let origin_z = f64::from(side.chunk().z * 16);
+        for i in 0..FALLERS_PER_REGION {
+            let i = f64::from(i);
+            // Different start heights, so the pigs cross the floor at
+            // different points of a tick's fall.
+            EntityBuilder::new(EntityKind::Pig)
+                .at(
+                    origin_x + 2.5 + 3.0 * i,
+                    ON_THE_FLOOR + DROP + 0.37 * i,
+                    origin_z + 3.5 + 2.0 * i,
+                )
+                .gravity(true)
+                .block_collision(true)
+                .wander(false)
+                .with(Faller(id))
+                .spawn_in(world);
+            id += 1;
+        }
+    }
+}
+
+/// Drops the pigs on a server in `mode` and returns every tick of their
+/// fall until all of them have rested, grounded, for 20 ticks.
+async fn drop_onto_thin_floors(mode: ExecutionMode) -> Vec<Vec<FallSample>> {
+    let trace = FallTrace::default();
+    let installed = trace.clone();
+    let server = TestServer::builder()
+        .config(move |config| config.execution_mode(mode))
+        .plugin(move |app: &mut App| {
+            app.insert_resource(installed)
+                .add_systems(Last, record_fallers);
+        })
+        .start()
+        .await;
+    assert_ne!(Side::A.region(), Side::B.region(), "two regions");
+    server.with_world(lay_floors_and_drop_pigs).await;
+
+    let recorded = trace.0.clone();
+    let ticks = server
+        .wait_for("every pig to rest for 20 ticks", move |_| {
+            let ticks = recorded.lock().unwrap();
+            let resting = ticks.len() > 20
+                && ticks[ticks.len() - 21..].windows(2).all(|pair| {
+                    pair[1].len() == 2 * FALLERS_PER_REGION as usize
+                        && pair[0] == pair[1]
+                        && pair[1].iter().all(|&(_, _, grounded)| grounded)
+                });
+            resting.then(|| ticks.clone())
+        })
+        .await;
+    let pigs = server
+        .with_world(|world| {
+            world
+                .query_filtered::<(), With<SpawnedEntity>>()
+                .iter(world)
+                .count()
+        })
+        .await;
+    assert_eq!(
+        pigs,
+        2 * FALLERS_PER_REGION as usize,
+        "{mode:?}: a pig was removed"
+    );
+    server.stop().await;
+    ticks
+}
+
+#[tokio::test]
+async fn fast_falls_land_on_a_one_block_floor_in_every_region_under_multi_threading() {
+    let baseline = drop_onto_thin_floors(ExecutionMode::SingleThreaded).await;
+
+    // Every pig fell fast enough to pass the floor between two ticks, and
+    // came to rest on it.
+    let height = |sample: &FallSample| f64::from_bits(sample.1);
+    for &(faller, y, grounded) in baseline.last().unwrap() {
+        assert!(
+            grounded && f64::from_bits(y) == ON_THE_FLOOR,
+            "baseline: pig {faller} rests at {}",
+            f64::from_bits(y)
+        );
+    }
+    for faller in 0..2 * FALLERS_PER_REGION {
+        let heights: Vec<f64> = baseline
+            .iter()
+            .map(|tick| height(&tick[faller as usize]))
+            .collect();
+        let fastest = heights
+            .windows(2)
+            .map(|pair| pair[0] - pair[1])
+            .fold(0.0, f64::max);
+        assert!(
+            fastest > PASSABLE_PER_TICK,
+            "pig {faller} fell at most {fastest} blocks per tick"
+        );
+    }
+
+    for run in 0..PARALLEL_RUNS {
+        let parallel = drop_onto_thin_floors(ExecutionMode::MultiThreaded).await;
+        for (tick, samples) in parallel.iter().enumerate() {
+            for sample in samples {
+                assert!(
+                    height(sample) >= ON_THE_FLOOR,
+                    "run {run}, tick {tick}: pig {} went below the floor: {}",
+                    sample.0,
+                    height(sample)
+                );
+            }
+        }
+        for &(faller, y, grounded) in parallel.last().unwrap() {
+            assert!(
+                grounded && f64::from_bits(y) == ON_THE_FLOOR,
+                "run {run}: pig {faller} rests at {} instead of on the floor",
+                f64::from_bits(y)
+            );
+        }
+        let common = parallel.len().min(baseline.len());
+        assert_eq!(
+            parallel[..common],
+            baseline[..common],
+            "run {run}: the falls differ from the single-threaded baseline"
+        );
     }
 }

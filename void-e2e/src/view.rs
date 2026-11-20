@@ -2,15 +2,20 @@ use std::collections::HashMap;
 use std::io::Cursor;
 
 use azalea_block::BlockState;
+use azalea_core::game_type::GameMode;
 use azalea_core::position::{BlockPos, ChunkBlockPos, ChunkPos, Vec3};
 use azalea_core::registry_holder::RegistryHolder;
 use azalea_inventory::ItemStack;
 use azalea_inventory::components::EquipmentSlot;
+use azalea_inventory::operations::ClickType;
 use azalea_protocol::common::movements::{PositionMoveRotation, RelativeMovements};
 use azalea_protocol::packets::game::ClientboundGamePacket;
+use azalea_protocol::packets::game::c_game_event::EventType;
 use azalea_registry::builtin::EntityKind;
 use azalea_world::Chunk;
 use uuid::Uuid;
+
+use crate::clicks::{Click, InventoryMenu, from_client, to_client};
 
 const OVERWORLD_MIN_Y: i32 = -64;
 const OVERWORLD_HEIGHT: u32 = 384;
@@ -27,6 +32,13 @@ pub struct SeenEntity {
 /// Everything a vanilla client would remember from the packets it received:
 /// its own position, the chunks it holds, the entities and players it knows,
 /// and its inventory.
+///
+/// Like the vanilla client, the inventory also shows the client's own
+/// prediction of the clicks it sends ([`Bot::click`](crate::Bot::click)) and
+/// of the slots it sets from the creative inventory, until the server
+/// corrects them. The server does not resend a slot the client predicted
+/// right, so the inventory is what the player sees, not only what the server
+/// sent.
 #[derive(Debug, Default)]
 pub struct ClientView {
     pub entity_id: Option<i32>,
@@ -41,7 +53,12 @@ pub struct ClientView {
     pub inventory: Vec<ItemStack>,
     pub cursor: ItemStack,
     pub inventory_state_id: u32,
+    /// The game mode, from Login, Respawn and Game Event packets.
+    pub game_mode: GameMode,
     pub anomalies: Vec<String>,
+    /// The drag in progress, which lasts across clicks, as in the client's
+    /// own inventory menu.
+    menu: InventoryMenu,
     min_y: i32,
     height: u32,
 }
@@ -95,6 +112,43 @@ impl ClientView {
             .unwrap_or(ItemStack::Empty)
     }
 
+    /// Predicts a click in the player inventory with vanilla's rules, from
+    /// what this view shows, as the vanilla client does before sending it.
+    pub(crate) fn predict_click(&mut self, slot: i16, button: u8, mode: ClickType) -> Click {
+        self.menu.slots = self.inventory.iter().map(from_client).collect();
+        self.menu.carried = from_client(&self.cursor);
+        self.menu.creative = self.game_mode == GameMode::Creative;
+        self.menu.drops.clear();
+        let before = self.menu.slots.clone();
+        self.menu.click(slot, button, mode);
+        let changed = before
+            .iter()
+            .zip(&self.menu.slots)
+            .enumerate()
+            .filter(|(_, (before, after))| before != after)
+            .map(|(index, (_, after))| (index as u16, *after))
+            .collect();
+        Click {
+            state_id: self.inventory_state_id,
+            slot,
+            button,
+            mode,
+            changed,
+            carried: self.menu.carried,
+            drops: std::mem::take(&mut self.menu.drops),
+        }
+    }
+
+    /// Shows the prediction of `click` until the server corrects it.
+    pub(crate) fn show_prediction(&mut self, click: &Click) {
+        for &(slot, stack) in &click.changed {
+            if let Some(shown) = self.inventory.get_mut(usize::from(slot)) {
+                *shown = to_client(stack, shown);
+            }
+        }
+        self.cursor = to_client(click.carried, &self.cursor);
+    }
+
     pub fn entity_by_uuid(&self, uuid: Uuid) -> Option<(i32, &SeenEntity)> {
         self.entities
             .iter()
@@ -106,6 +160,15 @@ impl ClientView {
         match packet {
             ClientboundGamePacket::Login(login) => {
                 self.entity_id = Some(login.player_id.0);
+                self.game_mode = login.common.game_type;
+            }
+            ClientboundGamePacket::Respawn(respawn) => {
+                self.game_mode = respawn.common.game_type;
+            }
+            ClientboundGamePacket::GameEvent(event) if event.event == EventType::ChangeGameMode => {
+                if let Some(mode) = GameMode::from_id(event.param as u8) {
+                    self.game_mode = mode;
+                }
             }
             ClientboundGamePacket::PlayerPosition(teleport) => {
                 let mut position = self.position;
@@ -285,4 +348,77 @@ fn apply_movement(
     } else {
         change.pos.z
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use azalea_protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot;
+    use azalea_protocol::packets::game::c_game_event::ClientboundGameEvent;
+    use azalea_registry::builtin::ItemKind;
+
+    use super::*;
+
+    fn view() -> ClientView {
+        ClientView::new(&RegistryHolder::default())
+    }
+
+    fn shown(view: &ClientView, slot: usize) -> (ItemKind, i32) {
+        (view.inventory[slot].kind(), view.inventory[slot].count())
+    }
+
+    #[test]
+    fn a_predicted_click_shows_at_once_until_the_server_corrects_it() {
+        let mut view = view();
+        view.inventory[9] = ItemStack::new(ItemKind::Diamond, 10);
+        view.inventory_state_id = 7;
+
+        let click = view.predict_click(9, 1, ClickType::Pickup);
+        assert_eq!(click.state_id, 7, "sent with the last state id received");
+        assert_eq!(click.changed, vec![(9, Some((ItemKind::Diamond, 5)))]);
+        assert_eq!(click.carried, Some((ItemKind::Diamond, 5)));
+        assert_eq!(shown(&view, 9), (ItemKind::Diamond, 10), "not shown yet");
+
+        view.show_prediction(&click);
+        assert_eq!(shown(&view, 9), (ItemKind::Diamond, 5));
+        assert_eq!(view.cursor.count(), 5);
+        assert_eq!(
+            view.inventory_state_id, 7,
+            "a prediction keeps the state id"
+        );
+
+        let correction = ClientboundGamePacket::ContainerSetSlot(ClientboundContainerSetSlot {
+            container_id: 0,
+            state_id: 8,
+            slot: 9,
+            item_stack: ItemStack::new(ItemKind::Diamond, 10),
+        });
+        view.apply(&correction).unwrap();
+        assert_eq!(shown(&view, 9), (ItemKind::Diamond, 10));
+        assert_eq!(view.inventory_state_id, 8);
+    }
+
+    #[test]
+    fn a_drag_lasts_across_clicks_and_a_clone_needs_creative() {
+        let mut view = view();
+        view.cursor = ItemStack::new(ItemKind::Stone, 9);
+        for (slot, button) in [(-999, 0), (9, 1), (10, 1), (11, 1), (-999, 2)] {
+            let click = view.predict_click(slot, button, ClickType::QuickCraft);
+            view.show_prediction(&click);
+        }
+        for slot in 9..=11 {
+            assert_eq!(shown(&view, slot), (ItemKind::Stone, 3));
+        }
+        assert_eq!(view.cursor, ItemStack::Empty);
+
+        let clone = view.predict_click(9, 2, ClickType::Clone);
+        assert_eq!(clone.carried, None, "a survival player clones nothing");
+        view.apply(&ClientboundGamePacket::GameEvent(ClientboundGameEvent {
+            event: EventType::ChangeGameMode,
+            param: 1.0,
+        }))
+        .unwrap();
+        assert_eq!(view.game_mode, GameMode::Creative);
+        let clone = view.predict_click(9, 2, ClickType::Clone);
+        assert_eq!(clone.carried, Some((ItemKind::Stone, 64)));
+    }
 }

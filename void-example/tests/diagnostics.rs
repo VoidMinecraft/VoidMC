@@ -3,7 +3,8 @@
 //! TPS CSV (`VOID_METRICS_DEBUG`, `VOID_TPS_OUTPUT`) and the folded flame
 //! trace (`VOID_METRICS_MODE=flame`, `VOID_FLAME_OUTPUT`,
 //! `VOID_FLAME_INCLUDE_IDLE`). It also checks the exit code of a server
-//! stopped by Ctrl-C or SIGTERM.
+//! stopped by Ctrl-C or SIGTERM, and that the `/health` and `/metrics`
+//! endpoints (`VOID_OBSERVABILITY_ADDR`) serve while all of these are on.
 //!
 //! Each run listens on a free port (`VOID_LISTEN_ADDR=127.0.0.1:0`) inside its
 //! own temporary directory, so relative paths and the default `logs/` paths
@@ -11,7 +12,8 @@
 
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -107,6 +109,132 @@ fn tps_csv_and_flame_trace_are_complete_after_ctrl_c() {
         !stacks.iter().any(|stack| stack.len() == 1),
         "idle samples are left out by default: {stacks:?}"
     );
+}
+
+/// `VOID_OBSERVABILITY_ADDR` together with every diagnostics variable: the
+/// endpoints report a healthy server whose tick counter keeps up with the
+/// TPS samples, and after Ctrl-C the CSV and the trace are as complete as
+/// without them, and the exit code is 130.
+#[test]
+fn observability_serves_while_the_tps_csv_and_flame_trace_are_written() {
+    let started_ms = unix_ms();
+    let mut server = Example::start(
+        "observed",
+        |_| {},
+        &[
+            ("VOID_OBSERVABILITY_ADDR", "127.0.0.1:0"),
+            ("VOID_METRICS_DEBUG", "1"),
+            ("VOID_TPS_OUTPUT", "stats/tps.csv"),
+            ("VOID_METRICS_MODE", "flame"),
+            ("VOID_FLAME_OUTPUT", "profiles/trace.folded"),
+        ],
+    );
+    let listening = server.expect_line("the observability address", |line| {
+        line.contains("Observability endpoints listening")
+    });
+    let address = listen_addr(&listening);
+    assert!(address.ip().is_loopback(), "{listening}");
+    server.expect_line("the TPS output line", |line| {
+        line.contains("Writing TPS samples to stats/tps.csv")
+    });
+    server.expect_line("the flame output line", |line| {
+        line.contains("Writing flame trace to profiles/trace.folded")
+    });
+
+    let deadline = Instant::now() + WAIT_LIMIT;
+    let health = loop {
+        let (status, body) = http_get(address, "/health");
+        if status == 200 {
+            break body;
+        }
+        assert!(Instant::now() < deadline, "never healthy: {status} {body}");
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert!(health.contains("\"status\":\"ok\""), "{health}");
+
+    server.wait_for_samples(2, 20);
+    let sampled = server
+        .lines
+        .iter()
+        .rev()
+        .find_map(|line| sample_ticks(line));
+    let sampled = sampled.expect("a TPS sample");
+    let (status, metrics) = http_get(address, "/metrics");
+    assert_eq!(status, 200, "{metrics}");
+    let scraped = metric(&metrics, "voidmc_ticks_total");
+    // The sample is logged during its tick, which the counter counts once
+    // it has ended.
+    assert!(
+        scraped + 1.0 >= sampled as f64,
+        "the endpoint counts {scraped} ticks, the last TPS sample {sampled}"
+    );
+    assert_eq!(
+        metric(&metrics, "voidmc_target_ticks_per_second"),
+        TICK_RATE
+    );
+    assert!(metric(&metrics, "voidmc_tick_duration_seconds_count") >= scraped);
+
+    let stopped = server.interrupt();
+    let finished_ms = unix_ms();
+
+    let rows = tps_rows(&stopped.read("stats/tps.csv"));
+    assert_eq!(
+        rows.iter().map(|row| row.total_ticks).collect::<Vec<_>>(),
+        stopped.logged_samples(),
+        "one row per logged sample, the last one included"
+    );
+    check_tps_rows(&rows, started_ms, finished_ms);
+    let stacks = folded_stacks(&stopped.read("profiles/trace.folded"));
+    let traced_ticks = stacks
+        .iter()
+        .filter(|stack| *stack == &["all-threads", "ingest_network_packets"])
+        .count() as u64;
+    let counted_ticks = rows.last().unwrap().total_ticks;
+    assert!(
+        traced_ticks >= counted_ticks,
+        "the trace holds {traced_ticks} ticks of the at least {counted_ticks} run"
+    );
+}
+
+/// The address of the `listen_addr: <address>` field of a log line.
+fn listen_addr(line: &str) -> SocketAddr {
+    let (_, rest) = line
+        .split_once("listen_addr: ")
+        .unwrap_or_else(|| panic!("no listen_addr in {line:?}"));
+    let address = rest.split_whitespace().next().unwrap_or_default();
+    address
+        .parse()
+        .unwrap_or_else(|_| panic!("not an address: {address:?} in {line:?}"))
+}
+
+/// One `GET` on an endpoint, which answers and closes the connection.
+fn http_get(address: SocketAddr, path: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect_timeout(&address, WAIT_LIMIT)
+        .unwrap_or_else(|error| panic!("connect to {address}: {error}"));
+    stream.set_read_timeout(Some(WAIT_LIMIT)).unwrap();
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: test\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .unwrap_or_else(|error| panic!("GET {path}: {error}"));
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("no end of headers in {response:?}"));
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .unwrap_or_else(|| panic!("no status in {head:?}"));
+    (status, body.to_string())
+}
+
+/// The value of the sample `name`, without labels, in a Prometheus text body.
+fn metric(body: &str, name: &str) -> f64 {
+    body.lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap_or_else(|| panic!("no {name} sample in\n{body}"))
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} is not a number in\n{body}"))
 }
 
 #[test]
