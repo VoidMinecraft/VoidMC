@@ -398,9 +398,6 @@ On a running server:
 - `join_with_information(name, ClientInformation { .. })` joins like `join`,
   with that Client Information (language, view distance, chat visibility,
   ...) sent during configuration.
-- `join_still_loading(name)` plays a bot into the play state that never sends
-  `PlayerLoaded`, like a client still loading the world: its player never
-  becomes ready. It returns once the bot has the server's Login packet.
 - `log_in(name)` logs a client in and leaves it in the configuration state,
   holding its connection without ever playing, until its `disconnect()`. Its
   `expect_disconnect()` waits for the server's configuration `Disconnect` and

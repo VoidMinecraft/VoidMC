@@ -483,7 +483,11 @@ async fn a_chat_setting_changed_while_playing_applies_to_the_next_line() {
 async fn a_player_still_loading_the_world_is_sent_chat() {
     let server = TestServer::start().await;
     let alice = join_ready(&server, "Alice").await;
-    let dave = server.join_still_loading("Dave").await;
+    let mut dave = server.join_silent("Dave").await;
+    dave.expect("the play Login", |packet| {
+        matches!(packet, ClientboundGamePacket::Login(_)).then_some(())
+    })
+    .await;
     let uuid = dave.uuid();
     let loading = move |world: &mut World| {
         world
@@ -498,10 +502,13 @@ async fn a_player_still_loading_the_world_is_sent_chat() {
         "Dave is in the play state and not ready"
     );
 
+    let line = "<Alice> while Dave loads 2e4c";
     alice.chat("while Dave loads 2e4c").await;
-    for bot in [&alice, &dave] {
-        sees_once(bot, "<Alice> while Dave loads 2e4c").await;
-    }
+    sees_once(&alice, line).await;
+    dave.expect(&format!("the chat line {line:?}"), |packet| {
+        (chat_line(packet)? == line).then_some(())
+    })
+    .await;
     assert_eq!(
         server.with_world(loading).await,
         Some((State::Play, false)),
@@ -509,6 +516,5 @@ async fn a_player_still_loading_the_world_is_sent_chat() {
     );
 
     alice.assert_healthy();
-    dave.assert_healthy();
     server.stop().await;
 }

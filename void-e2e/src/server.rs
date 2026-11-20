@@ -315,14 +315,7 @@ impl TestServer {
     /// client settings during configuration (language, view distance, chat
     /// visibility, ...).
     pub async fn join_with_information(&self, name: &str, information: ClientInformation) -> Bot {
-        Bot::join_as(self.address, name, information, true).await
-    }
-
-    /// Plays a bot into the play state that never reports `PlayerLoaded`,
-    /// like a client still loading the world: the server never makes its
-    /// player ready. Returns once the bot has the server's Login packet.
-    pub async fn join_still_loading(&self, name: &str) -> Bot {
-        Bot::join_as(self.address, name, ClientInformation::default(), false).await
+        Bot::join_as(self.address, name, information).await
     }
 
     /// Like [`TestServer::join`], but a login the server refuses returns its

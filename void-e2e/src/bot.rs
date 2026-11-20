@@ -147,7 +147,7 @@ impl SilentPlayer {
         let uuid = azalea_crypto::offline::generate_uuid(name);
         let (connection, _, _) = timeout(
             &format!("{name} to log in"),
-            login(address, name, uuid, &BotOptions::default()),
+            login(address, name, uuid, ClientInformation::default()),
         )
         .await
         .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"));
@@ -288,20 +288,17 @@ impl Bot {
             view_distance: options.view_distance,
             ..Default::default()
         };
-        Self::try_join_as(address, name, information, true).await
+        Self::try_join_as(address, name, information).await
     }
 
     /// Joins with `information` as the client settings sent during
-    /// configuration. Unless `report_loaded`, the bot never sends
-    /// `PlayerLoaded`: it stays in the play state like a client still loading
-    /// the world, and the join returns once the server's Login packet arrived.
+    /// configuration.
     pub(crate) async fn join_as(
         address: SocketAddr,
         name: &str,
         information: ClientInformation,
-        report_loaded: bool,
     ) -> Self {
-        Self::try_join_as(address, name, information, report_loaded)
+        Self::try_join_as(address, name, information)
             .await
             .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"))
     }
@@ -310,7 +307,6 @@ impl Bot {
         address: SocketAddr,
         name: &str,
         information: ClientInformation,
-        report_loaded: bool,
     ) -> Result<Self, LoginRefused> {
         let uuid = azalea_crypto::offline::generate_uuid(name);
         let (connection, transcript, registries) = timeout(
@@ -322,7 +318,6 @@ impl Bot {
         let shared = Arc::new(Shared {
             inbox: Mutex::new(Inbox {
                 view: ClientView::new(&registries),
-                loaded: !report_loaded,
                 ..Default::default()
             }),
             changed: Notify::new(),
@@ -338,17 +333,10 @@ impl Bot {
             shared,
             reader,
         };
-        if report_loaded {
-            bot.wait_until(&format!("{name} to spawn"), |view| {
-                view.entity_id.is_some() && view.players.contains_key(&uuid)
-            })
-            .await;
-        } else {
-            bot.wait_until(&format!("{name} to enter the play state"), |view| {
-                view.entity_id.is_some()
-            })
-            .await;
-        }
+        bot.wait_until(&format!("{name} to spawn"), |view| {
+            view.entity_id.is_some() && view.players.contains_key(&uuid)
+        })
+        .await;
         let entity_id = bot.lock().view.entity_id;
         bot.entity_id = entity_id.expect("spawned bots have an id");
         Ok(bot)
