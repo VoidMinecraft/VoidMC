@@ -30,6 +30,7 @@ mod server;
 mod server_status;
 pub mod sounds;
 pub mod systems;
+mod tick_time;
 pub mod titles;
 pub mod toasts;
 pub(crate) mod window;
