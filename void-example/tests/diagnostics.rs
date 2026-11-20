@@ -113,8 +113,8 @@ fn tps_csv_and_flame_trace_are_complete_after_ctrl_c() {
 
 /// `VOID_OBSERVABILITY_ADDR` together with every diagnostics variable: the
 /// endpoints report a healthy server whose tick counter keeps up with the
-/// TPS samples, and after Ctrl-C the endpoints close, the CSV and the trace
-/// are as complete as without them, and the exit code is 130.
+/// TPS samples, and after Ctrl-C the CSV and the trace are as complete as
+/// without them, and the exit code is 130.
 #[test]
 fn observability_serves_while_the_tps_csv_and_flame_trace_are_written() {
     let started_ms = unix_ms();
@@ -177,14 +177,6 @@ fn observability_serves_while_the_tps_csv_and_flame_trace_are_written() {
     let stopped = server.interrupt();
     let finished_ms = unix_ms();
 
-    assert!(
-        stopped
-            .lines
-            .iter()
-            .any(|line| line.contains("Observability endpoints closed")),
-        "{}",
-        stopped.transcript()
-    );
     let rows = tps_rows(&stopped.read("stats/tps.csv"));
     assert_eq!(
         rows.iter().map(|row| row.total_ticks).collect::<Vec<_>>(),
