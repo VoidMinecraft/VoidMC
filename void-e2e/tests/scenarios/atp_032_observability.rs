@@ -639,15 +639,8 @@ async fn kicks_despawns_and_shutdown_bring_the_players_gauge_back_to_zero() {
             response.health() == "stopping"
         })
         .await;
-        // The exit tick switches to `stopping` just before it stores the
-        // gauges, so give that tick a moment to finish.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut stopping = scrape(address).await;
-        while stopping.gauge("voidmc_players_online") != 0.0 && std::time::Instant::now() < deadline
-        {
-            tokio::task::yield_now().await;
-            stopping = scrape(address).await;
-        }
+        // `stopping` is reported after the exit tick stored its gauges.
+        let stopping = scrape(address).await;
         drop(release);
         stopping
     });
