@@ -49,7 +49,7 @@ WorldEditPlugin::default()
 | `wand` | `minecraft:wooden_axe` | Item whose left/right clicks set the selection corners. |
 | `permission` | `Operators` | `Operators` or `Everyone`. |
 | `blocks_per_tick` | 1,000,000 | Work budget per tick across all queued edits (one section costs 4096). |
-| `time_per_tick` | 15 ms | Wall-clock budget per tick, checked between sections. |
+| `time_per_tick` | 15 ms | Wall-clock budget per tick, checked between sections. A duration too large to add to the current time, such as `Duration::MAX`, means no time limit. |
 | `max_volume` | 33,554,432 | Largest region (bounding box) one command may touch. |
 | `history` | 25 entries, 128 MiB | Per-player undo history limits. An edit whose undo data alone exceeds the memory limit is not recorded, and the player is told it cannot be undone. |
 | `schematic_dir` | `schematics` | Where `/schem` reads and writes `.schem` files. |
