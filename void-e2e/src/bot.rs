@@ -100,6 +100,129 @@ impl ConfiguringClient {
     pub async fn disconnect(mut self) {
         let _ = self.connection.writer.shutdown().await;
     }
+
+    /// Reads what the server sends, still without answering, until its
+    /// configuration Disconnect; returns what it said once the server has
+    /// closed the connection after it.
+    pub async fn expect_disconnect(mut self) -> LoginRefused {
+        let name = self.name.clone();
+        timeout(&format!("{name} to be disconnected"), async move {
+            loop {
+                match self.connection.read().await {
+                    Ok(ClientboundConfigPacket::Disconnect(packet)) => {
+                        let refused = LoginRefused {
+                            reason: packet.reason.to_string(),
+                            component: serde_json::to_value(&packet.reason)
+                                .expect("a text component serializes to JSON"),
+                        };
+                        return match self.connection.read().await {
+                            Err(_) => refused,
+                            Ok(other) => panic!(
+                                "{name} got {other:?} after its Disconnect ({refused}) instead of the connection closing"
+                            ),
+                        };
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        panic!("{name}'s connection ended without a Disconnect: {error}")
+                    }
+                }
+            }
+        })
+        .await
+    }
+}
+
+/// A client that entered the play state, then never answers the server: no
+/// keep-alive, ping or teleport reply, and no `PlayerLoaded` unless told to
+/// report it. Its packets are read only while a test waits for one.
+pub struct SilentPlayer {
+    name: String,
+    uuid: Uuid,
+    connection: Connection<ClientboundGamePacket, ServerboundGamePacket>,
+}
+
+impl SilentPlayer {
+    pub(crate) async fn join(address: SocketAddr, name: &str) -> Self {
+        let uuid = azalea_crypto::offline::generate_uuid(name);
+        let (connection, _, _) = timeout(
+            &format!("{name} to log in"),
+            login(address, name, uuid, &BotOptions::default()),
+        )
+        .await
+        .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"));
+        Self {
+            name: name.to_string(),
+            uuid,
+            connection,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+
+    /// Tells the server the world is loaded, which makes the player ready.
+    pub async fn report_loaded(&mut self) {
+        self.connection
+            .write(ServerboundPlayerLoaded {})
+            .await
+            .unwrap_or_else(|error| panic!("{} could not report loaded: {error}", self.name));
+    }
+
+    /// Reads packets, dropping those `f` does not match, until `f` returns
+    /// `Some`.
+    pub async fn expect<T>(
+        &mut self,
+        what: &str,
+        mut f: impl FnMut(&ClientboundGamePacket) -> Option<T>,
+    ) -> T {
+        let name = self.name.clone();
+        let connection = &mut self.connection;
+        timeout(&format!("{name} to receive {what}"), async move {
+            loop {
+                match connection.read().await {
+                    Ok(packet) => {
+                        if let Some(value) = f(&packet) {
+                            return value;
+                        }
+                    }
+                    Err(error) => panic!("{name} lost its connection waiting for {what}: {error}"),
+                }
+            }
+        })
+        .await
+    }
+
+    /// Reads packets until the server's Disconnect; returns its reason as the
+    /// vanilla client shows it, once the server has closed the connection
+    /// after it.
+    pub async fn expect_disconnect(mut self) -> String {
+        let reason = self
+            .expect("a Disconnect", |packet| match packet {
+                ClientboundGamePacket::Disconnect(disconnect) => {
+                    Some(disconnect.reason.to_string())
+                }
+                _ => None,
+            })
+            .await;
+        let name = self.name.clone();
+        match timeout(
+            &format!("{name}'s connection to close"),
+            self.connection.read(),
+        )
+        .await
+        {
+            Err(_) => reason,
+            Ok(other) => panic!(
+                "{name} got {other:?} after its Disconnect ({reason}) instead of the connection closing"
+            ),
+        }
+    }
 }
 
 /// What a bot learned while logging in, before it entered the play state.
