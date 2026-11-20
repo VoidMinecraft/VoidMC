@@ -18,7 +18,7 @@ use voidmc_protocol::{clientbound, serverbound};
 use azalea_protocol::common::client_information::ClientInformation;
 use azalea_protocol::packets::status::c_status_response::ClientboundStatusResponse;
 
-use crate::bot::{Bot, BotOptions, ConfiguringClient, LoginRefused};
+use crate::bot::{Bot, BotOptions, ConfiguringClient, LoginRefused, SilentPlayer};
 use crate::logs::{ActiveCapture, LogCapture, LogRecord};
 use crate::timeout;
 
@@ -335,6 +335,12 @@ impl TestServer {
     /// its connection open without ever playing.
     pub async fn log_in(&self, name: &str) -> Result<ConfiguringClient, LoginRefused> {
         ConfiguringClient::log_in(self.address, name).await
+    }
+
+    /// Plays a client into the play state, where it then stays silent: see
+    /// [`SilentPlayer`].
+    pub async fn join_silent(&self, name: &str) -> SilentPlayer {
+        SilentPlayer::join(self.address, name).await
     }
 
     /// Asks for the server-list status like the multiplayer screen does.

@@ -5,7 +5,8 @@ use bevy_ecs::schedule::SystemSet;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum VoidSystems {
-    /// `PreUpdate`: packet decode + dispatch (`On<PacketEvent<T>>` fires here), disconnects.
+    /// `PreUpdate`: packet decode + dispatch (`On<PacketEvent<T>>` fires here), disconnects,
+    /// then the [`crate::network::PrePlayTimeout`] check.
     NetworkIngest,
 
     /// `Update`: contains `CommandSystems::DrainQueue`.

@@ -4,7 +4,7 @@ use bevy_ecs::prelude::*;
 use tracing::instrument;
 use voidmc_protocol::clientbound;
 
-use crate::components::{ClientId, KeepAliveState, PlayerReady};
+use crate::components::{ClientId, KeepAliveState};
 use crate::messages::{Text, TextColor};
 use crate::network::{ClientSenders, NetworkChannels};
 use crate::players::Players;
@@ -35,13 +35,17 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
+/// Sends keep-alives to, and times out, every client in the play state,
+/// ready or not: `KeepAliveState` is inserted when a client enters the play
+/// state. A connection that never gets there is closed by
+/// [`crate::network::PrePlayTimeout`] instead.
 #[instrument(level = "info", skip(ticker, players, channels, senders, query))]
 pub fn send_keep_alive(
     mut ticker: ResMut<KeepAliveTicker>,
     players: Players,
     channels: Res<NetworkChannels>,
     senders: Option<Res<ClientSenders>>,
-    mut query: Query<(Entity, &ClientId, &mut KeepAliveState), With<PlayerReady>>,
+    mut query: Query<(Entity, &ClientId, &mut KeepAliveState)>,
 ) {
     let now = now_millis();
 
@@ -116,6 +120,7 @@ mod tests {
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
 
     use super::*;
+    use crate::components::PlayerReady;
     use crate::network::{IncomingPacket, OutgoingPacket};
 
     struct Harness {
@@ -175,6 +180,42 @@ mod tests {
         let sent: Vec<OutgoingPacket> = h.outgoing.try_iter().collect();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].client_id, 7);
+        assert!(matches!(
+            sent[0].packet,
+            ClientboundPacket::Play(PlayPacket::Disconnect(_))
+        ));
+        assert_eq!(h.kicks.try_iter().collect::<Vec<_>>(), vec![7]);
+    }
+
+    #[test]
+    fn a_player_that_never_got_ready_is_kept_alive_and_timed_out_too() {
+        let mut h = harness();
+        h.app
+            .world_mut()
+            .resource_mut::<KeepAliveTicker>()
+            .interval_ticks = 1;
+        let loading = h
+            .app
+            .world_mut()
+            .spawn((ClientId(7), KeepAliveState::default()))
+            .id();
+
+        h.app.update();
+        let sent: Vec<OutgoingPacket> = h.outgoing.try_iter().collect();
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(
+            sent[0].packet,
+            ClientboundPacket::Play(PlayPacket::KeepAlive(_))
+        ));
+
+        h.app
+            .world_mut()
+            .get_mut::<KeepAliveState>(loading)
+            .unwrap()
+            .last_sent_id -= KEEP_ALIVE_TIMEOUT_MS + 1_000;
+        h.app.update();
+        let sent: Vec<OutgoingPacket> = h.outgoing.try_iter().collect();
+        assert_eq!(sent.len(), 1);
         assert!(matches!(
             sent[0].packet,
             ClientboundPacket::Play(PlayPacket::Disconnect(_))

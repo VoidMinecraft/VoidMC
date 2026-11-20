@@ -113,6 +113,7 @@ Chunks are also ECS entities with these components:
 | `ClientToEntityMap(HashMap<u32, Entity>)` | Maps network client IDs to ECS entities |
 | `CommandRegistry` | Registered commands (see [Commands](/reference/gameplay/commands)) |
 | `KeepAliveTicker` | Tick counter for keep-alive scheduling (default: 200 tick interval) |
+| `PrePlayTimeout(Duration)` | How long a connection may take to reach the play state before it is closed (default: 30 s); see [Pre-play timeout](/reference/protocol/networking#pre-play-timeout) |
 
 ## Entity Lifecycle
 

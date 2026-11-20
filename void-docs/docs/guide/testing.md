@@ -402,7 +402,14 @@ On a running server:
   `PlayerLoaded`, like a client still loading the world: its player never
   becomes ready. It returns once the bot has the server's Login packet.
 - `log_in(name)` logs a client in and leaves it in the configuration state,
-  holding its connection without ever playing, until its `disconnect()`.
+  holding its connection without ever playing, until its `disconnect()`. Its
+  `expect_disconnect()` waits for the server's configuration `Disconnect` and
+  the close after it, and returns them as a `LoginRefused`.
+- `join_silent(name)` plays a client into the play state, where it then never
+  answers: no keep-alive, ping or teleport reply, and no `PlayerLoaded` until
+  its `report_loaded()`. Its `expect(what, f)` reads packets until `f` matches
+  one; its `expect_disconnect()` returns the play `Disconnect` reason once the
+  server has closed the connection.
 - `with_world(|world| ...)` runs a closure on the game thread at the start of
   the next tick and returns its result. That is never the first tick, so
   even right after `start()` the closure sees a world in which every system
@@ -491,6 +498,8 @@ least one scenario fail.
 | Block change broadcast to the wrong chunk | `block_changes_reach_other_players_and_late_joiners` |
 | Block change broadcast but not stored | `block_changes_reach_other_players_and_late_joiners` |
 | Keep-alive answers never accepted | `keep_alive_round_trips_and_keeps_going` |
+| A player that never reports loaded is never timed out | `a_player_that_never_reports_loaded_and_stops_answering_is_timed_out` |
+| A connection stalled before play lingers | `a_client_stalled_in_login_is_told_it_took_too_long`, `a_client_stalled_in_configuration_is_told_it_took_too_long`, `a_connection_that_never_logs_in_is_closed` |
 | Wrong serverbound packet id for container clicks | `clicks_move_items_between_slots` |
 | Suggestion ranges in bytes instead of UTF-16 units | `server_suggestions_use_utf16_ranges` |
 | Joining player not announced to others | `players_see_each_other_move_and_leave` |
