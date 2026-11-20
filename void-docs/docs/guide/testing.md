@@ -391,6 +391,12 @@ On a running server:
 
 - `join(name)` and `join_with(name, BotOptions { view_distance })` log a bot
   in and return once the server lists it.
+- `try_join(name)` does the same, but returns `Err(LoginRefused)` when the
+  server refuses the login: its `reason` as the client shows it ("The server
+  is full!") and its text `component` as JSON. The harness also checks that
+  the server closed the connection after the refusal.
+- `log_in(name)` logs a client in and leaves it in the configuration state,
+  holding its connection without ever playing, until its `disconnect()`.
 - `with_world(|world| ...)` runs a closure on the game thread at the start of
   the next tick and returns its result. That is never the first tick, so
   even right after `start()` the closure sees a world in which every system
