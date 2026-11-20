@@ -11,8 +11,11 @@
 //! `execution_mode(ExecutionMode::MultiThreaded)` and checks its systems and
 //! regions run concurrently, and `atp_032_observability` queries the
 //! endpoints a server built with `observability(..)` serves.
+//!
+//! The registries `configure_registries` edits are frozen once a client has
+//! received them: later changes are refused, so every client gets the same.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,13 +26,15 @@ use bevy_ecs::prelude::*;
 use voidmc::components::{LoadedChunks, PlayerUuid};
 use voidmc::events::PlayerJoinEvent;
 use voidmc::{
-    ChunkIndex, DefaultWorldGenerator, FrameLimits, RegistryDataStore, ServerConfigBuilder,
-    SpawnPosition, WorldGenerator,
+    ChunkIndex, DefaultWorldGenerator, FrameLimits, RegistriesAlreadySent, RegistryDataStore,
+    ServerConfigBuilder, SpawnPosition, WorldGenerator, default_registry_data,
 };
 use voidmc_e2e::core::game_type::GameMode;
 use voidmc_e2e::core::position::{ChunkPos, Vec3};
 use voidmc_e2e::protocol::packets::game::{ClientboundGamePacket, c_login::ClientboundLogin};
+use voidmc_e2e::protocol::simdnbt::owned::NbtCompound;
 use voidmc_e2e::{Bot, LoginRefused, TestServer};
+use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 
 use crate::{feet, ground};
 
@@ -185,8 +190,9 @@ async fn every_option_reaches_the_client_or_the_running_server() {
                 .compression_threshold(Some(128))
                 .world_generator(flat())
                 .configure_registries(|registries| {
-                    let removed =
-                        registries.remove_entry("minecraft:painting_variant", "minecraft:alban");
+                    let removed = registries
+                        .remove_entry("minecraft:painting_variant", "minecraft:alban")
+                        .expect("no client has the registries yet");
                     assert!(removed.is_some(), "the default registries hold alban");
                 })
         })
@@ -326,6 +332,259 @@ async fn every_option_reaches_the_client_or_the_running_server() {
         })
         .await;
 
+    server.stop().await;
+}
+
+const PAINTINGS: &str = "minecraft:painting_variant";
+
+type Names = Vec<(String, Vec<String>)>;
+
+/// Registry ids in sending order, each with its entry ids in order.
+fn names_of(registries: &[RegistryData]) -> Names {
+    registries
+        .iter()
+        .map(|registry| {
+            let entries = registry.entries.iter().map(|entry| entry.entry_id.clone());
+            (registry.registry_id.clone(), entries.collect())
+        })
+        .collect()
+}
+
+fn entries_mut<'a>(names: &'a mut Names, id: &str) -> &'a mut Vec<String> {
+    let (_, entries) = names
+        .iter_mut()
+        .find(|(other, _)| other == id)
+        .unwrap_or_else(|| panic!("the registry {id}"));
+    entries
+}
+
+/// Each registry a bot received, in arrival order, with its entries as Azalea
+/// decoded them. Azalea decodes `dimension_type` and `enchantment` into its
+/// own types, so only their entry names are kept.
+type Received = Vec<(String, Vec<(String, Option<NbtCompound>)>)>;
+
+fn received(bot: &Bot) -> Received {
+    let transcript = bot.transcript();
+    let data = &transcript.registry_data;
+    let mut by_id: HashMap<String, Vec<(String, Option<NbtCompound>)>> = data
+        .extra
+        .iter()
+        .map(|(id, registry)| {
+            let entries = registry
+                .map
+                .iter()
+                .map(|(name, nbt)| (name.to_string(), Some(nbt.clone())));
+            (id.to_string(), entries.collect())
+        })
+        .collect();
+    let dimension_types = data.dimension_type.map.keys();
+    by_id.insert(
+        "minecraft:dimension_type".into(),
+        dimension_types
+            .map(|name| (name.to_string(), None))
+            .collect(),
+    );
+    let enchantments = data.enchantment.map.keys();
+    by_id.insert(
+        "minecraft:enchantment".into(),
+        enchantments.map(|name| (name.to_string(), None)).collect(),
+    );
+    let mut seen = HashSet::new();
+    transcript
+        .registries
+        .iter()
+        .filter(|id| seen.insert(id.as_str()))
+        .map(|id| (id.clone(), by_id.remove(id).unwrap_or_default()))
+        .collect()
+}
+
+fn received_names(received: &Received) -> Names {
+    received
+        .iter()
+        .map(|(id, entries)| {
+            let names = entries.iter().map(|(name, _)| name.clone());
+            (id.clone(), names.collect())
+        })
+        .collect()
+}
+
+/// Ids of the registries that differ between two clients.
+fn differing(first: &Received, second: &Received) -> Vec<String> {
+    let mut ids: Vec<&String> = Vec::new();
+    for (id, _) in first.iter().chain(second) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let find = |received: &Received, id: &String| {
+        received
+            .iter()
+            .find(|(other, _)| other == id)
+            .map(|(_, entries)| entries.clone())
+    };
+    ids.into_iter()
+        .filter(|id| find(first, id) != find(second, id))
+        .cloned()
+        .collect()
+}
+
+fn painting(received: &Received, name: &str) -> Option<NbtCompound> {
+    let (_, paintings) = received
+        .iter()
+        .find(|(id, _)| id == PAINTINGS)
+        .expect("the painting registry");
+    let (_, data) = paintings
+        .iter()
+        .find(|(entry, _)| entry == name)
+        .unwrap_or_else(|| panic!("the painting {name}"));
+    data.clone()
+}
+
+/// Before any client joins, every kind of registry change succeeds and is
+/// sent. Once a client has received the registries, each is refused, and a
+/// client joining later is sent exactly what the first one got.
+#[tokio::test]
+async fn registries_change_until_a_client_receives_them() {
+    let server = TestServer::builder()
+        .config(|config| {
+            config.configure_registries(|registries| {
+                const UNSENT: &str = "no client has the registries yet";
+                let aztec = registries
+                    .get_entry(PAINTINGS, "minecraft:aztec")
+                    .expect("the aztec painting")
+                    .data
+                    .clone();
+                let early = RegistryEntry {
+                    entry_id: "atp024:early".into(),
+                    data: aztec.clone(),
+                };
+                registries.add_entry(PAINTINGS, early).expect(UNSENT);
+                let alban = registries.remove_entry(PAINTINGS, "minecraft:alban");
+                assert!(alban.expect(UNSENT).is_some());
+                registries
+                    .get_entry_mut(PAINTINGS, "minecraft:kebab")
+                    .expect(UNSENT)
+                    .expect("the kebab painting")
+                    .data = aztec;
+                registries
+                    .get_registry_mut("minecraft:wolf_variant")
+                    .expect(UNSENT)
+                    .expect("the wolf variants")
+                    .entries
+                    .reverse();
+                let cats = registries
+                    .remove_registry("minecraft:cat_variant")
+                    .expect(UNSENT)
+                    .expect("the cat variants");
+                registries.add_registry(cats).expect(UNSENT);
+            })
+        })
+        .start()
+        .await;
+
+    // The default registries, with each change above applied.
+    let mut expected = names_of(&default_registry_data());
+    let paintings = entries_mut(&mut expected, PAINTINGS);
+    paintings.retain(|name| name != "minecraft:alban");
+    paintings.push("atp024:early".into());
+    entries_mut(&mut expected, "minecraft:wolf_variant").reverse();
+    let cats = expected
+        .iter()
+        .position(|(id, _)| id == "minecraft:cat_variant")
+        .expect("the cat variants");
+    let cats = expected.remove(cats);
+    expected.push(cats);
+    let configured = server
+        .with_world(|world| names_of(world.resource::<RegistryDataStore>().registries()))
+        .await;
+    assert_eq!(configured, expected, "every change before login applies");
+
+    let alice = server.join("Alice").await;
+    let first = received(&alice);
+    assert_eq!(received_names(&first), configured, "and is sent");
+    let aztec = painting(&first, "minecraft:aztec");
+    assert!(aztec.is_some());
+    assert_eq!(painting(&first, "minecraft:kebab"), aztec);
+    assert_eq!(painting(&first, "atp024:early"), aztec);
+
+    let refused = server
+        .with_world(|world| {
+            let mut registries = world.resource_mut::<RegistryDataStore>();
+            let aztec = registries
+                .get_entry(PAINTINGS, "minecraft:aztec")
+                .expect("the aztec painting")
+                .data
+                .clone();
+            let late = RegistryEntry {
+                entry_id: "atp024:late".into(),
+                data: aztec.clone(),
+            };
+            vec![
+                ("add_entry", registries.add_entry(PAINTINGS, late)),
+                (
+                    "remove_entry",
+                    registries
+                        .remove_entry(PAINTINGS, "minecraft:aztec")
+                        .map(drop),
+                ),
+                (
+                    "get_entry_mut",
+                    registries
+                        .get_entry_mut(PAINTINGS, "minecraft:bust")
+                        .map(|entry| {
+                            if let Some(entry) = entry {
+                                entry.data = aztec;
+                            }
+                        }),
+                ),
+                (
+                    "get_registry_mut",
+                    registries
+                        .get_registry_mut("minecraft:chicken_variant")
+                        .map(|registry| {
+                            if let Some(registry) = registry {
+                                registry.entries.reverse();
+                            }
+                        }),
+                ),
+                (
+                    "add_registry",
+                    registries.add_registry(RegistryData {
+                        registry_id: "atp024:late".into(),
+                        entries: Vec::new(),
+                    }),
+                ),
+                (
+                    "remove_registry",
+                    registries
+                        .remove_registry("minecraft:frog_variant")
+                        .map(drop),
+                ),
+            ]
+        })
+        .await;
+    for (change, result) in refused {
+        assert_eq!(result, Err(RegistriesAlreadySent), "{change} after login");
+    }
+
+    let bob = server.join("Bob").await;
+    let second = received(&bob);
+    assert_eq!(
+        differing(&first, &second),
+        Vec::<String>::new(),
+        "registries Bob was sent differently from Alice"
+    );
+    assert_eq!(bob.transcript().registries, alice.transcript().registries);
+    assert!(second == first, "Bob was sent exactly what Alice got");
+    let after = server
+        .with_world(|world| names_of(world.resource::<RegistryDataStore>().registries()))
+        .await;
+    assert_eq!(after, configured, "the store kept what Alice got");
+
+    for bot in [&alice, &bob] {
+        bot.sync().await;
+        bot.assert_healthy();
+    }
     server.stop().await;
 }
 

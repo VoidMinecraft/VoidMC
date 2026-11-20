@@ -92,7 +92,7 @@ pub use plugins::world_border::{WorldBorder, WorldBorderState};
 pub use plugins::world_time::{
     GameTime, TICKS_PER_DAY, TIME_SYNC_INTERVAL, WorldClock, WorldTime, WorldTimeState,
 };
-pub use registry::{RegistryDataStore, default_registry_data};
+pub use registry::{RegistriesAlreadySent, RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
 pub use sounds::{Sound, SoundPosition, SoundSource, SoundStop, Sounds, WorldSounds};
