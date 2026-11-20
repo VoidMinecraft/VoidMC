@@ -15,6 +15,8 @@ use voidmc::{ObservabilityAddress, ObservabilityConfig};
 use voidmc_e2e::protocol::packets::game::ServerboundPaddleBoat;
 use voidmc_e2e::{TestServer, TestServerBuilder};
 
+use crate::{DECODE_FAILURE, malformed_play_packets, var_int};
+
 /// Short, so that the stall scenario does not wait long, yet fifty ticks at
 /// 50 TPS, so that a busy CI machine does not look stalled.
 const STALL_THRESHOLD: Duration = Duration::from_secs(1);
@@ -729,6 +731,74 @@ async fn error_counters_count_errors_that_clients_cause() {
         .collect();
     assert_eq!(failures.len(), 1, "{failures:#?}");
     assert!(failures[0].contains("Unrecognized packet"), "{failures:#?}");
+    drop(server);
+}
+
+/// Since #178 a known packet whose body does not decode disconnects its
+/// sender: it counts as a packet error and as a kick. A packet whose id
+/// VoidMC does not know is still only dropped: it counts as unrecognized and
+/// its sender stays.
+#[tokio::test]
+async fn malformed_packets_count_as_errors_and_kicks_unknown_ones_as_unrecognized() {
+    let server = observed().start().await;
+    let address = endpoint(&server).await;
+    let alice = server.join("Alice").await;
+    let mallory = server.join("Mallory").await;
+    let before = scrape_until(&server, address, "two players online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 2.0
+    })
+    .await;
+    assert_eq!(before.counter("voidmc_packet_errors_total"), 0.0);
+    assert_eq!(before.counter("voidmc_packets_unrecognized_total"), 0.0);
+    assert_eq!(before.counter("voidmc_clients_kicked_total"), 0.0);
+
+    // A Use Item On whose face is not one of the six.
+    let (_, invalid_face) = malformed_play_packets().swap_remove(0);
+    mallory.send_raw(&invalid_face).await;
+    let reason = mallory.expect_disconnect().await;
+    assert!(reason.starts_with(DECODE_FAILURE), "{reason}");
+    let kicked = scrape_until(&server, address, "Mallory kicked and gone", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") == 1.0
+            && scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    assert_eq!(kicked.counter("voidmc_packet_errors_total"), 1.0);
+    assert_eq!(kicked.counter("voidmc_packets_unrecognized_total"), 0.0);
+
+    // Ids no serverbound play packet has, one of them past a byte.
+    alice.send_raw(&[0x7f, 1, 2, 3]).await;
+    let mut beyond_a_byte = var_int(300);
+    beyond_a_byte.push(0);
+    alice.send_raw(&beyond_a_byte).await;
+    let unrecognized = scrape_until(&server, address, "the unknown packets counted", |scrape| {
+        scrape.counter("voidmc_packets_unrecognized_total") == 2.0
+    })
+    .await;
+    assert_eq!(unrecognized.counter("voidmc_packet_errors_total"), 1.0);
+    assert_eq!(unrecognized.counter("voidmc_clients_kicked_total"), 1.0);
+    assert_eq!(unrecognized.gauge("voidmc_players_online"), 1.0);
+    assert_eq!(unrecognized.connection_errors("decode"), 0.0);
+    assert_counters_never_decrease(&before, &kicked);
+    assert_counters_never_decrease(&kicked, &unrecognized);
+    alice.sync().await;
+    alice.assert_healthy();
+
+    // A malformed packet is the client's fault, not a server error: the
+    // only failures logged are the two unknown packets, so the server is
+    // dropped, not `stop`ped.
+    let failures: Vec<String> = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.is_failure())
+        .map(|record| record.to_string())
+        .collect();
+    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert!(
+        failures
+            .iter()
+            .all(|failure| failure.contains("Unrecognized packet")),
+        "{failures:#?}"
+    );
     drop(server);
 }
 

@@ -101,6 +101,17 @@ impl ConfiguringClient {
         let _ = self.connection.writer.shutdown().await;
     }
 
+    /// Sends `packet`, its id then its body, as given: for packets a real
+    /// client would not write.
+    pub async fn send_raw(&mut self, packet: &[u8]) {
+        self.connection
+            .writer
+            .raw
+            .write(packet)
+            .await
+            .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
+    }
+
     /// Reads what the server sends, still without answering, until its
     /// configuration Disconnect; returns what it said once the server has
     /// closed the connection after it.
@@ -343,6 +354,18 @@ impl Bot {
             .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
     }
 
+    /// Sends `packet`, its id then its body, as given: for packets a real
+    /// client would not write, or that Azalea refuses to encode.
+    pub async fn send_raw(&self, packet: &[u8]) {
+        self.writer
+            .lock()
+            .await
+            .raw
+            .write(packet)
+            .await
+            .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
+    }
+
     pub async fn command(&self, command: &str) {
         self.send(ServerboundChatCommand {
             command: command.to_string(),
@@ -503,6 +526,31 @@ impl Bot {
             self.name,
             inbox.view.anomalies
         );
+    }
+
+    /// Waits for the server's Disconnect; returns its reason as the vanilla
+    /// client shows it, once the server has closed the connection after it.
+    pub async fn expect_disconnect(self) -> String {
+        let reason = self
+            .expect("a Disconnect", |packet| match packet {
+                ClientboundGamePacket::Disconnect(disconnect) => {
+                    Some(disconnect.reason.to_string())
+                }
+                _ => None,
+            })
+            .await;
+        let shared = self.shared.clone();
+        timeout(&format!("{}'s connection to close", self.name), async {
+            loop {
+                let changed = shared.changed.notified();
+                if shared.inbox.lock().unwrap().closed {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        reason
     }
 
     /// Closes the connection like a client quitting the game.

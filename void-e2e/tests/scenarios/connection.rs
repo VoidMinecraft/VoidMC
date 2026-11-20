@@ -2,22 +2,25 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use voidmc::components::{KeepAliveState, PlayerReady, PlayerUuid};
 use voidmc::network::PrePlayTimeout;
 use voidmc::systems::KeepAliveTicker;
 use voidmc_e2e::TestServer;
+use voidmc_e2e::protocol::common::client_information::ClientInformation;
 use voidmc_e2e::protocol::connect::Connection;
+use voidmc_e2e::protocol::packets::config::s_client_information::ServerboundClientInformation;
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 use voidmc_e2e::protocol::packets::handshake::s_intention::ServerboundIntention;
 use voidmc_e2e::protocol::packets::handshake::{
     ClientboundHandshakePacket, ServerboundHandshakePacket,
 };
 use voidmc_e2e::protocol::packets::login::ClientboundLoginPacket;
+use voidmc_e2e::protocol::packets::login::s_hello::ServerboundHello;
 use voidmc_e2e::protocol::packets::{ClientIntention, PROTOCOL_VERSION};
 
-use crate::{feet, ground};
+use crate::{DECODE_FAILURE, feet, ground, malformed_play_packets, raw, var_int};
 
 async fn join_and_spawn_on_the_ground(threshold: Option<u32>) {
     let server = TestServer::builder()
@@ -356,6 +359,141 @@ async fn a_player_who_joined_in_time_stays_past_the_pre_play_timeout() {
 
     tokio::time::sleep(PRE_PLAY_TIMEOUT + Duration::from_secs(1)).await;
 
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A player who sends a known packet whose body VoidMC cannot decode is
+/// disconnected with the reason, like vanilla does; the server stays up and
+/// the other players are not affected.
+#[tokio::test]
+async fn a_player_sending_a_malformed_packet_is_disconnected_with_the_reason() {
+    let server = TestServer::start().await;
+    let bob = server.join("Bob").await;
+
+    for (index, (what, packet)) in malformed_play_packets().into_iter().enumerate() {
+        let mallory = server.join(&format!("Mallory{index}")).await;
+        let entity = server.player_entity(mallory.uuid()).await;
+        mallory.sync().await;
+
+        mallory.send_raw(&packet).await;
+        let reason = mallory.expect_disconnect().await;
+        assert!(reason.starts_with(DECODE_FAILURE), "{what}: {reason}");
+        assert!(
+            reason.contains(&format!("0x{:02X}", packet[0])),
+            "{what}: {reason} names the packet id"
+        );
+        server
+            .wait_for("the sender's entity to be despawned", move |world| {
+                world.get_entity(entity).is_err().then_some(())
+            })
+            .await;
+    }
+
+    bob.sync().await;
+    bob.assert_healthy();
+    let erin = server.join("Erin").await;
+    erin.sync().await;
+    erin.assert_healthy();
+    server.stop().await;
+}
+
+/// The same rule holds before the play state: a malformed Login Start is
+/// answered with the login Disconnect, then the connection is closed.
+#[tokio::test]
+async fn a_malformed_login_packet_is_refused_with_the_reason() {
+    let server = TestServer::start().await;
+    let mut connection = handshaken(server.address(), ClientIntention::Login)
+        .await
+        .login();
+    // A name, then a UUID cut short.
+    let hello = raw(ServerboundHello {
+        name: "Mallory".to_string(),
+        profile_id: uuid::Uuid::nil(),
+    });
+    connection
+        .writer
+        .raw
+        .write(&hello[..hello.len() - 8])
+        .await
+        .expect("send Login Start");
+
+    let packet = within("the login Disconnect", connection.read()).await;
+    let Ok(ClientboundLoginPacket::LoginDisconnect(disconnect)) = packet else {
+        panic!("expected a login Disconnect, got {packet:?}");
+    };
+    let reason = disconnect.reason.to_string();
+    assert!(reason.starts_with(DECODE_FAILURE), "{reason}");
+    let after = within("the connection to close", connection.read()).await;
+    assert!(after.is_err(), "{after:?} after the Disconnect");
+
+    let alice = server.join("Alice").await;
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A malformed Client Information during configuration (a chat mode out of
+/// range) is answered with the configuration Disconnect.
+#[tokio::test]
+async fn a_malformed_configuration_packet_is_refused_with_the_reason() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(1))
+        .start()
+        .await;
+    let mut carol = server
+        .log_in("Carol")
+        .await
+        .unwrap_or_else(|refused| panic!("Carol was refused an empty server: {refused}"));
+    let mut information = raw(ServerboundClientInformation {
+        information: ClientInformation::default(),
+    });
+    // The id, the locale (its length, then `en_us`), the view distance, then
+    // the chat mode, 0 to 2.
+    assert_eq!(&information[1..7], b"\x05en_us", "{information:?}");
+    information[8] = 3;
+    carol.send_raw(&information).await;
+
+    let refused = carol.expect_disconnect().await;
+    assert!(refused.reason.starts_with(DECODE_FAILURE), "{refused}");
+    wait_until_no_player(&server).await;
+    let erin = server
+        .try_join("Erin")
+        .await
+        .unwrap_or_else(|refused| panic!("Erin was refused Carol's freed slot: {refused}"));
+    erin.sync().await;
+    erin.assert_healthy();
+    server.stop().await;
+}
+
+/// A handshake cut short has no disconnect packet to answer it with: the
+/// connection is closed at once, long before the pre-play timeout.
+#[tokio::test]
+async fn a_malformed_handshake_closes_the_connection() {
+    let server = TestServer::start().await;
+    let address = server.address();
+    let intention = raw(ServerboundIntention {
+        protocol_version: PROTOCOL_VERSION,
+        hostname: address.ip().to_string(),
+        port: address.port(),
+        intention: ClientIntention::Login,
+    });
+    // Without its last field, the intention.
+    let body = &intention[..intention.len() - 1];
+    let mut frame = var_int(body.len() as u32);
+    frame.extend(body);
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    stream.write_all(&frame).await.unwrap();
+
+    let mut received = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut received))
+        .await
+        .expect("the connection is closed well before the 30 s pre-play timeout")
+        .expect("the server closes the connection cleanly");
+    assert!(received.is_empty(), "{received:?}");
+
+    let alice = server.join("Alice").await;
     alice.sync().await;
     alice.assert_healthy();
     server.stop().await;
