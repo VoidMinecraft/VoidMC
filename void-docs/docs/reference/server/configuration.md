@@ -49,7 +49,7 @@ let config = ServerConfigBuilder::new()
 | `max_packets_per_tick` | `usize` | `1000` | Cap the number of packets drained from the incoming channel each tick (0 = unlimited) |
 | `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
-| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms); only while `metrics_debug` is on |
+| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick works longer than this (ms, 0 = off): the time from the start of `First` to the end of `Last`, without the wait between ticks, reported as `tick_work_ms`; only while `metrics_debug` is on |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
 | `compression_threshold` | `Option<u32>` | `Some(256)` | Packets of at least this many bytes are zlib-compressed after login; `None` disables compression (vanilla's negative threshold) |
 | `observability` | `Option<ObservabilityConfig>` | `None` | Serves `/health` and Prometheus `/metrics` over HTTP; see [Health and Metrics Endpoints](./observability.md) |

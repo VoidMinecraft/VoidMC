@@ -16,15 +16,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use bevy_app::{App, AppExit, First, Last, MainScheduleOrder, Plugin};
+use bevy_app::{App, AppExit, Plugin};
 use bevy_ecs::prelude::*;
-use bevy_ecs::schedule::ScheduleLabel;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use voidmc_net::socket::SocketError;
 
 use crate::components::PlayerReady;
 use crate::config::ServerConfigResource;
+use crate::tick_time::{self, TickEnd, TickMeasured, TickWorkTime};
 use crate::world::{ChunkLoadErrorKind, ChunkLoadFailedEvent};
 use exposition::{MetricKind, TextEncoder};
 use http::{Method, Request, Response};
@@ -507,39 +507,26 @@ pub(crate) struct ObservabilityPlugin {
     address: SocketAddr,
 }
 
-/// Runs before `First` and after `Last`, so that a tick is measured whole.
-#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
-struct TickStart;
-
-#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
-struct TickEnd;
-
 #[derive(Resource, Clone)]
 pub(crate) struct TelemetryHandle(pub(crate) Arc<Telemetry>);
 
+/// The window the measured tick rate is counted over.
 #[derive(Resource)]
 struct TickClock {
-    started: Option<Instant>,
     window_start: Instant,
     window_ticks: u32,
 }
 
 impl Plugin for ObservabilityPlugin {
     fn build(&self, app: &mut App) {
-        {
-            let mut order = app.world_mut().resource_mut::<MainScheduleOrder>();
-            order.insert_before(First, TickStart);
-            order.insert_after(Last, TickEnd);
-        }
+        tick_time::require(app);
         app.insert_resource(TelemetryHandle(self.telemetry.clone()))
             .insert_resource(ObservabilityAddress(self.address))
             .insert_resource(TickClock {
-                started: None,
                 window_start: Instant::now(),
                 window_ticks: 0,
             })
-            .add_systems(TickStart, start_tick)
-            .add_systems(TickEnd, end_tick)
+            .add_systems(TickEnd, end_tick.after(TickMeasured))
             .add_observer(count_chunk_load_failure);
     }
 }
@@ -548,12 +535,9 @@ fn count_chunk_load_failure(event: On<ChunkLoadFailedEvent>, telemetry: Res<Tele
     telemetry.0.chunk_load_failed(event.kind);
 }
 
-fn start_tick(mut clock: ResMut<TickClock>) {
-    clock.started = Some(Instant::now());
-}
-
 fn end_tick(
     telemetry: Res<TelemetryHandle>,
+    work: Res<TickWorkTime>,
     mut clock: ResMut<TickClock>,
     config: Option<Res<ServerConfigResource>>,
     online: Query<(), With<PlayerReady>>,
@@ -569,12 +553,8 @@ fn end_tick(
     telemetry.set_players(online.iter().count(), max_players);
     telemetry.add_players_joined(joined.iter().count());
 
-    let now = Instant::now();
-    let duration = clock
-        .started
-        .take()
-        .map_or(Duration::ZERO, |started| now - started);
-    telemetry.record_tick(duration, now);
+    let now = work.ended_at;
+    telemetry.record_tick(work.last, now);
 
     clock.window_ticks += 1;
     let window = now - clock.window_start;
