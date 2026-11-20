@@ -32,8 +32,10 @@ impl Budget {
         Self::blocks(u64::MAX)
     }
 
+    /// Adds a wall-clock deadline `limit` from now. A `limit` too large to
+    /// add to the current instant (such as `Duration::MAX`) sets none.
     pub fn with_time(mut self, limit: Duration) -> Self {
-        self.deadline = Some(Instant::now() + limit);
+        self.deadline = Instant::now().checked_add(limit);
         self
     }
 
