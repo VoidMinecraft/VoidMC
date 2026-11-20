@@ -7,6 +7,7 @@ use bevy_app::{App, AppExit, First, Last};
 use bevy_ecs::lifecycle::Add;
 use bevy_ecs::prelude::*;
 use tokio::sync::{Mutex, OwnedMutexGuard, oneshot, watch};
+use tracing::Level;
 use voidmc::components::{Operator, PlayerUuid};
 use voidmc::network::PacketEvent;
 use voidmc::{
@@ -77,6 +78,7 @@ pub struct TestServerBuilder {
     plugins: Vec<Plugin>,
     commands: Vec<CommandFactory>,
     default_commands: bool,
+    log_level: Level,
 }
 
 impl TestServerBuilder {
@@ -92,6 +94,7 @@ impl TestServerBuilder {
             plugins: Vec::new(),
             commands: Vec::new(),
             default_commands: true,
+            log_level: Level::WARN,
         }
     }
 
@@ -119,6 +122,14 @@ impl TestServerBuilder {
         self
     }
 
+    /// Records the events logged down to `level` (by default, only warnings
+    /// and errors), for a test that checks what the server logs at info or
+    /// debug level: see [`TestServer::logs`].
+    pub fn capture_logs(mut self, level: Level) -> Self {
+        self.log_level = level;
+        self
+    }
+
     /// Makes every player an [`Operator`] from the moment it logs in, so the
     /// command tree and permission level it gets at join are an operator's.
     pub fn operators(self) -> Self {
@@ -143,14 +154,15 @@ impl TestServerBuilder {
         let (jobs_tx, jobs_rx) = flume::unbounded::<Job>();
         let (ticks_tx, ticks_rx) = watch::channel(0u64);
         let (ready_tx, ready_rx) = oneshot::channel();
-        let logs = LogCapture::default();
-        let active = logs.activate();
         let Self {
             config,
             plugins,
             commands,
             default_commands,
+            log_level,
         } = self;
+        let logs = LogCapture::new(log_level);
+        let active = logs.activate();
 
         let thread = std::thread::Builder::new()
             .name("void-e2e-server".into())
@@ -371,6 +383,8 @@ impl TestServer {
         .await;
     }
 
+    /// The events logged so far while this server ran: warnings and errors,
+    /// or down to the level given to [`TestServerBuilder::capture_logs`].
     pub fn logs(&self) -> Vec<LogRecord> {
         self.logs.records()
     }

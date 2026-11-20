@@ -1,7 +1,9 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 
-use super::{CommandEnqueueSequence, CommandQueue, CommandRegistry, drain_command_queue};
+use super::{
+    CommandEnqueueSequence, CommandLines, CommandQueue, CommandRegistry, drain_command_queue,
+};
 use crate::schedule::VoidSystems;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone)]
@@ -19,6 +21,7 @@ impl Plugin for CommandPlugin {
         app.init_resource::<CommandRegistry>()
             .init_resource::<CommandQueue>()
             .init_resource::<CommandEnqueueSequence>()
+            .init_resource::<CommandLines>()
             .configure_sets(
                 Update,
                 CommandSystems::DrainQueue.in_set(VoidSystems::CommandDrain),

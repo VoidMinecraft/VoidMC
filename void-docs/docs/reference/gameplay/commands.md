@@ -28,6 +28,7 @@ Client presses Enter
   handle_command()
   ├── splits raw string → [command_name, args...]
   ├── enqueue_command() → pushes QueuedCommand to CommandQueue resource
+  │                       (the raw line is kept for text arguments)
   └── commands.trigger(ChatCommandEvent)  ← external observers hook here
        │
        ▼
@@ -35,6 +36,7 @@ Client presses Enter
        │  pops each QueuedCommand in FIFO order
        ▼
   dispatch_command()  in  void/src/commands/mod.rs
+  ├── logs "<sender> issued server command: /<name>" (info), the arguments (debug)
   ├── resolves name/alias in CommandRegistry
   ├── flags::extract_flags() — peels off --flags / -f tokens, values parsed with parse_in()
   ├── parse_positional()     — calls ArgParser::parse_in() per argument
@@ -227,7 +229,7 @@ the handler reads back with `ctx.get::<T>(name)`.
 |---|---|---|---|
 | `StringArg::single_word()` | `String` | `brigadier:string` (single word) | One word |
 | `StringArg::quotable()` | `String` | `brigadier:string` (quotable) | One word or a quoted phrase |
-| `StringArg::greedy()` / `GreedyStringArg` | `String` | `brigadier:string` (greedy) | The rest of the line |
+| `StringArg::greedy()` / `GreedyStringArg` | `String` | `brigadier:string` (greedy) | The rest of the line, as typed |
 | `BoolArg` | `bool` | `brigadier:bool` | `true/false/yes/no/1/0` |
 | `IntegerArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i32` | `brigadier:integer` + bounds | Bounded integer |
 | `LongArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i64` | `brigadier:long` + bounds | Bounded long |
@@ -249,7 +251,17 @@ the handler reads back with `ctx.get::<T>(name)`.
 | `EnumArg::new([(name, value), ..])` | `T` | `brigadier:string` + `ask_server` | One of the declared names |
 | `ResourceLocationArg` | `String` | `minecraft:resource_location` | `namespace:path` |
 | `SummonableEntityArg` | `String` | `minecraft:resource_location` + `summonable_entities` | Entity type id |
-| `MessageArg` | `String` | `minecraft:message` | Chat message |
+| `MessageArg` | `String` | `minecraft:message` | Chat message, as typed |
+
+A text argument (`GreedyStringArg`, `StringArg::greedy()` or `MessageArg`)
+declared with `arg_variadic` or `arg_variadic_required` receives the rest of
+the line exactly as the player typed it, like a vanilla greedy string:
+`/tell Bob a   b` delivers `a   b`, and trailing spaces are kept. The
+whitespace that separates it from the command and the earlier arguments is
+not part of it, and those arguments are still separated by any run of
+whitespace. Other variadic parsers receive the remaining words joined by
+single spaces, and so does every text argument when `dispatch_command` is
+called directly with a list of arguments, since there is no typed line.
 
 The `voidmc-vanilla-commands` crate adds parsers for the scoreboard family
 (`TeamArg`, `ObjectiveArg`, `ScoreHolderArg`, `OperationArg`, `SlotArg`,
@@ -514,8 +526,9 @@ message, and `/kick` a reason, containing a `§` formatting code or a control
 character (`Illegal characters in chat`), as a vanilla server does, so the
 line shows exactly as typed. A refused message reaches nobody and a refused
 `/kick` kicks nobody.
-Message words are joined by single spaces: runs of spaces and line breaks in
-the command become one space.
+The text is kept as typed, runs of spaces included (`/tell Bob a   b`
+delivers `a   b`); a tab or a line break in it is a control character, so the
+message is refused.
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
