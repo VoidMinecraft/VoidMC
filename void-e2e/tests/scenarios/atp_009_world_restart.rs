@@ -227,7 +227,18 @@ fn top(bot: &Bot, x: i32, z: i32) -> BlockPos {
         .unwrap_or_else(|| panic!("{} holds no column at ({x}, {z})", bot.name()))
 }
 
+/// Uses `item` on `face` of `against`. A click only reaches blocks a few
+/// blocks away, so the bot first stands four blocks above the clicked block,
+/// out of the way of what it places, and goes back where it was afterwards:
+/// at the start position every site's chunk is in view.
 async fn use_item_on(bot: &Bot, item: ItemKind, against: BlockPos, face: Direction, seq: u32) {
+    let home = bot.position();
+    let above = Vec3::new(
+        f64::from(against.x) + 0.5,
+        f64::from(against.y + 4),
+        f64::from(against.z) + 0.5,
+    );
+    bot.move_to(above).await;
     bot.send(ServerboundSetCreativeModeSlot {
         slot_num: 36,
         item_stack: ItemStack::Present(ItemStackData::new(item, 1)),
@@ -255,6 +266,7 @@ async fn use_item_on(bot: &Bot, item: ItemKind, against: BlockPos, face: Directi
         _ => None,
     })
     .await;
+    bot.move_to(home).await;
 }
 
 /// A recorded change: a block placed at a coordinate with an exact state.
@@ -300,12 +312,15 @@ async fn build_site(
     let step = side.normal();
     // A column whose neighbour on `side`, in the same chunk, is not higher:
     // the block next to `base` is then air. Columns 0 and 1 are skipped so
-    // that nothing is placed where the player stands at spawn.
+    // that nothing is placed where the player stands at spawn. A column
+    // topped with water is skipped too: a block placed on water replaces it.
     let (x, z) = (2..15)
         .flat_map(|a| (2..15).map(move |b| (a, b)))
         .find(|&(a, b)| {
             let (x, z) = (chunk.0 * 16 + a, chunk.1 * 16 + b);
-            top(bot, x + step.x, z + step.z).y <= top(bot, x, z).y
+            let ground = top(bot, x, z);
+            let water = bot.block_at(ground).map(BlockKind::from) == Some(BlockKind::Water);
+            !water && top(bot, x + step.x, z + step.z).y <= ground.y
         })
         .unwrap_or_else(|| panic!("no column of chunk {chunk:?} fits a log on its {side:?} side"));
     let base = place_on_top(bot, chunk, (x, z), base, seq).await;
@@ -414,9 +429,12 @@ async fn placed_blocks_keep_their_state_and_surroundings_across_two_restarts() {
     let mut placed = Vec::new();
     for (index, site) in SITES.iter().enumerate() {
         let seq = 1 + 2 * index as u32;
+        // Back at the start after the previous site, every site is in view
+        // again once its chunks are resent.
+        wait_for_chunks(&alice, &chunks).await;
         placed.push(build_site(&alice, site.chunk, site.base, site.side, seq).await);
     }
-    alice.sync().await;
+    wait_for_chunks(&alice, &chunks).await;
     let expected: Vec<Blocks> = chunks.iter().map(|pos| seen(&alice, *pos)).collect();
     for ((pos, before), (after, placed)) in
         chunks.iter().zip(&before).zip(expected.iter().zip(&placed))
@@ -522,6 +540,14 @@ async fn a_change_reverted_after_a_save_stays_reverted_after_restart() {
         "on disk before the revert",
     );
 
+    // Alice breaks it from above, within reach, then goes back.
+    let home = alice.position();
+    let above = Vec3::new(
+        f64::from(placed.x) + 0.5,
+        f64::from(placed.y + 3),
+        f64::from(placed.z) + 0.5,
+    );
+    alice.move_to(above).await;
     alice
         .send(ServerboundPlayerAction {
             action: Action::StartDestroyBlock,
@@ -541,7 +567,8 @@ async fn a_change_reverted_after_a_save_stays_reverted_after_restart() {
             view.block_at(placed).is_some_and(|state| state.is_air())
         })
         .await;
-    alice.sync().await;
+    alice.move_to(home).await;
+    wait_for_chunks(&alice, &[chunk]).await;
     assert_same_chunk(chunk, &original, &seen(&alice, chunk), "after the revert");
     alice.assert_healthy();
     server.stop().await;
@@ -587,7 +614,7 @@ async fn a_later_session_writes_into_a_region_file_without_damaging_it() {
     wait_for_chunks(&alice, &[first, second]).await;
     assert_eq!(alice.block_at(early.pos), Some(early.state));
     let late = place_on_top(&alice, second, (8, 8), EMERALD, 1).await;
-    alice.sync().await;
+    wait_for_chunks(&alice, &[first, second]).await;
     let expected = [seen(&alice, first), seen(&alice, second)];
     alice.assert_healthy();
     server.stop().await;

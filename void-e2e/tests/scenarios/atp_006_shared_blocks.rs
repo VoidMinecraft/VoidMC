@@ -269,8 +269,17 @@ async fn blocks_are_placed_against_the_clicked_face() {
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
 
-    // A pillar three blocks above the ground, built by clicking top faces.
-    let base = ground(&bob);
+    // A pillar three blocks above a stone two blocks east of Bob (a block
+    // cannot go where he stands), built by clicking top faces.
+    let base = ground(&bob).east(2);
+    let mut cleared = vec![(base, state_of(BlockKind::Stone, &[]))];
+    cleared.extend(
+        cuboid(base.up(1).west(1).north(1), base.up(5).east(1).south(1))
+            .into_iter()
+            .map(|pos| (pos, 0)),
+    );
+    build(&server, &cleared).await;
+    settle(&[&alice, &bob]).await;
     let mut seq = 1;
     hold(&bob, HOTBAR_START, Some(ItemKind::Stone)).await;
     for height in 0..3 {
@@ -354,8 +363,15 @@ async fn a_block_held_in_the_off_hand_is_placed_when_the_main_hand_is_empty() {
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
 
-    let base = ground(&bob);
+    // A stone two blocks east of Bob, to place on.
+    let base = ground(&bob).east(2);
     let target = base.up(1);
+    build(
+        &server,
+        &[(base, state_of(BlockKind::Stone, &[])), (target, 0)],
+    )
+    .await;
+    settle(&[&alice, &bob]).await;
     assert!(bob.block_at(target).is_some_and(|state| state.is_air()));
 
     // Like the vanilla client: the main hand passes, then the off hand is tried.
@@ -388,10 +404,19 @@ async fn a_click_with_no_block_in_hand_leaves_the_neighbouring_block() {
 
     // Two clicked blocks whose neighbour across the top face is not air: a
     // stone (as a lagging client view sees it) and short grass (which a
-    // vanilla client lets the player click through).
-    let base = ground(&bob);
+    // vanilla client lets the player click through). Both are two blocks
+    // from Bob: a block cannot go where he stands.
+    let below_bob = ground(&bob);
+    let base = below_bob.west(2);
+    build(
+        &server,
+        &[(base, state_of(BlockKind::Stone, &[])), (base.up(1), 0)],
+    )
+    .await;
     let other = bob
-        .view(|view| view.ground_below(BlockPos::new(base.x + 2, base.y + 8, base.z)))
+        .view(|view| {
+            view.ground_below(BlockPos::new(below_bob.x + 2, below_bob.y + 8, below_bob.z))
+        })
         .expect("Bob holds the chunk next to him");
     let mut seq = 1;
     for (clicked, item) in [(base, ItemKind::Stone), (other, ItemKind::ShortGrass)] {
@@ -474,8 +499,11 @@ async fn interleaved_changes_by_two_players_converge() {
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
 
+    // The ground on both sides of the players (a block cannot go where they
+    // stand).
     let centre = feet(&alice);
-    let columns: Vec<BlockPos> = (-3..=3)
+    let columns: Vec<BlockPos> = [-3, -2, -1, 1, 2, 3]
+        .into_iter()
         .map(|dx| {
             alice
                 .view(|view| {
@@ -490,8 +518,11 @@ async fn interleaved_changes_by_two_players_converge() {
     bob.sync().await;
 
     // Both players change the same blocks without waiting for each other:
-    // Alice breaks each ground block and puts planks on top of it, Bob refills
-    // it with stone, before Alice on even columns and after her on odd ones.
+    // Alice breaks each ground block and clicks its top with planks, Bob
+    // clicks the block below with stone, before Alice on even columns and
+    // after her on odd ones. A click whose target is already filled is
+    // refused, so the planks end up in the hole, or on Bob's stone when it
+    // filled the hole first.
     for (index, ground) in columns.iter().enumerate() {
         let (alice_seq, bob_seq) = (100 + 2 * index as u32, 200 + index as u32);
         if index % 2 == 0 {
@@ -511,18 +542,16 @@ async fn interleaved_changes_by_two_players_converge() {
     settle(&[&alice, &bob]).await;
     for ground in &columns {
         let state = kind(alice.block_at(*ground));
+        let above = kind(alice.block_at(ground.up(1)));
         assert!(
-            matches!(state, Some(BlockKind::Air | BlockKind::Stone)),
-            "{ground:?} is air or Bob's stone, not {state:?}"
-        );
-        assert_eq!(
-            kind(alice.block_at(ground.up(1))),
-            Some(BlockKind::OakPlanks),
-            "Alice's planks stand on {ground:?}"
+            state == Some(BlockKind::OakPlanks)
+                || state == Some(BlockKind::Stone) && above == Some(BlockKind::OakPlanks),
+            "{ground:?} holds Alice's planks, or Bob's stone under them, not {state:?} under {above:?}"
         );
     }
 
-    // Then both clear the columns at once: Alice her planks, Bob the ground.
+    // Then both clear the columns at once: Alice the block above the ground,
+    // Bob the ground.
     let alice_turn = async {
         for (index, ground) in columns.iter().enumerate() {
             break_block(&alice, ground.up(1), 300 + index as u32).await;
@@ -767,10 +796,13 @@ async fn invalid_interactions_leave_the_server_up_and_the_world_consistent() {
             .is_some_and(|state| state.is_air())
     );
 
-    // Interactions a vanilla server would refuse, but which the world may
-    // accept as long as every player ends up with the same block: placing
-    // into an occupied block, with a cursor outside the block, and breaking
-    // far out of reach.
+    // Interactions a vanilla server refuses, which change nothing and leave
+    // every player with the real blocks: placing into an occupied block,
+    // into the block the player stands in (with a cursor outside the block),
+    // and breaking far out of reach.
+    let mut checked = cuboid(base.down(1), base.up(1));
+    checked.push(reach);
+    let before = server_blocks(&server, checked.clone()).await;
     hold(&alice, HOTBAR_START, Some(ItemKind::Glass)).await;
     let occupied = 900;
     place(&alice, base.down(1), Direction::Up, occupied).await;
@@ -798,13 +830,22 @@ async fn invalid_interactions_leave_the_server_up_and_the_world_consistent() {
         expect_ack(&alice, s).await;
     }
     settle(&[&alice, &bob]).await;
-    let mut checked = cuboid(base.down(1), base.up(1));
-    checked.push(reach);
+    assert_eq!(
+        server_blocks(&server, checked.clone()).await,
+        before,
+        "refused interactions change nothing"
+    );
     assert_converged(&server, &[&alice, &bob], &checked).await;
 
     // The server still applies and shares valid changes.
-    let valid = base.up(2);
-    place(&alice, base.up(1), Direction::Up, 1000).await;
+    let side = base.east(2);
+    build(
+        &server,
+        &[(side, state_of(BlockKind::Stone, &[])), (side.up(1), 0)],
+    )
+    .await;
+    let valid = side.up(1);
+    place(&alice, side, Direction::Up, 1000).await;
     expect_ack(&alice, 1000).await;
     bob.wait_until("a valid placement after the invalid ones", |view| {
         kind(view.block_at(valid)) == Some(BlockKind::Glass)
@@ -880,7 +921,15 @@ async fn a_placement_bringing_a_section_past_256_states_keeps_every_block() {
     // Alice puts stone on the granite: the section's 257th state. Stone, not
     // a block with a higher id: Azalea grows a palette past 8 bits to 9-bit
     // global ids on a block update, so it panics on any id from 512 up.
+    // Alice first moves under the section, within reach of the granite.
     let target = base.up(1);
+    alice
+        .move_to(Vec3::new(
+            f64::from(base.x) + 2.5,
+            f64::from(base.y - 2),
+            f64::from(base.z) + 0.5,
+        ))
+        .await;
     hold(&alice, HOTBAR_START, Some(ItemKind::Stone)).await;
     place(&alice, base, Direction::Up, 1).await;
     expect_ack(&alice, 1).await;

@@ -216,6 +216,78 @@ impl ItemBehavior for DirtToBedrock {
 // reg.register_for("minecraft:dirt", DirtToBedrock);
 ```
 
+`place_block` puts the given state across the clicked face whatever is there:
+it replaces any block, ignores the entities in the way and uses up nothing.
+None of the checks of the default placement below apply to it, except the
+reach check, which runs before any behaviour.
+
+## The default placement
+
+When the item's behaviour and the clicked block's interaction both pass, a
+block item places its block the way a vanilla server does.
+
+- **Where.** Into the clicked block when that block is replaceable, else across
+  the clicked face, and only if the block there is replaceable. Replaceable
+  blocks are the ones of vanilla's `#minecraft:replaceable` tag (air, water,
+  lava, short and tall grass, ferns, bushes, seagrass, fire, vines, glow
+  lichen, light, ...), plus snow of a single layer, sculk veins and resin
+  clumps; a block never replaces another block of its own item. A slab
+  completes a slab of the same kind into a double slab, clicked on its empty
+  half or from the neighbouring block. Adding to other blocks of the same item
+  (snow layers, vines, candles, sea pickles, ...) is not done: they count as
+  occupied.
+- **Entities.** A block whose collision box would intersect a player (the
+  placing one included) or another entity that blocks building (mobs, armor
+  stands, boats, minecarts, primed TNT, falling blocks, end crystals) is
+  refused. Items, experience orbs and projectiles do not stop it, nor do any
+  entities for a block without a collision box (a lever, a torch).
+- **Orientation.** The block's state follows the clicked face, the cursor on
+  it and the player's rotation, for these property families:
+
+  | Family | Blocks | Rule |
+  |---|---|---|
+  | `axis` | logs, wood, stems, other pillars, hay, chains, infested deepslate, creaking heart | the axis of the clicked face |
+  | `facing`, toward the player | furnace, smoker, blast furnace, carved pumpkin, jack o'lantern, glazed terracotta, loom, stonecutter, beehive, bee nest, chiseled bookshelf, lectern, end portal frame, ender chest, shelves, copper golem statues, dried ghast, repeater, comparator | opposite the player's horizontal facing |
+  | `facing`, with the player | campfires, decorated pot, calibrated sculk sensor, fence gates | the player's horizontal facing (anvils: turned clockwise) |
+  | `facing`, six ways | dispenser, dropper, piston, sticky piston, barrel; observer | back along the player's look, up and down included; the observer along it |
+  | `facing`, clicked face | shulker boxes, lightning rods, end rod, amethyst buds and clusters; hopper | away from the clicked block (an end rod against an end rod pointing at it points back); a hopper into it, or down |
+  | `facing`, on a wall | ladder, tripwire hook | against the wall clicked, else the first wall around in the player's look order |
+  | `face` and `facing` | lever, buttons, grindstone | on the floor, a wall or the ceiling: the clicked block, else the first sturdy neighbour in the player's look order; facing the player's way on a floor or ceiling, away from the wall on one |
+  | `half` | stairs, trapdoors | stairs face the player's way, upside down when placed under a block or on the upper half of a side; a trapdoor clicked on a side hinges there, in the half clicked, else faces the player, on top when placed under a block |
+  | slab `type` | slabs | bottom on a top face or the lower half of a side, top on a bottom face or the upper half, double when a second one is added |
+
+  Attached blocks (levers, buttons, ladders, tripwire hooks, amethyst) need a
+  full face to hang on, as in vanilla; one with none is refused. A full face
+  is read from the block's collision shape (leaves have none, mud and soul
+  sand count as full blocks).
+
+  Every other block, and every other property, keeps its default value:
+  waterlogging, shapes that depend on the neighbours (fences, walls, panes,
+  stair corners, redstone dust, double chests, a fence gate in a wall),
+  redstone power, two-block blocks (doors, beds, tall plants), signs,
+  banners and heads (`rotation`), bells, lanterns, the crafter and pointed
+  dripstone, and the wall variants of torches, signs, banners, heads and
+  coral fans.
+- **Items used.** On a server whose [`game_mode`](../server/configuration.md)
+  is not Creative, a placed block takes one item from the hand that was used,
+  the last one emptying the slot. The client predicts it, so the slot is not
+  sent back. A Creative server uses nothing.
+- **Refused placements.** The player is sent the real clicked block and the
+  block the placement would have filled, then the acknowledgement of its
+  click, which undoes what its client predicted; outside Creative its hand's
+  slot is sent again too. Nothing else changes and no `BlockPlaceEvent` fires.
+
+### Reach
+
+Every click on a block, to use an item on it as to break it, is first checked
+against the player's reach: the distance from its eyes (1.62 blocks above its
+feet, 1.27 crouching) to the nearest point of the block must be below its
+block interaction range (4.5, 5 in Creative) plus 1, as on a vanilla server.
+Out of reach, no event fires (`PlayerUseItemOnBlockEvent`, the digging
+events), no item behaviour or block interaction runs, and the player is sent
+the real blocks (the clicked one, and for a use the one across the clicked
+face) before the acknowledgement of its sequence.
+
 ## Blocks that react to a right-click
 
 A right-click on a block runs, in order: the held item's `ItemBehavior`, then

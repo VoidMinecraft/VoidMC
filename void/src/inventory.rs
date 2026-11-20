@@ -259,6 +259,14 @@ impl Inventory {
         self.dirty.slots |= 1 << index;
     }
 
+    /// Sets a slot to what its client already shows, having predicted the
+    /// change itself (a block it placed): the slot is not sent back.
+    pub(crate) fn set_predicted(&mut self, index: usize, stack: ItemStack) {
+        if let Some(slot) = self.slots.get_mut(index) {
+            *slot = stack;
+        }
+    }
+
     pub(crate) fn mark_cursor(&mut self) {
         self.dirty.cursor = true;
     }
