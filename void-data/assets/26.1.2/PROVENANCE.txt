@@ -65,6 +65,22 @@ Notes:
     `saddle` items carry it, slots a player never uses (the script fails
     otherwise). void-data/build.rs emits `item_equipment_slot()`; an item
     missing from registries.json fails the build.
+  - tags/block/replaceable.json (the `#minecraft:replaceable` block tag:
+    the blocks a placement may replace) is copied verbatim from
+    data/minecraft/tags/block/replaceable.json in the same Mojang 26.1.2
+    server jar (server jar sha1 97ccd4c0ed3f81bbb7bfacddd1090b0c56f9bc51, inner
+    versions/26.1.2/server-26.1.2.jar); `java -DbundlerMainClass=
+    net.minecraft.data.Main -jar server.jar --server` writes a byte-identical
+    file (checked 2026-11-20, Eclipse Temurin 25.0.5.1+2). The jar is not
+    obfuscated, so on that day the tag was also checked against the game
+    itself: loading the jar and asking every block of
+    `BuiltInRegistries.BLOCK` for `BlockState.canBeReplaced()` (the
+    `replaceable()` block property, what a placement tests) gives the same
+    29 blocks. Only this one block tag is shipped and it is not sent to
+    clients; void-data/build.rs emits `BlockType::replaceable` from it, and
+    a block missing from blocks.json or a `#tag` reference fails the build.
+  - `BlockType::kind` is the `definition.type` of each blocks.json entry
+    (the vanilla block class, e.g. `minecraft:stair`); no extra file.
   - Re-run scripts/extract.sh once prismarine publishes 26.1.2.
   - The `Minecraft version:` line must match the directory name and
     version.json's `id`.
