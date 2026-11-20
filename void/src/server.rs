@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flume::{Receiver, Sender};
@@ -108,7 +109,9 @@ impl Server {
             info!(listen_addr = %addr, "Server listening");
         }
 
-        let (ended_tx, ended_rx) = flume::unbounded::<u32>();
+        // A connection that ended, and whether it was written a disconnect
+        // packet first.
+        let (ended_tx, ended_rx) = flume::unbounded::<(u32, bool)>();
 
         loop {
             tokio::select! {
@@ -138,9 +141,11 @@ impl Server {
                             }
 
                             let (close_tx, close_rx) = flume::bounded(1);
+                            let disconnect_written = Arc::new(AtomicBool::new(false));
                             let task = tokio::spawn(
                                 Client::new(client_id, client, incoming_tx, outgoing_rx, server_status)
                                     .with_close_signal(close_rx)
+                                    .with_disconnect_flag(disconnect_written.clone())
                                     .run(),
                             );
                             self.connections.insert(
@@ -161,7 +166,8 @@ impl Server {
                                         info!(client_ip = %client_ip, "Client connection aborted");
                                     }
                                 }
-                                let _ = ended_tx.send(client_id);
+                                let told_to_leave = disconnect_written.load(Ordering::Relaxed);
+                                let _ = ended_tx.send((client_id, told_to_leave));
                             });
                         }
                         Err(e) => {
@@ -170,14 +176,20 @@ impl Server {
                     }
                 }
 
-                Ok(client_id) = ended_rx.recv_async() => {
+                Ok((client_id, told_to_leave)) = ended_rx.recv_async() => {
                     // A kick requested before the connection ended still
                     // counts: despawning a client entity asks for one, then
                     // drops the client's sender, which can end the task first.
                     while let Ok(kicked) = kick_rx.try_recv() {
                         self.kick(kicked);
                     }
-                    self.connections.remove(&client_id);
+                    // So does one requested after it: a kick queues the
+                    // disconnect packet, then asks to close, and the client
+                    // can read the packet and close first. The later request
+                    // then finds no connection and counts nothing.
+                    if self.connections.remove(&client_id).is_some() && told_to_leave {
+                        self.count_kick(client_id);
+                    }
                     let _ = disconnect_tx.send(client_id);
                 }
 
@@ -203,10 +215,14 @@ impl Server {
                 tokio::time::sleep(KICK_FLUSH_TIMEOUT).await;
                 abort.abort();
             });
-            info!(client_id = client_id, "Kicked client");
-            if let Some(telemetry) = &self.telemetry {
-                telemetry.client_kicked();
-            }
+            self.count_kick(client_id);
+        }
+    }
+
+    fn count_kick(&self, client_id: u32) {
+        info!(client_id = client_id, "Kicked client");
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.client_kicked();
         }
     }
 }
@@ -499,6 +515,69 @@ mod tests {
 
             // `Outbox::kick`, next statement: ask for the kick.
             kick_tx.send(connected.client_id).unwrap();
+            run_until_kicks_are_taken(&mut running, &kick_tx).await;
+        }
+
+        let text = telemetry.render_metrics(std::time::Instant::now());
+        let line = format!("voidmc_clients_kicked_total {CLIENTS}\n");
+        assert!(text.contains(&line), "missing {line:?} in\n{text}");
+    }
+
+    /// Without the stall, the kick request and the client closing on its
+    /// `Disconnect` race; whichever the loop sees first, the kick counts
+    /// once. A client that closes after other packets was not kicked.
+    #[tokio::test]
+    async fn a_kicked_client_closing_on_its_disconnect_counts_once() {
+        const CLIENTS: u32 = 16;
+        let telemetry = Arc::new(Telemetry::new(Duration::from_secs(1), 20, 100));
+        let mut server = Server::new("127.0.0.1:0")
+            .await
+            .unwrap()
+            .with_telemetry(Some(telemetry.clone()));
+        let address = server.socket.local_addr().unwrap();
+        let (incoming_tx, _incoming_rx) = flume::unbounded();
+        let (connected_tx, connected_rx) = flume::unbounded();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded();
+        let (kick_tx, kick_rx) = flume::unbounded();
+        let mut running =
+            std::pin::pin!(server.run(incoming_tx, connected_tx, disconnect_tx, kick_rx));
+
+        for round in 0..CLIENTS * 2 {
+            let mut peer = TcpStream::connect(address).await.unwrap();
+            let connected = tokio::select! {
+                () = &mut running => panic!("the server stopped"),
+                connected = connected_rx.recv_async() => connected.unwrap(),
+            };
+
+            if round % 2 == 0 {
+                let (disconnect, wire) = kick_disconnect();
+                connected.outgoing.try_send(disconnect).unwrap();
+                kick_tx.send(connected.client_id).unwrap();
+                let frame = tokio::time::timeout(Duration::from_secs(1), read_frame(&mut peer))
+                    .await
+                    .expect("the Disconnect reaches the client");
+                assert_eq!(frame, wire, "the Disconnect and its reason, intact");
+            } else {
+                let packet = voidmc_protocol::clientbound::StatusPacket::PingResponse(
+                    voidmc_protocol::clientbound::PingResponse { timestamp: 1 },
+                );
+                connected
+                    .outgoing
+                    .try_send(OutgoingPacket {
+                        client_id: connected.client_id,
+                        packet: packet.into(),
+                    })
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(1), read_frame(&mut peer))
+                    .await
+                    .expect("the packet reaches the client");
+            }
+            drop(peer);
+            let ended = tokio::select! {
+                () = &mut running => panic!("the server stopped"),
+                ended = disconnect_rx.recv_async() => ended.unwrap(),
+            };
+            assert_eq!(ended, connected.client_id);
             run_until_kicks_are_taken(&mut running, &kick_tx).await;
         }
 

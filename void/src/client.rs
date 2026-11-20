@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::network::{IncomingPacket, OutgoingPacket};
 use crate::server_status::ServerStatusSnapshot;
 use flume::{Receiver, Sender};
@@ -30,6 +33,7 @@ pub struct Client {
     server_status: Option<ServerStatusSnapshot>,
     status_fast_path: StatusFastPath,
     close: Option<Receiver<()>>,
+    disconnect_written: Arc<AtomicBool>,
 }
 
 impl Client {
@@ -54,6 +58,7 @@ impl Client {
             server_status,
             status_fast_path,
             close: None,
+            disconnect_written: Arc::default(),
         }
     }
 
@@ -62,6 +67,15 @@ impl Client {
     /// written and flushed, then [`Client::run`] returns.
     pub fn with_close_signal(mut self, close: Receiver<()>) -> Self {
         self.close = Some(close);
+        self
+    }
+
+    /// Sets `flag` once a disconnect packet (of the play, configuration or
+    /// login state) has been written to the client: the server told it to
+    /// leave, so the connection ending afterwards is a kick even when the
+    /// client closes it first.
+    pub fn with_disconnect_flag(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.disconnect_written = flag;
         self
     }
 
@@ -105,6 +119,7 @@ impl Client {
             &self.outgoing_rx,
             &status_rx,
             self.close.as_ref(),
+            &self.disconnect_written,
         );
 
         tokio::select! {
@@ -164,6 +179,7 @@ impl Client {
         outgoing_rx: &Receiver<OutgoingPacket>,
         status_rx: &Receiver<clientbound::StatusPacket>,
         close: Option<&Receiver<()>>,
+        disconnect_written: &AtomicBool,
     ) -> Result<(), SocketError> {
         let mut status_open = true;
         loop {
@@ -173,7 +189,8 @@ impl Client {
                     // Write what the game queued before it asked to close
                     // (a kick's Disconnect), then end the connection.
                     while let Ok(packet) = outgoing_rx.try_recv() {
-                        Self::write_outbound(writer, Outbound::Game(packet)).await?;
+                        Self::write_outbound(writer, Outbound::Game(packet), disconnect_written)
+                            .await?;
                     }
                     writer.flush().await?;
                     return Ok(());
@@ -183,7 +200,14 @@ impl Client {
                 return Ok(());
             };
 
-            let batch = Self::write_batch(writer, first, outgoing_rx, status_open, status_rx);
+            let batch = Self::write_batch(
+                writer,
+                first,
+                outgoing_rx,
+                status_open,
+                status_rx,
+                disconnect_written,
+            );
             if let Err(error) = batch.await {
                 let _ = writer.flush().await;
                 return Err(error);
@@ -230,14 +254,15 @@ impl Client {
         outgoing_rx: &Receiver<OutgoingPacket>,
         status_open: bool,
         status_rx: &Receiver<clientbound::StatusPacket>,
+        disconnect_written: &AtomicBool,
     ) -> Result<(), SocketError> {
-        Self::write_outbound(writer, first).await?;
+        Self::write_outbound(writer, first, disconnect_written).await?;
         while let Ok(packet) = outgoing_rx.try_recv() {
-            Self::write_outbound(writer, Outbound::Game(packet)).await?;
+            Self::write_outbound(writer, Outbound::Game(packet), disconnect_written).await?;
         }
         if status_open {
             while let Ok(packet) = status_rx.try_recv() {
-                Self::write_outbound(writer, Outbound::Status(packet)).await?;
+                Self::write_outbound(writer, Outbound::Status(packet), disconnect_written).await?;
             }
         }
         Ok(())
@@ -246,7 +271,21 @@ impl Client {
     async fn write_outbound(
         writer: &mut ClientWriter,
         outbound: Outbound,
+        disconnect_written: &AtomicBool,
     ) -> Result<(), SocketError> {
+        let disconnect = matches!(
+            &outbound,
+            Outbound::Game(OutgoingPacket {
+                packet: clientbound::ClientboundPacket::Play(clientbound::PlayPacket::Disconnect(
+                    _
+                )) | clientbound::ClientboundPacket::Configuration(
+                    clientbound::ConfigurationPacket::ConfigurationDisconnect(_)
+                ) | clientbound::ClientboundPacket::Login(
+                    clientbound::LoginPacket::LoginDisconnect(_)
+                ),
+                ..
+            })
+        );
         match outbound {
             Outbound::Status(packet) => writer.send(&packet).await?,
             Outbound::Game(outgoing_packet) => match outgoing_packet.packet {
@@ -274,6 +313,9 @@ impl Client {
                 clientbound::ClientboundPacket::Play(packet) => writer.send(&packet).await?,
                 clientbound::ClientboundPacket::ManualPlay(packet) => writer.send(&packet).await?,
             },
+        }
+        if disconnect {
+            disconnect_written.store(true, Ordering::Relaxed);
         }
         Ok(())
     }
