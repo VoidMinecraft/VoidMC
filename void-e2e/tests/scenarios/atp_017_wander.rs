@@ -5,6 +5,10 @@
 //! server holds every tick and check properties that hold for every draw: the
 //! documented speed and timer, the facing, the direction changes, and that
 //! every watching client replays the same path from the packets it received.
+//!
+//! The same walk is reached through the public `EntityBuilder::wander(true)`,
+//! a wanderer that keeps its heading is sent position-only moves, and one
+//! pressed against a wall on an axis-aligned heading is sent no more moves.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -13,16 +17,22 @@ use bevy_ecs::prelude::*;
 use voidmc::components::{
     MinecraftEntityId, MovementConfig, Position, Rotation, SpawnedEntity, Velocity, Wander,
 };
+use voidmc::world::{DimensionId, set_block_state};
+use voidmc::{BlockPosition, EntityBuilder, EntityKind as VoidKind};
 use voidmc_e2e::core::position::Vec3;
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 use voidmc_e2e::registry::builtin::EntityKind;
 use voidmc_e2e::{Bot, TestServer};
+use voidmc_protocol::clientbound::chunk::blocks;
+
+use crate::feet;
 
 /// Walking speed `/summon --wander` gives the entity, in blocks per tick.
 const SPEED: f64 = 0.08;
 /// Ticks a heading lasts before `/summon --wander` draws a new one.
 const TIMER: std::ops::Range<i32> = 40..140;
-/// Direction changes each wanderer must make while it is watched.
+/// Direction changes each wanderer must make in the scenarios that watch it
+/// walk a whole random walk.
 const TURNS: usize = 4;
 /// One fixed-point unit of the relative move packets, in blocks.
 const UNIT: f64 = 1.0 / 4096.0;
@@ -87,23 +97,23 @@ fn turns(samples: &[Sample]) -> usize {
         .count()
 }
 
-/// Waits until every entity in `ids` changed direction [`TURNS`] times.
-async fn wait_for_turns(server: &TestServer, ids: &[i32]) {
+/// Waits until every entity in `ids` changed direction `count` times.
+async fn wait_for_turns(server: &TestServer, ids: &[i32], count: usize) {
     // A heading lasts at most `TIMER.end - 1` ticks, so this many are enough
     // for any draw.
-    let bound = (TURNS as u64 + 1) * TIMER.end as u64;
+    let bound = (count as u64 + 1) * TIMER.end as u64;
     let mut waited = 0;
     loop {
         let trace = trace(server).await;
         let done = ids
             .iter()
-            .all(|id| trace.get(id).is_some_and(|samples| turns(samples) >= TURNS));
+            .all(|id| trace.get(id).is_some_and(|samples| turns(samples) >= count));
         if done {
             return;
         }
         assert!(
             waited <= bound,
-            "no {TURNS} direction changes after {waited} ticks"
+            "no {count} direction changes after {waited} ticks"
         );
         server.wait_ticks(20).await;
         waited += 20;
@@ -260,6 +270,9 @@ struct Replay {
     reached: usize,
     /// Where the client last saw the entity, while it is visible.
     position: Option<Vec3>,
+    /// The trace index of every tick in which the client was sent a
+    /// rotation for the entity: a move-and-rotate, rotate or head packet.
+    rotations: Vec<usize>,
 }
 
 /// Replays every packet `bot` received about the entity `id` like a vanilla
@@ -333,6 +346,7 @@ fn replay(bot: &Bot, id: i32, samples: &[Sample]) -> Replay {
                 );
                 if let Some(byte) = byte {
                     yaw = byte_steps(byte);
+                    replay.rotations.push(index);
                 }
                 // The step direction is off by at most atan(1.5 / 327) from
                 // the true heading (0.19 steps), the byte by half a step.
@@ -359,8 +373,12 @@ fn replay(bot: &Bot, id: i32, samples: &[Sample]) -> Replay {
                 replay.moves += 1;
                 replay.reached = index;
             }
-            Seen::Turn { yaw: byte } => yaw = byte_steps(byte),
+            Seen::Turn { yaw: byte } => {
+                yaw = byte_steps(byte);
+                replay.rotations.push(index);
+            }
             Seen::Head { yaw: byte } => {
+                replay.rotations.push(index);
                 assert!(replay.position.is_some(), "{who}: head turned while hidden");
                 assert!(
                     step_distance(byte_steps(byte), yaw) <= 0.51,
@@ -422,7 +440,7 @@ async fn wandering_pig_walks_a_random_walk_that_watchers_follow() {
     pigs(&bob, 3).await;
 
     // Step 2: watch until both wanderers have changed direction a few times.
-    wait_for_turns(&server, &[long, short]).await;
+    wait_for_turns(&server, &[long, short], TURNS).await;
     alice.sync().await;
     bob.sync().await;
     let trace = trace(&server).await;
@@ -559,6 +577,243 @@ async fn many_wanderers_walk_unwatched_and_in_unloaded_chunks_without_errors() {
     let seen = replay(&alice, far, &trace[&far]);
     assert_eq!((seen.adds, seen.removes), (1, 1), "far pig");
     assert!(seen.moves > 0, "Alice never saw the far pig walk");
+
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn pig_built_with_wander_walks_the_summoned_random_walk() {
+    let server = traced_server().await;
+    let alice = server.join("Alice").await;
+    let home = alice.position();
+
+    // Through the public builder API on the game thread, not `/summon`.
+    let id = server
+        .with_world(move |world| {
+            EntityBuilder::new(VoidKind::Pig)
+                .at(home.x, home.y, home.z)
+                .wander(true)
+                .spawn_in(world)
+                .get::<MinecraftEntityId>()
+                .expect("a spawned entity has a network id")
+                .0
+        })
+        .await;
+    assert!(pigs(&alice, 1).await.contains(&id));
+
+    // Alice sees it walk away from where it appeared.
+    let appeared = alice.view(|view| view.entities[&id].position);
+    alice
+        .wait_until("the built pig walk a block", |view| {
+            view.entities
+                .get(&id)
+                .is_some_and(|pig| pig.position.distance_to(appeared) >= 1.0)
+        })
+        .await;
+
+    // It walks the walk `/summon --wander` gives: its speed and timer, facing
+    // where it goes, and a new heading when the timer runs out.
+    wait_for_turns(&server, &[id], 1).await;
+    alice.sync().await;
+    let samples = &trace(&server).await[&id];
+    let headings = check_walk(id, samples);
+    assert!(headings.len() > 1, "headings {headings:?}");
+    let seen = replay(&alice, id, samples);
+    assert_eq!((seen.adds, seen.removes), (1, 0));
+    assert!(seen.moves > 0, "Alice never saw the built pig walk");
+    let shown = alice.view(|view| view.entities.get(&id).map(|entity| entity.position));
+    assert_eq!(shown, seen.position, "client view");
+
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn wanderer_keeping_its_heading_is_sent_moves_without_rotation() {
+    let server = traced_server().await;
+    let alice = server.join("Alice").await;
+    let mut known = HashSet::new();
+    let ids = [
+        summon(&alice, "summon minecraft:pig --wander", &mut known).await,
+        summon(&alice, "summon minecraft:pig --wander", &mut known).await,
+    ];
+
+    wait_for_turns(&server, &ids, 2).await;
+    alice.sync().await;
+    let trace = trace(&server).await;
+
+    for id in ids {
+        let samples = &trace[&id];
+        check_walk(id, samples);
+        let seen = replay(&alice, id, samples);
+        // The ticks in which the server turned the entity.
+        let turned: Vec<usize> = (1..samples.len())
+            .filter(|&index| samples[index].yaw != samples[index - 1].yaw)
+            .collect();
+        assert!(!turned.is_empty(), "entity {id} never turned");
+        for &index in &seen.rotations {
+            assert!(
+                turned.contains(&index),
+                "Alice was sent a rotation for entity {id} in tick {index}, which kept \
+                 the heading {} (it turned only in ticks {turned:?})",
+                samples[index].yaw
+            );
+        }
+        // Each turn Alice followed reached her as a move-and-rotate packet and
+        // a head rotation.
+        for &index in turned.iter().filter(|&&index| index <= seen.reached) {
+            let sent = seen.rotations.iter().filter(|&&r| r == index).count();
+            assert_eq!(
+                sent, 2,
+                "entity {id}: rotations sent for its turn in tick {index}"
+            );
+        }
+    }
+
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// Wander headings along the axes, in `wander_system`'s convention (0 walks
+/// south, +z; 90 east, +x), with the axis each walks along (0 for x, 2 for
+/// z) and its direction on it.
+const CARDINALS: [(f32, usize, f64); 4] = [
+    (0.0, 2, 1.0),
+    (90.0, 0, 1.0),
+    (180.0, 2, -1.0),
+    (270.0, 0, -1.0),
+];
+/// Half the width of a pig's collision box.
+const PIG_HALF_WIDTH: f64 = 0.45;
+/// Blocks from the pigs' start block to the wall around it.
+const RING: i32 = 3;
+
+#[tokio::test]
+async fn wanderer_pressed_against_a_wall_on_an_axis_is_sent_no_more_moves() {
+    let server = traced_server().await;
+    let alice = server.join("Alice").await;
+    let feet = feet(&alice);
+    let (x, y, z) = (feet.x, feet.y + 12, feet.z);
+
+    // A ring wall in the air around the block (x, y, z), two blocks high so a
+    // pig cannot step onto it.
+    let placed = server
+        .with_world(move |world| {
+            let mut placed = 0;
+            for dx in -RING..=RING {
+                for dz in -RING..=RING {
+                    if dx.abs() < RING && dz.abs() < RING {
+                        continue;
+                    }
+                    for dy in 0..2 {
+                        let position = BlockPosition {
+                            x: x + dx,
+                            y: (y + dy) as i16,
+                            z: z + dz,
+                        };
+                        let old = set_block_state(
+                            world,
+                            DimensionId::Overworld,
+                            position,
+                            blocks::STONE,
+                            None,
+                        );
+                        placed += usize::from(old.is_some());
+                    }
+                }
+            }
+            placed
+        })
+        .await;
+    assert_eq!(
+        placed,
+        16 * RING as usize,
+        "the wall was built in empty air"
+    );
+
+    // One pig per axis-aligned heading, built through the public API with
+    // block checks and no gravity. The staged `Wander` points each one at its
+    // wall for good, with the server's speed.
+    let start = [f64::from(x) + 0.5, f64::from(y), f64::from(z) + 0.5];
+    let ids: Vec<i32> = server
+        .with_world(move |world| {
+            CARDINALS
+                .iter()
+                .map(|&(yaw, ..)| {
+                    EntityBuilder::new(VoidKind::Pig)
+                        .at(start[0], start[1], start[2])
+                        .block_collision(true)
+                        .wander(true)
+                        .with(Wander {
+                            ticks: i32::MAX,
+                            speed: SPEED,
+                            yaw,
+                        })
+                        .spawn_in(world)
+                        .get::<MinecraftEntityId>()
+                        .expect("a spawned entity has a network id")
+                        .0
+                })
+                .collect()
+        })
+        .await;
+
+    // Each pig ends with its box against the wall's face, less than one step
+    // short of it, without drifting along the wall.
+    let reach = f64::from(RING) - 0.5 - PIG_HALF_WIDTH;
+    let pressed = move |position: Vec3, axis: usize, sign: f64| {
+        let position = [position.x, position.y, position.z];
+        let across = 2 - axis;
+        let gap = (start[axis] + sign * reach - position[axis]) * sign;
+        (-UNIT..SPEED + UNIT).contains(&gap)
+            && (position[across] - start[across]).abs() <= UNIT
+            && (position[1] - start[1]).abs() <= UNIT
+    };
+    let watched = ids.clone();
+    alice
+        .wait_until("every pig pressed against the wall", move |view| {
+            watched.iter().zip(CARDINALS).all(|(id, (_, axis, sign))| {
+                view.entities
+                    .get(id)
+                    .is_some_and(|pig| pressed(pig.position, axis, sign))
+            })
+        })
+        .await;
+
+    // From then on a pressed pig does not move: no move or rotation packet
+    // reaches Alice for it. Motion packets are not counted: they carry the
+    // velocity, not a move.
+    server.wait_ticks(5).await;
+    alice.sync().await;
+    alice.clear();
+    server.wait_ticks(40).await;
+    alice.sync().await;
+    let mut moving = Vec::new();
+    for (id, (yaw, axis, sign)) in ids.iter().zip(CARDINALS) {
+        let moves: Vec<Seen> = seen_packets(&alice, *id)
+            .into_iter()
+            .filter(|seen| !matches!(seen, Seen::Motion { .. }))
+            .collect();
+        if !moves.is_empty() {
+            moving.push(format!(
+                "heading {yaw}: {} packets, first ones {:?}",
+                moves.len(),
+                &moves[..moves.len().min(2)]
+            ));
+        }
+        let shown = alice.view(|view| view.entities[id].position);
+        assert!(
+            pressed(shown, axis, sign),
+            "heading {yaw}: Alice shows the pig at {shown:?}"
+        );
+    }
+    assert!(
+        moving.is_empty(),
+        "Alice was sent move or rotation packets in 40 ticks for pigs pressed \
+         against the wall:\n{}",
+        moving.join("\n")
+    );
 
     alice.assert_healthy();
     server.stop().await;

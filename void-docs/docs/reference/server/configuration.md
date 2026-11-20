@@ -35,7 +35,7 @@ let config = ServerConfigBuilder::new()
 |---|---|---|---|
 | `address` | `String` | `"127.0.0.1:25565"` | TCP bind address |
 | `tick_rate` | `u64` | `20` | Game ticks per second; must be at least `1` (`0` is read as `1`). Not announced to clients, which assume 20 |
-| `max_players` | `i32` | `100` | Player count advertised in the server list and the Login packet; not enforced (see [Limits](#limits)) |
+| `max_players` | `i32` | `100` | Player count advertised in the server list and the Login packet, and enforced at login (see [Limits](#limits)) |
 | `view_distance` | `i32` | `10` | Maximum server-side view distance (in chunks) |
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
 | `game_mode` | `u8` | `1` (Creative) | Game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) every player joins in and whose rules the server applies; [`/gamemode`](../gameplay/commands.md#gamemode) only changes what a client shows |
@@ -67,10 +67,18 @@ The builder replaces values the server cannot run with and logs a warning: a
 `tick_rate` of `0` becomes `1`, and a negative `view_distance` or
 `simulation_distance` becomes `0`. Every other value is used as given.
 
-The configuration sets targets, not guarantees of capacity or performance:
+The configuration sets targets, not guarantees of performance:
 
-- `max_players` is only advertised. VoidMC does not refuse a login when that
-  many players are online; an application that needs a cap must enforce it.
+- `max_players` caps the connections past login. Every connection the server
+  has let through login holds a slot until it disconnects, whether it is still
+  in the configuration state, in play but not yet ready, or playing. Once
+  `max_players` slots are held, the next login is refused in the login state
+  with vanilla's "The server is full!" (`multiplayer.disconnect.server_full`),
+  and the connection is closed. Logins handled in the same tick are counted one
+  after another, so two of them cannot both take the last slot. Like vanilla,
+  there is no bypass for operators, and `0` (or a negative value) refuses every
+  login. The server list and the Login packet still show `max_players`, and the
+  server list's online count still counts ready players only.
 - `tick_rate` is the fastest rate the game loop runs at. A tick that takes
   longer than `1 / tick_rate` delays the next one, and missed ticks are not
   made up. Clients are not told the rate (VoidMC sends no Ticking State
