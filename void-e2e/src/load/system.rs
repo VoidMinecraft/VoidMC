@@ -138,6 +138,29 @@ mod tests {
     }
 
     #[test]
+    fn server_threads_match_the_tokio_runtime_workers() {
+        // Built as the server builds its network runtime: default thread
+        // names, which change between Tokio versions.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let worker = runtime
+            .block_on(
+                runtime.spawn(async { std::fs::read_to_string("/proc/thread-self/comm").unwrap() }),
+            )
+            .unwrap();
+        let worker = worker.trim_end();
+        assert!(
+            SERVER_THREADS
+                .iter()
+                .any(|prefix| worker.starts_with(prefix)),
+            "no prefix in {SERVER_THREADS:?} matches the Tokio worker thread {worker:?}"
+        );
+    }
+
+    #[test]
     fn one_pass_counts_the_calling_thread_in_the_total() {
         let own = std::fs::read_to_string("/proc/thread-self/comm").unwrap();
         let (own_ns, total_ns) = thread_and_threads_cpu_ns(&[own.trim_end()]).unwrap();
