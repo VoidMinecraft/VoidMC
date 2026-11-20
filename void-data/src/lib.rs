@@ -216,6 +216,58 @@ pub fn item_max_stack(version: Version, item_id: i32) -> u8 {
         .unwrap_or(64)
 }
 
+/// A vanilla equipment slot (`net.minecraft.world.entity.EquipmentSlot`).
+/// The variants are in the order of its ordinal, which Set Equipment sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EquipmentSlot {
+    MainHand,
+    OffHand,
+    Feet,
+    Legs,
+    Chest,
+    Head,
+    /// Animal armor, carpets and harnesses; never a player's.
+    Body,
+    /// Never a player's.
+    Saddle,
+}
+
+impl EquipmentSlot {
+    /// Every slot, in ordinal order.
+    pub const ALL: [EquipmentSlot; 8] = [
+        EquipmentSlot::MainHand,
+        EquipmentSlot::OffHand,
+        EquipmentSlot::Feet,
+        EquipmentSlot::Legs,
+        EquipmentSlot::Chest,
+        EquipmentSlot::Head,
+        EquipmentSlot::Body,
+        EquipmentSlot::Saddle,
+    ];
+
+    /// The vanilla ordinal (0 = main hand .. 7 = saddle).
+    pub fn ordinal(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_ordinal(ordinal: u8) -> Option<EquipmentSlot> {
+        Self::ALL.get(usize::from(ordinal)).copied()
+    }
+}
+
+/// Returns the slot of the item's default `minecraft:equippable` component,
+/// or `None` for an item without one (vanilla then treats it as a main-hand
+/// item).
+pub fn item_equipment_slot(version: Version, item_id: i32) -> Option<EquipmentSlot> {
+    let table = match version {
+        Version::V26_1_2 => v26_1_2::equipment::ITEM_EQUIPMENT_SLOTS,
+    };
+    table
+        .binary_search_by(|(id, _)| id.cmp(&item_id))
+        .ok()
+        .map(|i| table[i].1)
+}
+
 /// Returns entity types known by the versioned data to be excluded from
 /// Minecraft's `minecraft:summonable_entities` suggestion provider.
 pub fn non_summonable_entity_types(version: Version) -> &'static [&'static str] {
@@ -663,6 +715,35 @@ mod tests {
         // Ender pearls stack to 16.
         let pearl = item_id(Version::V26_1_2, "minecraft:ender_pearl").unwrap();
         assert_eq!(item_max_stack(Version::V26_1_2, pearl), 16);
+    }
+
+    #[test]
+    fn equippable_items_have_their_slot() {
+        let slot = |name: &str| {
+            item_equipment_slot(Version::V26_1_2, item_id(Version::V26_1_2, name).unwrap())
+        };
+        assert_eq!(slot("minecraft:diamond_helmet"), Some(EquipmentSlot::Head));
+        assert_eq!(slot("minecraft:carved_pumpkin"), Some(EquipmentSlot::Head));
+        assert_eq!(slot("minecraft:elytra"), Some(EquipmentSlot::Chest));
+        assert_eq!(
+            slot("minecraft:leather_leggings"),
+            Some(EquipmentSlot::Legs)
+        );
+        assert_eq!(slot("minecraft:netherite_boots"), Some(EquipmentSlot::Feet));
+        assert_eq!(slot("minecraft:shield"), Some(EquipmentSlot::OffHand));
+        assert_eq!(slot("minecraft:wolf_armor"), Some(EquipmentSlot::Body));
+        assert_eq!(slot("minecraft:saddle"), Some(EquipmentSlot::Saddle));
+        assert_eq!(slot("minecraft:diamond_sword"), None);
+        assert_eq!(slot("minecraft:stone"), None);
+
+        let table = v26_1_2::equipment::ITEM_EQUIPMENT_SLOTS;
+        assert_eq!(table.len(), 84);
+        assert!(table.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        for slot in EquipmentSlot::ALL {
+            assert_eq!(EquipmentSlot::from_ordinal(slot.ordinal()), Some(slot));
+        }
+        assert_eq!(EquipmentSlot::Head.ordinal(), 5);
+        assert_eq!(EquipmentSlot::from_ordinal(8), None);
     }
 
     #[test]

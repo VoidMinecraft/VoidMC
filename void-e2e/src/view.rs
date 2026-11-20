@@ -5,6 +5,7 @@ use azalea_block::BlockState;
 use azalea_core::position::{BlockPos, ChunkBlockPos, ChunkPos, Vec3};
 use azalea_core::registry_holder::RegistryHolder;
 use azalea_inventory::ItemStack;
+use azalea_inventory::components::EquipmentSlot;
 use azalea_protocol::common::movements::{PositionMoveRotation, RelativeMovements};
 use azalea_protocol::packets::game::ClientboundGamePacket;
 use azalea_registry::builtin::EntityKind;
@@ -34,6 +35,9 @@ pub struct ClientView {
     pub chunks: HashMap<ChunkPos, Chunk>,
     pub entities: HashMap<i32, SeenEntity>,
     pub players: HashMap<Uuid, String>,
+    /// What the other entities are shown holding and wearing, by entity id,
+    /// from Set Equipment. A slot never sent reads as empty.
+    pub equipment: HashMap<i32, HashMap<EquipmentSlot, ItemStack>>,
     pub inventory: Vec<ItemStack>,
     pub cursor: ItemStack,
     pub inventory_state_id: u32,
@@ -71,6 +75,15 @@ impl ClientView {
             .rev()
             .map(|y| BlockPos::new(pos.x, y, pos.z))
             .find(|pos| self.block_at(*pos).is_some_and(|state| !state.is_air()))
+    }
+
+    /// What entity `id` is shown holding or wearing in `slot`.
+    pub fn equipment_of(&self, id: i32, slot: EquipmentSlot) -> ItemStack {
+        self.equipment
+            .get(&id)
+            .and_then(|slots| slots.get(&slot))
+            .cloned()
+            .unwrap_or(ItemStack::Empty)
     }
 
     pub fn entity_by_uuid(&self, uuid: Uuid) -> Option<(i32, &SeenEntity)> {
@@ -151,6 +164,7 @@ impl ClientView {
             }
             ClientboundGamePacket::RemoveEntities(remove) => {
                 for id in &remove.entity_ids {
+                    self.equipment.remove(&id.0);
                     if self.entities.remove(&id.0).is_none() {
                         self.anomalies
                             .push(format!("removal of unknown entity {}", id.0));
@@ -174,6 +188,17 @@ impl ClientView {
                 self.move_entity(packet.id.0, |position| {
                     apply_movement(position, &packet.change, &packet.relative)
                 });
+            }
+            ClientboundGamePacket::SetEquipment(packet) => {
+                let id = packet.entity_id.0;
+                if !self.entities.contains_key(&id) {
+                    self.anomalies
+                        .push(format!("equipment of unknown entity {id}"));
+                }
+                let slots = self.equipment.entry(id).or_default();
+                for (slot, item) in &packet.slots.slots {
+                    slots.insert(*slot, item.clone());
+                }
             }
             ClientboundGamePacket::PlayerInfoUpdate(update) if update.actions.add_player => {
                 for entry in &update.entries {

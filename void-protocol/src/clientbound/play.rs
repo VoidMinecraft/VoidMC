@@ -34,6 +34,7 @@ mod set_cursor_item;
 mod set_display_objective;
 mod set_entity_data;
 mod set_entity_motion;
+mod set_equipment;
 mod set_head_rotation;
 mod set_held_slot;
 mod set_objective;
@@ -99,6 +100,7 @@ pub use set_cursor_item::*;
 pub use set_display_objective::*;
 pub use set_entity_data::*;
 pub use set_entity_motion::*;
+pub use set_equipment::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
 pub use set_objective::*;
@@ -218,6 +220,8 @@ pub enum PlayPacket {
     SetEntityData(SetEntityData),
     #[codec(packet_id = 0x65)]
     SetEntityMotion(SetEntityMotion),
+    #[codec(packet_id = 0x66)]
+    SetEquipment(SetEquipment),
     #[codec(packet_id = 0x69)]
     SetHeldSlot(SetHeldSlot),
     #[codec(packet_id = 0x6A)]

@@ -9,17 +9,31 @@
 //! The crouch shares the shared-flags byte with glowing and invisibility:
 //! the last scenarios check that every update of that byte carries all of
 //! them, whichever one changed.
+//!
+//! What a player holds in each hand and wears is shown to the others (Set
+//! Equipment), changes as the player selects another hotbar slot, and is
+//! told to a player who joins later.
 
 use azalea_entity::{EntityDataValue, LookDirection, Pose};
 use bevy_ecs::world::EntityWorldMut;
-use voidmc::{Effect, EffectDuration, Glowing, Invisible, StatusEffects};
+use voidmc::{
+    Effect, EffectDuration, Glowing, Inventory, Invisible, ItemStack as ServerItemStack,
+    StatusEffects,
+};
 use voidmc_e2e::core::position::Vec3;
+use voidmc_e2e::inventory::components::EquipmentSlot::{
+    Chest, Feet, Head, Legs, Mainhand, Offhand,
+};
 use voidmc_e2e::protocol::common::movements::MoveFlags;
 use voidmc_e2e::protocol::packets::game::{
     ClientboundGamePacket, s_move_player_pos::ServerboundMovePlayerPos,
     s_move_player_rot::ServerboundMovePlayerRot, s_player_input::ServerboundPlayerInput,
+    s_set_carried_item::ServerboundSetCarriedItem,
 };
+use voidmc_e2e::registry::builtin::ItemKind;
 use voidmc_e2e::{Bot, TestServer};
+
+use crate::wait_for_equipment;
 
 /// Shared entity flags (byte) and pose metadata indices of every entity.
 const SHARED_FLAGS: u8 = 0;
@@ -555,5 +569,88 @@ async fn a_joining_player_sees_the_complete_flags_of_a_glowing_crouching_player(
 
     alice.assert_healthy();
     bob.assert_healthy();
+    server.stop().await;
+}
+
+/// Alice holds a sword and a shield and wears a full diamond armor set. Bob,
+/// already online, is shown all six slots, and the main hand follows the
+/// hotbar slot she selects; Carol, joining later, is told her current
+/// equipment. Nobody is told about empty equipment, and Alice is never sent
+/// her own.
+#[tokio::test]
+async fn others_see_what_a_player_holds_and_wears_and_a_late_joiner_is_told() {
+    use ItemKind::{
+        DiamondBoots, DiamondChestplate, DiamondHelmet, DiamondLeggings, DiamondSword, Shield,
+        Torch,
+    };
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let entity = server.player_entity(alice.uuid()).await;
+    server
+        .with_world(move |world| {
+            let mut inventory = world.get_mut::<Inventory>(entity).unwrap();
+            for (slot, name, count) in [
+                (Inventory::HOTBAR_START, "minecraft:diamond_sword", 1),
+                (Inventory::HOTBAR_START + 1, "minecraft:torch", 5),
+                (Inventory::OFFHAND, "minecraft:shield", 1),
+                (Inventory::ARMOR_HEAD, "minecraft:diamond_helmet", 1),
+                (Inventory::ARMOR_CHEST, "minecraft:diamond_chestplate", 1),
+                (Inventory::ARMOR_LEGS, "minecraft:diamond_leggings", 1),
+                (Inventory::ARMOR_FEET, "minecraft:diamond_boots", 1),
+            ] {
+                inventory.set(slot, ServerItemStack::of(name, count).unwrap());
+            }
+        })
+        .await;
+    let worn = [
+        (Offhand, Shield, 1),
+        (Feet, DiamondBoots, 1),
+        (Legs, DiamondLeggings, 1),
+        (Chest, DiamondChestplate, 1),
+        (Head, DiamondHelmet, 1),
+    ];
+    let holding = |hand: Option<(ItemKind, i32)>| {
+        let mut all: Vec<_> = hand
+            .map(|(kind, count)| (Mainhand, kind, count))
+            .into_iter()
+            .collect();
+        all.extend(worn);
+        all
+    };
+    wait_for_equipment(&bob, &alice, &holding(Some((DiamondSword, 1)))).await;
+
+    // The main hand is the selected hotbar slot, empty or not.
+    alice.send(ServerboundSetCarriedItem { slot: 1 }).await;
+    wait_for_equipment(&bob, &alice, &holding(Some((Torch, 5)))).await;
+    alice.send(ServerboundSetCarriedItem { slot: 2 }).await;
+    wait_for_equipment(&bob, &alice, &holding(None)).await;
+    alice.send(ServerboundSetCarriedItem { slot: 1 }).await;
+    wait_for_equipment(&bob, &alice, &holding(Some((Torch, 5)))).await;
+
+    let carol = server.join("Carol").await;
+    wait_for_equipment(&carol, &alice, &holding(Some((Torch, 5)))).await;
+    for bot in [&alice, &bob, &carol] {
+        bot.sync().await;
+    }
+    for (viewer, empty) in [
+        (&carol, &bob),
+        (&alice, &bob),
+        (&alice, &carol),
+        (&bob, &carol),
+    ] {
+        assert!(
+            viewer.view(|view| !view.equipment.contains_key(&empty.entity_id())),
+            "{} was sent the empty equipment of {}",
+            viewer.name(),
+            empty.name()
+        );
+    }
+
+    // `assert_healthy` also fails on equipment sent about an entity the
+    // client does not know, such as itself.
+    alice.assert_healthy();
+    bob.assert_healthy();
+    carol.assert_healthy();
     server.stop().await;
 }
