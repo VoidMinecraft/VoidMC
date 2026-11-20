@@ -41,6 +41,13 @@ allocation bytes, remaining-byte fields, NBT bytes/depth, and general decode
 depth. Length conversions and fixed-length arithmetic are checked before any
 allocation or iteration.
 
+`max_string_bytes` bounds every string, since a field cannot declare its own
+limit. The protocol counts a string's limit in characters, at most 32767
+UTF-16 units, so the default is 98,301 bytes (3 bytes per unit, the most one
+takes in UTF-8, like vanilla): any string the protocol allows decodes, even
+one made of multibyte characters. A field with a lower limit, such as a chat
+message's 256 characters, checks it after decoding.
+
 `max_nbt_depth` is an `NbtDepth`: the number of compounds and lists that may
 nest below the root compound. Each compound or list adds one level, so the
 default of 64 accepts 64 nested levels and refuses the 65th with
@@ -164,6 +171,14 @@ pub enum PlayPacket {
 ```
 
 Encoding writes the `packet_id` as a VarI32, then the variant's payload. Decoding reads the VarI32 tag and dispatches to the matching variant.
+
+An unknown tag fails with `DecodeError::InvalidPacketId`, but so does an
+invalid value of a repr enum inside a known variant, so that error alone does
+not tell an unknown packet from a malformed one. The `Decode` derive therefore
+also implements `Tagged`, whose `variant_name(packet_id)` returns the name of
+the variant a tag decodes to, or `None` for a tag the enum does not know; the
+server uses it to decide what to do with a packet that fails to decode (see
+[networking](networking.md#undecodable-packets)).
 
 The `Encode` derive also emits `From<Inner> for Enum` for every variant. With
 `#[codec(tagged, wrap = ClientboundPacket::Play)]` it additionally emits

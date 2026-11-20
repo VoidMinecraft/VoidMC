@@ -40,6 +40,8 @@ use voidmc_e2e::protocol::packets::{ClientIntention, PROTOCOL_VERSION};
 use voidmc_e2e::{Bot, TestServer};
 use voidmc_protocol::clientbound::commands::{Parser, StringType};
 
+use crate::command_suggestion;
+
 const ASK_SERVER: &str = "minecraft:ask_server";
 
 /// The tree as a client holds it.
@@ -777,6 +779,32 @@ async fn hostile_and_flooding_requests_get_controlled_replies() {
     // The connection is intact and the next request is answered.
     let answers = ask_all(&alice, &[(2_000, "/greet Alice s")]).await;
     assert_eq!(answers[&2_000], (strings(&["sad"]), (13, 1)));
+
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// The protocol limits this text to 32500 characters, not bytes: a text of
+/// that many characters of three UTF-8 bytes each, almost 95 KiB, is answered
+/// like any other (#178).
+#[tokio::test]
+async fn a_long_multibyte_request_within_the_protocol_limit_is_answered() {
+    let server = TestServer::builder().command(greet_command).start().await;
+    let alice = server.join("Alice").await;
+
+    let partial = "語".repeat(32_500 - "/greet ".len());
+    let line = format!("/greet {partial}");
+    assert_eq!(utf16(&line), 32_500);
+    assert!(line.len() > 90 * 1024, "{} bytes", line.len());
+    alice.clear();
+    alice.send_raw(&command_suggestion(1, &line)).await;
+    alice.sync().await;
+    let answers = responses(&alice);
+    assert_eq!(answers.get(&1), Some(&(Vec::new(), (7, utf16(&partial)))));
+
+    // The connection is intact and the next request is answered.
+    let answers = ask_all(&alice, &[(2, "/greet Alice s")]).await;
+    assert_eq!(answers[&2], (strings(&["sad"]), (13, 1)));
 
     alice.assert_healthy();
     server.stop().await;
