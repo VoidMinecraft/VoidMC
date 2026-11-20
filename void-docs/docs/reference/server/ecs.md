@@ -88,7 +88,7 @@ to ready players by `systems::entities`.
 | `MovementConfig` | Feature flags | Enables wandering, gravity, and block collision checks |
 | `VerticalVelocity(f64)` | Vertical speed | Gravity state kept separately from protocol velocity |
 | `Grounded(bool)` | Contact state | Whether physics found support directly below the collision box |
-| `Wander` | Direction state | Optional demo random-walk behavior attached by `/summon --wander` |
+| `Wander` | Direction state | Optional demo random-walk behavior attached by `EntityBuilder::wander(true)` and `/summon --wander` |
 
 ### Chunk Entity Components
 
