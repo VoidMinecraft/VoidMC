@@ -116,3 +116,99 @@ pub fn default_registry_data() -> Vec<RegistryData> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use ussr_nbt::owned::Nbt;
+
+    use super::*;
+
+    const PAINTINGS: &str = "minecraft:painting_variant";
+
+    type Snapshot = Vec<(String, Vec<(String, Option<Nbt>)>)>;
+
+    fn snapshot(store: &RegistryDataStore) -> Snapshot {
+        store
+            .registries
+            .iter()
+            .map(|registry| {
+                let entries = registry
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.entry_id.clone(), entry.data.clone()))
+                    .collect();
+                (registry.registry_id.clone(), entries)
+            })
+            .collect()
+    }
+
+    /// A default store a client has already received, and what it held then.
+    fn sent_store() -> (RegistryDataStore, Snapshot) {
+        let store = RegistryDataStore::default();
+        store.mark_sent();
+        let sent = snapshot(&store);
+        (store, sent)
+    }
+
+    fn assert_unchanged(store: &RegistryDataStore, sent: &Snapshot) {
+        assert!(
+            snapshot(store) == *sent,
+            "the registries changed after a client received them"
+        );
+    }
+
+    #[test]
+    fn add_entry_is_refused_once_sent() {
+        let (mut store, sent) = sent_store();
+        store.add_entry(
+            PAINTINGS,
+            RegistryEntry {
+                entry_id: "test:late".into(),
+                data: None,
+            },
+        );
+        assert_unchanged(&store, &sent);
+    }
+
+    #[test]
+    fn remove_entry_is_refused_once_sent() {
+        let (mut store, sent) = sent_store();
+        store.remove_entry(PAINTINGS, "minecraft:alban");
+        assert_unchanged(&store, &sent);
+    }
+
+    #[test]
+    fn get_entry_mut_is_refused_once_sent() {
+        let (mut store, sent) = sent_store();
+        if let Some(entry) = store.get_entry_mut(PAINTINGS, "minecraft:alban") {
+            entry.data = None;
+        }
+        assert_unchanged(&store, &sent);
+    }
+
+    #[test]
+    fn add_registry_is_refused_once_sent() {
+        let (mut store, sent) = sent_store();
+        store.add_registry(RegistryData {
+            registry_id: "test:late".into(),
+            entries: Vec::new(),
+        });
+        assert_unchanged(&store, &sent);
+    }
+
+    #[test]
+    fn remove_registry_is_refused_once_sent() {
+        let (mut store, sent) = sent_store();
+        store.remove_registry(PAINTINGS);
+        assert_unchanged(&store, &sent);
+    }
+
+    #[test]
+    fn get_registry_mut_is_refused_once_sent() {
+        let (mut store, sent) = sent_store();
+        if let Some(registry) = store.get_registry_mut(PAINTINGS) {
+            registry.entries.clear();
+        }
+        assert_unchanged(&store, &sent);
+    }
+}
