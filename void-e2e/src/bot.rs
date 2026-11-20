@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use azalea_core::position::{BlockPos, Vec3};
 use azalea_core::registry_holder::RegistryHolder;
 use azalea_entity::LookDirection;
+use azalea_inventory::ItemStack;
+use azalea_inventory::operations::ClickType;
 use azalea_protocol::common::client_information::ClientInformation;
 use azalea_protocol::common::movements::MoveFlags;
 use azalea_protocol::common::tags::TagMap;
@@ -24,7 +26,7 @@ use azalea_protocol::packets::game::{
     s_chat_command::ServerboundChatCommand, s_keep_alive::ServerboundKeepAlive,
     s_move_player_pos::ServerboundMovePlayerPos,
     s_move_player_pos_rot::ServerboundMovePlayerPosRot, s_player_loaded::ServerboundPlayerLoaded,
-    s_pong::ServerboundPong,
+    s_pong::ServerboundPong, s_set_creative_mode_slot::ServerboundSetCreativeModeSlot,
 };
 use azalea_protocol::packets::handshake::s_intention::ServerboundIntention;
 use azalea_protocol::packets::login::{
@@ -41,6 +43,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::clicks::Click;
 use crate::server::BARRIER_BIT;
 use crate::timeout;
 use crate::view::ClientView;
@@ -427,6 +430,54 @@ impl Bot {
                 on_ground: true,
                 horizontal_collision: false,
             },
+        })
+        .await;
+    }
+
+    /// Clicks in the player inventory like a vanilla client: predicts the
+    /// result with vanilla's rules ([`crate::clicks`]) from what its view
+    /// shows, shows the prediction in the view at once, and sends the click
+    /// with the predicted slots and cursor and the last state id received.
+    /// The server corrects a wrong prediction; once [`Bot::sync`] returns,
+    /// the view shows what the player would see. Returns the click as sent.
+    pub async fn click(&self, slot: i16, button: u8, mode: ClickType) -> Click {
+        self.click_with(slot, button, mode, |_| {}).await
+    }
+
+    /// Like [`Bot::click`], but `forge` may change the click (its state id,
+    /// its predicted slots or cursor) before it is shown and sent, like a
+    /// client whose prediction is wrong; the view shows the forged
+    /// prediction.
+    pub async fn click_with(
+        &self,
+        slot: i16,
+        button: u8,
+        mode: ClickType,
+        forge: impl FnOnce(&mut Click),
+    ) -> Click {
+        let click = {
+            let mut inbox = self.lock();
+            let mut click = inbox.view.predict_click(slot, button, mode);
+            forge(&mut click);
+            inbox.view.show_prediction(&click);
+            click
+        };
+        self.shared.changed.notify_waiters();
+        self.send(click.packet()).await;
+        click
+    }
+
+    /// Sets a slot from the creative inventory like a vanilla client: shows
+    /// `item` in that slot of the view at once and sends Set Creative Mode
+    /// Slot. Slot `u16::MAX` (-1) throws `item` and shows nothing.
+    pub async fn set_creative_slot(&self, slot: u16, item: ItemStack) {
+        if let Some(shown) = self.lock().view.inventory.get_mut(usize::from(slot)) {
+            *shown = item.clone();
+        }
+        self.shared.changed.notify_waiters();
+        self.send(ServerboundSetCreativeModeSlot {
+            slot_num: slot,
+            item_stack: item,
         })
         .await;
     }
