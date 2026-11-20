@@ -15,6 +15,9 @@
 //! (inventories, cursors and item entities). The assertions therefore see
 //! every tick of a fall and of the pickup delay, and that no diamond is ever
 //! created or lost.
+//!
+//! Another player is shown the stack in the dropping player's hand change
+//! with each drop and pickup.
 
 use azalea_entity::{EntityDataValue, LookDirection};
 use bevy_app::PostUpdate;
@@ -29,6 +32,7 @@ use voidmc::world::{
 use voidmc::{BlockFace, BlockPosition, Inventory, ItemId, ItemStack as ServerItemStack};
 use voidmc_e2e::core::direction::Direction;
 use voidmc_e2e::core::position::{BlockPos, Vec3};
+use voidmc_e2e::inventory::components::EquipmentSlot::Mainhand;
 use voidmc_e2e::inventory::operations::ClickType;
 use voidmc_e2e::inventory::{ItemStack, ItemStackData};
 use voidmc_e2e::protocol::common::movements::MoveFlags;
@@ -43,7 +47,7 @@ use voidmc_e2e::registry::builtin::{EntityKind, ItemKind};
 use voidmc_e2e::{Bot, TestServer};
 use voidmc_protocol::clientbound::chunk::blocks;
 
-use crate::feet;
+use crate::{feet, wait_for_equipment};
 
 /// The documented pickup delay, in ticks.
 const PICKUP_DELAY: u64 = 40;
@@ -1132,6 +1136,42 @@ async fn thrown_items_never_clip_through_the_floor_or_a_wall() {
         assert_seen_at(bot, from_tower, tower_rest);
     }
     assert!(wall_trace.iter().all(|sample| sample.count == 1));
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// Bob is shown the stack in Alice's hand shrink with each drop, empty once
+/// she has thrown it all, and fill again when she picks the items back up.
+#[tokio::test]
+async fn others_see_the_held_stack_change_with_drops_and_pickups() {
+    let server = recorded_server().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let arena = build_arena(&server, &alice).await;
+    let thrower = arena.at(-2.5, 0.5);
+    place(&alice, thrower, EAST, 0.0).await;
+    place(&bob, arena.at(3.5, -6.5), 0.0, 0.0).await;
+    set_slot(&server, &alice, FIRST_HOTBAR_SLOT, DIAMOND, 5).await;
+    wait_for_equipment(&bob, &alice, &[(Mainhand, DIAMOND.kind, 5)]).await;
+
+    drop_key(&alice, false).await;
+    wait_for_equipment(&bob, &alice, &[(Mainhand, DIAMOND.kind, 4)]).await;
+    let one = expect_item(&alice, DIAMOND, 1).await.id;
+    drop_key(&alice, true).await;
+    wait_for_equipment(&bob, &alice, &[]).await;
+    let rest_of_stack = expect_item(&alice, DIAMOND, 4).await.id;
+
+    // Alice walks onto the items once they lie still and their pickup delay
+    // is over; they go back into her empty hand.
+    let first = rest(&server, one).await;
+    rest(&server, rest_of_stack).await;
+    let now = current_tick(&server).await;
+    wait_for_tick(&server, now + PICKUP_DELAY).await;
+    place(&alice, Vec3::new(first[0], first[1], first[2]), EAST, 0.0).await;
+    wait_for_equipment(&bob, &alice, &[(Mainhand, DIAMOND.kind, 5)]).await;
+    assert_eq!(holding(&server, &alice, DIAMOND).await, 5);
 
     alice.assert_healthy();
     bob.assert_healthy();

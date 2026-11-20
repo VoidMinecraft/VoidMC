@@ -3,6 +3,9 @@
 //! changed; `sync_containers` turns that into Set Container Slot / Content,
 //! Set Cursor Item and Set Held Slot once per tick. Clicks are applied
 //! server-side (or cancelled for read-only menus) and answered the same way.
+//! Other players are shown what each player holds and wears (`equipment`).
+
+mod equipment;
 
 use bevy_app::{App, Plugin, PostUpdate, Update};
 use bevy_ecs::lifecycle::Remove;
@@ -46,7 +49,10 @@ impl Plugin for InventoryPlugin {
             )
             .add_systems(
                 PostUpdate,
-                sync_containers.in_set(VoidSystems::InventorySync),
+                (
+                    sync_containers.in_set(VoidSystems::InventorySync),
+                    equipment::broadcast_equipment.in_set(VoidSystems::PlayerBroadcast),
+                ),
             );
     }
 }

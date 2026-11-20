@@ -65,14 +65,18 @@ is resent when the menu closes.
 
 Container clicks on window 0 are applied server-side with vanilla's rules. A
 stack's max size is its item's, or its `max_stack_size` component if it has
-one.
+one. An armor slot (5–8) only takes an item whose `equippable` component
+names that slot (the helmets, carved pumpkin and mob heads on the head, and
+so on; the per-item data comes from Mojang's item components report, see
+`void-data`), and holds one item; every click below follows that rule. The
+off-hand takes any item.
 
 | Click | Effect |
 |---|---|
 | Left / right click | Picks up the whole stack / half of it (rounded up); places the whole cursor / one item; merges into the same item up to its max stack size, the rest staying on the cursor; swaps with a different item |
 | Click outside the window (slot `-999`) | Drops the cursor stack (left) or one item of it (right) as an `ItemDropEvent` |
-| Shift-click | Hotbar to main inventory and back; crafting grid, armor and off-hand slots to the main inventory then the hotbar; the crafting output to the hotbar from the right, then the main inventory from the bottom. Partial stacks fill first, then empty slots; what does not fit stays |
-| Number key 1–9 / F | Swaps the hovered slot with that hotbar slot / the off-hand |
+| Shift-click | An item equippable in an empty armor slot goes there, and one equippable in the off-hand (a shield) to an empty off-hand, unless it comes from the crafting grid or an armor slot. Otherwise: hotbar to main inventory and back; crafting grid, armor and off-hand slots to the main inventory then the hotbar; the crafting output to the hotbar from the right, then the main inventory from the bottom. Partial stacks fill first, then empty slots; what does not fit stays. As in vanilla the move repeats while it moves something, so a stack of pumpkins puts one on an empty head and the rest moves on to the hotbar or main inventory |
+| Number key 1–9 / F | Swaps the hovered slot with that hotbar slot / the off-hand. A stack too large for the hovered armor slot leaves one item there; what the slot held goes back into the inventory (hotbar first), dropped if it does not fit |
 | Drag (left / right) | Spreads the cursor evenly over the dragged slots (the remainder stays on the cursor) / places one per slot. A slot holding another item is skipped, a slot named twice counts once, a drag never covers more slots than the cursor has items, and a packet out of order, an empty cursor or any other click cancels the drag |
 | Double-click | Fills the cursor with the same item from the whole window except the crafting output, partial stacks before full ones, in slot order (from the end with button 1), if the clicked slot is empty |
 | Drop key Q / Ctrl+Q over a slot | Drops one item / the whole stack, only with an empty cursor |
@@ -84,11 +88,10 @@ can be placed into the crafting output (slot 0), which only gives its whole
 stack. Closing the inventory returns the cursor stack and the crafting grid
 to the inventory, dropping what does not fit.
 
-Not supported: the server has no equipment data for items, so armor and the
-off-hand slots accept any item, and shift-clicking armor or a shield moves it
-like any other item instead of equipping it. Nothing is crafted in the
-crafting grid. A vanilla client predicts these differently and is corrected
-by the resync below.
+Not supported: nothing is crafted in the crafting grid, and only an item's
+default `equippable` component is known (a stack's own component is not
+read). A vanilla client predicts crafting differently and is corrected by the
+resync below.
 
 The client sends what it expects each slot it changed and its cursor to hold
 (hashed). As in vanilla, the server compares that prediction with its own
@@ -100,9 +103,23 @@ carrying a stale state id is answered with a full `SetContainerContent`.
 
 `SetCreativeModeSlot` is only honoured when the server's `game_mode` is
 creative, for slots 1–45 and stacks within their max size; otherwise the
-slot's true contents are resent. On a creative server a negative slot throws
-the stack, if it is within its max size ([Dropped items](#dropped-items)); on
-any other server it does nothing.
+slot's true contents are resent. As in vanilla, it ignores the armor-slot
+rule: a creative player can put any item on its head. On a creative server a
+negative slot throws the stack, if it is within its max size ([Dropped
+items](#dropped-items)); on any other server it does nothing.
+
+### Equipment seen by other players
+
+Other players are shown what a player holds and wears with Set Equipment:
+the selected hotbar slot as the main hand, the off-hand and the four armor
+slots. As in vanilla, the `PlayerBroadcast` phase in `PostUpdate` sends a
+slot to every other ready player (the players its entity is spawned for) when
+it changes, whatever changed it (selecting another hotbar slot, `/give`,
+`/clear`, clicks, creative slot sets, drops, pickups or the `Inventory` API),
+and every non-empty slot to a player who joins. A player is never sent its own
+equipment, and empty equipment is never sent to a joining player. Swapping
+hands with the F key outside the inventory screen is not handled by the
+server.
 
 ### Held slot and cooldowns
 

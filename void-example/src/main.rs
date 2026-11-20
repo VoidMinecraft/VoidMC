@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use bevy_app::Update;
+use bevy_app::{AppExit, Update};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_flame::{FlameLayer, FlushGuard};
 use tracing_subscriber::prelude::*;
@@ -88,11 +88,13 @@ impl MetricsEnv {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Returns the server's [`AppExit`] as the process exit code: 0 after `/stop`,
+/// 130 after Ctrl-C, SIGTERM or SIGHUP.
+fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
     let metrics_env = MetricsEnv::from_env();
     let _log_guards = setup_logging(&metrics_env)?;
 
-    VoidServer::new(server_config(&metrics_env, env_var))
+    let exit = VoidServer::new(server_config(&metrics_env, env_var))
         .add_plugin(|app| {
             // Persist modified chunks to ./world and reload them on restart.
             app.add_plugins(WorldPersistencePlugin::new(
@@ -186,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .run();
 
-    Ok(())
+    Ok(exit)
 }
 
 /// The configuration the example server runs with. `var` looks up the

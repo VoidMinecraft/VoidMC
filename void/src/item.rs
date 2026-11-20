@@ -5,7 +5,7 @@
 //! [`ItemStack::from_slot`] are the only points where the two representations
 //! cross; everything else in the server works with [`ItemStack`].
 
-use voidmc_data::Version;
+use voidmc_data::{EquipmentSlot, Version};
 use voidmc_protocol::slot::{DataComponent, Slot};
 
 /// The data version the server's item/registry tables are generated from.
@@ -104,6 +104,17 @@ impl ItemStack {
     /// Sets the item's durability damage (builder style).
     pub fn with_damage(self, damage: i32) -> Self {
         self.with_component(DataComponent::Damage(damage))
+    }
+
+    /// Where a player wears or holds this stack, as vanilla's
+    /// `LivingEntity.getEquipmentSlotForItem`: the slot of the item's
+    /// `equippable` component when a player can use it, else the main hand.
+    /// Only the item's default component is known.
+    pub(crate) fn equipment_slot(&self) -> EquipmentSlot {
+        match voidmc_data::item_equipment_slot(VERSION, self.item.0) {
+            Some(EquipmentSlot::Body | EquipmentSlot::Saddle) | None => EquipmentSlot::MainHand,
+            Some(slot) => slot,
+        }
     }
 
     /// Converts this stack to its protocol [`Slot`] wire form.

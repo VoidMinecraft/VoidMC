@@ -52,6 +52,19 @@ Notes:
     bytes vanilla sends. void-data/build.rs emits
     `EntityKind::is_living()` and `EntityKind::default_attribute()`; an entity
     or attribute missing from registries.json fails the build.
+  - equipment_slots.json (item -> slot of its default `minecraft:equippable`
+    component, for the 84 items that have one) is extracted from Mojang's
+    item components report (generated/reports/minecraft/components/item/
+    *.json) by scripts/extract_equipment_slots.py. The report was produced on
+    2026-11-19 by `java -DbundlerMainClass=net.minecraft.data.Main -jar
+    server.jar --reports` (Eclipse Temurin 25.0.5.1+2) on Mojang's 26.1.2
+    server jar, downloaded from piston-data.mojang.com through the 26.1.2
+    version manifest (server jar sha1 97ccd4c0ed3f81bbb7bfacddd1090b0c56f9bc51). The same run's
+    registries.json, blocks.json and packets.json are byte-identical to the
+    ones above. `allowed_entities` is dropped: in 26.1.2 only `body` and
+    `saddle` items carry it, slots a player never uses (the script fails
+    otherwise). void-data/build.rs emits `item_equipment_slot()`; an item
+    missing from registries.json fails the build.
   - Re-run scripts/extract.sh once prismarine publishes 26.1.2.
   - The `Minecraft version:` line must match the directory name and
     version.json's `id`.
