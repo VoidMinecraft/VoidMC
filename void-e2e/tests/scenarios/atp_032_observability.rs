@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bevy_app::Update;
@@ -11,9 +12,19 @@ use bevy_ecs::prelude::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use voidmc::components::KeepAliveState;
+use voidmc::network::PacketEvent;
 use voidmc::{ObservabilityAddress, ObservabilityConfig};
+use voidmc_e2e::protocol::common::client_information::{ChatVisibility, ClientInformation};
 use voidmc_e2e::protocol::packets::game::ServerboundPaddleBoat;
+use voidmc_e2e::protocol::packets::game::{
+    s_client_information::ServerboundClientInformation,
+    s_client_tick_end::ServerboundClientTickEnd, s_interact::InteractionHand,
+    s_player_abilities::ServerboundPlayerAbilities, s_swing::ServerboundSwing,
+};
 use voidmc_e2e::{TestServer, TestServerBuilder};
+use voidmc_protocol::serverbound;
+
+use crate::{DECODE_FAILURE, malformed_play_packets, var_int};
 
 /// Short, so that the stall scenario does not wait long, yet fifty ticks at
 /// 50 TPS, so that a busy CI machine does not look stalled.
@@ -730,6 +741,186 @@ async fn error_counters_count_errors_that_clients_cause() {
     assert_eq!(failures.len(), 1, "{failures:#?}");
     assert!(failures[0].contains("Unrecognized packet"), "{failures:#?}");
     drop(server);
+}
+
+/// Since #178 a known packet whose body does not decode disconnects its
+/// sender: it counts as a packet error and as a kick. A packet whose id
+/// VoidMC does not know is still only dropped: it counts as unrecognized and
+/// its sender stays.
+#[tokio::test]
+async fn malformed_packets_count_as_errors_and_kicks_unknown_ones_as_unrecognized() {
+    let server = observed().start().await;
+    let address = endpoint(&server).await;
+    let alice = server.join("Alice").await;
+    let mallory = server.join("Mallory").await;
+    let before = scrape_until(&server, address, "two players online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 2.0
+    })
+    .await;
+    assert_eq!(before.counter("voidmc_packet_errors_total"), 0.0);
+    assert_eq!(before.counter("voidmc_packets_unrecognized_total"), 0.0);
+    assert_eq!(before.counter("voidmc_clients_kicked_total"), 0.0);
+
+    // A Use Item On whose face is not one of the six.
+    let (_, invalid_face) = malformed_play_packets().swap_remove(0);
+    mallory.send_raw(&invalid_face).await;
+    let reason = mallory.expect_disconnect().await;
+    assert!(reason.starts_with(DECODE_FAILURE), "{reason}");
+    let kicked = scrape_until(&server, address, "Mallory kicked and gone", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") == 1.0
+            && scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    assert_eq!(kicked.counter("voidmc_packet_errors_total"), 1.0);
+    assert_eq!(kicked.counter("voidmc_packets_unrecognized_total"), 0.0);
+
+    // Ids no serverbound play packet has, one of them past a byte.
+    alice.send_raw(&[0x7f, 1, 2, 3]).await;
+    let mut beyond_a_byte = var_int(300);
+    beyond_a_byte.push(0);
+    alice.send_raw(&beyond_a_byte).await;
+    let unrecognized = scrape_until(&server, address, "the unknown packets counted", |scrape| {
+        scrape.counter("voidmc_packets_unrecognized_total") == 2.0
+    })
+    .await;
+    assert_eq!(unrecognized.counter("voidmc_packet_errors_total"), 1.0);
+    assert_eq!(unrecognized.counter("voidmc_clients_kicked_total"), 1.0);
+    assert_eq!(unrecognized.gauge("voidmc_players_online"), 1.0);
+    assert_eq!(unrecognized.connection_errors("decode"), 0.0);
+    assert_counters_never_decrease(&before, &kicked);
+    assert_counters_never_decrease(&kicked, &unrecognized);
+    alice.sync().await;
+    alice.assert_healthy();
+
+    // A malformed packet is the client's fault, not a server error: the
+    // only failures logged are the two unknown packets, so the server is
+    // dropped, not `stop`ped.
+    let failures: Vec<String> = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.is_failure())
+        .map(|record| record.to_string())
+        .collect();
+    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert!(
+        failures
+            .iter()
+            .all(|failure| failure.contains("Unrecognized packet")),
+        "{failures:#?}"
+    );
+    drop(server);
+}
+
+/// Since a known packet that does not decode disconnects its sender (#178),
+/// a decoder mistake for a packet a vanilla client sends routinely would
+/// kick every player. These are the known packets no other scenario sends:
+/// each is encoded by Azalea with values a vanilla client sends, reaches its
+/// handler, and counts as no error.
+#[tokio::test]
+async fn routine_vanilla_packets_reach_their_handlers_without_errors() {
+    let handled = Arc::new(Mutex::new(Vec::<String>::new()));
+    let record = handled.clone();
+    let server = observed()
+        .plugin(move |app| {
+            let log = record.clone();
+            app.add_observer(move |event: On<PacketEvent<serverbound::PluginMessage>>| {
+                log.lock().unwrap().push(format!(
+                    "plugin message {} {:?}",
+                    event.packet.channel, event.packet.data
+                ));
+            });
+            let log = record.clone();
+            app.add_observer(move |_: On<PacketEvent<serverbound::TickEnd>>| {
+                log.lock().unwrap().push("tick end".to_string());
+            });
+            let log = record.clone();
+            app.add_observer(
+                move |event: On<PacketEvent<serverbound::ClientInformation>>| {
+                    log.lock().unwrap().push(format!(
+                        "client information {} {:?}",
+                        event.packet.locale, event.packet.chat_mode
+                    ));
+                },
+            );
+            let log = record.clone();
+            app.add_observer(
+                move |event: On<PacketEvent<serverbound::PlayerAbilities>>| {
+                    log.lock()
+                        .unwrap()
+                        .push(format!("abilities {:#04x}", event.packet.flags));
+                },
+            );
+            let log = record.clone();
+            app.add_observer(move |event: On<PacketEvent<serverbound::SwingArm>>| {
+                log.lock()
+                    .unwrap()
+                    .push(format!("swing {:?}", event.packet.hand));
+            });
+        })
+        .start()
+        .await;
+    let address = endpoint(&server).await;
+
+    // Every bot sends its Client Information, then the `minecraft:brand`
+    // plugin message, during configuration.
+    let alice = server.join("Alice").await;
+    let joined = std::mem::take(&mut *handled.lock().unwrap());
+    assert_eq!(
+        joined,
+        [
+            "client information en_us Enabled",
+            "plugin message minecraft:brand [7, 118, 97, 110, 105, 108, 108, 97]",
+        ],
+        "the brand is the string `vanilla`"
+    );
+    let before = scrape(address).await;
+
+    alice.send(ServerboundClientTickEnd).await;
+    for (locale, chat_visibility) in [
+        ("en_gb", ChatVisibility::Full),
+        ("fr_fr", ChatVisibility::System),
+        ("de_de", ChatVisibility::Hidden),
+    ] {
+        alice
+            .send(ServerboundClientInformation {
+                client_information: ClientInformation {
+                    language: locale.to_string(),
+                    chat_visibility,
+                    ..ClientInformation::default()
+                },
+            })
+            .await;
+    }
+    for is_flying in [true, false] {
+        alice.send(ServerboundPlayerAbilities { is_flying }).await;
+    }
+    for hand in [InteractionHand::MainHand, InteractionHand::OffHand] {
+        alice.send(ServerboundSwing { hand }).await;
+    }
+    alice.sync().await;
+
+    assert_eq!(
+        *handled.lock().unwrap(),
+        [
+            "tick end",
+            "client information en_gb Enabled",
+            "client information fr_fr CommandOnly",
+            "client information de_de Hidden",
+            "abilities 0x02",
+            "abilities 0x00",
+            "swing MainHand",
+            "swing OffHand",
+        ]
+    );
+    let after = scrape(address).await;
+    for scrape in [&before, &after] {
+        assert_eq!(scrape.counter("voidmc_packet_errors_total"), 0.0);
+        assert_eq!(scrape.counter("voidmc_packets_unrecognized_total"), 0.0);
+        assert_eq!(scrape.counter("voidmc_clients_kicked_total"), 0.0);
+    }
+    assert_eq!(after.gauge("voidmc_players_online"), 1.0);
+    alice.assert_healthy();
+    server.stop().await;
 }
 
 /// Requests sent through `Stalls` block the game thread until released.

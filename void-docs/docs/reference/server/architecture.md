@@ -43,7 +43,7 @@ and never drops individual packets (which would desync the client). Instead it
 sends the client id through `kick`, the usual `disconnect` notification
 follows, and the entity is despawned like any other disconnect.
 
-On a kick (a full queue, a keep-alive timeout, the pre-play timeout, `/kick`, `Players::kick`) the
+On a kick (a full queue, a keep-alive timeout, the pre-play timeout, a malformed packet, `/kick`, `Players::kick`) the
 network thread closes the connection gracefully: the client task writes what is
 already queued (a `Disconnect` with the reason, typically) and ends. A client
 whose socket does not drain is aborted after 2 seconds, which closes the

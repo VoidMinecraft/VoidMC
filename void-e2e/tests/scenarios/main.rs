@@ -41,10 +41,99 @@ mod players;
 mod world;
 
 use voidmc_e2e::Bot;
-use voidmc_e2e::core::position::BlockPos;
+use voidmc_e2e::core::direction::Direction;
+use voidmc_e2e::core::position::{BlockPos, Vec3};
 use voidmc_e2e::inventory::ItemStack;
 use voidmc_e2e::inventory::components::EquipmentSlot;
+use voidmc_e2e::protocol::packets::game::s_command_suggestion::ServerboundCommandSuggestion;
+use voidmc_e2e::protocol::packets::game::s_interact::InteractionHand;
+use voidmc_e2e::protocol::packets::game::s_use_item_on::{BlockHit, ServerboundUseItemOn};
+use voidmc_e2e::protocol::packets::{Packet, ProtocolPacket};
 use voidmc_e2e::registry::builtin::ItemKind;
+
+/// `packet` as a client writes it, its id then its body, for a test to alter.
+fn raw<P: ProtocolPacket + std::fmt::Debug>(packet: impl Packet<P>) -> Vec<u8> {
+    voidmc_e2e::protocol::write::serialize_packet(&packet.into_variant())
+        .expect("Azalea encodes the packet")
+        .into_vec()
+}
+
+/// `value` as a protocol VarInt.
+fn var_int(mut value: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            bytes.push(byte);
+            return bytes;
+        }
+        bytes.push(byte | 0x80);
+    }
+}
+
+/// A Command Suggestions Request for `text`, built by hand: Azalea refuses
+/// to write a string of more than 32767 bytes, which a valid text of 32500
+/// multibyte characters takes.
+fn command_suggestion(id: u32, text: &str) -> Vec<u8> {
+    let mut packet = raw(ServerboundCommandSuggestion {
+        id,
+        command: String::new(),
+    });
+    assert_eq!(packet.pop(), Some(0), "the empty text ends the packet");
+    packet.extend(var_int(text.len() as u32));
+    packet.extend(text.as_bytes());
+    packet
+}
+
+/// A valid Use Item On: its id, the hand, the block position (8 bytes), the
+/// face at index 10, the cursor (12 bytes), two flags, the sequence.
+fn use_item_on() -> Vec<u8> {
+    let packet = raw(ServerboundUseItemOn {
+        hand: InteractionHand::MainHand,
+        block_hit: BlockHit {
+            block_pos: BlockPos::new(0, 64, 0),
+            direction: Direction::Up,
+            location: Vec3 {
+                x: 0.5,
+                y: 65.0,
+                z: 0.5,
+            },
+            inside: false,
+            world_border: false,
+        },
+        seq: 1,
+    });
+    assert_eq!(packet.len(), 26, "{packet:?}");
+    assert_eq!(packet[10], Direction::Up as u8, "{packet:?}");
+    packet
+}
+
+/// Known play packets whose body VoidMC cannot decode, by what is wrong with
+/// them.
+fn malformed_play_packets() -> Vec<(&'static str, Vec<u8>)> {
+    let valid = use_item_on();
+    let mut invalid_face = valid.clone();
+    // Faces are 0 to 5.
+    invalid_face[10] = 6;
+    // Cut after the cursor: no flags, no sequence.
+    let truncated = valid[..valid.len() - 3].to_vec();
+    let mut trailing = valid.clone();
+    trailing.extend([1, 2, 3]);
+    // More bytes than a string of the protocol's 32767 characters takes, at
+    // most 3 bytes each.
+    let over_long = command_suggestion(1, &"a".repeat(32_767 * 3 + 1));
+    vec![
+        ("a Use Item On with an invalid face", invalid_face),
+        ("a truncated Use Item On", truncated),
+        ("a Use Item On with trailing bytes", trailing),
+        ("an over-long command suggestion text", over_long),
+    ]
+}
+
+/// The start of the reason a client is shown when the server could not
+/// decode one of its packets, after vanilla's "Internal Exception: ...".
+const DECODE_FAILURE: &str = "Internal Exception: Failed to decode packet";
 
 fn feet(bot: &Bot) -> BlockPos {
     BlockPos::from(bot.position())

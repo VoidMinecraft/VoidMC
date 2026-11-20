@@ -13,6 +13,7 @@ use azalea_protocol::common::tags::TagMap;
 use azalea_protocol::connect::{Connection, ReadConnection, WriteConnection};
 use azalea_protocol::packets::config::{
     ClientboundConfigPacket, ServerboundConfigPacket, s_client_information,
+    s_custom_payload::ServerboundCustomPayload,
     s_finish_configuration::ServerboundFinishConfiguration,
     s_keep_alive::ServerboundKeepAlive as ConfigKeepAlive,
     s_select_known_packs::ServerboundSelectKnownPacks,
@@ -35,6 +36,7 @@ use azalea_protocol::packets::status::{
     s_status_request::ServerboundStatusRequest,
 };
 use azalea_protocol::packets::{ClientIntention, PROTOCOL_VERSION, Packet, ProtocolPacket};
+use azalea_registry::identifier::Identifier;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -44,6 +46,9 @@ use crate::timeout;
 use crate::view::ClientView;
 
 static NEXT_BARRIER: AtomicU32 = AtomicU32::new(1);
+
+/// The brand every bot announces during configuration, like a vanilla client.
+const VANILLA_BRAND: &str = "vanilla";
 
 /// How a bot presents itself while joining.
 #[derive(Clone, Debug)]
@@ -99,6 +104,17 @@ impl ConfiguringClient {
     /// Closes the connection like a client quitting during configuration.
     pub async fn disconnect(mut self) {
         let _ = self.connection.writer.shutdown().await;
+    }
+
+    /// Sends `packet`, its id then its body, as given: for packets a real
+    /// client would not write.
+    pub async fn send_raw(&mut self, packet: &[u8]) {
+        self.connection
+            .writer
+            .raw
+            .write(packet)
+            .await
+            .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
     }
 
     /// Reads what the server sends, still without answering, until its
@@ -367,6 +383,18 @@ impl Bot {
             .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
     }
 
+    /// Sends `packet`, its id then its body, as given: for packets a real
+    /// client would not write, or that Azalea refuses to encode.
+    pub async fn send_raw(&self, packet: &[u8]) {
+        self.writer
+            .lock()
+            .await
+            .raw
+            .write(packet)
+            .await
+            .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
+    }
+
     pub async fn command(&self, command: &str) {
         self.send(ServerboundChatCommand {
             command: command.to_string(),
@@ -529,6 +557,31 @@ impl Bot {
         );
     }
 
+    /// Waits for the server's Disconnect; returns its reason as the vanilla
+    /// client shows it, once the server has closed the connection after it.
+    pub async fn expect_disconnect(self) -> String {
+        let reason = self
+            .expect("a Disconnect", |packet| match packet {
+                ClientboundGamePacket::Disconnect(disconnect) => {
+                    Some(disconnect.reason.to_string())
+                }
+                _ => None,
+            })
+            .await;
+        let shared = self.shared.clone();
+        timeout(&format!("{}'s connection to close", self.name), async {
+            loop {
+                let changed = shared.changed.notified();
+                if shared.inbox.lock().unwrap().closed {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        reason
+    }
+
     /// Closes the connection like a client quitting the game.
     pub async fn disconnect(self) {
         self.reader.abort();
@@ -669,6 +722,17 @@ async fn login(
         .write(s_client_information::ServerboundClientInformation { information })
         .await
         .expect("client information");
+    // Like the vanilla client, which names itself right after: the brand is
+    // a protocol string, its length then its bytes.
+    let mut brand = vec![VANILLA_BRAND.len() as u8];
+    brand.extend(VANILLA_BRAND.as_bytes());
+    connection
+        .write(ServerboundCustomPayload {
+            identifier: Identifier::new("minecraft:brand"),
+            data: brand.into(),
+        })
+        .await
+        .expect("brand");
 
     let mut registries = RegistryHolder::default();
     loop {
