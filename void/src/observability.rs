@@ -25,6 +25,7 @@ use voidmc_net::socket::SocketError;
 
 use crate::components::PlayerReady;
 use crate::config::ServerConfigResource;
+use crate::world::{ChunkLoadErrorKind, ChunkLoadFailedEvent};
 use exposition::{MetricKind, TextEncoder};
 use http::{Method, Request, Response};
 
@@ -136,6 +137,9 @@ impl ConnectionErrorKind {
     }
 }
 
+const CHUNK_LOAD_ERROR_KINDS: [ChunkLoadErrorKind; 2] =
+    [ChunkLoadErrorKind::Decode, ChunkLoadErrorKind::Io];
+
 const NO_SAMPLE: u64 = u64::MAX;
 
 /// Counters and gauges shared by the game thread, the network thread and the
@@ -163,6 +167,8 @@ pub(crate) struct Telemetry {
     clients_kicked: AtomicU64,
     packets_unrecognized: AtomicU64,
     packet_errors: AtomicU64,
+    /// Indexed like [`CHUNK_LOAD_ERROR_KINDS`].
+    chunk_load_errors: [AtomicU64; 2],
 }
 
 impl Telemetry {
@@ -185,6 +191,7 @@ impl Telemetry {
             clients_kicked: AtomicU64::new(0),
             packets_unrecognized: AtomicU64::new(0),
             packet_errors: AtomicU64::new(0),
+            chunk_load_errors: Default::default(),
         }
     }
 
@@ -250,6 +257,14 @@ impl Telemetry {
 
     pub(crate) fn packet_failed(&self) {
         self.packet_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn chunk_load_failed(&self, kind: ChunkLoadErrorKind) {
+        let index = CHUNK_LOAD_ERROR_KINDS
+            .iter()
+            .position(|known| *known == kind)
+            .expect("every kind is listed");
+        self.chunk_load_errors[index].fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn begin_stopping(&self) {
@@ -451,6 +466,19 @@ impl Telemetry {
         );
         out.sample("voidmc_packet_errors_total", &[], load(&self.packet_errors));
 
+        out.family(
+            "voidmc_chunk_load_errors_total",
+            MetricKind::Counter,
+            "Stored chunks that could not be loaded and were generated instead: decode (stored bytes undecodable) or io (stored bytes unreadable).",
+        );
+        for (kind, count) in CHUNK_LOAD_ERROR_KINDS.iter().zip(&self.chunk_load_errors) {
+            out.sample(
+                "voidmc_chunk_load_errors_total",
+                &[("kind", kind.as_str())],
+                load(count),
+            );
+        }
+
         out.finish()
     }
 
@@ -511,8 +539,13 @@ impl Plugin for ObservabilityPlugin {
                 window_ticks: 0,
             })
             .add_systems(TickStart, start_tick)
-            .add_systems(TickEnd, end_tick);
+            .add_systems(TickEnd, end_tick)
+            .add_observer(count_chunk_load_failure);
     }
+}
+
+fn count_chunk_load_failure(event: On<ChunkLoadFailedEvent>, telemetry: Res<TelemetryHandle>) {
+    telemetry.0.chunk_load_failed(event.kind);
 }
 
 fn start_tick(mut clock: ResMut<TickClock>) {
@@ -823,6 +856,7 @@ mod tests {
         telemetry.packet_unrecognized();
         telemetry.packet_unrecognized();
         telemetry.packet_failed();
+        telemetry.chunk_load_failed(ChunkLoadErrorKind::Io);
         telemetry.record_measured_tps(19.5);
         let text = telemetry.render_metrics(now);
 
@@ -837,6 +871,8 @@ mod tests {
             "voidmc_clients_kicked_total 1\n",
             "voidmc_packets_unrecognized_total 2\n",
             "voidmc_packet_errors_total 1\n",
+            "voidmc_chunk_load_errors_total{kind=\"decode\"} 0\n",
+            "voidmc_chunk_load_errors_total{kind=\"io\"} 1\n",
             "voidmc_ticks_per_second 19.5\n",
             "voidmc_target_ticks_per_second 20\n",
         ] {
@@ -886,6 +922,35 @@ mod tests {
         app.world_mut().write_message(AppExit::Success);
         app.update();
         assert_eq!(telemetry.health(Instant::now()), Health::Stopping);
+    }
+
+    #[test]
+    fn plugin_counts_chunk_load_failures_by_kind() {
+        let telemetry = Arc::new(telemetry());
+        let mut app = App::new();
+        app.add_plugins(ObservabilityPlugin {
+            telemetry: telemetry.clone(),
+            address: "127.0.0.1:1".parse().unwrap(),
+        });
+        let failure = |kind| ChunkLoadFailedEvent {
+            dimension: crate::world::DimensionId::Overworld,
+            pos: crate::world::ChunkPos::new(1, 0),
+            kind,
+            error: "test".into(),
+            action: crate::world::DamagedChunkAction::SavesSkipped,
+        };
+        app.world_mut().trigger(failure(ChunkLoadErrorKind::Decode));
+        app.world_mut().trigger(failure(ChunkLoadErrorKind::Decode));
+        app.world_mut().trigger(failure(ChunkLoadErrorKind::Io));
+
+        let text = telemetry.render_metrics(Instant::now());
+        for line in [
+            "# TYPE voidmc_chunk_load_errors_total counter\n",
+            "voidmc_chunk_load_errors_total{kind=\"decode\"} 2\n",
+            "voidmc_chunk_load_errors_total{kind=\"io\"} 1\n",
+        ] {
+            assert!(text.contains(line), "missing {line:?} in\n{text}");
+        }
     }
 
     #[test]

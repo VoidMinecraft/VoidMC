@@ -124,6 +124,7 @@ no sample rather than a made-up one.
 | `voidmc_clients_kicked_total` | counter | Live connections the server closed itself: `/kick` and `Players::kick`, logins refused because the server is full, keep-alive timeouts (30 s) of players in the play state whether ready or not, connections that did not reach the play state within the pre-play timeout (30 s), outbound queues that overflowed, and client entities despawned by game code. Players still online at shutdown are not counted. |
 | `voidmc_packets_unrecognized_total` | counter | Packets dropped because their id is unknown in the connection's state (logged as `Unrecognized packet`). |
 | `voidmc_packet_errors_total` | counter | Packets with a known id the game thread failed to decode (logged as `Failed to handle packet`). |
+| `voidmc_chunk_load_errors_total{kind}` | counter | Stored chunks that could not be loaded and were generated instead, one per `ChunkLoadFailedEvent`. `kind="decode"`: the stored bytes were read but could not be decoded; `kind="io"`: they could not be read. Only a chunk loader such as `voidmc-world-io` produces them; see [Damaged chunks](/reference/server/world-serialization#damaged-chunks). |
 
 Player gauges are updated at the end of each tick, so while the game loop is
 stalled they keep their last value; `voidmc_seconds_since_last_tick` shows how
