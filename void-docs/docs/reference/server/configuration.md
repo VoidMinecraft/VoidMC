@@ -134,8 +134,13 @@ A `main` that also returns errors can return `Result<AppExit, E>` and wrap what
 `FrameLimits` rejects invalid packet lengths before allocation and carries the
 limits used while decoding strings, collections, remaining-byte fields, and NBT.
 The production defaults allow 2 MiB inbound frames and 8 MiB outbound frames.
+Strings may take up to 98,301 bytes: the protocol's 32767 characters at 3
+bytes each (see [codec](../protocol/codec.md)).
 Applications can replace the complete policy through
-`ServerConfigBuilder::frame_limits`.
+`ServerConfigBuilder::frame_limits`. A packet that breaks the framing closes the
+connection on the network thread; a known packet whose body breaks a decode
+limit disconnects its sender with a reason (see
+[networking](../protocol/networking.md#undecodable-packets)).
 
 With compression enabled, a compressed inbound frame is rejected when its
 declared uncompressed length is below the threshold, above

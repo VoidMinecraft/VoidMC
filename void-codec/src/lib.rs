@@ -34,8 +34,22 @@ pub trait Decode: Sized {
     }
 }
 
+/// An enum with one variant per packet id, as `#[derive(Decode)]` generates
+/// it for a `#[codec(tagged)]` enum. It tells an id the enum does not know
+/// from a known packet whose body does not decode, which
+/// [`DecodeError::InvalidPacketId`] alone cannot: a field's invalid enum
+/// value returns that error too.
+pub trait Tagged {
+    /// The name of the variant `packet_id` decodes to, or `None` when the
+    /// enum has no variant for it.
+    fn variant_name(packet_id: i32) -> Option<&'static str>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecodeLimits {
+    /// The most bytes a string may take. The protocol counts its limit in
+    /// characters, at most 32767 UTF-16 units, so the default allows 3 bytes
+    /// for each, the most one takes in UTF-8, like vanilla.
     pub max_string_bytes: usize,
     pub max_collection_elements: usize,
     pub max_total_elements: usize,
@@ -151,7 +165,7 @@ impl DecodeLimits {
 impl Default for DecodeLimits {
     fn default() -> Self {
         Self {
-            max_string_bytes: 32 * 1024,
+            max_string_bytes: 32_767 * 3,
             max_collection_elements: 65_536,
             max_total_elements: 131_072,
             max_allocation_bytes: 4 * 1024 * 1024,
@@ -617,6 +631,61 @@ mod tests {
         assert_eq!(
             StatePacket::decode(&mut slice),
             Err(DecodeError::InvalidPacketId(None))
+        );
+    }
+
+    #[test]
+    fn tagged_enum_names_the_variant_of_each_known_id_only() {
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
+        #[codec(varint32)]
+        #[repr(i32)]
+        pub enum Face {
+            Up = 0,
+        }
+
+        #[derive(voidmc_codec_macros::Encode, voidmc_codec_macros::Decode, Debug, PartialEq)]
+        #[codec(tagged)]
+        pub enum StatePacket {
+            #[codec(packet_id = 0x02)]
+            Click(Face),
+            #[codec(packet_id = 0x100)]
+            Wide(u8),
+        }
+
+        assert_eq!(StatePacket::variant_name(0x02), Some("Click"));
+        assert_eq!(StatePacket::variant_name(0x100), Some("Wide"));
+        assert_eq!(StatePacket::variant_name(0x03), None);
+        assert_eq!(StatePacket::variant_name(-1), None);
+
+        // A known id with an invalid enum value fails like an unknown id,
+        // which is why the ids are listed apart.
+        let mut slice: &[u8] = &[0x02, 0x07];
+        assert_eq!(
+            StatePacket::decode(&mut slice),
+            Err(DecodeError::InvalidPacketId(None))
+        );
+    }
+
+    #[test]
+    fn default_string_limit_fits_the_protocol_maximum_in_any_characters() {
+        let longest = "語".repeat(32_767);
+        let mut buf = Vec::new();
+        longest.encode(&mut buf);
+        assert_eq!(
+            DecodeLimits::default().decode_exact::<String>(&buf),
+            Ok(longest)
+        );
+
+        let over = "a".repeat(32_767 * 3 + 1);
+        let mut buf = Vec::new();
+        over.encode(&mut buf);
+        assert_eq!(
+            DecodeLimits::default().decode_exact::<String>(&buf),
+            Err(DecodeError::LimitExceeded {
+                kind: LimitKind::StringBytes,
+                requested: 32_767 * 3 + 1,
+                limit: 32_767 * 3,
+            })
         );
     }
 
