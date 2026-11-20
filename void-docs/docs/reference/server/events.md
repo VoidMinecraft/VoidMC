@@ -138,7 +138,7 @@ them. `PlayerQuitEvent` fires however the player leaves:
 |---|---|
 | The client closes the connection, or it drops | When the network thread reports the closed connection, at the next ingest. |
 | Kick (`/kick`, `Players::kick`) | After the `Disconnect` is written and the server has closed the connection, even if the client ignores the packet. |
-| Keep-alive timeout, outbound queue overflow | Same as a kick. |
+| Keep-alive timeout (ready or not), outbound queue overflow | Same as a kick. |
 | Server shutdown (`/stop`, Ctrl-C, `AppExit`) | In the last tick, for every player still connected. |
 
 A client entity despawned by game code gets no quit event; kick it instead (see

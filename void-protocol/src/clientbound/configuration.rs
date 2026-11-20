@@ -1,8 +1,10 @@
+mod configuration_disconnect;
 mod finish_configuration;
 mod known_packs;
 mod registry_data;
 mod update_tags;
 
+pub use configuration_disconnect::*;
 pub use finish_configuration::*;
 pub use known_packs::*;
 pub use registry_data::*;
@@ -12,6 +14,8 @@ use voidmc_codec::{Decode, Encode};
 #[derive(Debug, Clone, Encode, Decode)]
 #[codec(tagged, wrap = crate::clientbound::ClientboundPacket::Configuration)]
 pub enum ConfigurationPacket {
+    #[codec(packet_id = 0x02)]
+    ConfigurationDisconnect(ConfigurationDisconnect),
     #[codec(packet_id = 0x03)]
     FinishConfiguration(FinishConfiguration),
     #[codec(packet_id = 0x07)]

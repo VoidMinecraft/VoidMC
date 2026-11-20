@@ -1,7 +1,21 @@
-use voidmc::components::{KeepAliveState, PlayerReady};
+use std::future::Future;
+use std::net::SocketAddr;
+use std::time::{Duration, Instant};
+
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
+use voidmc::components::{KeepAliveState, PlayerReady, PlayerUuid};
+use voidmc::network::PrePlayTimeout;
 use voidmc::systems::KeepAliveTicker;
 use voidmc_e2e::TestServer;
+use voidmc_e2e::protocol::connect::Connection;
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
+use voidmc_e2e::protocol::packets::handshake::s_intention::ServerboundIntention;
+use voidmc_e2e::protocol::packets::handshake::{
+    ClientboundHandshakePacket, ServerboundHandshakePacket,
+};
+use voidmc_e2e::protocol::packets::login::ClientboundLoginPacket;
+use voidmc_e2e::protocol::packets::{ClientIntention, PROTOCOL_VERSION};
 
 use crate::{feet, ground};
 
@@ -189,4 +203,160 @@ async fn a_player_that_never_reports_loaded_and_stops_answering_is_timed_out() {
 #[tokio::test]
 async fn a_ready_player_that_stops_answering_is_timed_out() {
     silent_player_is_timed_out(true).await;
+}
+
+/// Shortened from vanilla's 30 s so the scenarios below can wait it out, yet
+/// still several times longer than a join takes on a slow machine.
+const PRE_PLAY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What vanilla shows for `multiplayer.disconnect.slow_login`.
+const SLOW_LOGIN: &str = "Took too long to log in";
+
+async fn start_with_short_pre_play_timeout(max_players: i32) -> TestServer {
+    TestServer::builder()
+        .config(|config| config.max_players(max_players))
+        .plugin(|app| {
+            app.insert_resource(PrePlayTimeout(PRE_PLAY_TIMEOUT));
+        })
+        .start()
+        .await
+}
+
+async fn within<T>(what: &str, future: impl Future<Output = T>) -> T {
+    let wait = PRE_PLAY_TIMEOUT + Duration::from_secs(15);
+    tokio::time::timeout(wait, future)
+        .await
+        .unwrap_or_else(|_| panic!("timed out after {wait:?} waiting for {what}"))
+}
+
+/// A connection opened with the handshake for `intention`, nothing more.
+async fn handshaken(
+    address: SocketAddr,
+    intention: ClientIntention,
+) -> Connection<ClientboundHandshakePacket, ServerboundHandshakePacket> {
+    let mut connection = Connection::new(&address)
+        .await
+        .unwrap_or_else(|error| panic!("could not connect to {address}: {error}"));
+    connection
+        .write(ServerboundIntention {
+            protocol_version: PROTOCOL_VERSION,
+            hostname: address.ip().to_string(),
+            port: address.port(),
+            intention,
+        })
+        .await
+        .expect("handshake");
+    connection
+}
+
+async fn wait_until_no_player(server: &TestServer) {
+    server
+        .wait_for("every player to be gone", |world| {
+            let online = world.query::<&PlayerUuid>().iter(world).count();
+            (online == 0).then_some(())
+        })
+        .await;
+}
+
+/// A client that opens a login and never says who it is is told, like
+/// vanilla, that it took too long to log in, then closed.
+#[tokio::test]
+async fn a_client_stalled_in_login_is_told_it_took_too_long() {
+    let server = start_with_short_pre_play_timeout(100).await;
+    let started = Instant::now();
+    let mut connection = handshaken(server.address(), ClientIntention::Login)
+        .await
+        .login();
+
+    let packet = within("the login Disconnect", connection.read()).await;
+    let Ok(ClientboundLoginPacket::LoginDisconnect(disconnect)) = packet else {
+        panic!("expected a login Disconnect, got {packet:?}");
+    };
+    assert_eq!(disconnect.reason.to_string(), SLOW_LOGIN);
+    assert!(
+        started.elapsed() >= PRE_PLAY_TIMEOUT,
+        "{:?}",
+        started.elapsed()
+    );
+    let after = within("the connection to close", connection.read()).await;
+    assert!(after.is_err(), "{after:?} after the Disconnect");
+
+    server.stop().await;
+}
+
+/// A client that logged in but never finishes configuration is told it took
+/// too long to log in, and its `max_players` slot is free again.
+#[tokio::test]
+async fn a_client_stalled_in_configuration_is_told_it_took_too_long() {
+    let server = start_with_short_pre_play_timeout(1).await;
+    let started = Instant::now();
+    let carol = server
+        .log_in("Carol")
+        .await
+        .unwrap_or_else(|refused| panic!("Carol was refused an empty server: {refused}"));
+
+    let refused = carol.expect_disconnect().await;
+    assert_eq!(
+        refused.component["translate"], "multiplayer.disconnect.slow_login",
+        "{refused}"
+    );
+    assert_eq!(refused.reason, SLOW_LOGIN);
+    assert!(
+        started.elapsed() >= PRE_PLAY_TIMEOUT,
+        "{:?}",
+        started.elapsed()
+    );
+    wait_until_no_player(&server).await;
+    let erin = server
+        .try_join("Erin")
+        .await
+        .unwrap_or_else(|refused| panic!("Erin was refused Carol's freed slot: {refused}"));
+
+    erin.sync().await;
+    erin.assert_healthy();
+    server.stop().await;
+}
+
+/// A socket that sends nothing, and a server-list connection that never asks
+/// for the status, have no disconnect packet: they are just closed.
+#[tokio::test]
+async fn a_connection_that_never_logs_in_is_closed() {
+    let server = start_with_short_pre_play_timeout(100).await;
+    let started = Instant::now();
+    let mut idle = TcpStream::connect(server.address()).await.unwrap();
+    let mut status = handshaken(server.address(), ClientIntention::Status)
+        .await
+        .status();
+
+    let mut received = Vec::new();
+    within(
+        "the idle connection to close",
+        idle.read_to_end(&mut received),
+    )
+    .await
+    .expect("the server closes the idle connection cleanly");
+    assert!(received.is_empty(), "nothing is sent before a handshake");
+    let after = within("the status connection to close", status.read()).await;
+    assert!(after.is_err(), "{after:?} on the status connection");
+    assert!(
+        started.elapsed() >= PRE_PLAY_TIMEOUT,
+        "{:?}",
+        started.elapsed()
+    );
+
+    server.stop().await;
+}
+
+/// A player who reached the play state in time is not affected by the
+/// pre-play timeout running out afterwards.
+#[tokio::test]
+async fn a_player_who_joined_in_time_stays_past_the_pre_play_timeout() {
+    let server = start_with_short_pre_play_timeout(100).await;
+    let alice = server.join("Alice").await;
+
+    tokio::time::sleep(PRE_PLAY_TIMEOUT + Duration::from_secs(1)).await;
+
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
 }

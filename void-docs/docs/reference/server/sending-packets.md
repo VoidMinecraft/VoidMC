@@ -163,8 +163,9 @@ fn ban_hammer(event: On<PlayerReadyEvent>, names: Query<&PlayerName>, players: P
 
 `Players::kick(entity, reason)` (and `WorldPlayers::kick`) sends the
 disconnect packet of the client's state with `reason` in red: the play-state
-`Disconnect`, or the login-state `LoginDisconnect` (a client still in
-configuration is just disconnected). It then closes the connection whether or
+`Disconnect`, the configuration-state `Disconnect`, or the login-state
+`LoginDisconnect` (a client still in the handshake or status state, which has
+none, is just disconnected). It then closes the connection whether or
 not the client cooperates. Nothing is sent to the client afterwards and a
 second call does nothing. The disconnect is then handled like any other, at the
 next network ingest: `PlayerQuitEvent` for a player who joined, then despawn.
@@ -176,7 +177,11 @@ way.
 `DisconnectReason::translatable(key)` names a key of the client's language
 file, which the client shows in its own language. The login plugin refuses a
 login past `max_players` with `kick_with(entity, DisconnectReason::server_full())`
-(vanilla's `multiplayer.disconnect.server_full`, "The server is full!").
+(vanilla's `multiplayer.disconnect.server_full`, "The server is full!"), and a
+connection that has not reached the play state within the
+[pre-play timeout](../protocol/networking.md#pre-play-timeout) is disconnected
+with `DisconnectReason::slow_login()` (`multiplayer.disconnect.slow_login`,
+"Took too long to log in").
 
 Do not despawn a client entity to get rid of a player: the framework then
 closes its connection and drops its later packets, but no `PlayerQuitEvent`

@@ -71,6 +71,10 @@ Client                              Server
   |<== Position broadcasts ===========|  (from other players)
 ```
 
+Until the client reaches the play state, the [pre-play timeout](#pre-play-timeout)
+applies; from then on, [keep-alives](#keep-alive-system) do, whether or not the
+client has sent `PlayerLoaded`.
+
 ### Server List Ping
 
 When a client connects with `next_state = 1` (Status):
@@ -132,9 +136,31 @@ fn dispatch_packet(world, client_id, entity, packet) {
 The server sends periodic keep-alive packets to detect dead connections:
 
 - **Interval**: 200 ticks (10 seconds at 20 TPS)
-- **Mechanism**: Each tick, `KeepAliveTicker` increments. When the interval is reached, a `KeepAlive` packet with a timestamp ID is sent to all ready players.
-- **Tracking**: `KeepAliveState` on each player tracks the last sent ID and whether a response is pending.
+- **Mechanism**: Each tick, `KeepAliveTicker` increments. When the interval is reached, a `KeepAlive` packet with a timestamp ID is sent to every client in the play state, ready or not: a client that never sends `PlayerLoaded` is kept alive and timed out like any other.
+- **Tracking**: `KeepAliveState`, inserted when the client enters the play state, tracks the last sent ID and whether a response is pending.
 - **Timeout**: If a player hasn't responded when the next keep-alive is due, a warning is logged and the keep-alive is skipped for that player. Once a keep-alive has gone unanswered for 30 seconds (`KEEP_ALIVE_TIMEOUT_MS`), the player receives a `Disconnect` ("Timed out") and the network thread closes the connection, which despawns the player like any other disconnect.
+
+## Pre-Play Timeout
+
+The configuration state has no keep-alive exchange. Instead, a connection must
+reach the play state within 30 seconds (wall clock) of being accepted, through
+handshake, status, login and configuration together, like vanilla's login
+time limit. Past it, the server closes the connection:
+
+| State when the time runs out | What the client is told |
+|---|---|
+| Login | `LoginDisconnect`, vanilla's `multiplayer.disconnect.slow_login` ("Took too long to log in") |
+| Configuration | The configuration `Disconnect`, same reason |
+| Handshake (or nothing sent at all), status | Nothing: these states have no disconnect packet, the connection is just closed |
+
+A client that passed login holds a `max_players` slot, so a stalled one frees it
+when it is closed. The limit is the public `PrePlayTimeout` resource
+(`voidmc::network::PrePlayTimeout`, default `PrePlayTimeout(Duration::from_secs(30))`);
+change it like `KeepAliveTicker`, for example in tests:
+
+```rust
+world.resource_mut::<PrePlayTimeout>().0 = Duration::from_secs(5);
+```
 
 ## Status Response
 
