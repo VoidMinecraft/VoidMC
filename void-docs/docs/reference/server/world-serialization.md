@@ -96,6 +96,10 @@ The `ChunkDirty` marker is removed only after a **successful** write, so a faile
 save is retried on the next interval. Loaded chunks are inserted exactly like
 generated ones and are not marked dirty (they already match disk).
 
+`save_dirty_chunks` runs in `PostUpdate` after `VoidSystems::BlockEntitySync`,
+which marks the chunks whose block entities changed. A block-entity change
+made later in the tick is marked in the next tick and saved by a later save.
+
 ## Damaged chunks
 
 A stored chunk that cannot be loaded is **generated again**, so that players are
