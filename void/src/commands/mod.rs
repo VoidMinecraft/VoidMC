@@ -1096,11 +1096,38 @@ fn auto_usage(path: &[&Command]) -> String {
 // Parsing pipeline
 // ---------------------------------------------------------------------------
 
-/// Parse positional tokens against argument definitions.
+/// Whether `parser` reads text: as a variadic argument, it takes the rest of
+/// the line as typed, like a vanilla greedy string or message.
+fn reads_text(parser: &dyn ArgParser) -> bool {
+    matches!(
+        parser.protocol_parser(),
+        Some(Parser::String(StringType::GreedyPhrase) | Parser::Message)
+    )
+}
+
+/// The end of `line` from the word that starts `tail`, as typed (runs of
+/// whitespace and trailing whitespace kept), when `tail` is the line's last
+/// whitespace-separated words.
+fn typed_tail<'a>(line: &'a str, tail: &[String]) -> Option<&'a str> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let words = &words[words.len().checked_sub(tail.len())?..];
+    if !words.iter().copied().eq(tail.iter().map(String::as_str)) {
+        return None;
+    }
+    // The words are subslices of `line`: the first one's offset is where
+    // the tail starts.
+    let start = words.first()?.as_ptr() as usize - line.as_ptr() as usize;
+    Some(&line[start..])
+}
+
+/// Parse positional tokens against argument definitions. With the `line`
+/// the tokens were split from, a variadic text argument takes its words as
+/// typed instead of joined by single spaces.
 fn parse_positional(
     tokens: &[String],
     definitions: &[(String, Arc<dyn ArgParser>, bool, bool)], // (name, parser, required, variadic)
     ctx: &ParseContext<'_>,
+    line: Option<&str>,
 ) -> Result<HashMap<String, Box<dyn Any + Send + Sync>>, Vec<ParseError>> {
     let mut parsed = HashMap::new();
     let mut errors = Vec::new();
@@ -1108,9 +1135,14 @@ fn parse_positional(
 
     for (name, parser, required, variadic) in definitions {
         if *variadic {
-            // Consume all remaining tokens, joined by spaces
+            // Consume all remaining tokens: text as typed, anything else
+            // joined by spaces.
             if token_idx < tokens.len() {
-                let remaining = tokens[token_idx..].join(" ");
+                let tail = &tokens[token_idx..];
+                let remaining = line
+                    .filter(|_| reads_text(parser.as_ref()))
+                    .and_then(|line| typed_tail(line, tail))
+                    .map_or_else(|| tail.join(" "), str::to_string);
                 match parser.parse_in(&remaining, ctx) {
                     Ok(val) => {
                         parsed.insert(name.clone(), val);
@@ -1190,6 +1222,37 @@ pub struct CommandQueue(pub VecDeque<QueuedCommand>);
 #[derive(Resource, Default)]
 pub struct CommandEnqueueSequence(pub u64);
 
+/// The line a player typed for each queued command, by its `sequence`: its
+/// text arguments are taken from it as typed. Entries are dropped once the
+/// queue is drained.
+#[derive(Resource, Default)]
+pub(crate) struct CommandLines(HashMap<u64, String>);
+
+/// Queues the command a player typed as `line` (without the `/`), split on
+/// whitespace into its name and arguments, which it returns.
+pub(crate) fn enqueue_command_line(
+    queue: &mut CommandQueue,
+    sequence: &mut CommandEnqueueSequence,
+    lines: &mut CommandLines,
+    client_id: u32,
+    entity: Entity,
+    line: &str,
+) -> (String, Vec<String>) {
+    let mut words = line.split_whitespace().map(String::from);
+    let command = words.next().unwrap_or_default();
+    let args: Vec<String> = words.collect();
+    lines.0.insert(sequence.0, line.to_string());
+    enqueue_command(
+        queue,
+        sequence,
+        client_id,
+        entity,
+        command.clone(),
+        args.clone(),
+    );
+    (command, args)
+}
+
 pub fn enqueue_command(
     queue: &mut CommandQueue,
     sequence: &mut CommandEnqueueSequence,
@@ -1220,6 +1283,9 @@ pub fn drain_command_queue(world: &mut World) {
         let Some(queued) = queued else {
             break;
         };
+        let line = world
+            .get_resource_mut::<CommandLines>()
+            .and_then(|mut lines| lines.0.remove(&queued.sequence));
 
         if !world.entities().contains(queued.entity) {
             tracing::debug!(
@@ -1230,16 +1296,21 @@ pub fn drain_command_queue(world: &mut World) {
             continue;
         }
 
-        dispatch_command(
+        dispatch(
             world,
             queued.client_id,
             queued.entity,
             &queued.command,
             queued.args,
+            line.as_deref(),
         );
 
         // Preserve command-to-command ordering for deferred side effects.
         world.flush();
+    }
+    // Every queued command has run: a line left over belongs to none.
+    if let Some(mut lines) = world.get_resource_mut::<CommandLines>() {
+        lines.0.clear();
     }
 }
 
@@ -1247,7 +1318,8 @@ pub fn drain_command_queue(world: &mut World) {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// Resolve and execute a command with the full parsing pipeline.
+/// Resolve and execute a command with the full parsing pipeline. A
+/// variadic text argument gets the remaining `args` joined by single spaces.
 pub fn dispatch_command(
     world: &mut World,
     client_id: u32,
@@ -1255,11 +1327,30 @@ pub fn dispatch_command(
     command_name: &str,
     args: Vec<String>,
 ) {
-    tracing::info!(
-        "[DISPATCH_COMMAND_CALLED] command='{}', args={:?}",
-        command_name,
-        args
-    );
+    dispatch(world, client_id, entity, command_name, args, None);
+}
+
+/// [`dispatch_command`], given the `line` the player typed when there is
+/// one: a variadic text argument then takes its words from it as typed.
+fn dispatch(
+    world: &mut World,
+    client_id: u32,
+    entity: Entity,
+    command_name: &str,
+    args: Vec<String>,
+    line: Option<&str>,
+) {
+    let sender = world
+        .get::<PlayerName>(entity)
+        .map_or_else(|| format!("{entity}"), |name| name.0.clone());
+    let name = command_name.escape_debug();
+    tracing::info!("{sender} issued server command: /{name}");
+    tracing::debug!("{sender} ran /{name} with arguments {args:?}");
+    // The line is used only while it still splits into these words.
+    let line = line.filter(|line| {
+        line.split_whitespace()
+            .eq(std::iter::once(command_name).chain(args.iter().map(String::as_str)))
+    });
     // Step 1: borrow registry immutably to clone handler + definitions
     let resolved = world
         .resource::<CommandRegistry>()
@@ -1319,7 +1410,7 @@ pub fn dispatch_command(
     }
     positional.extend(res.after_separator.iter().cloned());
 
-    match parse_positional(&positional, &res.arguments, &ctx) {
+    match parse_positional(&positional, &res.arguments, &ctx, line) {
         Ok(parsed_args) => {
             let Some(handler) = &res.handler else {
                 fail(
@@ -1661,7 +1752,7 @@ mod tests {
             .collect();
         let tokens: Vec<String> = ["1", "2", "3", "4"].into_iter().map(String::from).collect();
 
-        let errors = parse_positional(&tokens, &definitions, &ctx).unwrap_err();
+        let errors = parse_positional(&tokens, &definitions, &ctx, None).unwrap_err();
         assert!(matches!(
             errors.as_slice(),
             [ParseError::TooManyArguments {
@@ -2169,6 +2260,49 @@ mod tests {
             dispatch_command(&mut world, 1, player, "note", args);
         }
         assert_eq!(*seen.lock().unwrap(), vec!["a b c", "a  b c", "a  b"]);
+    }
+
+    #[test]
+    fn a_typed_line_gives_text_arguments_their_spacing() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let note = |name: &str, parser: Arc<dyn ArgParser>| {
+            let record = Arc::clone(&seen);
+            CommandBuilder::new(name)
+                .arg("topic", StringArg::single_word())
+                .arg_variadic_required("text", parser)
+                .handler(move |ctx| {
+                    let text = ctx.get::<String>("text").cloned().unwrap_or_default();
+                    record.lock().unwrap().push(text);
+                })
+                .build()
+        };
+        let (mut world, player) = echo_world(note("note", StringArg::greedy()));
+        world
+            .resource_mut::<CommandRegistry>()
+            .register(note("words", StringArg::single_word()));
+        world.init_resource::<CommandQueue>();
+        world.init_resource::<CommandEnqueueSequence>();
+        world.init_resource::<CommandLines>();
+        let enqueue = |world: &mut World, line: &str| {
+            world.resource_scope(|world, mut queue: Mut<CommandQueue>| {
+                world.resource_scope(|world, mut sequence: Mut<CommandEnqueueSequence>| {
+                    let mut lines = world.resource_mut::<CommandLines>();
+                    enqueue_command_line(&mut queue, &mut sequence, &mut lines, 1, player, line);
+                });
+            });
+        };
+
+        enqueue(&mut world, " note  idea  a \u{a0} b  ");
+        // Only text parsers take the line as typed.
+        enqueue(&mut world, "words idea a   b");
+        // A queued command rewritten since it was typed no longer matches
+        // its line: its words are joined.
+        enqueue(&mut world, "note idea a   b");
+        world.resource_mut::<CommandQueue>().0[2].args[1] = "c".into();
+        drain_command_queue(&mut world);
+
+        assert_eq!(*seen.lock().unwrap(), vec!["a \u{a0} b  ", "a b", "c b"]);
+        assert!(world.resource::<CommandLines>().0.is_empty());
     }
 
     #[test]

@@ -386,6 +386,7 @@ commands.
 | `command(my_command)` | Registers a command built by `my_command()` |
 | `without_default_commands()` | Starts with an empty command registry |
 | `operators()` | Makes every player an `Operator` from login, so its bots may run the operator-only default commands (`/tp`, `/give`, `/kick`, `/stop`, ...) |
+| `capture_logs(Level::DEBUG)` | Also records the events logged down to that level (by default only warnings and errors), for a scenario that checks what the server logs at info or debug level |
 
 On a running server:
 
@@ -416,6 +417,8 @@ On a running server:
 - `wait_ticks(n)`, `status()` (the server-list ping) and `player_entity(uuid)`.
 - `op(&bot)` and `deop(&bot)` add and remove `Operator` on a connected bot's
   player, as an application would at runtime.
+- `logs()` returns the events logged so far, on any thread (the bots' too):
+  warnings and errors, or down to the level given to `capture_logs`.
 - `stop()` shuts the server down and fails the test if VoidMC logged an
   error, or an unrecognised packet, on any thread.
 - `wait_for_exit()` waits for the server to stop on its own, for example
