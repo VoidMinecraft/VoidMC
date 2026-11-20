@@ -259,6 +259,8 @@ struct Inbox {
     packets: VecDeque<ClientboundGamePacket>,
     received: BTreeMap<&'static str, usize>,
     loaded: bool,
+    /// The server placed the player: a position sync arrived.
+    placed: bool,
     hold_teleports: bool,
     view: ClientView,
     failure: Option<String>,
@@ -278,6 +280,9 @@ type Writer = Arc<tokio::sync::Mutex<WriteConnection<ServerboundGamePacket>>>;
 /// with strict length checks: a packet the vanilla client could not read
 /// fails the test. A background task answers keep-alives, pings and
 /// teleports like the vanilla client, and keeps a [`ClientView`] up to date.
+/// Like the vanilla client leaving its loading screen, it reports
+/// `PlayerLoaded` once the server has placed it and it holds the chunk it
+/// stands in.
 pub struct Bot {
     name: String,
     uuid: Uuid,
@@ -834,6 +839,18 @@ async fn read_loop(
 }
 
 fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<ServerboundGamePacket> {
+    let mut replies = answers(packet, inbox);
+    if matches!(packet, ClientboundGamePacket::PlayerPosition(_)) {
+        inbox.placed = true;
+    }
+    if !inbox.loaded && inbox.placed && inbox.view.stands_in_a_held_chunk() {
+        inbox.loaded = true;
+        replies.push(ServerboundPlayerLoaded {}.into_variant());
+    }
+    replies
+}
+
+fn answers(packet: &ClientboundGamePacket, inbox: &Inbox) -> Vec<ServerboundGamePacket> {
     match packet {
         ClientboundGamePacket::KeepAlive(keep_alive) => {
             vec![ServerboundKeepAlive { id: keep_alive.id }.into_variant()]
@@ -842,7 +859,7 @@ fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<Serverbound
             vec![ServerboundPong { id: ping.id }.into_variant()]
         }
         ClientboundGamePacket::PlayerPosition(teleport) if !inbox.hold_teleports => {
-            let mut replies = vec![
+            vec![
                 ServerboundAcceptTeleportation { id: teleport.id }.into_variant(),
                 ServerboundMovePlayerPosRot {
                     pos: inbox.view.position,
@@ -856,12 +873,7 @@ fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<Serverbound
                     },
                 }
                 .into_variant(),
-            ];
-            if !inbox.loaded {
-                inbox.loaded = true;
-                replies.push(ServerboundPlayerLoaded {}.into_variant());
-            }
-            replies
+            ]
         }
         _ => Vec::new(),
     }

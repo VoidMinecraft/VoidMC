@@ -40,7 +40,7 @@ let config = ServerConfigBuilder::new()
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
 | `game_mode` | `u8` | `1` (Creative) | Game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) every player joins in and whose rules the server applies; [`/gamemode`](../gameplay/commands.md#gamemode) only changes what a client shows |
 | `spawn_position` | `SpawnPosition` | `{ x: 0.0, z: 0.0, y: None }` | World spawn location |
-| `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn |
+| `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn; `0` pre-generates the spawn chunk only. A negative radius pre-generates nothing, and the first player to join generates the chunk it stands in |
 | `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over), capped by the player's effective view distance |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
@@ -64,8 +64,9 @@ untouched `ServerConfigBuilder::new()` both hold the defaults above.
 ## Limits
 
 The builder replaces values the server cannot run with and logs a warning: a
-`tick_rate` of `0` becomes `1`, and a negative `view_distance` or
-`simulation_distance` becomes `0`. Every other value is used as given.
+`tick_rate` of `0` becomes `1`, and a negative `view_distance`,
+`simulation_distance` or `spawn_chunk_radius` becomes `0`. Every other value
+is used as given.
 
 The configuration sets targets, not guarantees of performance:
 
