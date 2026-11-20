@@ -14,7 +14,7 @@ use voidmc_protocol::{
 
 use crate::{
     CommandRegistry,
-    commands::{CommandEnqueueSequence, CommandQueue, enqueue_command},
+    commands::{CommandEnqueueSequence, CommandLines, CommandQueue, enqueue_command_line},
     components::{ClientSettings, ConnectionState, PlayerName},
     events::{ChatCommandEvent, ChatMessageEvent},
     messages::{Messages, TextColor},
@@ -39,25 +39,14 @@ fn handle_command(
     command: &str,
     queue: &mut CommandQueue,
     sequence: &mut CommandEnqueueSequence,
+    lines: &mut CommandLines,
     mut commands: Commands,
 ) {
     // A line with no command name (`/` alone, or only spaces) still goes
     // through the queue, so the player gets the same "Unknown command" reply
     // as for any other name, in order with their other commands.
-    let parts: Vec<String> = command.split_whitespace().map(String::from).collect();
-    let (command_name, args) = match parts.split_first() {
-        Some((name, rest)) => (name.clone(), rest.to_vec()),
-        None => (String::new(), Vec::new()),
-    };
-
-    enqueue_command(
-        queue,
-        sequence,
-        client_id,
-        entity,
-        command_name.clone(),
-        args.clone(),
-    );
+    let (command_name, args) =
+        enqueue_command_line(queue, sequence, lines, client_id, entity, command);
 
     commands.trigger(ChatCommandEvent {
         entity,
@@ -71,6 +60,7 @@ fn handle_chat_command(
     event: On<PacketEvent<ChatCommand>>,
     queue: ResMut<CommandQueue>,
     sequence: ResMut<CommandEnqueueSequence>,
+    lines: ResMut<CommandLines>,
     commands: Commands,
 ) {
     handle_command(
@@ -79,6 +69,7 @@ fn handle_chat_command(
         &event.packet.command,
         queue.into_inner(),
         sequence.into_inner(),
+        lines.into_inner(),
         commands,
     );
 }
@@ -87,6 +78,7 @@ fn handle_signed_chat_command(
     event: On<PacketEvent<SignedChatCommand>>,
     queue: ResMut<CommandQueue>,
     sequence: ResMut<CommandEnqueueSequence>,
+    lines: ResMut<CommandLines>,
     commands: Commands,
 ) {
     handle_command(
@@ -95,6 +87,7 @@ fn handle_signed_chat_command(
         &event.packet.command,
         queue.into_inner(),
         sequence.into_inner(),
+        lines.into_inner(),
         commands,
     );
 }
@@ -104,6 +97,7 @@ fn handle_chat_message(
     mut commands: Commands,
     queue: ResMut<CommandQueue>,
     sequence: ResMut<CommandEnqueueSequence>,
+    lines: ResMut<CommandLines>,
     messages: Messages,
     players: Players,
     player_names: Query<&PlayerName>,
@@ -118,6 +112,7 @@ fn handle_chat_message(
             cmd,
             queue.into_inner(),
             sequence.into_inner(),
+            lines.into_inner(),
             commands,
         );
         return;

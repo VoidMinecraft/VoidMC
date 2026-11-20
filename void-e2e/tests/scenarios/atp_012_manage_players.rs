@@ -642,16 +642,16 @@ async fn atp_012_broadcast_reaches_every_player_once() {
     );
     assert_eq!((to_bob, to_carol, to_dave), (vec![], vec![], vec![]));
 
-    // A line break cannot start a second line that looks like someone else's.
-    let [to_alice, to_bob, to_carol, to_dave] =
-        run(&alice, "broadcast first\n<Bob> forged", everyone).await;
-    for seen in [to_alice, to_bob, to_carol, to_dave] {
-        assert_eq!(seen, [plain("[Broadcast] first <Bob> forged", "white")]);
-    }
-
     // Formatting codes and other control characters would restyle or hide
-    // part of the line: refused, to the sender only.
-    for text in ["§cred §kobfuscated", "§r", "bell\u{7}", "nul\u{0}"] {
+    // part of the line, and a line break would start a second line that
+    // looks like someone else's: refused, to the sender only.
+    for text in [
+        "§cred §kobfuscated",
+        "§r",
+        "bell\u{7}",
+        "nul\u{0}",
+        "first\n<Bob> forged",
+    ] {
         let [to_alice, to_bob, to_carol, to_dave] =
             run(&alice, &format!("broadcast {text}"), everyone).await;
         assert_eq!(
@@ -698,6 +698,160 @@ async fn atp_012_say_refuses_text_that_would_restyle_the_line() {
     let expected = [plain(&format!("[Alice] {text}"), "white")];
     assert_eq!(to_alice, expected);
     assert_eq!(to_bob, expected);
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// The text of `/tell`, `/say`, `/broadcast` and a kick reason is the rest of
+/// the line as typed, like a vanilla greedy string: its runs of spaces and
+/// any trailing spaces are kept, while the spaces that separate the command,
+/// the player and the text are not part of it. Whitespace that is a control
+/// character (a tab, a line break) is refused like any other.
+#[tokio::test]
+async fn atp_012_text_keeps_the_spaces_it_was_typed_with() {
+    let server = TestServer::builder().operators().start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let everyone = [&alice, &bob];
+
+    for (command, text) in [
+        ("tell Bob a   b", "a   b"),
+        ("tell  \t Bob   \t  a  b", "a  b"),
+        ("tell Bob trailing  ", "trailing  "),
+        // Spaces that are not control characters are text like any other.
+        (
+            "tell Bob wide\u{3000}space\u{a0}nbsp",
+            "wide\u{3000}space\u{a0}nbsp",
+        ),
+    ] {
+        let [to_alice, to_bob] = run(&alice, command, everyone).await;
+        assert_eq!(
+            to_bob,
+            [plain(&format!("Alice whispers to you: {text}"), "gray")],
+            "/{command:?}"
+        );
+        assert_eq!(
+            to_alice,
+            [plain(&format!("You whisper to Bob: {text}"), "white")],
+            "/{command:?}"
+        );
+    }
+
+    let [to_alice, to_bob] = run(&alice, "say   a   b", everyone).await;
+    let expected = [plain("[Alice] a   b", "white")];
+    assert_eq!((to_alice, to_bob), (expected.to_vec(), expected.to_vec()));
+
+    let [to_alice, to_bob] = run(&alice, "broadcast a    b", everyone).await;
+    let expected = [plain("[Broadcast] a    b", "white")];
+    assert_eq!((to_alice, to_bob), (expected.to_vec(), expected.to_vec()));
+
+    // A tab or a line break inside the text is a control character: refused
+    // to the sender, like `§`, and nobody else hears anything.
+    for command in [
+        "tell Bob a\tb",
+        "say a\tb",
+        "broadcast a\nb",
+        "kick Bob a\tb",
+    ] {
+        let [to_alice, to_bob] = run(&alice, command, everyone).await;
+        assert_eq!(
+            to_alice,
+            [plain("Illegal characters in chat", "red")],
+            "/{command:?}"
+        );
+        assert!(to_bob.is_empty(), "/{command:?}: {to_bob:?}");
+    }
+
+    // The kick reason reaches the kicked player and the kicker as typed.
+    let mut carol = Raw::join(&server, "Carol", true).await;
+    let carol_uuid = carol.uuid;
+    alice
+        .wait_until("Carol listed", |view| {
+            view.players.contains_key(&carol_uuid)
+        })
+        .await;
+    assert!(carol.sync().await.is_empty());
+    let [to_alice] = run(&alice, "kick   Carol   too   many   spaces", [&alice]).await;
+    assert_eq!(
+        to_alice,
+        [plain("Kicked Carol (reason: too   many   spaces)", "white")]
+    );
+    assert_eq!(carol.kicked().await, "too   many   spaces");
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// The server log at info level names each command and its sender, but not
+/// its arguments: a private message stays out of it. The arguments are
+/// logged at debug level only.
+#[tokio::test]
+async fn atp_012_tell_text_stays_out_of_the_info_log() {
+    let server = TestServer::builder()
+        .capture_logs(tracing::Level::DEBUG)
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+
+    let secret = "the vault code is 4711-hush";
+    let [to_alice, to_bob] = run(&alice, &format!("tell Bob {secret}"), [&alice, &bob]).await;
+    assert_eq!(
+        to_alice,
+        [plain(&format!("You whisper to Bob: {secret}"), "white")]
+    );
+    assert_eq!(
+        to_bob,
+        [plain(&format!("Alice whispers to you: {secret}"), "gray")]
+    );
+
+    // The bots run in this process too: only the server's records count.
+    let records: Vec<_> = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.target.starts_with("voidmc"))
+        .collect();
+    let leaked: Vec<String> = records
+        .iter()
+        .filter(|record| record.level <= tracing::Level::INFO && record.message.contains("4711"))
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the private message is logged at info level or above:\n{}",
+        leaked.join("\n")
+    );
+    let announced: Vec<String> = records
+        .iter()
+        .filter(|record| {
+            record.level == tracing::Level::INFO
+                && record.message.contains("Alice")
+                && record.message.contains("/tell")
+        })
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        announced.len(),
+        1,
+        "one info record names the command and its sender: {announced:?}"
+    );
+    assert!(
+        records
+            .iter()
+            .any(|record| record.level == tracing::Level::DEBUG
+                && record.message.contains("Alice")
+                && record.message.contains("4711-hush")),
+        "the arguments are logged at debug level"
+    );
+    let prefixed: Vec<String> = records
+        .iter()
+        .filter(|record| record.message.contains("DISPATCH_COMMAND_CALLED"))
+        .map(ToString::to_string)
+        .collect();
+    assert!(prefixed.is_empty(), "{prefixed:?}");
 
     alice.assert_healthy();
     bob.assert_healthy();

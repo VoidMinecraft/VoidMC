@@ -499,10 +499,13 @@ async fn interleaved_changes_by_two_players_converge() {
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
 
-    // The ground on both sides of the players (a block cannot go where they
-    // stand).
+    // The ground on both sides of the players, two blocks or more from the
+    // block they stand in: a player's box is 0.6 wide, so one standing near
+    // an edge of its block (the spawn is on a block corner) also reaches into
+    // the next column, where Alice's planks could not go above Bob's stone.
     let centre = feet(&alice);
-    let columns: Vec<BlockPos> = [-3, -2, -1, 1, 2, 3]
+    assert_eq!(feet(&bob), centre, "Bob stands in Alice's block");
+    let columns: Vec<BlockPos> = [-4, -3, -2, 2, 3, 4]
         .into_iter()
         .map(|dx| {
             alice
@@ -520,9 +523,10 @@ async fn interleaved_changes_by_two_players_converge() {
     // Both players change the same blocks without waiting for each other:
     // Alice breaks each ground block and clicks its top with planks, Bob
     // clicks the block below with stone, before Alice on even columns and
-    // after her on odd ones. A click whose target is already filled is
+    // after her on odd ones; the server may still handle Bob's click between
+    // Alice's two packets. A click whose target is already filled is
     // refused, so the planks end up in the hole, or on Bob's stone when it
-    // filled the hole first.
+    // filled the hole between Alice's break and her click.
     for (index, ground) in columns.iter().enumerate() {
         let (alice_seq, bob_seq) = (100 + 2 * index as u32, 200 + index as u32);
         if index % 2 == 0 {
@@ -580,8 +584,8 @@ async fn interleaved_changes_by_two_players_converge() {
     let low = columns.iter().map(|pos| pos.y).min().unwrap();
     let high = columns.iter().map(|pos| pos.y).max().unwrap();
     let area = cuboid(
-        BlockPos::new(centre.x - 4, low - 2, centre.z - 1),
-        BlockPos::new(centre.x + 4, high + 2, centre.z + 1),
+        BlockPos::new(centre.x - 5, low - 2, centre.z - 1),
+        BlockPos::new(centre.x + 5, high + 2, centre.z + 1),
     );
     assert_converged(&server, &[&alice, &bob], &area).await;
 
