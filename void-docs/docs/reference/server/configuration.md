@@ -211,6 +211,14 @@ only shows when two of them act on the same thing in the same tick, for
 example an item used on the tick another item is picked up into the same
 inventory.
 
+`Update` is not the only schedule with unordered conflicting systems.
+Measured with Bevy's ambiguity detection on `develop` at `264ac4e`, with the
+default configuration, `Update` holds 25 pairs (three of them against Bevy's
+`exit_on_flag`; 35 with `RedstonePlugin`), `PostUpdate` 65 (54 among the
+`EntityMetadataSync` systems, 10 between `ChunkStreaming` and the other sync
+sets, one between `InventorySync` and `PlayerBroadcast`), and `Last` one:
+`disconnect_clients_on_exit` against Bevy's `tick_global_task_pools`.
+
 The compute task pool always has at least two threads, so two systems or
 regions can be in flight at once on a two-core machine. The running mode is
 available as the `ExecutionMode` resource. See
@@ -228,4 +236,4 @@ fn my_system(config: Res<ServerConfigResource>) {
 }
 ```
 
-Fields mirror `ServerConfig` except that `SpawnPosition` is flattened into `spawn_x`, `spawn_z`, and `spawn_y: Option<f64>`, and the world generator and registries are stored as separate resources (`WorldGen` and `RegistryDataStore`).
+Fields mirror `ServerConfig` except that `SpawnPosition` is flattened into `spawn_x`, `spawn_z`, and `spawn_y: Option<f64>`, and the world generator and registries are stored as separate resources (`WorldGen` and `RegistryDataStore`). Four more fields are not mirrored: the execution mode is the `ExecutionMode` resource, the address the [observability endpoints](./observability.md) are bound to is the `ObservabilityAddress` resource (present only when `observability` is set), and `frame_limits` and `compression_threshold` are handed to the network thread, with no resource in the world.
