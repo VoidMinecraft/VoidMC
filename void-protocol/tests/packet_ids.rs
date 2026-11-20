@@ -48,6 +48,7 @@ const SPECS: &[EnumSpec] = &[
         state: "login",
         direction: "clientbound",
         names: &[
+            ("LoginDisconnect", "minecraft:login_disconnect"),
             ("LoginSuccess", "minecraft:login_finished"),
             ("SetCompression", "minecraft:login_compression"),
         ],

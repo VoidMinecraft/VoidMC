@@ -31,6 +31,7 @@ Client                              Server
   |                                    |  Set state -> Login
   |                                    |
   |--- LoginStart (name, uuid) ------->|  Store PlayerName, PlayerUuid
+  |                                    |  (or, server full: LoginDisconnect, close)
   |<-- SetCompression (threshold) -----|  (network thread, if enabled)
   |<-- LoginSuccess -------------------|  (compressed framing from here on)
   |                                    |
