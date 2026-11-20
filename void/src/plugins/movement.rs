@@ -454,6 +454,62 @@ mod tests {
     }
 
     #[test]
+    fn rotations_and_ground_flags_sent_before_a_teleport_is_confirmed_are_ignored() {
+        let mut app = test_app();
+        let entity = app
+            .world_mut()
+            .spawn((
+                Position::default(),
+                Rotation::default(),
+                Grounded(false),
+                TeleportState {
+                    next_id: 6,
+                    pending_id: Some(5),
+                },
+            ))
+            .id();
+        let state = |app: &App| {
+            let rot = app.world().get::<Rotation>(entity).unwrap();
+            (
+                (rot.yaw, rot.pitch),
+                app.world().get::<Grounded>(entity).unwrap().0,
+                app.world().resource::<Rotates>().0,
+            )
+        };
+
+        pos_and_rot(&mut app, entity, 64.0, 90.0);
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: SetPlayerRotation {
+                yaw: 45.0,
+                pitch: 20.0,
+                flags: ON_GROUND,
+            },
+        });
+        app.update();
+        assert_eq!(state(&app), ((0.0, 0.0), false, 0));
+
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: ConfirmTeleportation { teleport_id: 5 },
+        });
+        app.world_mut().flush();
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: SetPlayerRotation {
+                yaw: 45.0,
+                pitch: 20.0,
+                flags: ON_GROUND,
+            },
+        });
+        app.update();
+        assert_eq!(state(&app), ((45.0, 20.0), true, 1));
+    }
+
+    #[test]
     fn free_player_movement_is_unchanged() {
         let mut app = App::new();
         app.add_plugins(MovementPlugin);
