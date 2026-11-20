@@ -125,6 +125,13 @@ async fn smoke_workload_passes_in_process_and_reports_every_clause() {
             server >= game,
             "the game thread is one of the server threads"
         );
+        // The clients' packets are read, framed and written on the server's
+        // network runtime, whose threads are server threads too.
+        assert!(
+            server > game,
+            "the server threads' CPU ({server} ms) includes the network runtime's, \
+             beyond the game thread's ({game} ms)"
+        );
         assert!(resources.process_cpu_ms.is_some());
         assert!(resources.process_rss_peak_kib.is_some_and(|kib| kib > 0));
         assert!(report.unavailable.is_empty(), "{:?}", report.unavailable);
