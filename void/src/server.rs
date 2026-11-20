@@ -219,6 +219,7 @@ mod tests {
     use tokio::net::TcpStream;
 
     use super::*;
+    use crate::network::OutgoingPacket;
 
     #[tokio::test]
     async fn run_exits_when_kick_channel_closes() {
@@ -390,6 +391,115 @@ mod tests {
                 ended = disconnect_rx.recv_async() => ended.unwrap(),
             };
             assert_eq!(ended, connected.client_id);
+        }
+
+        let text = telemetry.render_metrics(std::time::Instant::now());
+        let line = format!("voidmc_clients_kicked_total {CLIENTS}\n");
+        assert!(text.contains(&line), "missing {line:?} in\n{text}");
+    }
+
+    /// The play-state `Disconnect` a kick queues, and its bytes on the wire
+    /// (packet id and body, without the frame length).
+    fn kick_disconnect() -> (OutgoingPacket, Vec<u8>) {
+        use voidmc_codec::Encode;
+        use voidmc_protocol::clientbound::{ClientboundPacket, Disconnect, PlayPacket};
+
+        let packet = PlayPacket::Disconnect(Disconnect {
+            reason: crate::Text::truncated("Kicked by an operator")
+                .component(crate::TextColor::Red),
+        });
+        let mut wire = Vec::new();
+        packet.encode(&mut wire);
+        let outgoing = OutgoingPacket {
+            client_id: 0,
+            packet: ClientboundPacket::Play(packet),
+        };
+        (outgoing, wire)
+    }
+
+    /// Reads one uncompressed frame and returns what follows its length.
+    async fn read_frame(peer: &mut TcpStream) -> Vec<u8> {
+        use voidmc_codec::{Decode, VarI32};
+
+        let mut length = Vec::new();
+        loop {
+            let byte = peer.read_u8().await.unwrap();
+            length.push(byte);
+            if byte & 0x80 == 0 {
+                break;
+            }
+        }
+        let length = VarI32::decode(&mut length.as_slice()).unwrap().0 as usize;
+        let mut frame = vec![0; length];
+        peer.read_exact(&mut frame).await.unwrap();
+        frame
+    }
+
+    /// Runs the loop until it has taken every kick request sent so far: it
+    /// handles a request in the same poll that receives it.
+    async fn run_until_kicks_are_taken(
+        running: &mut std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+        kick_tx: &Sender<u32>,
+    ) {
+        tokio::select! {
+            () = running.as_mut() => panic!("the server stopped"),
+            () = async {
+                while !kick_tx.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            } => {}
+        }
+    }
+
+    /// `Players::kick` and the keep-alive timeout queue the `Disconnect`,
+    /// then ask for the kick in the next statement. Nothing keeps the game
+    /// thread from being preempted between the two: the client can read the
+    /// `Disconnect` and close its side, and the loop learn that the
+    /// connection ended, before the kick request is sent. The kick still
+    /// counts.
+    #[tokio::test]
+    async fn a_kick_requested_after_the_client_closed_on_its_disconnect_counts() {
+        const CLIENTS: u32 = 16;
+        let telemetry = Arc::new(Telemetry::new(Duration::from_secs(1), 20, 100));
+        let mut server = Server::new("127.0.0.1:0")
+            .await
+            .unwrap()
+            .with_telemetry(Some(telemetry.clone()));
+        let address = server.socket.local_addr().unwrap();
+        let (incoming_tx, _incoming_rx) = flume::unbounded();
+        let (connected_tx, connected_rx) = flume::unbounded();
+        let (disconnect_tx, disconnect_rx) = flume::unbounded();
+        let (kick_tx, kick_rx) = flume::unbounded();
+        let mut running =
+            std::pin::pin!(server.run(incoming_tx, connected_tx, disconnect_tx, kick_rx));
+
+        for _ in 0..CLIENTS {
+            let mut peer = TcpStream::connect(address).await.unwrap();
+            let connected = tokio::select! {
+                () = &mut running => panic!("the server stopped"),
+                connected = connected_rx.recv_async() => connected.unwrap(),
+            };
+
+            // `Outbox::kick`, first statement: queue the Disconnect.
+            let (disconnect, wire) = kick_disconnect();
+            connected.outgoing.try_send(disconnect).unwrap();
+
+            // The game thread stalls here. The client reads its Disconnect,
+            // reason included, and closes.
+            let frame = tokio::time::timeout(Duration::from_secs(1), read_frame(&mut peer))
+                .await
+                .expect("the Disconnect reaches the client");
+            assert_eq!(frame, wire, "the Disconnect and its reason, intact");
+            drop(peer);
+            let ended = tokio::select! {
+                () = &mut running => panic!("the server stopped"),
+                ended = disconnect_rx.recv_async() => ended.unwrap(),
+            };
+            assert_eq!(ended, connected.client_id);
+
+            // `Outbox::kick`, next statement: ask for the kick.
+            kick_tx.send(connected.client_id).unwrap();
+            run_until_kicks_are_taken(&mut running, &kick_tx).await;
         }
 
         let text = telemetry.render_metrics(std::time::Instant::now());
