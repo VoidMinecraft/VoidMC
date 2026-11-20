@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use bevy_ecs::prelude::*;
+use rand::Rng;
 use uuid::Uuid;
 
 use crate::entity::EntityMetadata;
@@ -272,6 +273,9 @@ pub struct VerticalVelocity(pub f64);
 pub struct Grounded(pub bool);
 
 /// Simple wander behavior state for random walking AI example.
+///
+/// [`crate::EntityBuilder::wander`] and `/summon --wander` attach
+/// [`Wander::random`].
 #[derive(Component, Clone)]
 pub struct Wander {
     /// Ticks remaining until picking a new walk direction.
@@ -280,6 +284,24 @@ pub struct Wander {
     pub speed: f64,
     /// Current yaw direction in degrees (0-360).
     pub yaw: f32,
+}
+
+impl Wander {
+    /// Walking speed of the default walk, in blocks per tick.
+    pub const SPEED: f64 = 0.08;
+    /// Range each heading's duration is drawn from, in ticks.
+    pub const TICKS: std::ops::Range<i32> = 40..140;
+
+    /// The default walk: [`Self::SPEED`], a random heading and a random
+    /// duration drawn from [`Self::TICKS`].
+    pub fn random() -> Self {
+        let mut rng = rand::thread_rng();
+        Self {
+            ticks: rng.gen_range(Self::TICKS),
+            speed: Self::SPEED,
+            yaw: rng.gen_range(0.0..360.0) as f32,
+        }
+    }
 }
 
 /// A dropped item floating in the world. The entity also carries the standard
