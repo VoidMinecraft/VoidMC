@@ -17,7 +17,7 @@ use voidmc_protocol::{clientbound, serverbound};
 
 use azalea_protocol::packets::status::c_status_response::ClientboundStatusResponse;
 
-use crate::bot::{Bot, BotOptions};
+use crate::bot::{Bot, BotOptions, ConfiguringClient, LoginRefused};
 use crate::logs::{ActiveCapture, LogCapture, LogRecord};
 use crate::timeout;
 
@@ -308,6 +308,18 @@ impl TestServer {
 
     pub async fn join_with(&self, name: &str, options: BotOptions) -> Bot {
         Bot::join(self.address, name, options).await
+    }
+
+    /// Like [`TestServer::join`], but a login the server refuses returns its
+    /// reason instead of failing the test.
+    pub async fn try_join(&self, name: &str) -> Result<Bot, LoginRefused> {
+        Bot::try_join(self.address, name, BotOptions::default()).await
+    }
+
+    /// Logs a client in and leaves it in the configuration state, holding
+    /// its connection open without ever playing.
+    pub async fn log_in(&self, name: &str) -> Result<ConfiguringClient, LoginRefused> {
+        ConfiguringClient::log_in(self.address, name).await
     }
 
     /// Asks for the server-list status like the multiplayer screen does.

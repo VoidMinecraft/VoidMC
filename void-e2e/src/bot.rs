@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,7 @@ use azalea_protocol::common::movements::MoveFlags;
 use azalea_protocol::common::tags::TagMap;
 use azalea_protocol::connect::{Connection, ReadConnection, WriteConnection};
 use azalea_protocol::packets::config::{
-    ClientboundConfigPacket, s_client_information,
+    ClientboundConfigPacket, ServerboundConfigPacket, s_client_information,
     s_finish_configuration::ServerboundFinishConfiguration,
     s_keep_alive::ServerboundKeepAlive as ConfigKeepAlive,
     s_select_known_packs::ServerboundSelectKnownPacks,
@@ -53,6 +54,51 @@ pub struct BotOptions {
 impl Default for BotOptions {
     fn default() -> Self {
         Self { view_distance: 8 }
+    }
+}
+
+/// The server refused a login: what its Login Disconnect said. The server
+/// closed the connection after it.
+#[derive(Clone, Debug)]
+pub struct LoginRefused {
+    /// The reason as the vanilla client shows it, in English.
+    pub reason: String,
+    /// The reason's text component in its JSON form, for example
+    /// `{"translate": "multiplayer.disconnect.server_full"}`.
+    pub component: serde_json::Value,
+}
+
+impl fmt::Display for LoginRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.reason, self.component)
+    }
+}
+
+/// A client that logged in, then stays in the configuration state without
+/// answering anything: it holds its connection open but never plays.
+pub struct ConfiguringClient {
+    name: String,
+    connection: Connection<ClientboundConfigPacket, ServerboundConfigPacket>,
+}
+
+impl ConfiguringClient {
+    pub(crate) async fn log_in(address: SocketAddr, name: &str) -> Result<Self, LoginRefused> {
+        let uuid = azalea_crypto::offline::generate_uuid(name);
+        let (connection, _) =
+            timeout(&format!("{name} to log in"), log_in(address, name, uuid)).await?;
+        Ok(Self {
+            name: name.to_string(),
+            connection,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Closes the connection like a client quitting during configuration.
+    pub async fn disconnect(mut self) {
+        let _ = self.connection.writer.shutdown().await;
     }
 }
 
@@ -105,12 +151,22 @@ pub struct Bot {
 
 impl Bot {
     pub(crate) async fn join(address: SocketAddr, name: &str, options: BotOptions) -> Self {
+        Self::try_join(address, name, options)
+            .await
+            .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"))
+    }
+
+    pub(crate) async fn try_join(
+        address: SocketAddr,
+        name: &str,
+        options: BotOptions,
+    ) -> Result<Self, LoginRefused> {
         let uuid = azalea_crypto::offline::generate_uuid(name);
         let (connection, transcript, registries) = timeout(
             &format!("{name} to log in"),
             login(address, name, uuid, &options),
         )
-        .await;
+        .await?;
         let (read, write) = connection.into_split();
         let shared = Arc::new(Shared {
             inbox: Mutex::new(Inbox {
@@ -136,7 +192,7 @@ impl Bot {
         .await;
         let entity_id = bot.lock().view.entity_id;
         bot.entity_id = entity_id.expect("spawned bots have an id");
-        bot
+        Ok(bot)
     }
 
     pub fn name(&self) -> &str {
@@ -368,17 +424,20 @@ pub(crate) async fn status(address: SocketAddr) -> ClientboundStatusResponse {
     }
 }
 
-async fn login(
+/// Logs in up to the configuration state, or returns the server's refusal
+/// once the server has closed the connection after it.
+async fn log_in(
     address: SocketAddr,
     name: &str,
     uuid: Uuid,
-    options: &BotOptions,
-) -> (
-    Connection<ClientboundGamePacket, ServerboundGamePacket>,
-    JoinTranscript,
-    RegistryHolder,
-) {
-    let mut transcript = JoinTranscript::default();
+) -> Result<
+    (
+        Connection<ClientboundConfigPacket, ServerboundConfigPacket>,
+        Option<i32>,
+    ),
+    LoginRefused,
+> {
+    let mut compression_threshold = None;
     let mut connection = Connection::new(&address)
         .await
         .unwrap_or_else(|error| panic!("{name} could not connect to {address}: {error}"));
@@ -404,7 +463,7 @@ async fn login(
     loop {
         match connection.read().await {
             Ok(ClientboundLoginPacket::LoginCompression(packet)) => {
-                transcript.compression_threshold = Some(packet.compression_threshold);
+                compression_threshold = Some(packet.compression_threshold);
                 connection.set_compression_threshold(packet.compression_threshold);
             }
             Ok(ClientboundLoginPacket::LoginFinished(packet)) => {
@@ -420,14 +479,45 @@ async fn login(
                     .write(ServerboundLoginAcknowledged {})
                     .await
                     .expect("login acknowledged");
-                break;
+                return Ok((connection.config(), compression_threshold));
+            }
+            Ok(ClientboundLoginPacket::LoginDisconnect(packet)) => {
+                let refused = LoginRefused {
+                    reason: packet.reason.to_string(),
+                    component: serde_json::to_value(&packet.reason)
+                        .expect("a text component serializes to JSON"),
+                };
+                match connection.read().await {
+                    Err(_) => return Err(refused),
+                    Ok(other) => panic!(
+                        "{name} got {other:?} after being refused ({refused}) instead of the connection closing"
+                    ),
+                }
             }
             Ok(other) => panic!("{name} got an unexpected login packet: {other:?}"),
             Err(error) => panic!("{name} failed to read a login packet: {error}"),
         }
     }
+}
 
-    let mut connection = connection.config();
+async fn login(
+    address: SocketAddr,
+    name: &str,
+    uuid: Uuid,
+    options: &BotOptions,
+) -> Result<
+    (
+        Connection<ClientboundGamePacket, ServerboundGamePacket>,
+        JoinTranscript,
+        RegistryHolder,
+    ),
+    LoginRefused,
+> {
+    let (mut connection, compression_threshold) = log_in(address, name, uuid).await?;
+    let mut transcript = JoinTranscript {
+        compression_threshold,
+        ..Default::default()
+    };
     connection
         .write(s_client_information::ServerboundClientInformation {
             information: ClientInformation {
@@ -485,7 +575,7 @@ async fn login(
     }
 
     transcript.registry_data = registries.clone();
-    (connection.game(), transcript, registries)
+    Ok((connection.game(), transcript, registries))
 }
 
 async fn read_loop(
