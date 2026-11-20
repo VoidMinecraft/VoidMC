@@ -1,17 +1,20 @@
 //! VMC-ATP-025: the TPS CSV a server writes with `metrics_debug(true)` and
 //! `metrics_tps_output(path)`, and what it does without them or with an
-//! unusable path. The example binary's environment variables and flame
+//! unusable path; and the slow-tick warnings `slow_tick_ms` sets off with
+//! `metrics_debug(true)`. The example binary's environment variables and flame
 //! traces are covered by `void-example/tests/diagnostics.rs`.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bevy_app::PostUpdate;
+use bevy_app::{PostUpdate, Update};
+use bevy_ecs::prelude::{ResMut, Resource};
 use bevy_ecs::schedule::{ScheduleError, Schedules, SystemSet};
 use bevy_ecs::world::World;
 use tracing::Level;
 use voidmc::VoidSystems;
-use voidmc_e2e::TestServer;
+use voidmc_e2e::{LogRecord, TestServer};
 
 const HEADER: &str = "timestamp_ms,tps,window_ms,last_tick_ms,total_ticks";
 
@@ -198,4 +201,137 @@ async fn an_unusable_tps_path_is_a_warning_and_the_server_runs_on() {
     server.stop().await;
 
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+}
+
+/// The target of the warnings [`work_as_planned`] logs before it works.
+const WORK_MARKER: &str = "atp_025::work";
+
+/// The work planned for the coming ticks, one entry per tick: a tick whose
+/// entry holds a duration works (sleeps) that long in `Update`.
+#[derive(Resource, Default)]
+struct PlannedWork(VecDeque<Option<Duration>>);
+
+fn work_as_planned(mut plan: ResMut<PlannedWork>) {
+    if let Some(Some(work)) = plan.0.pop_front() {
+        // Marks the tick in the captured logs, in order with the server's
+        // own warnings: both are logged on the game thread.
+        tracing::warn!(target: WORK_MARKER, "working {} ms", work.as_millis());
+        std::thread::sleep(work);
+    }
+}
+
+fn is_slow_tick_warning(record: &LogRecord) -> bool {
+    record.level == Level::WARN
+        && record.target == "voidmc::metrics"
+        && record.message.starts_with("Slow tick detected")
+}
+
+/// The work time, in milliseconds, a slow-tick warning reports.
+fn reported_work_ms(record: &LogRecord) -> f64 {
+    record
+        .message
+        .split_once(" tick_work_ms=")
+        .and_then(|(_, rest)| rest.split(' ').next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| panic!("no tick_work_ms in {record}"))
+}
+
+/// #191: `slow_tick_ms` is compared with the time a tick spends working, from
+/// the start of `First` to the end of `Last`, not with the interval between
+/// ticks, which includes the scheduler's wait. At 10 ticks per second that
+/// interval is about 100 ms, so a 40 ms threshold used to warn on every tick.
+/// The margins, 40 ms between an idle tick and the threshold and 40 ms
+/// between the threshold and the shortest planned work, hold on a loaded
+/// machine.
+#[tokio::test]
+async fn slow_tick_warnings_report_the_ticks_that_work_longer_than_the_threshold() {
+    let dir = TempDir::new("slow-ticks");
+    let output = dir.0.join("tps.csv").display().to_string();
+    let server = TestServer::builder()
+        .config(|config| {
+            config
+                .tick_rate(10)
+                .metrics_debug(true)
+                .metrics_tps_output(output)
+                .slow_tick_ms(40)
+        })
+        .plugin(|app| {
+            app.init_resource::<PlannedWork>()
+                .add_systems(Update, work_as_planned);
+        })
+        .start()
+        .await;
+
+    // The first ticks build the schedules, real work that may be slow; then
+    // an idle server runs 30 ticks of about 100 ms without a warning.
+    server.wait_ticks(3).await;
+    let idle_from = server.logs().len();
+    server.wait_ticks(30).await;
+    let idle: Vec<String> = server.logs()[idle_from..]
+        .iter()
+        .filter(|record| is_slow_tick_warning(record))
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        idle.is_empty(),
+        "an idle server warned of {} slow tick(s):\n{}",
+        idle.len(),
+        idle.join("\n")
+    );
+
+    // Three ticks work longer than the threshold, two idle ticks after each.
+    let planned = [80, 80, 120];
+    let busy_from = server.logs().len();
+    server
+        .with_world(move |world| {
+            let mut plan = world.resource_mut::<PlannedWork>();
+            for work in planned {
+                plan.0.push_back(Some(Duration::from_millis(work)));
+                plan.0.extend([None, None]);
+            }
+        })
+        .await;
+    server
+        .wait_for("the planned ticks to have run", |world| {
+            world.resource::<PlannedWork>().0.is_empty().then_some(())
+        })
+        .await;
+    // A late or stray warning would show up in these ticks.
+    server.wait_ticks(3).await;
+
+    let events: Vec<LogRecord> = server.logs()[busy_from..]
+        .iter()
+        .filter(|record| record.target == WORK_MARKER || is_slow_tick_warning(record))
+        .cloned()
+        .collect();
+    let listing = events
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        events.len(),
+        2 * planned.len(),
+        "one warning per working tick:\n{listing}"
+    );
+    for (pair, work) in events.chunks(2).zip(planned) {
+        assert_eq!(pair[0].target, WORK_MARKER, "{listing}");
+        assert_eq!(pair[0].message, format!("working {work} ms"), "{listing}");
+        assert!(
+            is_slow_tick_warning(&pair[1]),
+            "the working tick is reported right after it:\n{listing}"
+        );
+        assert!(
+            reported_work_ms(&pair[1]) >= work as f64,
+            "the warning reports the {work} ms of work: {}",
+            pair[1]
+        );
+        assert!(
+            pair[1].message.contains(" slow_tick_ms=40"),
+            "the warning names the threshold: {}",
+            pair[1]
+        );
+    }
+
+    server.stop().await;
 }
