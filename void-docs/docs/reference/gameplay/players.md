@@ -26,14 +26,15 @@ The server sends a burst of packets to set up the client:
 1. **Play Login** — Game settings (entity ID, dimensions, game mode, view distance, etc.)
 2. **EntityEvent** — The player's permission level (status 28 with `Operator`, 24 without)
 3. **Commands** — Protocol command tree for tab-completion, holding only the commands the player may run
-4. **GameEvent(StartWaitingForLevelChunks)** — Tells the client to show the loading screen
-5. **SetCenterChunk** — Sets the client's chunk loading center
-6. **ChunkBatchStart** — Opens the batch of initial chunks
-7. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready
-8. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
-9. **ChunkBatchFinished** — Closes the batch with its chunk count
+4. **SetDefaultSpawnPosition** — The world spawn point the client shows and points compasses at: the block of the configured spawn position (its Y from the generator's surface when none is configured) in the overworld, with yaw and pitch `0`. Sent once, where vanilla sends it: the last level information before the wait for chunks
+5. **GameEvent(StartWaitingForLevelChunks)** — Tells the client to show the loading screen
+6. **SetCenterChunk** — Sets the client's chunk loading center
+7. **ChunkBatchStart** — Opens the batch of initial chunks
+8. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready. The chunk the player stands in is always sent: when it is not loaded (a spawn moved after startup, a negative `spawn_chunk_radius` set on the `ServerConfig` field), the join takes it from the `ChunkLoaderResource` if one is installed, or generates it, and adds it to the world
+9. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
+10. **ChunkBatchFinished** — Closes the batch with its chunk count
 
-An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive. The vanilla client answers the batch with `ChunkBatchReceived`, which the server accepts and ignores.
+An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive. The vanilla client leaves its loading screen, and sends `PlayerLoaded`, only once it holds the chunk it stands in, hence that chunk is never left to streaming. The vanilla client answers the batch with `ChunkBatchReceived`, which the server accepts and ignores.
 
 ### 3. PlayerJoinEvent
 

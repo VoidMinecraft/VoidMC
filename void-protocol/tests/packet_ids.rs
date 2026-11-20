@@ -150,6 +150,10 @@ const SPECS: &[EnumSpec] = &[
             ("ChunkBatchStart", "minecraft:chunk_batch_start"),
             ("SetCenterChunk", "minecraft:set_chunk_cache_center"),
             ("SetCursorItem", "minecraft:set_cursor_item"),
+            (
+                "SetDefaultSpawnPosition",
+                "minecraft:set_default_spawn_position",
+            ),
             ("SetEntityData", "minecraft:set_entity_data"),
             ("SetHeldSlot", "minecraft:set_held_slot"),
             ("ResetScore", "minecraft:reset_score"),

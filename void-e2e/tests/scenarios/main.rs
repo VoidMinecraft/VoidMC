@@ -40,7 +40,7 @@ mod inventory;
 mod players;
 mod world;
 
-use voidmc_e2e::Bot;
+use voidmc::components::PlayerReady;
 use voidmc_e2e::core::direction::Direction;
 use voidmc_e2e::core::position::{BlockPos, Vec3};
 use voidmc_e2e::inventory::ItemStack;
@@ -50,6 +50,7 @@ use voidmc_e2e::protocol::packets::game::s_interact::InteractionHand;
 use voidmc_e2e::protocol::packets::game::s_use_item_on::{BlockHit, ServerboundUseItemOn};
 use voidmc_e2e::protocol::packets::{Packet, ProtocolPacket};
 use voidmc_e2e::registry::builtin::ItemKind;
+use voidmc_e2e::{Bot, TestServer};
 
 /// `packet` as a client writes it, its id then its body, for a test to alter.
 fn raw<P: ProtocolPacket + std::fmt::Debug>(packet: impl Packet<P>) -> Vec<u8> {
@@ -143,6 +144,17 @@ fn ground(bot: &Bot) -> BlockPos {
     let feet = feet(bot);
     bot.view(|view| view.ground_below(feet))
         .unwrap_or_else(|| panic!("{} holds no chunk under its feet", bot.name()))
+}
+
+/// Waits until the server counts the bot's player as ready, as it does once
+/// the client reports it has loaded the world around it.
+async fn wait_until_ready(server: &TestServer, bot: &Bot) {
+    let player = server.player_entity(bot.uuid()).await;
+    server
+        .wait_for("the player to be ready", move |world| {
+            world.get::<PlayerReady>(player).map(|_| ())
+        })
+        .await;
 }
 
 /// The six slots a player is shown with, in Set Equipment order.

@@ -36,7 +36,7 @@ use voidmc_e2e::protocol::simdnbt::owned::NbtCompound;
 use voidmc_e2e::{Bot, LoginRefused, TestServer};
 use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 
-use crate::{feet, ground};
+use crate::{feet, ground, wait_until_ready};
 
 fn square(center: ChunkPos, radius: i32) -> HashSet<ChunkPos> {
     (-radius..=radius)
@@ -899,6 +899,58 @@ async fn negative_distances_are_read_as_zero() {
     assert_eq!(loaded(&alice), square(own, 0));
     ground(&alice);
 
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A negative `spawn_chunk_radius` is read as 0, which still pre-generates
+/// the spawn chunk: the player gets the chunk it stands in and leaves its
+/// loading screen.
+#[tokio::test]
+async fn a_negative_spawn_chunk_radius_still_pregenerates_the_spawn_chunk() {
+    let server = TestServer::builder()
+        .config(|config| config.spawn_chunk_radius(-1))
+        .start()
+        .await;
+    let at_startup = startup_chunks(&server).await;
+
+    let alice = server.join("Alice").await;
+    wait_until_ready(&server, &alice).await;
+    let own = ChunkPos::from(feet(&alice));
+    assert_eq!(
+        ground(&alice).y,
+        feet(&alice).y - 1,
+        "a floor under the player"
+    );
+    assert_eq!(
+        at_startup,
+        square(own, 0),
+        "only the spawn chunk was pre-generated"
+    );
+
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A negative radius set on the `ServerConfig` field itself, past the builder,
+/// pre-generates nothing: the join generates the chunk the player stands in.
+#[tokio::test]
+async fn a_negative_spawn_chunk_radius_set_on_the_config_field_lets_players_in() {
+    let server = TestServer::builder()
+        .edit_config(|config| config.spawn_chunk_radius = -1)
+        .start()
+        .await;
+
+    let alice = server.join("Alice").await;
+    wait_until_ready(&server, &alice).await;
+    assert_eq!(
+        ground(&alice).y,
+        feet(&alice).y - 1,
+        "a floor under the player"
+    );
+
+    alice.sync().await;
     alice.assert_healthy();
     server.stop().await;
 }

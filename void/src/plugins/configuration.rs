@@ -10,6 +10,7 @@ use bevy_ecs::{
 use voidmc_protocol::{
     State, clientbound,
     serverbound::{ClientInformation, FinishConfigurationAcknowledged, KnownPacks, PluginMessage},
+    types::BlockPosition,
 };
 
 use crate::{
@@ -23,7 +24,10 @@ use crate::{
     network::PacketEvent,
     players::Players,
     systems::chunk::effective_view_distance,
-    world::{ChunkData, ChunkIndex, ChunkPos, ChunkPosition, DimensionId},
+    world::{
+        ChunkData, ChunkDimension, ChunkIndex, ChunkLoaderResource, ChunkPos, ChunkPosition,
+        DimensionId, load_or_generate,
+    },
 };
 
 /// Plugin handling the configuration phase of the Minecraft protocol.
@@ -112,6 +116,8 @@ fn handle_finish_configuration(
     players: Players,
     chunk_index: Res<ChunkIndex>,
     chunks: Query<(&ChunkPosition, &ChunkData)>,
+    loader: Option<Res<ChunkLoaderResource>>,
+    registries: Option<Res<RegistryDataStore>>,
     settings: Query<&ClientSettings>,
 ) {
     // The join never sends chunks the player's effective view distance would
@@ -196,6 +202,22 @@ fn handle_finish_configuration(
     // drives the client's tab completion).
     super::permissions::send_permissions(world, event.entity, minecraft_entity_id.0);
 
+    // The world spawn point, the last level information vanilla sends before
+    // the client starts waiting for chunks.
+    players.send(
+        event.entity,
+        clientbound::SetDefaultSpawnPosition {
+            dimension: "minecraft:overworld".to_string(),
+            position: BlockPosition {
+                x: config.spawn_x.floor() as i32,
+                y: spawn_y.floor() as i16,
+                z: config.spawn_z.floor() as i32,
+            },
+            yaw: 0.0,
+            pitch: 0.0,
+        },
+    );
+
     // Send GameEvent (Start waiting for level chunks)
     players.send(
         event.entity,
@@ -220,18 +242,41 @@ fn handle_finish_configuration(
     let mut loaded = HashSet::new();
     let mut teleport_sent = false;
 
-    let join_chunks = spawn_chunk.chunks_in_radius(join_radius);
+    // The client leaves its loading screen once it holds the chunk it stands
+    // in, and chunks are streamed only to players that left it. That chunk is
+    // always sent: when it is not loaded (a spawn moved after startup, or no
+    // spawn area), it is loaded or generated here as streaming would.
+    let spawn_key = (DimensionId::Overworld, spawn_chunk);
+    let missing_spawn_chunk = (!chunk_index.0.contains_key(&spawn_key)).then(|| {
+        let mut chunk_data = load_or_generate(
+            loader.as_deref(),
+            &world_gen,
+            DimensionId::Overworld,
+            &spawn_chunk,
+        );
+        if let Some(registries) = &registries {
+            chunk_data.normalize_biomes(registries.biome_count());
+        }
+        chunk_data
+    });
+
+    let join_chunks = spawn_chunk.chunks_in_radius(join_radius.max(0));
     let join_chunk_count = join_chunks.len();
     for pos in join_chunks {
         let key = (DimensionId::Overworld, pos);
-        let chunk_entity = chunk_index.0.get(&key).copied();
-
-        if let Some(chunk_entity) = chunk_entity {
-            if let Ok((chunk_pos, chunk_data)) = chunks.get(chunk_entity) {
-                let pkt = chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z);
-                players.send(event.entity, pkt);
-                loaded.insert(pos);
-            }
+        let packet = match chunk_index.0.get(&key) {
+            Some(&chunk_entity) => chunks
+                .get(chunk_entity)
+                .ok()
+                .map(|(chunk_pos, chunk_data)| chunk_data.to_packet(chunk_pos.0.x, chunk_pos.0.z)),
+            None if pos == spawn_chunk => missing_spawn_chunk
+                .as_ref()
+                .map(|chunk_data| chunk_data.to_packet(pos.x, pos.z)),
+            None => None,
+        };
+        if let Some(packet) = packet {
+            players.send(event.entity, packet);
+            loaded.insert(pos);
         }
 
         // After the first 9 chunks (center 3×3), send the teleport
@@ -261,6 +306,26 @@ fn handle_finish_configuration(
             spawn_y,
             config.spawn_z,
         );
+    }
+
+    if let Some(chunk_data) = missing_spawn_chunk {
+        // Another player joining in the same tick may have added it first.
+        commands.queue(move |world: &mut World| {
+            if world.resource::<ChunkIndex>().0.contains_key(&spawn_key) {
+                return;
+            }
+            let chunk_entity = world
+                .spawn((
+                    ChunkPosition(spawn_chunk),
+                    chunk_data,
+                    ChunkDimension(DimensionId::Overworld),
+                ))
+                .id();
+            world
+                .resource_mut::<ChunkIndex>()
+                .0
+                .insert(spawn_key, chunk_entity);
+        });
     }
 
     // Chunks outside the pre-generated spawn area were skipped. A backlog

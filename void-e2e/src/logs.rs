@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 use tracing::field::{Field, Visit};
@@ -8,8 +9,13 @@ use tracing_subscriber::{EnvFilter, Registry};
 
 static ACTIVE: Mutex<Option<LogCapture>> = Mutex::new(None);
 static INSTALL: Once = Once::new();
+/// Whether the active capture keeps events less severe than warnings, so
+/// that the others are dropped without taking a lock.
+static VERBOSE: AtomicBool = AtomicBool::new(false);
 
-/// A warning or error logged anywhere in the process while a server ran.
+/// An event logged anywhere in the process while a server ran: a warning or
+/// an error, or down to the level the test asked for
+/// ([`TestServerBuilder::capture_logs`](crate::TestServerBuilder::capture_logs)).
 #[derive(Clone, Debug)]
 pub struct LogRecord {
     pub level: Level,
@@ -31,10 +37,21 @@ impl fmt::Display for LogRecord {
     }
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct LogCapture(Arc<Mutex<Vec<LogRecord>>>);
+#[derive(Clone)]
+pub(crate) struct LogCapture {
+    records: Arc<Mutex<Vec<LogRecord>>>,
+    /// The least severe level kept.
+    level: Level,
+}
 
 impl LogCapture {
+    pub(crate) fn new(level: Level) -> Self {
+        Self {
+            records: Arc::default(),
+            level,
+        }
+    }
+
     pub(crate) fn activate(&self) -> ActiveCapture {
         INSTALL.call_once(|| {
             let filter = EnvFilter::try_from_env("VOID_E2E_LOG").unwrap_or_else(|_| "off".into());
@@ -49,12 +66,14 @@ impl LogCapture {
                 );
             }
         });
-        *ACTIVE.lock().unwrap() = Some(self.clone());
+        let mut active = ACTIVE.lock().unwrap();
+        *active = Some(self.clone());
+        VERBOSE.store(self.level > Level::WARN, Ordering::Relaxed);
         ActiveCapture
     }
 
     pub(crate) fn records(&self) -> Vec<LogRecord> {
-        self.0.lock().unwrap().clone()
+        self.records.lock().unwrap().clone()
     }
 }
 
@@ -62,7 +81,9 @@ pub(crate) struct ActiveCapture;
 
 impl Drop for ActiveCapture {
     fn drop(&mut self) {
-        *ACTIVE.lock().unwrap() = None;
+        let mut active = ACTIVE.lock().unwrap();
+        *active = None;
+        VERBOSE.store(false, Ordering::Relaxed);
     }
 }
 
@@ -71,15 +92,18 @@ struct Forward;
 impl<S: Subscriber> Layer<S> for Forward {
     fn on_event(&self, event: &Event<'_>, _: Context<'_, S>) {
         let metadata = event.metadata();
-        if *metadata.level() > Level::WARN {
+        if *metadata.level() > Level::WARN && !VERBOSE.load(Ordering::Relaxed) {
             return;
         }
         let Some(capture) = ACTIVE.lock().unwrap().clone() else {
             return;
         };
+        if *metadata.level() > capture.level {
+            return;
+        }
         let mut message = MessageVisitor(String::new());
         event.record(&mut message);
-        capture.0.lock().unwrap().push(LogRecord {
+        capture.records.lock().unwrap().push(LogRecord {
             level: *metadata.level(),
             target: metadata.target().to_string(),
             message: message.0,
