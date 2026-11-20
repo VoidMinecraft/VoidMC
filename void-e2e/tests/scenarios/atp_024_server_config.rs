@@ -26,8 +26,8 @@ use bevy_ecs::prelude::*;
 use voidmc::components::{LoadedChunks, PlayerUuid};
 use voidmc::events::PlayerJoinEvent;
 use voidmc::{
-    ChunkIndex, DefaultWorldGenerator, FrameLimits, RegistryDataStore, ServerConfigBuilder,
-    SpawnPosition, WorldGenerator, default_registry_data,
+    ChunkIndex, DefaultWorldGenerator, FrameLimits, RegistriesAlreadySent, RegistryDataStore,
+    ServerConfigBuilder, SpawnPosition, WorldGenerator, default_registry_data,
 };
 use voidmc_e2e::core::game_type::GameMode;
 use voidmc_e2e::core::position::{ChunkPos, Vec3};
@@ -190,8 +190,9 @@ async fn every_option_reaches_the_client_or_the_running_server() {
                 .compression_threshold(Some(128))
                 .world_generator(flat())
                 .configure_registries(|registries| {
-                    let removed =
-                        registries.remove_entry("minecraft:painting_variant", "minecraft:alban");
+                    let removed = registries
+                        .remove_entry("minecraft:painting_variant", "minecraft:alban")
+                        .expect("no client has the registries yet");
                     assert!(removed.is_some(), "the default registries hold alban");
                 })
         })
@@ -447,36 +448,35 @@ async fn registries_change_until_a_client_receives_them() {
     let server = TestServer::builder()
         .config(|config| {
             config.configure_registries(|registries| {
+                const UNSENT: &str = "no client has the registries yet";
                 let aztec = registries
                     .get_entry(PAINTINGS, "minecraft:aztec")
                     .expect("the aztec painting")
                     .data
                     .clone();
-                registries.add_entry(
-                    PAINTINGS,
-                    RegistryEntry {
-                        entry_id: "atp024:early".into(),
-                        data: aztec.clone(),
-                    },
-                );
-                assert!(
-                    registries
-                        .remove_entry(PAINTINGS, "minecraft:alban")
-                        .is_some()
-                );
+                let early = RegistryEntry {
+                    entry_id: "atp024:early".into(),
+                    data: aztec.clone(),
+                };
+                registries.add_entry(PAINTINGS, early).expect(UNSENT);
+                let alban = registries.remove_entry(PAINTINGS, "minecraft:alban");
+                assert!(alban.expect(UNSENT).is_some());
                 registries
                     .get_entry_mut(PAINTINGS, "minecraft:kebab")
+                    .expect(UNSENT)
                     .expect("the kebab painting")
                     .data = aztec;
                 registries
                     .get_registry_mut("minecraft:wolf_variant")
+                    .expect(UNSENT)
                     .expect("the wolf variants")
                     .entries
                     .reverse();
                 let cats = registries
                     .remove_registry("minecraft:cat_variant")
+                    .expect(UNSENT)
                     .expect("the cat variants");
-                registries.add_registry(cats);
+                registries.add_registry(cats).expect(UNSENT);
             })
         })
         .start()
@@ -495,7 +495,7 @@ async fn registries_change_until_a_client_receives_them() {
     let cats = expected.remove(cats);
     expected.push(cats);
     let configured = server
-        .with_world(|world| names_of(&world.resource::<RegistryDataStore>().registries))
+        .with_world(|world| names_of(world.resource::<RegistryDataStore>().registries()))
         .await;
     assert_eq!(configured, expected, "every change before login applies");
 
@@ -507,7 +507,7 @@ async fn registries_change_until_a_client_receives_them() {
     assert_eq!(painting(&first, "minecraft:kebab"), aztec);
     assert_eq!(painting(&first, "atp024:early"), aztec);
 
-    server
+    let refused = server
         .with_world(|world| {
             let mut registries = world.resource_mut::<RegistryDataStore>();
             let aztec = registries
@@ -515,27 +515,57 @@ async fn registries_change_until_a_client_receives_them() {
                 .expect("the aztec painting")
                 .data
                 .clone();
-            registries.add_entry(
-                PAINTINGS,
-                RegistryEntry {
-                    entry_id: "atp024:late".into(),
-                    data: aztec.clone(),
-                },
-            );
-            registries.remove_entry(PAINTINGS, "minecraft:aztec");
-            if let Some(entry) = registries.get_entry_mut(PAINTINGS, "minecraft:bust") {
-                entry.data = aztec;
-            }
-            if let Some(registry) = registries.get_registry_mut("minecraft:chicken_variant") {
-                registry.entries.reverse();
-            }
-            registries.add_registry(RegistryData {
-                registry_id: "atp024:late".into(),
-                entries: Vec::new(),
-            });
-            registries.remove_registry("minecraft:frog_variant");
+            let late = RegistryEntry {
+                entry_id: "atp024:late".into(),
+                data: aztec.clone(),
+            };
+            vec![
+                ("add_entry", registries.add_entry(PAINTINGS, late)),
+                (
+                    "remove_entry",
+                    registries
+                        .remove_entry(PAINTINGS, "minecraft:aztec")
+                        .map(drop),
+                ),
+                (
+                    "get_entry_mut",
+                    registries
+                        .get_entry_mut(PAINTINGS, "minecraft:bust")
+                        .map(|entry| {
+                            if let Some(entry) = entry {
+                                entry.data = aztec;
+                            }
+                        }),
+                ),
+                (
+                    "get_registry_mut",
+                    registries
+                        .get_registry_mut("minecraft:chicken_variant")
+                        .map(|registry| {
+                            if let Some(registry) = registry {
+                                registry.entries.reverse();
+                            }
+                        }),
+                ),
+                (
+                    "add_registry",
+                    registries.add_registry(RegistryData {
+                        registry_id: "atp024:late".into(),
+                        entries: Vec::new(),
+                    }),
+                ),
+                (
+                    "remove_registry",
+                    registries
+                        .remove_registry("minecraft:frog_variant")
+                        .map(drop),
+                ),
+            ]
         })
         .await;
+    for (change, result) in refused {
+        assert_eq!(result, Err(RegistriesAlreadySent), "{change} after login");
+    }
 
     let bob = server.join("Bob").await;
     let second = received(&bob);
@@ -547,7 +577,7 @@ async fn registries_change_until_a_client_receives_them() {
     assert_eq!(bob.transcript().registries, alice.transcript().registries);
     assert!(second == first, "Bob was sent exactly what Alice got");
     let after = server
-        .with_world(|world| names_of(&world.resource::<RegistryDataStore>().registries))
+        .with_world(|world| names_of(world.resource::<RegistryDataStore>().registries()))
         .await;
     assert_eq!(after, configured, "the store kept what Alice got");
 

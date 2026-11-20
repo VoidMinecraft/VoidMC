@@ -1,15 +1,36 @@
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 
+/// A registry change refused because a client already received the
+/// registries: its ids would no longer match the server's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistriesAlreadySent;
+
+impl fmt::Display for RegistriesAlreadySent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "a client already received the registries; change them in \
+             ServerConfigBuilder::configure_registries or a plugin, before any client logs in"
+        )
+    }
+}
+
+impl std::error::Error for RegistriesAlreadySent {}
+
 /// Stores all registry data sent to clients during configuration.
 ///
 /// Use the mutation methods to add, remove, or edit individual registries
-/// and entries without replacing the entire set.
+/// and entries without replacing the entire set. They succeed until the
+/// first client receives the registries; from then on each returns
+/// [`RegistriesAlreadySent`] and leaves the store unchanged, so every client
+/// is sent the same registries. Reading works at any time.
 #[derive(Resource)]
 pub struct RegistryDataStore {
-    pub registries: Vec<RegistryData>,
+    registries: Vec<RegistryData>,
     sent: AtomicBool,
 }
 
@@ -23,8 +44,8 @@ impl Default for RegistryDataStore {
 }
 
 impl RegistryDataStore {
-    /// Whether any client has already received these registries; mutations
-    /// after that point desynchronise ids (see `BiomeBuilder::register`).
+    /// Whether any client has already received these registries; every
+    /// mutation is refused with [`RegistriesAlreadySent`] from then on.
     pub fn sent_to_clients(&self) -> bool {
         self.sent.load(Ordering::Relaxed)
     }
@@ -33,39 +54,73 @@ impl RegistryDataStore {
         self.sent.store(true, Ordering::Relaxed);
     }
 
+    fn ensure_unsent(&self) -> Result<(), RegistriesAlreadySent> {
+        if self.sent_to_clients() {
+            Err(RegistriesAlreadySent)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Every registry, in the order they are sent.
+    pub fn registries(&self) -> &[RegistryData] {
+        &self.registries
+    }
+
     /// Look up a registry by its id (e.g. `"minecraft:worldgen/biome"`).
     pub fn get_registry(&self, id: &str) -> Option<&RegistryData> {
         self.registries.iter().find(|r| r.registry_id == id)
     }
 
     /// Look up a registry mutably by its id.
-    pub fn get_registry_mut(&mut self, id: &str) -> Option<&mut RegistryData> {
-        self.registries.iter_mut().find(|r| r.registry_id == id)
+    pub fn get_registry_mut(
+        &mut self,
+        id: &str,
+    ) -> Result<Option<&mut RegistryData>, RegistriesAlreadySent> {
+        self.ensure_unsent()?;
+        Ok(self.registries.iter_mut().find(|r| r.registry_id == id))
     }
 
     /// Append a whole new registry.
-    pub fn add_registry(&mut self, registry: RegistryData) {
+    pub fn add_registry(&mut self, registry: RegistryData) -> Result<(), RegistriesAlreadySent> {
+        self.ensure_unsent()?;
         self.registries.push(registry);
+        Ok(())
     }
 
     /// Remove a registry by its id, returning it if found.
-    pub fn remove_registry(&mut self, id: &str) -> Option<RegistryData> {
-        let pos = self.registries.iter().position(|r| r.registry_id == id)?;
-        Some(self.registries.remove(pos))
+    pub fn remove_registry(
+        &mut self,
+        id: &str,
+    ) -> Result<Option<RegistryData>, RegistriesAlreadySent> {
+        self.ensure_unsent()?;
+        let pos = self.registries.iter().position(|r| r.registry_id == id);
+        Ok(pos.map(|pos| self.registries.remove(pos)))
     }
 
     /// Add an entry to an existing registry.
-    pub fn add_entry(&mut self, registry_id: &str, entry: RegistryEntry) {
-        if let Some(reg) = self.get_registry_mut(registry_id) {
+    pub fn add_entry(
+        &mut self,
+        registry_id: &str,
+        entry: RegistryEntry,
+    ) -> Result<(), RegistriesAlreadySent> {
+        if let Some(reg) = self.get_registry_mut(registry_id)? {
             reg.entries.push(entry);
         }
+        Ok(())
     }
 
     /// Remove an entry from a registry, returning it if found.
-    pub fn remove_entry(&mut self, registry_id: &str, entry_id: &str) -> Option<RegistryEntry> {
-        let reg = self.get_registry_mut(registry_id)?;
-        let pos = reg.entries.iter().position(|e| e.entry_id == entry_id)?;
-        Some(reg.entries.remove(pos))
+    pub fn remove_entry(
+        &mut self,
+        registry_id: &str,
+        entry_id: &str,
+    ) -> Result<Option<RegistryEntry>, RegistriesAlreadySent> {
+        let Some(reg) = self.get_registry_mut(registry_id)? else {
+            return Ok(None);
+        };
+        let pos = reg.entries.iter().position(|e| e.entry_id == entry_id);
+        Ok(pos.map(|pos| reg.entries.remove(pos)))
     }
 
     /// Look up a single entry inside a registry.
@@ -81,11 +136,9 @@ impl RegistryDataStore {
         &mut self,
         registry_id: &str,
         entry_id: &str,
-    ) -> Option<&mut RegistryEntry> {
-        self.get_registry_mut(registry_id)?
-            .entries
-            .iter_mut()
-            .find(|e| e.entry_id == entry_id)
+    ) -> Result<Option<&mut RegistryEntry>, RegistriesAlreadySent> {
+        let registry = self.get_registry_mut(registry_id)?;
+        Ok(registry.and_then(|r| r.entries.iter_mut().find(|e| e.entry_id == entry_id)))
     }
 }
 
@@ -129,7 +182,7 @@ mod tests {
 
     fn snapshot(store: &RegistryDataStore) -> Snapshot {
         store
-            .registries
+            .registries()
             .iter()
             .map(|registry| {
                 let entries = registry
@@ -157,15 +210,26 @@ mod tests {
         );
     }
 
+    fn late_entry() -> RegistryEntry {
+        RegistryEntry {
+            entry_id: "test:late".into(),
+            data: None,
+        }
+    }
+
+    fn late_registry() -> RegistryData {
+        RegistryData {
+            registry_id: "test:late".into(),
+            entries: Vec::new(),
+        }
+    }
+
     #[test]
     fn add_entry_is_refused_once_sent() {
         let (mut store, sent) = sent_store();
-        store.add_entry(
-            PAINTINGS,
-            RegistryEntry {
-                entry_id: "test:late".into(),
-                data: None,
-            },
+        assert_eq!(
+            store.add_entry(PAINTINGS, late_entry()),
+            Err(RegistriesAlreadySent)
         );
         assert_unchanged(&store, &sent);
     }
@@ -173,42 +237,103 @@ mod tests {
     #[test]
     fn remove_entry_is_refused_once_sent() {
         let (mut store, sent) = sent_store();
-        store.remove_entry(PAINTINGS, "minecraft:alban");
+        assert!(matches!(
+            store.remove_entry(PAINTINGS, "minecraft:alban"),
+            Err(RegistriesAlreadySent)
+        ));
         assert_unchanged(&store, &sent);
     }
 
     #[test]
     fn get_entry_mut_is_refused_once_sent() {
         let (mut store, sent) = sent_store();
-        if let Some(entry) = store.get_entry_mut(PAINTINGS, "minecraft:alban") {
-            entry.data = None;
-        }
+        assert!(matches!(
+            store.get_entry_mut(PAINTINGS, "minecraft:alban"),
+            Err(RegistriesAlreadySent)
+        ));
         assert_unchanged(&store, &sent);
     }
 
     #[test]
     fn add_registry_is_refused_once_sent() {
         let (mut store, sent) = sent_store();
-        store.add_registry(RegistryData {
-            registry_id: "test:late".into(),
-            entries: Vec::new(),
-        });
+        assert_eq!(
+            store.add_registry(late_registry()),
+            Err(RegistriesAlreadySent)
+        );
         assert_unchanged(&store, &sent);
     }
 
     #[test]
     fn remove_registry_is_refused_once_sent() {
         let (mut store, sent) = sent_store();
-        store.remove_registry(PAINTINGS);
+        assert!(matches!(
+            store.remove_registry(PAINTINGS),
+            Err(RegistriesAlreadySent)
+        ));
         assert_unchanged(&store, &sent);
     }
 
     #[test]
     fn get_registry_mut_is_refused_once_sent() {
         let (mut store, sent) = sent_store();
-        if let Some(registry) = store.get_registry_mut(PAINTINGS) {
-            registry.entries.clear();
-        }
+        assert!(matches!(
+            store.get_registry_mut(PAINTINGS),
+            Err(RegistriesAlreadySent)
+        ));
         assert_unchanged(&store, &sent);
+    }
+
+    #[test]
+    fn reading_works_once_sent() {
+        let (store, sent) = sent_store();
+        assert!(store.get_registry(PAINTINGS).is_some());
+        assert!(store.get_entry(PAINTINGS, "minecraft:alban").is_some());
+        assert_eq!(store.registries().len(), sent.len());
+    }
+
+    #[test]
+    fn every_mutation_applies_before_registries_are_sent() {
+        let mut store = RegistryDataStore::default();
+        let count =
+            |store: &RegistryDataStore| store.get_registry(PAINTINGS).unwrap().entries.len();
+        let paintings = count(&store);
+
+        store.add_entry(PAINTINGS, late_entry()).unwrap();
+        assert!(store.get_entry(PAINTINGS, "test:late").is_some());
+        let removed = store.remove_entry(PAINTINGS, "minecraft:alban").unwrap();
+        assert_eq!(
+            removed.map(|entry| entry.entry_id).as_deref(),
+            Some("minecraft:alban")
+        );
+        store
+            .get_entry_mut(PAINTINGS, "minecraft:kebab")
+            .unwrap()
+            .expect("the kebab painting")
+            .data = None;
+        assert!(
+            store
+                .get_entry(PAINTINGS, "minecraft:kebab")
+                .unwrap()
+                .data
+                .is_none()
+        );
+        store
+            .get_registry_mut(PAINTINGS)
+            .unwrap()
+            .unwrap()
+            .entries
+            .pop();
+        assert_eq!(count(&store), paintings - 1);
+
+        store.add_registry(late_registry()).unwrap();
+        assert!(store.get_registry("test:late").is_some());
+        let removed = store.remove_registry("test:late").unwrap();
+        assert_eq!(
+            removed.map(|registry| registry.registry_id).as_deref(),
+            Some("test:late")
+        );
+        assert!(store.get_registry("test:late").is_none());
+        assert!(!store.sent_to_clients());
     }
 }
