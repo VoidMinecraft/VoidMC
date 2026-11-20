@@ -232,10 +232,13 @@ The `/tp` command shows the underlying steps:
 
 While `pending_id` is `Some`, the server knows a teleportation is in-flight and
 the client has not yet acknowledged it. Like vanilla, the movement handlers
-then ignore the position of `SetPlayerPos`/`SetPlayerPosAndRot` (no
-`PlayerMoveEvent`; the rotation still applies): the client sent them from its
-old position before it processed the teleport, and they would pull the player
-back. Only the latest id confirms; an older, unknown or repeated id is logged
+then ignore every movement packet whole (`SetPlayerPos`, `SetPlayerPosAndRot`,
+`SetPlayerRotation` and `SetPlayerMovementFlags`): neither the position, the
+rotation nor the on-ground flag applies, no `PlayerMoveEvent` or
+`PlayerRotateEvent` fires and the other players are shown nothing. The client
+sent them from its old position before it processed the teleport, and they
+would pull the player back. Only the latest id confirms; an older, unknown or
+repeated id is logged
 at `warn` and ignored. The first position packet after the confirmation (the
 client's echo of the destination) moves the player as usual. This also holds
 after a `Teleport` times out: the player stays at the destination until the

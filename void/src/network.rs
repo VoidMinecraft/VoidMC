@@ -657,6 +657,13 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
+                serverbound::PlayPacket::SetPlayerMovementFlags(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
                 serverbound::PlayPacket::SignedChatCommand(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
