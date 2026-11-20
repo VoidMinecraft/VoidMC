@@ -927,7 +927,10 @@ impl CommandRegistry {
     /// dropped before invoking.
     fn resolve_handler(&self, name: &str, args: &[String]) -> Resolved {
         let Some(cmd) = self.resolve(name).and_then(|name| self.commands.get(name)) else {
-            return Resolved::NotFound(format!("Unknown command: /{}", name));
+            return Resolved::NotFound(format!(
+                "Unknown command: /{}",
+                defaults::strip_illegal_characters(name)
+            ));
         };
         let walk = Walk::new(cmd, args);
         let node = walk.node();
