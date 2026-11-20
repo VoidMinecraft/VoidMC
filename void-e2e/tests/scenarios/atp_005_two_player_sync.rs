@@ -16,6 +16,7 @@
 
 use azalea_entity::{EntityDataValue, LookDirection, Pose};
 use bevy_ecs::world::EntityWorldMut;
+use voidmc::components::Grounded;
 use voidmc::{
     Effect, EffectDuration, Glowing, Inventory, Invisible, ItemStack as ServerItemStack,
     StatusEffects,
@@ -27,11 +28,12 @@ use voidmc_e2e::inventory::components::EquipmentSlot::{
 use voidmc_e2e::protocol::common::movements::MoveFlags;
 use voidmc_e2e::protocol::packets::game::{
     ClientboundGamePacket, s_move_player_pos::ServerboundMovePlayerPos,
-    s_move_player_rot::ServerboundMovePlayerRot, s_player_input::ServerboundPlayerInput,
-    s_set_carried_item::ServerboundSetCarriedItem,
+    s_move_player_rot::ServerboundMovePlayerRot,
+    s_move_player_status_only::ServerboundMovePlayerStatusOnly,
+    s_player_input::ServerboundPlayerInput, s_set_carried_item::ServerboundSetCarriedItem,
 };
 use voidmc_e2e::registry::builtin::ItemKind;
-use voidmc_e2e::{Bot, TestServer};
+use voidmc_e2e::{Bot, LogRecord, TestServer};
 
 use crate::wait_for_equipment;
 
@@ -328,6 +330,75 @@ async fn players_see_each_other_walk_turn_jump_and_crouch() {
 
     act_and_observe(&alice, &bob).await;
     act_and_observe(&bob, &alice).await;
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// The on-ground state the server holds for `bot`'s player.
+async fn server_on_ground(server: &TestServer, bot: &Bot) -> Option<bool> {
+    let entity = server.player_entity(bot.uuid()).await;
+    server
+        .with_world(move |world| world.get::<Grounded>(entity).map(|grounded| grounded.0))
+        .await
+}
+
+/// Reports only the on-ground state, as a vanilla client does when it lands
+/// or takes off without moving or turning that tick.
+async fn report_on_ground(actor: &Bot, on_ground: bool) {
+    actor
+        .send(ServerboundMovePlayerStatusOnly {
+            flags: MoveFlags {
+                on_ground,
+                horizontal_collision: false,
+            },
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn an_on_ground_change_without_movement_is_recorded_and_shown_to_others() {
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let at = alice.position();
+    wait_until_seen_at(&bob, &alice, at, 0.0).await;
+    alice.sync().await;
+    bob.sync().await;
+    bob.clear();
+    let id = alice.entity_id();
+
+    // The bot's answer to the join teleport reports Alice airborne: she
+    // lands, then takes off again, without moving or turning.
+    for on_ground in [true, false] {
+        report_on_ground(&alice, on_ground).await;
+        alice.sync().await;
+        let dropped: Vec<String> = server
+            .logs()
+            .iter()
+            .filter(|record| record.is_failure())
+            .map(LogRecord::to_string)
+            .collect();
+        assert!(
+            dropped.is_empty(),
+            "the server dropped the status-only packet: {dropped:?}"
+        );
+        assert_eq!(
+            server_on_ground(&server, &alice).await,
+            Some(on_ground),
+            "the server did not record Alice's on-ground state"
+        );
+        bob.expect(&format!("Alice's on-ground state {on_ground}"), |packet| {
+            movement_of(id, packet).filter(|moved| moved.on_ground == on_ground)
+        })
+        .await;
+        let seen = seen_position(&bob, &alice);
+        assert!(
+            seen.is_some_and(|seen| seen.distance_to(at) <= 1e-9),
+            "Bob sees Alice moved: {seen:?} vs {at:?}"
+        );
+    }
 
     alice.assert_healthy();
     bob.assert_healthy();
