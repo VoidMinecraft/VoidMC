@@ -9,13 +9,14 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use flume::{Receiver, Sender};
 use tracing::instrument;
+use voidmc_codec::{Decode, DecodeError, Tagged};
 use voidmc_net::socket::Packet;
 use voidmc_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState};
 use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
-use crate::observability::TelemetryHandle;
+use crate::observability::{Telemetry, TelemetryHandle};
 use crate::players::{DisconnectReason, WorldPlayers};
 use crate::schedule::VoidSystems;
 
@@ -312,35 +313,19 @@ pub fn ingest_network_packets(world: &mut World) {
             continue;
         };
 
-        if let Err(e) = dispatch_packet(
+        if let Err(error) = dispatch_packet(
             world,
             incoming_packet.client_id,
             client_entity,
             incoming_packet.packet,
         ) {
-            let unrecognized = matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_));
-            if let Some(telemetry) = &telemetry {
-                if unrecognized {
-                    telemetry.packet_unrecognized();
-                } else {
-                    telemetry.packet_failed();
-                }
-            }
-            if unrecognized {
-                // Unrecognized packet (e.g. one we don't handle yet): expected and
-                // non-fatal, so warn instead of error.
-                tracing::warn!(
-                    "Unrecognized packet from client {}: {}",
-                    incoming_packet.client_id,
-                    e
-                );
-            } else {
-                tracing::error!(
-                    "Failed to handle packet from client {}: {}",
-                    incoming_packet.client_id,
-                    e
-                );
-            }
+            reject_packet(
+                world,
+                telemetry.as_deref(),
+                incoming_packet.client_id,
+                client_entity,
+                error,
+            );
         }
     }
 
@@ -400,6 +385,106 @@ fn close_connections_past_pre_play_timeout(world: &mut World) {
             None => {
                 let _ = world.resource::<NetworkChannels>().kick.send(client_id);
             }
+        }
+    }
+}
+
+/// Why a packet could not be dispatched.
+#[derive(Debug)]
+enum PacketError {
+    /// Its id is not one of the packets VoidMC decodes in the connection's
+    /// state.
+    Unrecognized(voidmc_codec::DecodeError),
+    /// Its id is known, its body did not decode; `packet` is `None` when not
+    /// even the id did.
+    Malformed {
+        packet: Option<(&'static str, i32)>,
+        error: voidmc_codec::DecodeError,
+    },
+}
+
+/// The leading packet id, the rest skipped.
+struct PacketId(i32);
+
+impl Decode for PacketId {
+    fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, DecodeError> {
+        let id = decoder.decode::<voidmc_codec::VarI32>()?.0;
+        decoder.take(decoder.remaining_len())?;
+        Ok(Self(id))
+    }
+}
+
+/// Decodes `packet` as one of `T`'s packets. On failure, tells an id `T`
+/// has no variant for from a known packet whose body is malformed: the
+/// decoder returns the same error for an unknown id and for an invalid enum
+/// value inside a known packet.
+fn decode_packet<T: Decode + Tagged>(packet: &Packet) -> Result<T, PacketError> {
+    packet.decode::<T>().map_err(|error| {
+        let Ok(PacketId(id)) = packet.decode::<PacketId>() else {
+            return PacketError::Malformed {
+                packet: None,
+                error,
+            };
+        };
+        match T::variant_name(id) {
+            Some(name) => PacketError::Malformed {
+                packet: Some((name, id)),
+                error,
+            },
+            None => PacketError::Unrecognized(error),
+        }
+    })
+}
+
+/// What happens to a packet that could not be dispatched, in every state.
+/// An unknown id is dropped: VoidMC does not decode every packet a vanilla
+/// client sends, and those are not the client's fault. A known packet that
+/// does not decode disconnects the client, like vanilla, with vanilla's
+/// "Internal Exception: ..." reason; no disconnect packet exists in the
+/// handshake state, so that connection is just closed.
+fn reject_packet(
+    world: &mut World,
+    telemetry: Option<&Telemetry>,
+    client_id: u32,
+    entity: Entity,
+    error: PacketError,
+) {
+    match error {
+        PacketError::Unrecognized(error) => {
+            if let Some(telemetry) = telemetry {
+                telemetry.packet_unrecognized();
+            }
+            // A packet VoidMC does not handle yet: expected, so a warning.
+            tracing::warn!("Unrecognized packet from client {}: {}", client_id, error);
+        }
+        PacketError::Malformed { packet, error } => {
+            if let Some(telemetry) = telemetry {
+                telemetry.packet_failed();
+            }
+            let state = world.get::<ConnectionState>(entity).map(|state| state.0);
+            let reason = match packet {
+                Some((name, id)) => {
+                    tracing::info!(
+                        client_id,
+                        ?state,
+                        packet = name,
+                        id,
+                        %error,
+                        "Client sent a malformed packet; disconnecting"
+                    );
+                    format!("Internal Exception: Failed to decode packet '{name}' (0x{id:02X})")
+                }
+                None => {
+                    tracing::info!(
+                        client_id,
+                        ?state,
+                        %error,
+                        "Client sent a packet without a valid id; disconnecting"
+                    );
+                    "Internal Exception: Failed to decode packet id".to_string()
+                }
+            };
+            WorldPlayers::new(world).kick_with(entity, DisconnectReason::text(reason));
         }
     }
 }
@@ -523,14 +608,14 @@ fn dispatch_packet(
     client_id: u32,
     entity: Entity,
     packet: Packet,
-) -> Result<(), voidmc_codec::DecodeError> {
+) -> Result<(), PacketError> {
     let state = world
         .get::<ConnectionState>(entity)
         .expect("Client must have a ConnectionState component");
 
     match state.0 {
         voidmc_protocol::State::Handshake => {
-            let packet = packet.decode::<serverbound::HandshakePacket>()?;
+            let packet = decode_packet::<serverbound::HandshakePacket>(&packet)?;
             tracing::debug!("[Client {}][Handshake] Received {:?}", client_id, packet);
 
             match packet {
@@ -542,7 +627,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Status => {
-            let packet = packet.decode::<serverbound::StatusPacket>()?;
+            let packet = decode_packet::<serverbound::StatusPacket>(&packet)?;
             tracing::debug!("[Client {}][Status] Received {:?}", client_id, packet);
 
             match packet {
@@ -559,7 +644,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Login => {
-            let packet = packet.decode::<serverbound::LoginPacket>()?;
+            let packet = decode_packet::<serverbound::LoginPacket>(&packet)?;
             tracing::debug!("[Client {}][Login] Received {:?}", client_id, packet);
 
             match packet {
@@ -576,7 +661,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Configuration => {
-            let packet = packet.decode::<serverbound::ConfigurationPacket>()?;
+            let packet = decode_packet::<serverbound::ConfigurationPacket>(&packet)?;
             tracing::debug!(
                 "[Client {}][Configuration] Received {:?}",
                 client_id,
@@ -614,7 +699,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Play => {
-            let packet = packet.decode::<serverbound::PlayPacket>()?;
+            let packet = decode_packet::<serverbound::PlayPacket>(&packet)?;
             tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
 
             match packet {
@@ -1004,13 +1089,70 @@ mod tests {
         let logs = captured(|| h.app.update());
 
         assert!(logs.contains(tracing::Level::WARN, "Unrecognized packet from client 1"));
-        assert_eq!(logs.errors().len(), 2);
+        assert!(logs.contains(
+            tracing::Level::INFO,
+            "Client sent a malformed packet; disconnecting"
+        ));
+        assert_eq!(logs.errors(), Vec::<String>::new());
+        assert_eq!(
+            h._kick_rx.try_iter().collect::<Vec<_>>(),
+            vec![2, 3],
+            "only the clients that sent a malformed packet are disconnected"
+        );
         let text = telemetry.render_metrics(Instant::now());
         assert!(
             text.contains("\nvoidmc_packets_unrecognized_total 1\n"),
             "{text}"
         );
         assert!(text.contains("\nvoidmc_packet_errors_total 2\n"), "{text}");
+    }
+
+    /// An invalid enum value inside a known packet is malformed, not
+    /// unrecognized, although the decoder reports both with the same error.
+    #[test]
+    fn an_invalid_enum_value_in_a_known_packet_is_malformed() {
+        let mut h = harness();
+        let telemetry = std::sync::Arc::new(crate::observability::Telemetry::new(
+            Duration::from_secs(1),
+            20,
+            100,
+        ));
+        h.app.insert_resource(TelemetryHandle(telemetry.clone()));
+        let rx = h.connect(1);
+        // A handshake whose next state, its last byte, is none of them.
+        let mut bytes = Vec::new();
+        serverbound::HandshakePacket::Handshake(serverbound::Handshake {
+            protocol_version: PROTOCOL_VERSION,
+            server_address: "localhost".to_string(),
+            server_port: 25565,
+            next_state: voidmc_protocol::State::Login,
+        })
+        .encode(&mut bytes);
+        *bytes.last_mut().unwrap() = 0x7f;
+        assert_eq!(
+            serverbound::HandshakePacket::decode(&mut bytes.as_slice()).unwrap_err(),
+            voidmc_codec::DecodeError::InvalidPacketId(None)
+        );
+        h.incoming_tx
+            .send(IncomingPacket {
+                client_id: 1,
+                packet: raw_packet(bytes),
+            })
+            .unwrap();
+        let logs = captured(|| h.app.update());
+
+        assert_eq!(logs.errors(), Vec::<String>::new());
+        assert!(!logs.contains(tracing::Level::WARN, "Unrecognized packet"));
+        // The handshake state has no disconnect packet: the connection is
+        // just closed.
+        assert_eq!(h._kick_rx.try_iter().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(rx.try_iter().count(), 0);
+        let text = telemetry.render_metrics(Instant::now());
+        assert!(text.contains("\nvoidmc_packet_errors_total 1\n"), "{text}");
+        assert!(
+            text.contains("\nvoidmc_packets_unrecognized_total 0\n"),
+            "{text}"
+        );
     }
 
     #[test]

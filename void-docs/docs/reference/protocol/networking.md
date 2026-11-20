@@ -131,6 +131,24 @@ fn dispatch_packet(world, client_id, entity, packet) {
 }
 ```
 
+### Undecodable Packets
+
+A packet that fails to decode is handled in one place, `ingest_network_packets`,
+the same way in every state; which case applies is decided from its id, through
+the `Tagged` trait of the state's packet enum (an invalid enum value inside a
+known packet fails with the same error as an unknown id, so the error alone
+cannot tell them apart):
+
+| Packet | What happens | Counted in |
+|---|---|---|
+| An id VoidMC has no decoder for in the connection's state | Dropped with a WARN (`Unrecognized packet from client …`); the client stays connected. VoidMC does not decode every packet a vanilla client sends, so these are not the client's fault. | `voidmc_packets_unrecognized_total` |
+| A known id whose body does not decode: an invalid enum value, a truncated body, trailing bytes, a string or collection over its decode limit, … | The client is disconnected, like vanilla, with the reason `Internal Exception: Failed to decode packet '<name>' (0x<id>)`, sent in its state's disconnect packet; the connection is closed once it is written. Logged at INFO, since it is the client's fault, not the server's. | `voidmc_packet_errors_total` and `voidmc_clients_kicked_total` |
+
+The disconnect packet is the play `Disconnect`, the configuration `Disconnect` or
+the `LoginDisconnect`; a malformed handshake has none, so its connection is just
+closed. Status requests are answered on the network thread, which closes a
+connection whose status packet does not decode (`voidmc_connection_errors_total{kind="decode"}`).
+
 ## Keep-Alive System
 
 The server sends periodic keep-alive packets to detect dead connections:
