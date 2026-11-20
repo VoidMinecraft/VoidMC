@@ -368,6 +368,30 @@ impl TestServer {
         self.assert_no_failures();
     }
 
+    /// Stops the server like [`TestServer::stop`], except that the failures
+    /// `expected` accepts are allowed; returns them, so that the test can
+    /// check that the server logged what it provoked.
+    pub async fn stop_expecting(mut self, expected: impl Fn(&LogRecord) -> bool) -> Vec<LogRecord> {
+        self.shutdown().await;
+        let (expected, unexpected): (Vec<LogRecord>, Vec<LogRecord>) = self
+            .logs
+            .records()
+            .into_iter()
+            .filter(LogRecord::is_failure)
+            .partition(|record| expected(record));
+        assert!(
+            unexpected.is_empty(),
+            "the server logged {} unexpected failure(s):\n{}",
+            unexpected.len(),
+            unexpected
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        expected
+    }
+
     /// Waits for the server to stop on its own, for example after a player
     /// ran `/stop`, without asking it to; then fails like [`TestServer::stop`].
     /// Returns what `VoidServer::run` returned.

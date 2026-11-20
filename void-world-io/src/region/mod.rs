@@ -112,6 +112,43 @@ mod tests {
         vec![tag; 100]
     }
 
+    /// The region file of chunk (0, 0) in the overworld.
+    fn region_0_0(root: &std::path::Path) -> PathBuf {
+        root.join("region/overworld/r.0.0.vrm")
+    }
+
+    /// XORs the compressed bytes of the only chunk stored in `path`, which
+    /// sits in the first sector after the header.
+    fn damage_only_chunk(path: &std::path::Path) {
+        let mut file = std::fs::read(path).unwrap();
+        let start = 2 * 4096;
+        let len = u32::from_be_bytes(file[start..start + 4].try_into().unwrap()) as usize;
+        for byte in &mut file[start + 5..start + 4 + len] {
+            *byte ^= 0x5A;
+        }
+        std::fs::write(path, file).unwrap();
+    }
+
+    #[test]
+    fn damaged_compressed_data_reads_as_corrupt_not_as_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let pos = ChunkPos::new(0, 0);
+        {
+            let store = RegionChunkStore::new(dir.path());
+            store
+                .write(DimensionId::Overworld, pos, &payload(0x33))
+                .unwrap();
+        }
+        damage_only_chunk(&region_0_0(dir.path()));
+
+        let store = RegionChunkStore::new(dir.path());
+        let result = store.read(DimensionId::Overworld, pos);
+        assert!(
+            matches!(result, Err(crate::PersistenceError::Corrupt(_))),
+            "{result:?}"
+        );
+    }
+
     #[test]
     fn write_then_read_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
