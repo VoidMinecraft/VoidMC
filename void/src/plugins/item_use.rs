@@ -504,11 +504,17 @@ mod tests {
             .add_plugins((InteractionPlugin, ItemUsePlugin));
 
             let chunk_pos = ChunkPos::new(0, 0);
-            let chunk = ChunkData::new(
+            let mut chunk = ChunkData::new(
                 (0..24).map(|_| ChunkSection::empty()).collect(),
                 ChunkHeightmaps::empty(),
                 LightData::empty(),
             );
+            // A stone floor at y = 63 to place blocks on.
+            for x in 0..16 {
+                for z in 0..16 {
+                    chunk.set_block(x, 63, z, 1);
+                }
+            }
             let chunk_entity = app.world_mut().spawn(chunk).id();
             app.world_mut()
                 .resource_mut::<ChunkIndex>()

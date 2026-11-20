@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 
 use bevy_ecs::prelude::Entity;
 use voidmc::components::ClientId;
-use voidmc::world::{ChunkData, ChunkIndex, ChunkPos as ServerChunkPos, DimensionId};
+use voidmc::world::{
+    ChunkData, ChunkIndex, ChunkPos as ServerChunkPos, DimensionId, set_block_state,
+};
 use voidmc::{
     BlockBreakContext, BlockFace, BlockPosition, Hand, Inventory, ItemBehavior,
     ItemBehaviorRegistry, ItemId, ItemStack as ServerItemStack, ItemUseContext, UseResult,
@@ -33,7 +35,7 @@ use voidmc_e2e::protocol::packets::game::{
 use voidmc_e2e::registry::builtin::{BlockKind, ItemKind};
 use voidmc_e2e::{Bot, TestServer};
 
-use crate::ground;
+use crate::{feet, ground};
 
 const MAIN_HAND_SLOT: u16 = 36;
 const OFF_HAND_SLOT: u16 = 45;
@@ -344,6 +346,75 @@ async fn the_example_wand_places_glowstone_once_per_click_for_everyone() {
     );
 
     for bot in [&alice, &bob, &carol] {
+        bot.assert_healthy();
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn a_behavior_placing_a_block_overwrites_what_the_default_placement_would_not() {
+    let server = TestServer::builder()
+        .plugin(|app| {
+            app.world_mut()
+                .resource_mut::<ItemBehaviorRegistry>()
+                .register_for("minecraft:stick", WandBehavior);
+        })
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+
+    // A stone on the block the wand clicks, and the block Alice stands in:
+    // the default placement refuses both, `place_block` forces them.
+    let clicked = support(&alice);
+    let occupied = clicked.up(1);
+    let below_alice = ground(&alice);
+    assert_eq!(
+        below_alice.up(1),
+        feet(&alice),
+        "Alice stands on the ground"
+    );
+    let stone = block_state("minecraft:stone");
+    server
+        .with_world(move |world| {
+            set_block_state(
+                world,
+                DimensionId::Overworld,
+                to_server(occupied),
+                stone,
+                None,
+            );
+        })
+        .await;
+    hold(&alice, MAIN_HAND_SLOT, Some((ItemKind::Stick, 1))).await;
+    alice.sync().await;
+
+    use_on(
+        &alice,
+        InteractionHand::MainHand,
+        hit(clicked, Direction::Up),
+        1,
+    )
+    .await;
+    use_on(
+        &alice,
+        InteractionHand::MainHand,
+        hit(below_alice, Direction::Up),
+        2,
+    )
+    .await;
+    expect_ack(&alice, 1).await;
+    expect_ack(&alice, 2).await;
+    let glowstone = block_state("minecraft:glowstone");
+    for target in [occupied, feet(&alice)] {
+        bob.wait_until("the wand's glowstone", |view| {
+            kind(view.block_at(target)) == Some(BlockKind::Glowstone)
+        })
+        .await;
+        assert_eq!(server_block(&server, target).await, Some(glowstone));
+    }
+
+    for bot in [&alice, &bob] {
         bot.assert_healthy();
     }
     server.stop().await;
