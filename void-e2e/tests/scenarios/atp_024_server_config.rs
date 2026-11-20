@@ -33,7 +33,7 @@ use voidmc_e2e::core::game_type::GameMode;
 use voidmc_e2e::core::position::{ChunkPos, Vec3};
 use voidmc_e2e::protocol::packets::game::{ClientboundGamePacket, c_login::ClientboundLogin};
 use voidmc_e2e::protocol::simdnbt::owned::NbtCompound;
-use voidmc_e2e::{Bot, TestServer};
+use voidmc_e2e::{Bot, LoginRefused, TestServer};
 use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
 
 use crate::{feet, ground};
@@ -715,33 +715,162 @@ async fn an_untouched_builder_restores_the_documented_defaults() {
     server.stop().await;
 }
 
-/// `max_players` is advertised, not enforced: the configuration promises no
-/// capacity.
+const SERVER_FULL: &str = "multiplayer.disconnect.server_full";
+
+/// The login of `name` is refused with vanilla's "server is full" reason.
+async fn assert_refused_as_full(server: &TestServer, name: &str) {
+    let refused = match server.try_join(name).await {
+        Ok(bot) => panic!("{} joined a full server", bot.name()),
+        Err(refused) => refused,
+    };
+    assert_server_full(&refused);
+}
+
+fn assert_server_full(refused: &LoginRefused) {
+    assert_eq!(refused.component["translate"], SERVER_FULL, "{refused}");
+    assert_eq!(refused.reason, "The server is full!");
+}
+
+/// Waits until the server holds no logged-in connection any more.
+async fn wait_until_empty(server: &TestServer) {
+    server
+        .wait_for("every player to be gone", |world| {
+            let online = world.query::<&PlayerUuid>().iter(world).count();
+            (online == 0).then_some(())
+        })
+        .await;
+}
+
+/// `max_players` is advertised and enforced: once that many players are
+/// connected, the next login is refused with vanilla's "server is full"
+/// reason, and the players already in are unaffected.
 #[tokio::test]
-async fn max_players_is_advertised_but_not_enforced() {
+async fn max_players_is_advertised_and_enforced() {
     let server = TestServer::builder()
         .config(|config| config.max_players(1))
         .start()
         .await;
     let alice = server.join("Alice").await;
-    let bob = server.join("Bob").await;
+    assert_refused_as_full(&server, "Bob").await;
 
     let mut status = server.status().await;
     for _ in 0..100 {
-        if status.players.online == 2 {
+        if status.players.online == 1 {
             break;
         }
         server.wait_ticks(1).await;
         status = server.status().await;
     }
     assert_eq!(status.players.max, 1);
-    assert_eq!(status.players.online, 2);
-    assert_eq!(login_packet(&bob).await.max_players, 1);
+    assert_eq!(status.players.online, 1);
+    assert_eq!(login_packet(&alice).await.max_players, 1);
 
     alice.sync().await;
-    bob.sync().await;
     alice.assert_healthy();
-    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// A player leaving frees its slot, and a refused login never took one.
+#[tokio::test]
+async fn a_slot_frees_up_when_its_player_leaves() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(1))
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    assert_refused_as_full(&server, "Bob").await;
+
+    alice.disconnect().await;
+    wait_until_empty(&server).await;
+    let carol = server
+        .try_join("Carol")
+        .await
+        .unwrap_or_else(|refused| panic!("Carol was refused a free slot: {refused}"));
+
+    carol.sync().await;
+    carol.assert_healthy();
+    server.stop().await;
+}
+
+/// Every connection past login holds a slot, also one still configuring that
+/// has not entered the play state.
+#[tokio::test]
+async fn a_player_still_configuring_holds_a_slot() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(1))
+        .start()
+        .await;
+    let alice = server
+        .log_in("Alice")
+        .await
+        .unwrap_or_else(|refused| panic!("Alice was refused an empty server: {refused}"));
+    assert_refused_as_full(&server, "Bob").await;
+
+    alice.disconnect().await;
+    wait_until_empty(&server).await;
+    let carol = server
+        .try_join("Carol")
+        .await
+        .unwrap_or_else(|refused| panic!("Carol was refused a free slot: {refused}"));
+
+    carol.sync().await;
+    carol.assert_healthy();
+    server.stop().await;
+}
+
+/// Two logins sent together for the last free slot: exactly one gets in, the
+/// other is refused as full.
+#[tokio::test]
+async fn two_logins_for_the_last_slot_let_exactly_one_in() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(2))
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+
+    let (bob, carol) = tokio::join!(server.try_join("Bob"), server.try_join("Carol"));
+    let (winner, refused) = match (bob, carol) {
+        (Ok(winner), Err(refused)) | (Err(refused), Ok(winner)) => (winner, refused),
+        (Ok(_), Ok(_)) => panic!("both Bob and Carol joined a server with one free slot"),
+        (Err(bob), Err(carol)) => panic!("both were refused: Bob {bob}, Carol {carol}"),
+    };
+    assert_server_full(&refused);
+
+    alice.sync().await;
+    winner.sync().await;
+    alice.assert_healthy();
+    winner.assert_healthy();
+    server.stop().await;
+}
+
+/// The default `max_players` (100) refuses none of a few players logging in
+/// at once.
+#[tokio::test]
+async fn the_default_configuration_refuses_nobody() {
+    let server = TestServer::start().await;
+
+    let (alice, bob, carol, dave) = tokio::join!(
+        server.try_join("Alice"),
+        server.try_join("Bob"),
+        server.try_join("Carol"),
+        server.try_join("Dave"),
+    );
+    for bot in [alice, bob, carol, dave] {
+        let bot = bot.unwrap_or_else(|refused| panic!("refused by default: {refused}"));
+        bot.sync().await;
+        bot.assert_healthy();
+    }
+    server.stop().await;
+}
+
+/// Like vanilla, `max_players(0)` refuses everyone.
+#[tokio::test]
+async fn zero_max_players_refuses_everyone() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(0))
+        .start()
+        .await;
+    assert_refused_as_full(&server, "Alice").await;
     server.stop().await;
 }
 

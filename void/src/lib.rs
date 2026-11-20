@@ -74,7 +74,7 @@ pub use menu::{
 pub use messages::{MessageRequest, Messages, Text, TextColor, TextTooLong, WorldMessages};
 pub use observability::{DEFAULT_OBSERVABILITY_HOST, ObservabilityAddress, ObservabilityConfig};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
-pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
+pub use players::{Audience, DisconnectReason, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
 pub use plugins::scoreboard::{
