@@ -170,7 +170,7 @@ async fn atp_003_handshake_reaches_the_ready_play_state() {
         .with_world(|world| {
             let registries = world
                 .resource::<RegistryDataStore>()
-                .registries
+                .registries()
                 .iter()
                 .map(|registry| (registry.registry_id.clone(), registry.entries.len()))
                 .collect::<Vec<_>>();
