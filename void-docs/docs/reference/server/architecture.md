@@ -43,7 +43,7 @@ and never drops individual packets (which would desync the client). Instead it
 sends the client id through `kick`, the usual `disconnect` notification
 follows, and the entity is despawned like any other disconnect.
 
-On a kick (a full queue, a keep-alive timeout, `/kick`, `Players::kick`) the
+On a kick (a full queue, a keep-alive timeout, the pre-play timeout, `/kick`, `Players::kick`) the
 network thread closes the connection gracefully: the client task writes what is
 already queued (a `Disconnect` with the reason, typically) and ends. A client
 whose socket does not drain is aborted after 2 seconds, which closes the
@@ -89,7 +89,7 @@ Each tick executes these schedules in order:
 | Schedule | Systems | Purpose |
 |---|---|---|
 | **Startup** | `init_world` | Pre-generate spawn area chunks |
-| **PreUpdate** | `ingest_network_packets` | Drain incoming channel, decode packets, dispatch to handlers |
+| **PreUpdate** | `ingest_network_packets`, then the pre-play timeout | Drain incoming channel, decode packets, dispatch to handlers; close connections that have not reached the play state in time |
 | **Update** | `send_keep_alive` | Periodic keep-alive packets |
 | **PostUpdate** | `broadcast_position`, `update_previous_positions`, `stream_chunks` | Sync player movement, load/unload chunks |
 

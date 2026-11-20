@@ -220,6 +220,7 @@ fn main() {
             load_entity_attributes(&crate_dir, version, &entity_types, &attributes);
         let block_entity_hosts = load_block_entity_hosts(&crate_dir, version);
         let equipment_slots = load_equipment_slots(&crate_dir, version);
+        let replaceable = load_replaceable_blocks(&crate_dir, version);
         emit_blocks_module(
             &mut blocks_code,
             BlocksModuleInput {
@@ -234,6 +235,7 @@ fn main() {
                 entity_attributes: &entity_attributes,
                 block_entity_hosts: &block_entity_hosts,
                 equipment_slots: &equipment_slots,
+                replaceable: &replaceable,
             },
         );
     }
@@ -335,6 +337,7 @@ struct BlocksModuleInput<'a> {
     entity_attributes: &'a [EntityAttributesDef],
     block_entity_hosts: &'a BTreeMap<String, Vec<String>>,
     equipment_slots: &'a Map<String, Value>,
+    replaceable: &'a BTreeSet<String>,
 }
 
 fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
@@ -350,6 +353,7 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
         entity_attributes,
         block_entity_hosts,
         equipment_slots,
+        replaceable,
     } = input;
     let blocks_obj = blocks_json
         .as_object()
@@ -597,7 +601,7 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
     emit_block_entity_hosts_module(out, &defs, block_entity_hosts);
 
     // ---- block types (name + property values per state)
-    emit_block_types_module(out, blocks_obj);
+    emit_block_types_module(out, blocks_obj, replaceable);
 
     // ---- packets module
     emit_packets_module(out, packets);
@@ -617,11 +621,23 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
 
 type PropertyValues = Vec<(String, Vec<String>)>;
 
-/// Emits the `block_types` submodule: every block with its state range and the
-/// raw property values from `blocks.json`, sorted by first state id so a state
-/// id resolves to its block with a binary search.
-fn emit_block_types_module(out: &mut String, blocks_obj: &Map<String, Value>) {
-    let mut rows: Vec<(i32, i32, &str, PropertyValues)> = Vec::new();
+/// Emits the `block_types` submodule: every block with its state range, its
+/// kind (the `definition.type` of `blocks.json`: the vanilla block class),
+/// whether a placement may replace it, and the raw property values from
+/// `blocks.json`, sorted by first state id so a state id resolves to its
+/// block with a binary search.
+fn emit_block_types_module(
+    out: &mut String,
+    blocks_obj: &Map<String, Value>,
+    replaceable: &BTreeSet<String>,
+) {
+    for name in replaceable {
+        assert!(
+            blocks_obj.contains_key(name),
+            "tags/block/replaceable.json: unknown block {name}"
+        );
+    }
+    let mut rows: Vec<(i32, i32, &str, &str, PropertyValues)> = Vec::new();
     for (name, block) in blocks_obj {
         let states = block
             .get("states")
@@ -634,6 +650,10 @@ fn emit_block_types_module(out: &mut String, blocks_obj: &Map<String, Value>) {
             .find(|s| s.get("default").and_then(|v| v.as_bool()).unwrap_or(false))
             .map(id)
             .unwrap_or(min);
+        let kind = block
+            .pointer("/definition/type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("blocks.json: {name} has no definition.type"));
         let properties = block
             .get("properties")
             .and_then(|v| v.as_object())
@@ -644,7 +664,7 @@ fn emit_block_types_module(out: &mut String, blocks_obj: &Map<String, Value>) {
                     .collect()
             })
             .unwrap_or_default();
-        rows.push((min, default, name.as_str(), properties));
+        rows.push((min, default, name.as_str(), kind, properties));
     }
     rows.sort_by_key(|row| row.0);
 
@@ -652,10 +672,11 @@ fn emit_block_types_module(out: &mut String, blocks_obj: &Map<String, Value>) {
     let _ = writeln!(out, "    pub mod block_types {{");
     let _ = writeln!(out, "        use crate::{{BlockProperty, BlockType}};");
     let _ = writeln!(out, "        pub static BLOCK_TYPES: &[BlockType] = &[");
-    for (min, default, name, properties) in &rows {
+    for (min, default, name, kind, properties) in &rows {
+        let replaceable = replaceable.contains(*name);
         let _ = write!(
             out,
-            "            BlockType {{ name: {name:?}, min_state_id: {min}, default_state_id: {default}, properties: &["
+            "            BlockType {{ name: {name:?}, kind: {kind:?}, replaceable: {replaceable}, min_state_id: {min}, default_state_id: {default}, properties: &["
         );
         for (prop, values) in properties {
             let _ = write!(out, "BlockProperty {{ name: {prop:?}, values: &[");
@@ -668,6 +689,38 @@ fn emit_block_types_module(out: &mut String, blocks_obj: &Map<String, Value>) {
     }
     let _ = writeln!(out, "        ];");
     let _ = writeln!(out, "    }}");
+}
+
+/// Reads `assets/<version>/tags/block/replaceable.json`: Mojang's
+/// `#minecraft:replaceable` block tag, copied verbatim from the server jar,
+/// which lists the blocks built with the `replaceable()` block property (see
+/// `PROVENANCE.txt`). A reference to another tag fails the build, as the
+/// copy would no longer stand on its own.
+fn load_replaceable_blocks(crate_dir: &Path, version: &str) -> BTreeSet<String> {
+    let path = crate_dir
+        .join("assets")
+        .join(version)
+        .join("tags")
+        .join("block")
+        .join("replaceable.json");
+    let json_text = fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "read {}: {e}; copy data/minecraft/tags/block/replaceable.json from the server jar",
+            path.display()
+        )
+    });
+    let value: Value = serde_json::from_str(&json_text)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+    parse_tag_values(&value, &path)
+        .into_iter()
+        .inspect(|entry| {
+            assert!(
+                !entry.starts_with('#'),
+                "{}: tag reference {entry} is not supported",
+                path.display()
+            );
+        })
+        .collect()
 }
 
 /// Reads `assets/<version>/block_entity_hosts.json` (block entity type ->

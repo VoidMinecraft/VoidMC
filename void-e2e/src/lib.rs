@@ -22,7 +22,7 @@ mod view;
 use std::future::Future;
 use std::time::Duration;
 
-pub use bot::{Bot, BotOptions, ConfiguringClient, JoinTranscript, LoginRefused};
+pub use bot::{Bot, BotOptions, ConfiguringClient, JoinTranscript, LoginRefused, SilentPlayer};
 pub use logs::LogRecord;
 pub use server::{TestServer, TestServerBuilder};
 pub use view::{ClientView, SeenEntity};
