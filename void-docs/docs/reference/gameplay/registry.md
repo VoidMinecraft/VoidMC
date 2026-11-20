@@ -5,23 +5,48 @@ Minecraft requires servers to send registry data during the configuration phase.
 ## RegistryDataStore API
 
 ```rust
-pub struct RegistryDataStore {
-    pub registries: Vec<RegistryData>,
-}
+pub struct RegistryDataStore { /* private fields */ }
 ```
+
+The registries are read and changed through methods only.
 
 ### Methods
 
-| Method | Description |
-|---|---|
-| `get_registry(id)` | Look up a registry by ID (e.g., `"minecraft:worldgen/biome"`) |
-| `get_registry_mut(id)` | Mutable lookup |
-| `add_registry(registry)` | Append a new registry |
-| `remove_registry(id)` | Remove a registry by ID, returning it |
-| `get_entry(registry_id, entry_id)` | Look up a single entry |
-| `get_entry_mut(registry_id, entry_id)` | Mutable entry lookup |
-| `add_entry(registry_id, entry)` | Add an entry to an existing registry |
-| `remove_entry(registry_id, entry_id)` | Remove an entry, returning it |
+| Method | Returns | Description |
+|---|---|---|
+| `registries()` | `&[RegistryData]` | Every registry, in the order they are sent |
+| `get_registry(id)` | `Option<&RegistryData>` | Look up a registry by ID (e.g., `"minecraft:worldgen/biome"`) |
+| `get_entry(registry_id, entry_id)` | `Option<&RegistryEntry>` | Look up a single entry |
+| `sent_to_clients()` | `bool` | Whether a client has already received the registries |
+| `get_registry_mut(id)` | `Result<Option<&mut RegistryData>, RegistriesAlreadySent>` | Mutable lookup |
+| `add_registry(registry)` | `Result<(), RegistriesAlreadySent>` | Append a new registry |
+| `remove_registry(id)` | `Result<Option<RegistryData>, RegistriesAlreadySent>` | Remove a registry by ID, returning it |
+| `get_entry_mut(registry_id, entry_id)` | `Result<Option<&mut RegistryEntry>, RegistriesAlreadySent>` | Mutable entry lookup |
+| `add_entry(registry_id, entry)` | `Result<(), RegistriesAlreadySent>` | Add an entry to an existing registry (nothing happens if the registry does not exist) |
+| `remove_entry(registry_id, entry_id)` | `Result<Option<RegistryEntry>, RegistriesAlreadySent>` | Remove an entry, returning it |
+
+### When Registries Can Change
+
+Registries can be changed until the first client receives them, during its
+configuration phase: in `ServerConfigBuilder::configure_registries`, in a
+plugin, or in a system that runs before anyone logs in.
+
+From then on they are frozen. Every mutating method (`get_registry_mut`,
+`add_registry`, `remove_registry`, `get_entry_mut`, `add_entry`,
+`remove_entry`, and `BiomeBuilder::register`) returns
+`Err(RegistriesAlreadySent)` and leaves the store unchanged, so every client,
+the first one and those that join later, is sent the same registries. Reading
+still works at any time. The freeze lasts until the server stops: a client
+holds registry ids by their position, so an entry added, removed or reordered
+after login would make the server and that client disagree on what an id
+means (for biomes, a registry that crosses a power of two also changes the
+palette width clients must use to read chunks).
+
+`RegistriesAlreadySent` (`voidmc::RegistriesAlreadySent`) implements
+`std::error::Error`. Check `sent_to_clients()` first to tell the two cases
+apart without trying a change. The guard lives in the store itself:
+replacing the whole `RegistryDataStore` resource after login (for example
+with `insert_resource`) bypasses it and desynchronises clients the same way.
 
 ## Default Registries
 
@@ -58,7 +83,7 @@ The `data` field contains an NBT compound (`ussr_nbt::owned::Nbt`) whose tags va
 
 ### At Build Time
 
-Use `ServerConfigBuilder::configure_registries` to modify registries before the server starts:
+Use `ServerConfigBuilder::configure_registries` to modify registries before the server starts. No client has the registries yet, so the mutating methods return `Ok`:
 
 ```rust
 use voidmc::{BiomeBuilder, ServerConfigBuilder};
@@ -76,13 +101,15 @@ let config = ServerConfigBuilder::new()
             .expect("a new, valid biome");
 
         // Remove a default registry
-        registries.remove_registry("minecraft:pig_variant");
+        registries
+            .remove_registry("minecraft:pig_variant")
+            .expect("no client has the registries yet");
 
         // Modify an existing entry
-        if let Some(entry) = registries.get_entry_mut(
-            "minecraft:dimension_type",
-            "minecraft:overworld",
-        ) {
+        if let Some(entry) = registries
+            .get_entry_mut("minecraft:dimension_type", "minecraft:overworld")
+            .expect("no client has the registries yet")
+        {
             // Modify the NBT data
         }
     })
@@ -104,18 +131,20 @@ use voidmc::RegistryDataStore;
 VoidServer::new(config)
     .add_plugin(|app| {
         let mut registries = app.world_mut().resource_mut::<RegistryDataStore>();
-        registries.remove_entry("minecraft:damage_type", "minecraft:campfire");
+        registries
+            .remove_entry("minecraft:damage_type", "minecraft:campfire")
+            .expect("plugins run before any client logs in");
     })
 ```
 
-Plugins run before the first tick, so registry modifications are applied before any client receives data.
+Plugins run before the first tick, so registry modifications are applied before any client receives data. A system that changes registries while the server runs gets `Err(RegistriesAlreadySent)` as soon as one client has received them (see [When Registries Can Change](#when-registries-can-change)).
 
 ## How Registries Are Sent
 
 During the configuration phase, when the client sends `KnownPacks`:
 
-1. The server clones all registries from `RegistryDataStore`
-2. Each `RegistryData` is sent as a separate `RegistryData` configuration packet
+1. The server marks the registries as sent (`sent_to_clients()` becomes `true`, and every later change is refused)
+2. Each `RegistryData` in `RegistryDataStore` is sent as a separate `RegistryData` configuration packet
 3. After all registries are sent, `FinishConfiguration` is sent
 
 The client uses this data to set up its local registry state for rendering, gameplay, and validation.
