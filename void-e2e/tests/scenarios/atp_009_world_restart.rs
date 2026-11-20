@@ -6,14 +6,22 @@
 //! `voidmc-world-io`'s `WorldPersistencePlugin`. The player reconnects and the
 //! chunks it receives are compared block by block with what it saw before
 //! the stop. Between runs, every region file on disk is decoded.
+//!
+//! A chunk whose stored bytes are damaged between two runs is generated
+//! again, while its damaged bytes are kept in a side file next to the region
+//! file, which later saves never touch.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use bevy_ecs::prelude::{On, ResMut, Resource};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use voidmc::{
-    BlockFace, ChunkDirty, ChunkIndex, ChunkPos as VoidChunkPos, DimensionId, ItemBehavior,
-    ItemBehaviorRegistry, ItemUseContext, UseResult,
+    BlockFace, ChunkDirty, ChunkIndex, ChunkLoadErrorKind, ChunkLoadFailedEvent,
+    ChunkPos as VoidChunkPos, DamagedChunkAction, DimensionId, ItemBehavior, ItemBehaviorRegistry,
+    ItemUseContext, ObservabilityAddress, ObservabilityConfig, UseResult,
 };
 use voidmc_e2e::block::{BlockState, blocks, properties::Axis};
 use voidmc_e2e::core::direction::Direction;
@@ -26,7 +34,7 @@ use voidmc_e2e::protocol::packets::game::{
     s_use_item_on::{BlockHit, ServerboundUseItemOn},
 };
 use voidmc_e2e::registry::builtin::{BlockKind, ItemKind};
-use voidmc_e2e::{Bot, TestServer, TestServerBuilder};
+use voidmc_e2e::{Bot, LogRecord, TestServer, TestServerBuilder};
 use voidmc_world_io::{ChunkStore, PersistenceConfig, RegionChunkStore, WorldPersistencePlugin};
 
 const MIN_Y: i32 = -64;
@@ -640,4 +648,247 @@ async fn a_later_session_writes_into_a_region_file_without_damaging_it() {
     }
     alice.assert_healthy();
     server.stop().await;
+}
+
+// --- A chunk whose stored bytes are damaged ------------------------------
+
+/// The chunk load failures the server triggered, in order.
+#[derive(Resource, Default)]
+struct LoadFailures(Vec<ChunkLoadFailedEvent>);
+
+/// [`persistent`] without periodic saves, with the metrics endpoint on a free
+/// port, recording [`ChunkLoadFailedEvent`]s in [`LoadFailures`].
+fn persistent_observed(world: &TempWorld) -> TestServerBuilder {
+    persistent(world, NO_PERIODIC_SAVE)
+        .config(|config| config.observability(ObservabilityConfig::localhost(0)))
+        .plugin(|app| {
+            app.init_resource::<LoadFailures>().add_observer(
+                |event: On<ChunkLoadFailedEvent>, mut failures: ResMut<LoadFailures>| {
+                    failures.0.push(event.event().clone());
+                },
+            );
+        })
+}
+
+async fn load_failures(server: &TestServer) -> Vec<ChunkLoadFailedEvent> {
+    server
+        .with_world(|world| world.resource::<LoadFailures>().0.clone())
+        .await
+}
+
+/// Checks that the only load failure of the run is the decoding of the
+/// chunk at `pos`, quarantined in the side file `name`.
+async fn assert_quarantined(server: &TestServer, world: &Path, pos: (i32, i32), name: &str) {
+    let failures = load_failures(server).await;
+    assert_eq!(failures.len(), 1, "{failures:#?}");
+    let failure = &failures[0];
+    assert_eq!(
+        (
+            failure.dimension,
+            failure.pos,
+            failure.kind,
+            &failure.action
+        ),
+        (
+            DimensionId::Overworld,
+            void_pos(pos),
+            ChunkLoadErrorKind::Decode,
+            &DamagedChunkAction::Quarantined(world.join("region").join("overworld").join(name)),
+        )
+    );
+}
+
+const SECTOR: usize = 4096;
+
+fn region_file(world: &Path, (cx, cz): (i32, i32)) -> PathBuf {
+    world
+        .join("region")
+        .join("overworld")
+        .join(format!("r.{}.{}.vrm", cx >> 5, cz >> 5))
+}
+
+/// The byte range of the sectors that hold the chunk at `pos` in its region
+/// file, read from the file's location table.
+fn slot(file: &[u8], (cx, cz): (i32, i32)) -> Range<usize> {
+    let index = ((cx & 31) + (cz & 31) * 32) as usize * 4;
+    let location = u32::from_be_bytes(file[index..index + 4].try_into().unwrap());
+    assert_ne!(location, 0, "chunk ({cx}, {cz}) is not stored");
+    let offset = (location >> 8) as usize * SECTOR;
+    offset..offset + (location & 0xFF) as usize * SECTOR
+}
+
+/// Damages the compressed data of the chunk at `pos` in place, as bit rot
+/// would, leaving its length and compression byte intact. Returns the
+/// sectors of the chunk as they now are on disk.
+fn damage(world: &Path, pos: (i32, i32), pattern: u8) -> Vec<u8> {
+    let path = region_file(world, pos);
+    let mut file = std::fs::read(&path).expect("the region file is readable");
+    let range = slot(&file, pos);
+    let length = u32::from_be_bytes(file[range.start..range.start + 4].try_into().unwrap());
+    // `length` counts the compression byte, which is left as it is.
+    for byte in &mut file[range.start + 5..range.start + 4 + length as usize] {
+        *byte ^= pattern;
+    }
+    std::fs::write(&path, &file).expect("the region file is writable");
+    file[range].to_vec()
+}
+
+/// The side files of the overworld region directory, by name, with their
+/// bytes.
+fn side_files(world: &Path) -> BTreeMap<String, Vec<u8>> {
+    let directory = world.join("region").join("overworld");
+    std::fs::read_dir(&directory)
+        .unwrap_or_else(|error| panic!("cannot list {}: {error}", directory.display()))
+        .map(|entry| entry.expect("region directory entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "corrupt"))
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            (
+                name,
+                std::fs::read(&path).expect("the side file is readable"),
+            )
+        })
+        .collect()
+}
+
+/// The value of `voidmc_chunk_load_errors_total{kind}` on the metrics
+/// endpoint, `None` without such a sample.
+async fn chunk_load_errors(server: &TestServer, kind: &str) -> Option<f64> {
+    let address = server
+        .with_world(|world| world.resource::<ObservabilityAddress>().0)
+        .await;
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    stream
+        .write_all(b"GET /metrics HTTP/1.1\r\nHost: test\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let prefix = format!("voidmc_chunk_load_errors_total{{kind=\"{kind}\"}} ");
+    response
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.parse().expect("a sample value"))
+}
+
+/// The chunk at `pos` as stored on disk, decoded; panics if it cannot be.
+fn stored_chunk(world: &Path, pos: (i32, i32)) -> voidmc::ChunkData {
+    let bytes = RegionChunkStore::new(world)
+        .read(DimensionId::Overworld, void_pos(pos))
+        .unwrap_or_else(|error| panic!("chunk {pos:?} unreadable: {error}"))
+        .unwrap_or_else(|| panic!("chunk {pos:?} is not stored"));
+    voidmc_world_io::format::deserialize_chunk(&bytes)
+        .unwrap_or_else(|error| panic!("chunk {pos:?} undecodable: {error}"))
+        .data
+}
+
+/// The error `voidmc-world-io` logs for a stored chunk it cannot load.
+fn is_chunk_load_error(record: &LogRecord) -> bool {
+    record.target.starts_with("voidmc_world_io") && record.message.contains("chunk")
+}
+
+#[tokio::test]
+async fn a_chunk_that_cannot_be_decoded_is_quarantined_then_generated_again() {
+    let world = TempWorld::new();
+    // Both chunks are in r.0.0.vrm, in the spawn area loaded at startup.
+    let (intact, damaged) = ((0, 0), (1, 0));
+
+    // First run: a change in each chunk, saved on stop.
+    let server = persistent_observed(&world).start().await;
+    let alice = server.join("Alice").await;
+    wait_for_chunks(&alice, &[intact, damaged]).await;
+    let generated = seen(&alice, damaged);
+    place_on_top(&alice, intact, (3, 3), DIAMOND, 1).await;
+    place_on_top(&alice, damaged, (5, 5), GOLD, 2).await;
+    alice.sync().await;
+    let built = seen(&alice, intact);
+    alice.assert_healthy();
+    assert!(load_failures(&server).await.is_empty());
+    server.stop().await;
+
+    let first_damage = damage(world.path(), damaged, 0x5A);
+
+    // Second run: the damaged chunk is generated again, its bytes are in a
+    // side file and the failure is counted; the other chunk loads as saved.
+    let server = persistent_observed(&world).start().await;
+    let alice = server.join("Alice").await;
+    wait_for_chunks(&alice, &[intact, damaged]).await;
+    assert_same_chunk(
+        damaged,
+        &generated,
+        &seen(&alice, damaged),
+        "after the damage",
+    );
+    assert_same_chunk(
+        intact,
+        &built,
+        &seen(&alice, intact),
+        "next to the damaged one",
+    );
+    let first_side = side_files(world.path());
+    assert_eq!(
+        first_side.keys().collect::<Vec<_>>(),
+        ["c.1.0.1.corrupt"],
+        "one side file for the damaged chunk"
+    );
+    assert!(
+        first_side["c.1.0.1.corrupt"] == first_damage,
+        "the side file does not hold the damaged sectors"
+    );
+    assert_eq!(chunk_load_errors(&server, "decode").await, Some(1.0));
+    assert_eq!(chunk_load_errors(&server, "io").await, Some(0.0));
+    assert_quarantined(&server, world.path(), damaged, "c.1.0.1.corrupt").await;
+
+    // An edit in the generated chunk is saved over the damaged slot; the side
+    // file is left as it was.
+    let edit = place_on_top(&alice, damaged, (8, 8), EMERALD, 1).await;
+    alice.sync().await;
+    alice.assert_healthy();
+    let failures = server.stop_expecting(is_chunk_load_error).await;
+    assert_eq!(failures.len(), 1, "{failures:#?}");
+    assert_eq!(
+        side_files(world.path()),
+        first_side,
+        "after a save of the chunk"
+    );
+    let (lx, lz) = (
+        edit.pos.x.rem_euclid(16) as u8,
+        edit.pos.z.rem_euclid(16) as u8,
+    );
+    assert_eq!(
+        stored_chunk(world.path(), damaged).get_block(lx, edit.pos.y, lz),
+        Some(state_id(edit.state)),
+        "the edit made after the damage is saved"
+    );
+
+    // A second damage of the same chunk gets a side file of its own.
+    let second_damage = damage(world.path(), damaged, 0xA5);
+    let server = persistent_observed(&world).start().await;
+    let alice = server.join("Alice").await;
+    wait_for_chunks(&alice, &[intact, damaged]).await;
+    assert_same_chunk(
+        damaged,
+        &generated,
+        &seen(&alice, damaged),
+        "after the second damage",
+    );
+    let second_side = side_files(world.path());
+    assert_eq!(
+        second_side.keys().collect::<Vec<_>>(),
+        ["c.1.0.1.corrupt", "c.1.0.2.corrupt"]
+    );
+    assert!(
+        second_side["c.1.0.1.corrupt"] == first_damage,
+        "the first side file changed"
+    );
+    assert!(
+        second_side["c.1.0.2.corrupt"] == second_damage,
+        "the second side file does not hold the damaged sectors"
+    );
+    assert_eq!(chunk_load_errors(&server, "decode").await, Some(1.0));
+    alice.assert_healthy();
+    assert_quarantined(&server, world.path(), damaged, "c.1.0.2.corrupt").await;
+    let failures = server.stop_expecting(is_chunk_load_error).await;
+    assert_eq!(failures.len(), 1, "{failures:#?}");
+    assert_eq!(side_files(world.path()), second_side, "after the third run");
 }

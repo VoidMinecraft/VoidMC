@@ -196,7 +196,10 @@ fn handle_help(ctx: &mut CommandContext) {
         });
 
         let Some((canonical, desc, usage)) = resolved else {
-            ctx.reply_error(&format!("Unknown command: /{}", cmd_name));
+            ctx.reply_error(&format!(
+                "Unknown command: /{}",
+                strip_illegal_characters(&cmd_name)
+            ));
             return;
         };
 
@@ -273,6 +276,9 @@ fn handle_kick(ctx: &mut CommandContext) {
         .get::<String>("reason")
         .cloned()
         .unwrap_or_else(|| "Kicked by an operator".to_string());
+    if refuse_illegal_characters(ctx, &reason) {
+        return;
+    }
 
     // Sends the Disconnect and has the server close the connection, so a
     // client that ignores the packet does not stay in the game.
@@ -363,13 +369,31 @@ fn handle_broadcast(ctx: &mut CommandContext) {
 /// characters are not chat text. These are the characters a vanilla client
 /// cannot type and a vanilla server refuses (`StringUtil.isAllowedChatCharacter`).
 fn refuse_illegal_characters(ctx: &CommandContext, message: &str) -> bool {
-    let illegal = message
-        .chars()
-        .any(|c| c == '\u{a7}' || c < ' ' || c == '\u{7f}');
+    let illegal = message.chars().any(is_illegal_character);
     if illegal {
         ctx.reply_error("Illegal characters in chat");
     }
     illegal
+}
+
+fn is_illegal_character(c: char) -> bool {
+    c == '\u{a7}' || c < ' ' || c == '\u{7f}'
+}
+
+/// `text` as it can be echoed back to the player who typed it: without the
+/// `§` formatting codes (the `§` and the character after it, which the client
+/// would read as one code) and without control characters.
+pub(super) fn strip_illegal_characters(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{a7}' {
+            chars.next();
+        } else if !is_illegal_character(c) {
+            stripped.push(c);
+        }
+    }
+    stripped
 }
 
 pub fn list_command() -> Command {
@@ -474,6 +498,9 @@ pub fn say_command() -> Command {
 fn handle_say(ctx: &mut CommandContext) {
     let name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
     let message = ctx.get::<String>("message").unwrap().clone();
+    if refuse_illegal_characters(ctx, &message) {
+        return;
+    }
     ctx.broadcast(&format!("[{}] {}", name, message));
 }
 
@@ -937,5 +964,20 @@ mod tests {
 
         let exits = world.resource::<bevy_ecs::message::Messages<AppExit>>();
         assert_eq!(exits.len(), 1, "/stop should write exactly one AppExit");
+    }
+
+    #[test]
+    fn strip_illegal_characters_drops_formatting_codes_and_control_characters() {
+        for (text, stripped) in [
+            ("nope", "nope"),
+            ("\u{a7}knope", "nope"),
+            ("\u{a7}4\u{a7}lred\u{a7}r", "red"),
+            ("\u{a7}\u{a7}knope", "knope"),
+            ("trailing\u{a7}", "trailing"),
+            ("pi\0ng\u{7}\u{7f}\n", "ping"),
+            ("Gr\u{fc}\u{df}e \u{1f600}", "Gr\u{fc}\u{df}e \u{1f600}"),
+        ] {
+            assert_eq!(strip_illegal_characters(text), stripped, "{text:?}");
+        }
     }
 }
