@@ -30,6 +30,7 @@ use voidmc::world::{
     is_solid_block_state, mutate_block,
 };
 use voidmc::{BlockFace, BlockPosition, Inventory, ItemId, ItemStack as ServerItemStack};
+use voidmc_e2e::clicks::{OUTSIDE, Stack, from_client};
 use voidmc_e2e::core::direction::Direction;
 use voidmc_e2e::core::position::{BlockPos, Vec3};
 use voidmc_e2e::inventory::components::EquipmentSlot::Mainhand;
@@ -37,12 +38,10 @@ use voidmc_e2e::inventory::operations::ClickType;
 use voidmc_e2e::inventory::{ItemStack, ItemStackData};
 use voidmc_e2e::protocol::common::movements::MoveFlags;
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
-use voidmc_e2e::protocol::packets::game::s_container_click::{
-    HashedActualItem, HashedPatchMap, HashedStack, ServerboundContainerClick,
-};
 use voidmc_e2e::protocol::packets::game::s_move_player_pos_rot::ServerboundMovePlayerPosRot;
 use voidmc_e2e::protocol::packets::game::s_player_action::{Action, ServerboundPlayerAction};
 use voidmc_e2e::protocol::packets::game::s_set_creative_mode_slot::ServerboundSetCreativeModeSlot;
+use voidmc_e2e::registry::Registry;
 use voidmc_e2e::registry::builtin::{EntityKind, ItemKind};
 use voidmc_e2e::{Bot, TestServer};
 use voidmc_protocol::clientbound::chunk::blocks;
@@ -66,8 +65,6 @@ const EAST: f32 = -90.0;
 const DOWN: f32 = 90.0;
 const PLAYER_WINDOW: i32 = 0;
 const FIRST_HOTBAR_SLOT: usize = 36;
-/// Slot number of a click outside the inventory window.
-const OUTSIDE: i16 = -999;
 /// The floor spans `-HALF..=HALF` blocks around the arena's centre.
 const HALF: i32 = 8;
 
@@ -871,36 +868,41 @@ async fn the_item_waits_out_the_pickup_delay_and_only_one_player_gets_it() {
     server.stop().await;
 }
 
-fn hashed(item: Item, count: i32) -> HashedStack {
-    HashedStack(Some(HashedActualItem {
-        kind: item.kind,
-        count,
-        components: HashedPatchMap {
-            added_components: Vec::new(),
-            removed_components: Vec::new(),
-        },
-    }))
+/// Once the server has handled what the bot sent, what the client shows
+/// (its own predictions, then the server's corrections) is what the server
+/// holds: every slot and the cursor. The server does not resend a slot the
+/// client predicted right, so only a view that applies the predictions can
+/// agree.
+async fn assert_client_agrees_with_server(server: &TestServer, bot: &Bot) {
+    bot.sync().await;
+    let player = server.player_entity(bot.uuid()).await;
+    let held = server
+        .with_world(move |world| {
+            let inventory = world.get::<Inventory>(player).unwrap();
+            let slots: Vec<Stack> = (0..Inventory::SIZE)
+                .map(|slot| from_server(inventory.get(slot)))
+                .collect();
+            (slots, from_server(inventory.cursor()))
+        })
+        .await;
+    let shown = bot.view(|view| {
+        let slots: Vec<Stack> = view.inventory.iter().map(from_client).collect();
+        (slots, from_client(&view.cursor))
+    });
+    assert_eq!(
+        shown,
+        held,
+        "{} shows another inventory than the server holds",
+        bot.name()
+    );
 }
 
-async fn click(
-    bot: &Bot,
-    slot: i16,
-    button: u8,
-    click_type: ClickType,
-    changed: Vec<(u16, HashedStack)>,
-    carried: HashedStack,
-) {
-    let state_id = bot.view(|view| view.inventory_state_id);
-    bot.send(ServerboundContainerClick {
-        container_id: PLAYER_WINDOW,
-        state_id,
-        slot_num: slot,
-        button_num: button,
-        click_type,
-        changed_slots: changed.into_iter().collect(),
-        carried_item: carried,
-    })
-    .await;
+fn from_server(item: &ServerItemStack) -> Stack {
+    if item.is_empty() {
+        return None;
+    }
+    let kind = ItemKind::from_u32(item.item.0 as u32).expect("a known item");
+    Some((kind, i32::from(item.count)))
 }
 
 #[tokio::test]
@@ -933,56 +935,41 @@ async fn every_drop_path_throws_exactly_the_dropped_stack() {
     assert_eq!(queued_item_adds(&bob), 0);
     assert_eq!(item_entity_count(&server).await, 2);
 
-    // The inventory screen: Q over a slot, then Ctrl+Q.
+    // The inventory screen: Q over a slot, then Ctrl+Q. The bot predicts
+    // each click like the vanilla client, and must end up showing what the
+    // server holds.
     set_slot(&server, &alice, 9, EMERALD, 5).await;
-    click(
-        &alice,
-        9,
-        0,
-        ClickType::Throw,
-        vec![(9, hashed(EMERALD, 4))],
-        HashedStack(None),
-    )
-    .await;
+    let throw_one = alice.click(9, 0, ClickType::Throw).await;
+    assert_eq!(throw_one.changed, vec![(9, Some((EMERALD.kind, 4)))]);
+    assert_eq!(throw_one.drops, vec![(EMERALD.kind, 1)]);
     expect_item(&alice, EMERALD, 1).await;
     expect_item(&bob, EMERALD, 1).await;
     assert_eq!(server_slot(&server, &alice, 9).await, EMERALD.stack(4));
-    click(
-        &alice,
-        9,
-        1,
-        ClickType::Throw,
-        vec![(9, HashedStack(None))],
-        HashedStack(None),
-    )
-    .await;
+    assert_client_agrees_with_server(&server, &alice).await;
+    let throw_rest = alice.click(9, 1, ClickType::Throw).await;
+    assert_eq!(throw_rest.changed, vec![(9, None)]);
+    assert_eq!(throw_rest.drops, vec![(EMERALD.kind, 4)]);
     expect_item(&alice, EMERALD, 4).await;
     expect_item(&bob, EMERALD, 4).await;
     assert!(server_slot(&server, &alice, 9).await.is_empty());
+    assert_client_agrees_with_server(&server, &alice).await;
 
     // A stack picked up on the cursor and clicked outside the window.
     set_slot(&server, &alice, 10, GOLD, 3).await;
-    click(
-        &alice,
-        10,
-        0,
-        ClickType::Pickup,
-        vec![(10, HashedStack(None))],
-        hashed(GOLD, 3),
-    )
-    .await;
-    click(
-        &alice,
-        OUTSIDE,
-        0,
-        ClickType::Pickup,
-        Vec::new(),
-        HashedStack(None),
-    )
-    .await;
+    let pick_up = alice.click(10, 0, ClickType::Pickup).await;
+    assert_eq!(
+        (pick_up.changed, pick_up.carried),
+        (vec![(10, None)], Some((GOLD.kind, 3)))
+    );
+    let throw_cursor = alice.click(OUTSIDE, 0, ClickType::Pickup).await;
+    assert_eq!(
+        (throw_cursor.changed, throw_cursor.carried),
+        (Vec::new(), None)
+    );
     expect_item(&alice, GOLD, 3).await;
     expect_item(&bob, GOLD, 3).await;
     assert_eq!(holding(&server, &alice, GOLD).await, 0);
+    assert_client_agrees_with_server(&server, &alice).await;
 
     // The creative inventory throws with slot -1.
     alice
@@ -1000,6 +987,7 @@ async fn every_drop_path_throws_exactly_the_dropped_stack() {
     assert_eq!(queued_item_adds(&alice), 0);
     assert_eq!(queued_item_adds(&bob), 0);
     assert_eq!(item_entity_count(&server).await, 6);
+    assert_client_agrees_with_server(&server, &alice).await;
 
     alice.assert_healthy();
     bob.assert_healthy();
