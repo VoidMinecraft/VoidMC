@@ -77,6 +77,15 @@ impl ClientView {
             .find(|pos| self.block_at(*pos).is_some_and(|state| !state.is_air()))
     }
 
+    /// Whether the chunk this client stands in is held, or it stands above or
+    /// below the world, where the vanilla client needs no chunk to leave its
+    /// loading screen.
+    pub(crate) fn stands_in_a_held_chunk(&self) -> bool {
+        let feet = BlockPos::from(self.position);
+        let outside = feet.y < self.min_y || feet.y >= self.min_y + self.height as i32;
+        outside || self.chunks.contains_key(&ChunkPos::from(feet))
+    }
+
     /// What entity `id` is shown holding or wearing in `slot`.
     pub fn equipment_of(&self, id: i32, slot: EquipmentSlot) -> ItemStack {
         self.equipment

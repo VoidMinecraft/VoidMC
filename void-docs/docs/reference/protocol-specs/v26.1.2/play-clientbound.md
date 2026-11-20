@@ -1320,9 +1320,14 @@ Per-action payload:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| Respawn Data | RespawnData | `(Position BlockPos, Angle Float)` indicating world spawn / compass target. |
+| Dimension | [Identifier](./data-types#identifier) | Dimension of the spawn, e.g. `minecraft:overworld`. |
+| Location | [Position](./data-types#position) | Block of the world spawn. |
+| Yaw | [Float](./data-types#float) | Yaw a player respawns with. |
+| Pitch | [Float](./data-types#float) | Pitch a player respawns with. |
 
-**Semantics.** Updates the world's default spawn point (also sets the compass target).
+The four fields are vanilla's `LevelData.RespawnData`: a [GlobalPos](./data-types#globalpos) (dimension, then location) followed by the two angles.
+
+**Semantics.** Updates the world's default spawn point, which the client shows as the world spawn and uses as the compass target. Vanilla sends it on join and respawn as part of the level information, right before `Game Event` `13` (start waiting for chunks).
 
 ## 0x62 - Set Display Objective
 

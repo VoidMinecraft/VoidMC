@@ -31,6 +31,7 @@ mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
 mod set_cursor_item;
+mod set_default_spawn_position;
 mod set_display_objective;
 mod set_entity_data;
 mod set_entity_motion;
@@ -97,6 +98,7 @@ pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
 pub use set_cursor_item::*;
+pub use set_default_spawn_position::*;
 pub use set_display_objective::*;
 pub use set_entity_data::*;
 pub use set_entity_motion::*;
@@ -214,6 +216,8 @@ pub enum PlayPacket {
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]
     SetCursorItem(SetCursorItem),
+    #[codec(packet_id = 0x61)]
+    SetDefaultSpawnPosition(SetDefaultSpawnPosition),
     #[codec(packet_id = 0x62)]
     SetDisplayObjective(SetDisplayObjective),
     #[codec(packet_id = 0x63)]
