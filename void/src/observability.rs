@@ -302,6 +302,8 @@ impl Telemetry {
         self.chunk_load_errors[index].fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Reports `stopping`. Called after the last gauges are stored: a reader
+    /// that sees `stopping` then sees them too.
     pub(crate) fn begin_stopping(&self) {
         self.stopping.store(true, Ordering::Release);
         self.written("begin_stopping");
@@ -581,10 +583,6 @@ fn end_tick(
     mut exits: MessageReader<AppExit>,
 ) {
     let telemetry = &telemetry.0;
-    if !exits.is_empty() {
-        exits.clear();
-        telemetry.begin_stopping();
-    }
     let max_players = config.map_or(0, |config| config.max_players);
     telemetry.set_players(online.iter().count(), max_players);
     telemetry.add_players_joined(joined.iter().count());
@@ -598,6 +596,14 @@ fn end_tick(
         telemetry.record_measured_tps(f64::from(clock.window_ticks) / window.as_secs_f64());
         clock.window_start = now;
         clock.window_ticks = 0;
+    }
+
+    // Last, so that `stopping` implies the gauges are final: they are stored
+    // before this `Release` store, so a reader whose `Acquire` load sees
+    // `stopping` (as `/health` does) sees them or later values, never older.
+    if !exits.is_empty() {
+        exits.clear();
+        telemetry.begin_stopping();
     }
 }
 
