@@ -6,18 +6,19 @@ struct with `#[derive(Event)]`, fired with `world.trigger(..)` (or
 `On<T>` observer registered through `app.add_observer(..)`.
 
 ```rust
+use bevy_app::AppExit;
 use voidmc::{On, ServerConfig, VoidServer, events::PlayerJoinEvent};
 
 fn on_join(event: On<PlayerJoinEvent>) {
     tracing::info!(client_id = event.client_id, "Player joined");
 }
 
-fn main() {
+fn main() -> AppExit {
     VoidServer::new(ServerConfig::default())
         .add_plugin(|app| {
             app.add_observer(on_join);
         })
-        .run();
+        .run()
 }
 ```
 
