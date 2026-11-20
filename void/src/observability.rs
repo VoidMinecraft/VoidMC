@@ -169,6 +169,19 @@ pub(crate) struct Telemetry {
     packet_errors: AtomicU64,
     /// Indexed like [`CHUNK_LOAD_ERROR_KINDS`].
     chunk_load_errors: [AtomicU64; 2],
+    #[cfg(test)]
+    probe: std::sync::OnceLock<Probe>,
+}
+
+/// A reader on another thread that a test lets read the telemetry after each
+/// write of the game thread's end of tick, while that thread waits.
+#[cfg(test)]
+#[derive(Debug)]
+struct Probe {
+    /// Sends the name of the write that just completed.
+    written: flume::Sender<Option<&'static str>>,
+    /// Receives once the reader is done reading.
+    read: flume::Receiver<()>,
 }
 
 impl Telemetry {
@@ -192,6 +205,24 @@ impl Telemetry {
             packets_unrecognized: AtomicU64::new(0),
             packet_errors: AtomicU64::new(0),
             chunk_load_errors: Default::default(),
+            #[cfg(test)]
+            probe: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Under test, lets the probe, if one is set, read the telemetry before
+    /// the game thread writes anything else. Does nothing otherwise.
+    fn written(&self, _write: &'static str) {
+        #[cfg(test)]
+        if let Some(probe) = self.probe.get() {
+            probe
+                .written
+                .send(Some(_write))
+                .expect("the probe reads until the test ends");
+            probe
+                .read
+                .recv()
+                .expect("the probe reads until the test ends");
         }
     }
 
@@ -213,15 +244,18 @@ impl Telemetry {
         self.last_tick_end
             .store(self.nanos_since_epoch(ended_at), Ordering::Relaxed);
         self.ticks.fetch_add(1, Ordering::Release);
+        self.written("record_tick");
     }
 
     fn record_measured_tps(&self, tps: f64) {
         self.measured_tps.store(tps.to_bits(), Ordering::Relaxed);
+        self.written("record_measured_tps");
     }
 
     fn set_players(&self, online: usize, max: i32) {
         self.players_online.store(online as u64, Ordering::Relaxed);
         self.players_max.store(max.into(), Ordering::Relaxed);
+        self.written("set_players");
     }
 
     fn add_players_joined(&self, joined: usize) {
@@ -229,6 +263,7 @@ impl Telemetry {
             self.players_joined
                 .fetch_add(joined as u64, Ordering::Relaxed);
         }
+        self.written("add_players_joined");
     }
 
     pub(crate) fn connection_accepted(&self) {
@@ -269,6 +304,7 @@ impl Telemetry {
 
     pub(crate) fn begin_stopping(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.written("begin_stopping");
     }
 
     /// Time since the last tick completed, `None` before the first one.
@@ -902,6 +938,85 @@ mod tests {
         app.world_mut().write_message(AppExit::Success);
         app.update();
         assert_eq!(telemetry.health(Instant::now()), Health::Stopping);
+    }
+
+    /// Reads `/health` and `/metrics` from another thread after each write of
+    /// the exit tick, the way a scrape can land between any two of them, and
+    /// checks that every read reporting `stopping` also reports the gauges of
+    /// that tick.
+    #[test]
+    fn a_reader_that_sees_stopping_sees_the_gauges_of_the_exit_tick() {
+        let telemetry = Arc::new(telemetry());
+        let mut app = App::new();
+        app.add_plugins(ObservabilityPlugin {
+            telemetry: telemetry.clone(),
+            address: "127.0.0.1:1".parse().unwrap(),
+        })
+        .insert_resource(ServerConfigResource::from(&crate::ServerConfig {
+            max_players: 7,
+            ..Default::default()
+        }));
+        let alice = app.world_mut().spawn(PlayerReady).id();
+        let bob = app.world_mut().spawn(PlayerReady).id();
+        app.update();
+        app.update();
+        let before = telemetry.render_metrics(Instant::now());
+        assert!(before.contains("voidmc_players_online 2\n"), "{before}");
+
+        let (written_tx, written_rx) = flume::bounded(0);
+        let (read_tx, read_rx) = flume::bounded(0);
+        telemetry
+            .probe
+            .set(Probe {
+                written: written_tx.clone(),
+                read: read_rx,
+            })
+            .unwrap();
+        let reader = std::thread::spawn({
+            let telemetry = telemetry.clone();
+            move || {
+                let mut reads = Vec::new();
+                while let Ok(Some(write)) = written_rx.recv() {
+                    let now = Instant::now();
+                    let health = telemetry.health_response(now).body;
+                    let metrics = telemetry.render_metrics(now);
+                    reads.push((write, health, metrics));
+                    read_tx.send(()).unwrap();
+                }
+                reads
+            }
+        });
+
+        // The exit tick: the players have left and the server stops.
+        app.world_mut().despawn(alice);
+        app.world_mut().despawn(bob);
+        app.world_mut().write_message(AppExit::Success);
+        app.update();
+        written_tx.send(None).unwrap();
+        let reads = reader.join().unwrap();
+
+        let stopping: Vec<_> = reads
+            .iter()
+            .filter(|(_, health, _)| health.starts_with("{\"status\":\"stopping\""))
+            .collect();
+        assert!(!stopping.is_empty(), "never saw stopping in {reads:#?}");
+        for (write, health, metrics) in stopping {
+            for line in [
+                "voidmc_players_online 0\n",
+                "voidmc_players_max 7\n",
+                "voidmc_players_joined_total 2\n",
+                "voidmc_ticks_total 3\n",
+            ] {
+                assert!(
+                    metrics.contains(line),
+                    "after {write}, /health reports stopping but /metrics lacks {line:?}:\n{health}{metrics}"
+                );
+            }
+            assert!(
+                health.contains("\"ticks\":3,"),
+                "after {write}, /health reports stopping before the exit tick is counted: {health}"
+            );
+        }
     }
 
     #[test]
