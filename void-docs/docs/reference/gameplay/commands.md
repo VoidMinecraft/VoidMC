@@ -485,7 +485,9 @@ The Description column is what `/help` shows.
 down cleanly. Plugins that clean up on shutdown — such as
 [world serialization](/reference/server/world-serialization), which flushes
 dirty chunks — react to the same signal. Ctrl-C (SIGINT), SIGTERM and SIGHUP
-stop the server the same way.
+stop the server the same way. `VoidServer::run` then returns `AppExit::Success`
+after `/stop` and `AppExit::from_code(130)` after a signal (see
+[Stopping and the exit code](/reference/server/configuration#stopping-and-the-exit-code)).
 
 `/kick` sends the reason in a `Disconnect` packet, then the server closes the
 connection itself, so a client that ignores the packet does not stay in the
