@@ -29,6 +29,7 @@ static ONE_SERVER_AT_A_TIME: LazyLock<Arc<Mutex<()>>> = LazyLock::new(Default::d
 type Job = Box<dyn FnOnce(&mut World) + Send>;
 type Plugin = Box<dyn FnOnce(&mut App) + Send>;
 type CommandFactory = Box<dyn FnOnce() -> Command + Send>;
+type ConfigEdit = Box<dyn FnOnce(&mut ServerConfig) + Send>;
 
 #[derive(Resource)]
 struct Control {
@@ -74,6 +75,7 @@ impl ServerHandle {
 /// Configures a [`TestServer`] before it boots.
 pub struct TestServerBuilder {
     config: ServerConfigBuilder,
+    config_edits: Vec<ConfigEdit>,
     plugins: Vec<Plugin>,
     commands: Vec<CommandFactory>,
     default_commands: bool,
@@ -89,6 +91,7 @@ impl TestServerBuilder {
                 .simulation_distance(4)
                 .spawn_chunk_radius(4)
                 .initial_chunk_radius(2),
+            config_edits: Vec::new(),
             plugins: Vec::new(),
             commands: Vec::new(),
             default_commands: true,
@@ -97,6 +100,14 @@ impl TestServerBuilder {
 
     pub fn config(mut self, f: impl FnOnce(ServerConfigBuilder) -> ServerConfigBuilder) -> Self {
         self.config = f(self.config);
+        self
+    }
+
+    /// Sets fields of the built [`ServerConfig`] directly, past the checks
+    /// of the builder methods, like an application filling in the public
+    /// fields itself.
+    pub fn edit_config(mut self, f: impl FnOnce(&mut ServerConfig) + Send + 'static) -> Self {
+        self.config_edits.push(Box::new(f));
         self
     }
 
@@ -147,6 +158,7 @@ impl TestServerBuilder {
         let active = logs.activate();
         let Self {
             config,
+            config_edits,
             plugins,
             commands,
             default_commands,
@@ -155,7 +167,10 @@ impl TestServerBuilder {
         let thread = std::thread::Builder::new()
             .name("void-e2e-server".into())
             .spawn(move || {
-                let config: ServerConfig = config.build();
+                let mut config: ServerConfig = config.build();
+                for edit in config_edits {
+                    edit(&mut config);
+                }
                 let mut server = VoidServer::new(config).add_plugin(move |app: &mut App| {
                     app.insert_resource(Control {
                         jobs: jobs_rx,

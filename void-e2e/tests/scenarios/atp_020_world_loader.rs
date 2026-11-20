@@ -11,9 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use bevy_app::PostStartup;
+use bevy_ecs::system::ResMut;
 use voidmc::{
     ChunkData, ChunkLoader, ChunkLoaderResource, ChunkPos as VoidChunkPos, DefaultWorldGenerator,
-    DimensionId, WorldGenerator,
+    DimensionId, ServerConfigResource, WorldGenerator,
 };
 use voidmc_e2e::block::BlockState;
 use voidmc_e2e::core::direction::Direction;
@@ -29,7 +31,7 @@ use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightDa
 use voidmc_world_io::store::save_chunk;
 use voidmc_world_io::{ChunkStore, PersistenceConfig, RegionChunkStore, WorldPersistencePlugin};
 
-use crate::ground;
+use crate::{ground, wait_until_ready};
 
 const MIN_Y: i32 = -64;
 const MAX_Y: i32 = 320;
@@ -42,6 +44,8 @@ const STORED_STREAMED: (i32, i32) = (-3, 2);
 const MISSING_AT_SPAWN: (i32, i32) = (-1, 0);
 /// Missing chunk outside the spawn area.
 const MISSING_STREAMED: (i32, i32) = (3, -2);
+/// Stored chunk far from the spawn area, where a plugin moves the spawn.
+const STORED_AWAY: (i32, i32) = (9, -7);
 
 /// The test servers generate a 3×3 spawn area around chunk (0, 0); a view
 /// distance of 4 streams the rest.
@@ -369,5 +373,69 @@ async fn persistence_plugin_loads_stored_chunks_and_keeps_edits_across_restarts(
     }
 
     bob.assert_healthy();
+    server.stop().await;
+}
+
+/// A plugin moves the spawn after startup into a chunk stored on disk but
+/// outside the spawn area: the join loads that chunk from the store for the
+/// player standing in it instead of generating it.
+#[tokio::test]
+async fn a_stored_chunk_at_a_moved_spawn_is_loaded_for_the_joining_player() {
+    let world = TempWorld::new();
+    {
+        let store = RegionChunkStore::new(world.path());
+        let config = PersistenceConfig::new(world.path());
+        save_chunk(
+            &store,
+            &config,
+            DimensionId::Overworld,
+            void_pos(STORED_AWAY),
+            &stored_chunk(),
+        )
+        .expect("failed to store the chunk");
+        store.flush().expect("failed to flush the store");
+    }
+    let calls = CallLog::default();
+    let generator_calls = calls.clone();
+    let server = persistent(&world)
+        .config(move |config| {
+            config.world_generator(RecordingGenerator {
+                inner: DefaultWorldGenerator::default(),
+                calls: generator_calls,
+            })
+        })
+        .plugin(|app| {
+            app.add_systems(PostStartup, |mut config: ResMut<ServerConfigResource>| {
+                config.spawn_x = f64::from(STORED_AWAY.0 * 16) + 8.5;
+                config.spawn_z = f64::from(STORED_AWAY.1 * 16) + 8.5;
+                config.spawn_y = Some(100.0);
+            });
+        })
+        .start()
+        .await;
+
+    let alice = server.join("Alice").await;
+    wait_until_ready(&server, &alice).await;
+    let own = ChunkPos::from(BlockPos::from(alice.position()));
+    assert_eq!(
+        own,
+        client_pos(STORED_AWAY),
+        "the player is at the moved spawn"
+    );
+    assert_client_chunk(
+        &alice,
+        STORED_AWAY,
+        &stored_chunk(),
+        "the chunk stored on disk",
+    );
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(
+        first(&calls, Call::Generate(void_pos(STORED_AWAY))),
+        None,
+        "the stored chunk was generated"
+    );
+
+    alice.sync().await;
+    alice.assert_healthy();
     server.stop().await;
 }
