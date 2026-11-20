@@ -147,7 +147,7 @@ impl SilentPlayer {
         let uuid = azalea_crypto::offline::generate_uuid(name);
         let (connection, _, _) = timeout(
             &format!("{name} to log in"),
-            login(address, name, uuid, &BotOptions::default()),
+            login(address, name, uuid, ClientInformation::default()),
         )
         .await
         .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"));
@@ -284,10 +284,34 @@ impl Bot {
         name: &str,
         options: BotOptions,
     ) -> Result<Self, LoginRefused> {
+        let information = ClientInformation {
+            view_distance: options.view_distance,
+            ..Default::default()
+        };
+        Self::try_join_as(address, name, information).await
+    }
+
+    /// Joins with `information` as the client settings sent during
+    /// configuration.
+    pub(crate) async fn join_as(
+        address: SocketAddr,
+        name: &str,
+        information: ClientInformation,
+    ) -> Self {
+        Self::try_join_as(address, name, information)
+            .await
+            .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"))
+    }
+
+    async fn try_join_as(
+        address: SocketAddr,
+        name: &str,
+        information: ClientInformation,
+    ) -> Result<Self, LoginRefused> {
         let uuid = azalea_crypto::offline::generate_uuid(name);
         let (connection, transcript, registries) = timeout(
             &format!("{name} to log in"),
-            login(address, name, uuid, &options),
+            login(address, name, uuid, information),
         )
         .await?;
         let (read, write) = connection.into_split();
@@ -627,7 +651,7 @@ async fn login(
     address: SocketAddr,
     name: &str,
     uuid: Uuid,
-    options: &BotOptions,
+    information: ClientInformation,
 ) -> Result<
     (
         Connection<ClientboundGamePacket, ServerboundGamePacket>,
@@ -642,12 +666,7 @@ async fn login(
         ..Default::default()
     };
     connection
-        .write(s_client_information::ServerboundClientInformation {
-            information: ClientInformation {
-                view_distance: options.view_distance,
-                ..Default::default()
-            },
-        })
+        .write(s_client_information::ServerboundClientInformation { information })
         .await
         .expect("client information");
 

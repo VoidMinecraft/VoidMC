@@ -1,15 +1,19 @@
 //! VMC-ATP-007: chat typed by one player is shown once to every connected
-//! player, with the sender's name and the text as typed, and chat never costs
-//! anyone their connection.
+//! player whose chat is shown, still loading the world or not, with the
+//! sender's name and the text as typed, and chat never costs anyone their
+//! connection.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use azalea_crypto::signing::MessageSignature;
-use voidmc::components::{PlayerReady, PlayerUuid};
+use bevy_ecs::prelude::{Has, World};
+use voidmc::WorldMessages;
+use voidmc::components::{ConnectionState, PlayerReady, PlayerUuid};
 use voidmc::events::ChatMessageEvent;
 use voidmc::{Command, CommandBuilder, MessageArg, On};
 use voidmc_e2e::core::bitset::FixedBitSet;
+use voidmc_e2e::protocol::common::client_information::{ChatVisibility, ClientInformation};
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 use voidmc_e2e::protocol::packets::game::s_chat::{LastSeenMessagesUpdate, ServerboundChat};
 use voidmc_e2e::protocol::packets::game::s_chat_ack::ServerboundChatAck;
@@ -19,7 +23,9 @@ use voidmc_e2e::protocol::packets::game::s_chat_command_signed::{
 use voidmc_e2e::protocol::packets::game::s_chat_session_update::{
     ProfilePublicKeyData, RemoteChatSessionData, ServerboundChatSessionUpdate,
 };
+use voidmc_e2e::protocol::packets::game::s_client_information::ServerboundClientInformation;
 use voidmc_e2e::{Bot, TestServer};
+use voidmc_protocol::State;
 
 /// The line a vanilla client adds to its chat box for this packet, as plain
 /// text. An overlay system message goes to the action bar, not the chat box.
@@ -34,6 +40,23 @@ fn chat_line(packet: &ClientboundGamePacket) -> Option<String> {
 
 async fn join_ready(server: &TestServer, name: &str) -> Bot {
     let bot = server.join(name).await;
+    until_ready(server, &bot).await;
+    bot
+}
+
+async fn join_ready_with_chat(
+    server: &TestServer,
+    name: &str,
+    chat_visibility: ChatVisibility,
+) -> Bot {
+    let bot = server
+        .join_with_information(name, chat_setting(chat_visibility))
+        .await;
+    until_ready(server, &bot).await;
+    bot
+}
+
+async fn until_ready(server: &TestServer, bot: &Bot) {
     let uuid = bot.uuid();
     server
         .wait_for("the player to finish loading", move |world| {
@@ -44,7 +67,25 @@ async fn join_ready(server: &TestServer, name: &str) -> Bot {
                 .then_some(())
         })
         .await;
-    bot
+}
+
+/// The default client settings with this chat visibility ("Shown",
+/// "Commands only" or "Hidden" in the vanilla chat settings).
+fn chat_setting(chat_visibility: ChatVisibility) -> ClientInformation {
+    ClientInformation {
+        chat_visibility,
+        ..Default::default()
+    }
+}
+
+/// Changes the chat visibility like a player editing their chat settings
+/// while playing, and returns once the server has handled the change.
+async fn set_chat_visibility(bot: &Bot, chat_visibility: ChatVisibility) {
+    bot.send(ServerboundClientInformation {
+        client_information: chat_setting(chat_visibility),
+    })
+    .await;
+    bot.sync().await;
 }
 
 /// Waits for `line` in `bot`'s chat box, then checks, once every packet the
@@ -368,5 +409,112 @@ async fn lines_reach_players_present_when_sent_and_nobody_else() {
         sees_once(bot, "<Carol> after Bob left").await;
         bot.assert_healthy();
     }
+    server.stop().await;
+}
+
+/// Like a vanilla server, only a client whose chat is shown ("Full") is sent
+/// other players' chat; one on "Commands only" or "Hidden" still gets its
+/// command feedback and the server's own messages.
+#[tokio::test]
+async fn players_who_hide_chat_are_sent_no_player_chat_but_still_command_feedback() {
+    let server = TestServer::builder().command(shout_command).start().await;
+    let alice = join_ready(&server, "Alice").await;
+    let bob = join_ready_with_chat(&server, "Bob", ChatVisibility::System).await;
+    let carol = join_ready_with_chat(&server, "Carol", ChatVisibility::Hidden).await;
+
+    alice.chat("for shown chat only 5d2b").await;
+    sees_once(&alice, "<Alice> for shown chat only 5d2b").await;
+    for bot in [&bob, &carol] {
+        never_sees(bot, "for shown chat only 5d2b").await;
+    }
+
+    for bot in [&bob, &carol] {
+        bot.command(&format!("shout from {}", bot.name())).await;
+        sees_once(bot, &format!("shouted from {}", bot.name())).await;
+    }
+    never_sees(&alice, "shouted").await;
+
+    server
+        .with_world(|world| {
+            WorldMessages::new(world)
+                .broadcast("server notice 8a1f")
+                .send();
+        })
+        .await;
+    for bot in [&alice, &bob, &carol] {
+        sees_once(bot, "server notice 8a1f").await;
+        bot.assert_healthy();
+    }
+    server.stop().await;
+}
+
+/// A chat setting changed while playing decides the next lines, in both
+/// directions.
+#[tokio::test]
+async fn a_chat_setting_changed_while_playing_applies_to_the_next_line() {
+    let server = TestServer::start().await;
+    let alice = join_ready(&server, "Alice").await;
+    let bob = join_ready(&server, "Bob").await;
+
+    set_chat_visibility(&bob, ChatVisibility::Hidden).await;
+    alice.chat("while Bob hides chat").await;
+    sees_once(&alice, "<Alice> while Bob hides chat").await;
+    never_sees(&bob, "while Bob hides chat").await;
+
+    set_chat_visibility(&bob, ChatVisibility::Full).await;
+    alice.chat("Bob shows chat again").await;
+    for bot in [&alice, &bob] {
+        sees_once(bot, "<Alice> Bob shows chat again").await;
+    }
+
+    set_chat_visibility(&bob, ChatVisibility::System).await;
+    alice.chat("while Bob shows commands only").await;
+    sees_once(&alice, "<Alice> while Bob shows commands only").await;
+    never_sees(&bob, "while Bob shows commands only").await;
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// A player in the play state is sent chat before its client reports the
+/// world loaded, like on a vanilla server.
+#[tokio::test]
+async fn a_player_still_loading_the_world_is_sent_chat() {
+    let server = TestServer::start().await;
+    let alice = join_ready(&server, "Alice").await;
+    let mut dave = server.join_silent("Dave").await;
+    dave.expect("the play Login", |packet| {
+        matches!(packet, ClientboundGamePacket::Login(_)).then_some(())
+    })
+    .await;
+    let uuid = dave.uuid();
+    let loading = move |world: &mut World| {
+        world
+            .query::<(&PlayerUuid, &ConnectionState, Has<PlayerReady>)>()
+            .iter(world)
+            .find(|(id, ..)| id.0 == uuid)
+            .map(|(_, state, ready)| (state.0, ready))
+    };
+    assert_eq!(
+        server.with_world(loading).await,
+        Some((State::Play, false)),
+        "Dave is in the play state and not ready"
+    );
+
+    let line = "<Alice> while Dave loads 2e4c";
+    alice.chat("while Dave loads 2e4c").await;
+    sees_once(&alice, line).await;
+    dave.expect(&format!("the chat line {line:?}"), |packet| {
+        (chat_line(packet)? == line).then_some(())
+    })
+    .await;
+    assert_eq!(
+        server.with_world(loading).await,
+        Some((State::Play, false)),
+        "Dave is still loading when the line arrives"
+    );
+
+    alice.assert_healthy();
     server.stop().await;
 }
