@@ -1426,6 +1426,71 @@ mod tests {
         assert!(h.app.world().resource::<Quits>().0.is_empty());
     }
 
+    /// Records, at the moment it is woken, whether the connection's sender
+    /// has already been dropped.
+    struct SenderDroppedWhenWoken {
+        connection: Receiver<OutgoingPacket>,
+        dropped: Mutex<Vec<bool>>,
+    }
+
+    impl std::task::Wake for SenderDroppedWhenWoken {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let dropped = self.connection.is_disconnected();
+            self.dropped.lock().unwrap().push(dropped);
+        }
+    }
+
+    /// The network thread counts a despawned client's kick only if the kick
+    /// request reaches it before it learns that the connection ended, and
+    /// dropping the client's sender can end the connection at once. No
+    /// Disconnect is written to a despawned client, so the end of its
+    /// connection does not count as a kick by itself. The kick must
+    /// therefore be requested while the sender is still alive.
+    ///
+    /// A receiver waiting on the kick channel is woken synchronously, inside
+    /// the `send` of the observer, so the waker sees the sender as it is at
+    /// that moment, whatever the threads do.
+    #[test]
+    fn a_despawned_client_is_kicked_before_its_sender_is_dropped() {
+        use std::future::Future;
+
+        let mut h = harness();
+        let (entity, connection) = client_in(&mut h, 1, voidmc_protocol::State::Play, "gone");
+        let witness = Arc::new(SenderDroppedWhenWoken {
+            connection: connection.clone(),
+            dropped: Mutex::default(),
+        });
+        let waker = std::task::Waker::from(witness.clone());
+        let mut kick = std::pin::pin!(h._kick_rx.recv_async());
+        assert!(
+            kick.as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending(),
+            "no kick before the despawn"
+        );
+
+        h.app.world_mut().despawn(entity);
+
+        assert_eq!(
+            *witness.dropped.lock().unwrap(),
+            vec![false],
+            "the kick was requested once, before the sender was dropped"
+        );
+        assert!(connection.is_disconnected(), "the sender is dropped after");
+        match kick
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(&waker))
+        {
+            std::task::Poll::Ready(Ok(client_id)) => assert_eq!(client_id, 1),
+            other => panic!("expected the kick of client 1, got {other:?}"),
+        }
+        assert!(h._kick_rx.is_empty(), "one kick request only");
+    }
+
     fn set_pre_play_timeout(h: &mut Harness, timeout: Duration) {
         h.app.world_mut().resource_mut::<PrePlayTimeout>().0 = timeout;
     }
