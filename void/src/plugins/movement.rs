@@ -8,8 +8,8 @@ use bevy_ecs::{
     world::{EntityWorldMut, World},
 };
 use voidmc_protocol::serverbound::{
-    ConfirmTeleportation, PlayerAbilities, PlayerInput, SetPlayerPos, SetPlayerPosAndRot,
-    SetPlayerRotation,
+    ConfirmTeleportation, PlayerAbilities, PlayerInput, SetPlayerMovementFlags, SetPlayerPos,
+    SetPlayerPosAndRot, SetPlayerRotation,
 };
 
 use crate::{
@@ -30,6 +30,7 @@ impl Plugin for MovementPlugin {
         app.add_observer(handle_set_player_pos);
         app.add_observer(handle_set_player_pos_and_rot);
         app.add_observer(handle_set_player_rotation);
+        app.add_observer(handle_set_player_movement_flags);
         app.add_observer(handle_player_abilities);
         app.add_observer(handle_player_input);
     }
@@ -84,14 +85,18 @@ fn handle_confirm_teleportation(
     }
 }
 
-/// Like vanilla, positions are ignored while a position sync is unconfirmed:
-/// they were sent before the client processed the teleport and would undo it.
+/// Like vanilla, a movement packet is ignored whole (position, rotation and
+/// on-ground flag) while a position sync is unconfirmed: the client sent it
+/// before it processed the teleport, and it would undo the teleport.
+fn awaiting_teleport(world: &World, entity: Entity) -> bool {
+    world
+        .get::<TeleportState>(entity)
+        .is_some_and(|state| state.pending_id.is_some())
+}
+
 fn apply_position(world: &World, commands: &mut Commands, entity: Entity, new: Position) {
     if world.get::<Mount>(entity).is_some()
         || world.get::<ServerControlledPosition>(entity).is_some()
-        || world
-            .get::<TeleportState>(entity)
-            .is_some_and(|state| state.pending_id.is_some())
     {
         return;
     }
@@ -129,6 +134,9 @@ fn handle_set_player_pos(
     world: &World,
     mut commands: Commands,
 ) {
+    if awaiting_teleport(world, event.entity) {
+        return;
+    }
     apply_on_ground(&mut commands, event.entity, event.packet.flags);
     apply_position(
         world,
@@ -147,6 +155,9 @@ fn handle_set_player_pos_and_rot(
     world: &World,
     mut commands: Commands,
 ) {
+    if awaiting_teleport(world, event.entity) {
+        return;
+    }
     apply_on_ground(&mut commands, event.entity, event.packet.flags);
     apply_position(
         world,
@@ -168,7 +179,14 @@ fn handle_set_player_pos_and_rot(
     );
 }
 
-fn handle_set_player_rotation(event: On<PacketEvent<SetPlayerRotation>>, mut commands: Commands) {
+fn handle_set_player_rotation(
+    event: On<PacketEvent<SetPlayerRotation>>,
+    world: &World,
+    mut commands: Commands,
+) {
+    if awaiting_teleport(world, event.entity) {
+        return;
+    }
     apply_on_ground(&mut commands, event.entity, event.packet.flags);
     apply_rotation(
         &mut commands,
@@ -178,6 +196,17 @@ fn handle_set_player_rotation(event: On<PacketEvent<SetPlayerRotation>>, mut com
             pitch: event.packet.pitch,
         },
     );
+}
+
+fn handle_set_player_movement_flags(
+    event: On<PacketEvent<SetPlayerMovementFlags>>,
+    world: &World,
+    mut commands: Commands,
+) {
+    if awaiting_teleport(world, event.entity) {
+        return;
+    }
+    apply_on_ground(&mut commands, event.entity, event.packet.flags);
 }
 
 fn handle_player_abilities(event: On<PacketEvent<PlayerAbilities>>, mut commands: Commands) {
@@ -487,6 +516,11 @@ mod tests {
                 flags: ON_GROUND,
             },
         });
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: SetPlayerMovementFlags { flags: ON_GROUND },
+        });
         app.update();
         assert_eq!(state(&app), ((0.0, 0.0), false, 0));
 
@@ -540,6 +574,13 @@ mod tests {
         });
         app.world_mut().flush();
         assert!(grounded(&app));
+        app.world_mut().trigger(PacketEvent {
+            client_id: 1,
+            entity,
+            packet: SetPlayerMovementFlags { flags: 0 },
+        });
+        app.world_mut().flush();
+        assert!(!grounded(&app), "the status-only packet records the flag");
 
         for (flags, sneak) in [
             (PlayerInput::SNEAK | PlayerInput::FORWARD, true),

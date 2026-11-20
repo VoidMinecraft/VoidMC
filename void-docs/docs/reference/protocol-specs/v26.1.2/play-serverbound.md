@@ -471,7 +471,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 |-------|------|-------|
 | Flags | [Unsigned Byte](./data-types#unsigned-byte) | Bit 0 = on ground, bit 1 = horizontal collision. |
 
-**Semantics.** Sent each tick when neither position nor rotation changed but the on-ground / horizontal-collision status must still be reported. Corresponds to the `Move Player Status Only` Java class.
+**Semantics.** Sent on a tick when neither position nor rotation changed (and no periodic position reminder is due) but the on-ground or horizontal-collision status did change since the last movement packet. Corresponds to the `Move Player Status Only` Java class (`minecraft:move_player_status_only`). Like the other movement packets, the vanilla server ignores it while a teleport is unconfirmed.
 
 ## 0x22 - Move Vehicle
 
