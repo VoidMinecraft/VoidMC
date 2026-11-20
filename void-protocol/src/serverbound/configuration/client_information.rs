@@ -1,6 +1,6 @@
 use voidmc_codec::{Decode, Encode};
 
-#[derive(Debug, Clone, Copy, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 #[codec(varint32)]
 #[repr(i32)]
 pub enum ChatMode {
