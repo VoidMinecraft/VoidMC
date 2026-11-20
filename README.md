@@ -98,9 +98,10 @@ Operational details, production caveats, logs, metrics, and deployment assumptio
 Void servers are configured through `ServerConfigBuilder`:
 
 ```rust
+use bevy_app::AppExit;
 use voidmc::{ServerConfigBuilder, VoidServer};
 
-fn main() {
+fn main() -> AppExit {
     let config = ServerConfigBuilder::new()
         .address("127.0.0.1:25565")
         .tick_rate(20)
@@ -113,9 +114,13 @@ fn main() {
         .add_plugin(|app| {
             // Register systems, observers, resources, etc.
         })
-        .run();
+        .run()
 }
 ```
+
+`run` blocks until the server stops and returns Bevy's `AppExit`; returned from
+`main`, it becomes the process exit code: 0 after `/stop`, 130 after Ctrl-C,
+SIGTERM or SIGHUP.
 
 The example server also supports environment variables for diagnostics:
 

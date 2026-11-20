@@ -35,7 +35,7 @@ pub use voidmc_data::v26_1_2::EntityKind;
 use crate::components::{
     EntityCollider, EntityDimension, EntityType, EntityUuid, EntityViewers, Grounded,
     MinecraftEntityId, MovementConfig, Position, PreviousPosition, RecentlySpawned, Rotation,
-    SpawnedEntity, Velocity, VerticalVelocity,
+    SpawnedEntity, Velocity, VerticalVelocity, Wander,
 };
 use crate::entity::visibility_index::{ChunkViewerIndex, DirtyChunks};
 use crate::events::EntityDespawnEvent;
@@ -156,6 +156,10 @@ impl EntityBuilder {
         self
     }
 
+    /// Gives the entity the demo random walk: `spawn`/`spawn_in` attach a
+    /// [`Wander`] with the [`Wander::random`] defaults, the same walk
+    /// `/summon --wander` gives. A `Wander` staged with [`Self::with`]
+    /// replaces it.
     pub fn wander(mut self, enabled: bool) -> Self {
         self.movement.wander = enabled;
         self
@@ -186,8 +190,9 @@ impl EntityBuilder {
 
     /// The base bundle every spawned entity needs. This is the raw escape hatch
     /// for handing a bundle straight to Bevy (`commands.spawn(builder.bundle())`);
-    /// it does not carry components staged with [`Self::with`], since those are
-    /// applied by `spawn`/`spawn_in` after the base bundle lands.
+    /// it does not carry components staged with [`Self::with`], nor the
+    /// [`Wander`] that [`Self::wander`] asks for, since those are applied by
+    /// `spawn`/`spawn_in` after the base bundle lands.
     pub fn bundle(self) -> impl Bundle {
         let gravity = self.movement.gravity_enabled;
         (
@@ -215,7 +220,11 @@ impl EntityBuilder {
 
     pub fn spawn<'a>(mut self, commands: &'a mut Commands) -> EntityCommands<'a> {
         let extras = std::mem::take(&mut self.extras);
+        let wander = self.movement.wander.then(Wander::random);
         let mut entity = commands.spawn(self.bundle());
+        if let Some(wander) = wander {
+            entity.insert(wander);
+        }
         for extra in extras {
             extra.apply_commands(&mut entity);
         }
@@ -224,7 +233,11 @@ impl EntityBuilder {
 
     pub fn spawn_in(mut self, world: &mut World) -> EntityWorldMut<'_> {
         let extras = std::mem::take(&mut self.extras);
+        let wander = self.movement.wander.then(Wander::random);
         let mut entity = world.spawn(self.bundle());
+        if let Some(wander) = wander {
+            entity.insert(wander);
+        }
         for extra in extras {
             extra.apply_world(&mut entity);
         }

@@ -2,7 +2,8 @@
 //! checks the files it leaves behind once stopped with Ctrl-C (SIGINT): the
 //! TPS CSV (`VOID_METRICS_DEBUG`, `VOID_TPS_OUTPUT`) and the folded flame
 //! trace (`VOID_METRICS_MODE=flame`, `VOID_FLAME_OUTPUT`,
-//! `VOID_FLAME_INCLUDE_IDLE`).
+//! `VOID_FLAME_INCLUDE_IDLE`). It also checks the exit code of a server
+//! stopped by Ctrl-C or SIGTERM.
 //!
 //! Each run listens on a free port (`VOID_LISTEN_ADDR=127.0.0.1:0`) inside its
 //! own temporary directory, so relative paths and the default `logs/` paths
@@ -12,7 +13,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +25,11 @@ const TPS_HEADER: &str = "timestamp_ms,tps,window_ms,last_tick_ms,total_ticks";
 
 /// The example's tick rate: 20 ticks per second.
 const TICK_RATE: f64 = 20.0;
+
+/// The exit code of a server stopped by Ctrl-C, SIGTERM or SIGHUP: Bevy's
+/// handler for these signals ends the app with `AppExit::from_code(130)`, the
+/// shell's code for a process interrupted by SIGINT (128 + 2).
+const INTERRUPTED: i32 = 130;
 
 /// Every variable the example reads; each run starts without them.
 const VARIABLES: [&str; 9] = [
@@ -101,6 +107,30 @@ fn tps_csv_and_flame_trace_are_complete_after_ctrl_c() {
         !stacks.iter().any(|stack| stack.len() == 1),
         "idle samples are left out by default: {stacks:?}"
     );
+}
+
+#[test]
+fn ctrl_c_exits_with_code_130() {
+    let mut server = Example::start("ctrl-c", |_| {}, &[]);
+    server.expect_line("the spawn area log line", |line| {
+        line.contains("spawn area chunks")
+    });
+
+    let stopped = server.stop_with("INT");
+
+    stopped.assert_exit_code(INTERRUPTED);
+}
+
+#[test]
+fn sigterm_exits_with_code_130() {
+    let mut server = Example::start("sigterm", |_| {}, &[]);
+    server.expect_line("the spawn area log line", |line| {
+        line.contains("spawn area chunks")
+    });
+
+    let stopped = server.stop_with("TERM");
+
+    stopped.assert_exit_code(INTERRUPTED);
 }
 
 #[test]
@@ -437,13 +467,22 @@ impl Example {
         }
     }
 
-    /// Sends SIGINT, as Ctrl-C does, and waits for a clean exit.
-    fn interrupt(mut self) -> Stopped {
+    /// Sends SIGINT, as Ctrl-C does, and waits for the server to exit as
+    /// an interrupted process does, with code 130.
+    fn interrupt(self) -> Stopped {
+        let stopped = self.stop_with("INT");
+        stopped.assert_exit_code(INTERRUPTED);
+        stopped
+    }
+
+    /// Sends the signal `name` (`INT`, `TERM`, ...) and waits for the process
+    /// to exit, whatever its exit status.
+    fn stop_with(mut self, name: &str) -> Stopped {
         let status = Command::new("kill")
-            .args(["-INT", &self.child.id().to_string()])
+            .args([&format!("-{name}"), &self.child.id().to_string()])
             .status()
             .expect("run kill");
-        assert!(status.success(), "kill -INT failed: {status}");
+        assert!(status.success(), "kill -{name} failed: {status}");
 
         // Both pipes close when the process exits.
         let deadline = Instant::now() + WAIT_LIMIT;
@@ -458,12 +497,9 @@ impl Example {
             }
         }
         let status = self.child.wait().expect("wait for the server process");
-        if !status.success() {
-            self.fail(&format!("the server did not exit cleanly: {status}"));
-        }
         let lines = std::mem::take(&mut self.lines);
         let dir = RuntimeDir(std::mem::take(&mut self.dir.0));
-        Stopped { lines, dir }
+        Stopped { lines, dir, status }
     }
 
     /// Stops the server and fails the test with its whole output.
@@ -485,13 +521,24 @@ impl Drop for Example {
     }
 }
 
-/// A stopped run: its output and the directory it ran in.
+/// A stopped run: its output, the directory it ran in and how it exited.
 struct Stopped {
     lines: Vec<String>,
     dir: RuntimeDir,
+    status: ExitStatus,
 }
 
 impl Stopped {
+    fn assert_exit_code(&self, code: i32) {
+        assert_eq!(
+            self.status.code(),
+            Some(code),
+            "the server exited with {}, not code {code}\n{}",
+            self.status,
+            self.transcript()
+        );
+    }
+
     fn read(&self, relative: &str) -> String {
         std::fs::read_to_string(self.dir.0.join(relative))
             .unwrap_or_else(|error| panic!("read {relative}: {error}\n{}", self.transcript()))

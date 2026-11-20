@@ -2,7 +2,7 @@ use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
 
 use bevy_app::{
-    App, ScheduleRunnerPlugin, Startup, TaskPoolOptions, TaskPoolPlugin,
+    App, AppExit, ScheduleRunnerPlugin, Startup, TaskPoolOptions, TaskPoolPlugin,
     TaskPoolThreadAssignmentPolicy, TerminalCtrlCHandlerPlugin,
 };
 use bevy_ecs::prelude::*;
@@ -62,7 +62,23 @@ impl VoidServer {
     /// Starts the server — binds the listening socket, spawns the network
     /// thread and runs the Bevy app. This function blocks until the server
     /// shuts down, and panics if the address cannot be bound.
-    pub fn run(self) {
+    ///
+    /// Returns the [`AppExit`] the app stopped with: [`AppExit::Success`]
+    /// after `/stop`, `AppExit::from_code(130)` after Ctrl-C, SIGTERM or
+    /// SIGHUP, or the one an application wrote (an error wins over
+    /// [`AppExit::Success`] when several are written). `AppExit` implements
+    /// [`Termination`](std::process::Termination), so `main` can return it to
+    /// make it the process exit code:
+    ///
+    /// ```no_run
+    /// use bevy_app::AppExit;
+    /// use voidmc::{ServerConfig, VoidServer};
+    ///
+    /// fn main() -> AppExit {
+    ///     VoidServer::new(ServerConfig::default()).run()
+    /// }
+    /// ```
+    pub fn run(self) -> AppExit {
         let config_resource = ServerConfigResource::from(&self.config);
         let server_status = ServerStatusSnapshot::new(&self.config);
         let tick_duration = self.config.tick_duration();
@@ -183,10 +199,10 @@ impl VoidServer {
         }
 
         apply_execution_mode(&mut app, execution_mode);
-        app.run();
-        // `_observability_guard` drops here: `/health` reports `stopping` until
-        // the observability listener is closed, which happens before `run`
-        // returns.
+        // `_observability_guard` drops after this: `/health` reports `stopping`
+        // until the observability listener is closed, which happens before
+        // `run` returns.
+        app.run()
     }
 }
 

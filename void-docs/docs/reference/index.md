@@ -18,12 +18,13 @@ Void is a Minecraft-compatible server framework written in Rust. It combines [Be
 Add `void` as a dependency, then create a minimal server:
 
 ```rust
+use bevy_app::AppExit;
 use voidmc::{
     CommandBuilder, CommandRegistry, ServerConfigBuilder, VoidServer,
     register_default_commands,
 };
 
-fn main() {
+fn main() -> AppExit {
     VoidServer::new(ServerConfigBuilder::new().build())
         .add_plugin(|app| {
             let mut registry = app.world_mut().resource_mut::<CommandRegistry>();
@@ -37,11 +38,11 @@ fn main() {
                 })
                 .build(),
         )
-        .run();
+        .run()
 }
 ```
 
-This starts a server on `127.0.0.1:25565` with default settings, all built-in commands, and a custom `/hello` command.
+This starts a server on `127.0.0.1:25565` with default settings, all built-in commands, and a custom `/hello` command. `run` returns the server's `AppExit` once it stops, which `main` returns as the process exit code (see [Stopping and the exit code](/reference/server/configuration#stopping-and-the-exit-code)).
 
 ## Server
 

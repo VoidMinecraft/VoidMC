@@ -178,7 +178,7 @@ impl TestServerBuilder {
                 for command in commands {
                     server = server.add_command(command());
                 }
-                server.run();
+                server.run()
             })
             .expect("failed to spawn the server thread");
 
@@ -248,7 +248,7 @@ fn answer_barriers(world: &mut World) {
 pub struct TestServer {
     handle: ServerHandle,
     address: SocketAddr,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<JoinHandle<AppExit>>,
     logs: LogCapture,
     _active: ActiveCapture,
     _turn: OwnedMutexGuard<()>,
@@ -370,9 +370,14 @@ impl TestServer {
 
     /// Waits for the server to stop on its own, for example after a player
     /// ran `/stop`, without asking it to; then fails like [`TestServer::stop`].
-    pub async fn wait_for_exit(mut self) {
-        self.join_thread().await;
+    /// Returns what `VoidServer::run` returned.
+    pub async fn wait_for_exit(mut self) -> AppExit {
+        let exit = self
+            .join_thread()
+            .await
+            .expect("the server thread is joined only once");
         self.assert_no_failures();
+        exit
     }
 
     fn assert_no_failures(&self) {
@@ -402,19 +407,20 @@ impl TestServer {
         self.join_thread().await;
     }
 
-    async fn join_thread(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let joined = tokio::task::spawn_blocking(move || thread.join());
-            match tokio::time::timeout(Duration::from_secs(10), joined).await {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(panic))) => std::panic::resume_unwind(panic),
-                Ok(Err(error)) => panic!("failed to join the server thread: {error}"),
-                Err(_) => {
-                    // The join is still blocking the test runtime: stop the
-                    // server so the runtime can shut down after the panic.
-                    self.request_exit();
-                    panic!("the server did not stop within 10s");
-                }
+    /// Waits for the server thread and returns what `VoidServer::run`
+    /// returned, or `None` if the thread was already joined.
+    async fn join_thread(&mut self) -> Option<AppExit> {
+        let thread = self.thread.take()?;
+        let joined = tokio::task::spawn_blocking(move || thread.join());
+        match tokio::time::timeout(Duration::from_secs(10), joined).await {
+            Ok(Ok(Ok(exit))) => Some(exit),
+            Ok(Ok(Err(panic))) => std::panic::resume_unwind(panic),
+            Ok(Err(error)) => panic!("failed to join the server thread: {error}"),
+            Err(_) => {
+                // The join is still blocking the test runtime: stop the
+                // server so the runtime can shut down after the panic.
+                self.request_exit();
+                panic!("the server did not stop within 10s");
             }
         }
     }

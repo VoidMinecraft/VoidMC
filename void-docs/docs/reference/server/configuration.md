@@ -102,6 +102,33 @@ fn announce(address: Res<ListenAddress>) {
 }
 ```
 
+## Stopping and the exit code
+
+`VoidServer::run` blocks until the game loop stops and returns the Bevy
+`AppExit` it stopped with:
+
+| Stopped by | `run` returns | Exit code of a `main` returning it |
+|---|---|---|
+| `/stop` | `AppExit::Success` | `0` |
+| Ctrl-C (SIGINT), SIGTERM or SIGHUP | `AppExit::from_code(130)` | `130` |
+| A system writing an `AppExit` | that `AppExit`; an error wins over `Success` when several are written | its code |
+
+`AppExit` implements `std::process::Termination`, so returning it from `main`
+makes it the process exit code, and a supervisor can tell a requested stop from
+an interrupted one:
+
+```rust
+use bevy_app::AppExit;
+use voidmc::{ServerConfigBuilder, VoidServer};
+
+fn main() -> AppExit {
+    VoidServer::new(ServerConfigBuilder::new().build()).run()
+}
+```
+
+A `main` that also returns errors can return `Result<AppExit, E>` and wrap what
+`run` returned in `Ok`, as the example server does.
+
 ## Packet limits
 
 `FrameLimits` rejects invalid packet lengths before allocation and carries the
