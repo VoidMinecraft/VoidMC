@@ -12,12 +12,17 @@ pub(crate) fn thread_cpu_ms() -> Option<f64> {
 /// Thread names (as the kernel truncates them, to 15 bytes) of an
 /// in-process server: its game thread and network driver, which inherit the
 /// harness's `void-e2e-server` name, its Tokio network runtime, and Bevy's
-/// task pools, where the multi-threaded executor runs most systems. The load
-/// clients never run on threads with these names: in a test they run on the
-/// test thread, and the `voidmc-load` binary names its own runtime threads
-/// `load-client`.
-pub(crate) const SERVER_THREADS: [&str; 5] = [
+/// task pools, where the multi-threaded executor runs most systems. The
+/// network runtime keeps Tokio's default thread name, `tokio-rt-worker` in
+/// the locked Tokio and `tokio-runtime-worker` before it; both are listed.
+/// The load clients never run on threads with these names: in a test they
+/// run on the test thread, and the `voidmc-load` binary names its own
+/// runtime threads `load-client`. A test runtime's blocking pool does take
+/// Tokio's default name, but the in-process run only uses it to stop the
+/// server, after the measured window.
+pub(crate) const SERVER_THREADS: [&str; 6] = [
     "void-e2e-server",
+    "tokio-rt-worker",
     "tokio-runtime-w",
     "Compute Task Po",
     "Async Compute T",
@@ -135,6 +140,29 @@ mod tests {
         assert!(threads_cpu_ms(&[own.trim_end()]).unwrap() > 0.0);
         assert_eq!(threads_cpu_ms(&["no thread has this name"]), Some(0.0));
         assert!(process_rss_kib().unwrap() > 0);
+    }
+
+    #[test]
+    fn server_threads_match_the_tokio_runtime_workers() {
+        // Built as the server builds its network runtime: default thread
+        // names, which change between Tokio versions.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let worker = runtime
+            .block_on(
+                runtime.spawn(async { std::fs::read_to_string("/proc/thread-self/comm").unwrap() }),
+            )
+            .unwrap();
+        let worker = worker.trim_end();
+        assert!(
+            SERVER_THREADS
+                .iter()
+                .any(|prefix| worker.starts_with(prefix)),
+            "no prefix in {SERVER_THREADS:?} matches the Tokio worker thread {worker:?}"
+        );
     }
 
     #[test]

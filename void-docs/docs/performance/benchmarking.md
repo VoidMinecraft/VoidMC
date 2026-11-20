@@ -68,7 +68,7 @@ The CSV columns are:
 | `timestamp_ms` | Unix timestamp in milliseconds |
 | `tps` | Ticks per second over the metrics window |
 | `window_ms` | Actual elapsed measurement window |
-| `last_tick_ms` | Duration of the latest completed tick |
+| `last_tick_ms` | Interval between the latest two ticks, measured at the same point of each, so the scheduler's wait between them is included (about 50 ms at 20 TPS); not the time a tick spends working, which the observability endpoint reports as [`voidmc_tick_duration_seconds`](../reference/server/observability.md#tick) |
 | `total_ticks` | Total ticks since startup |
 
 The file starts with the header line

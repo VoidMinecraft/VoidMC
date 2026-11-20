@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bevy_app::Last;
+use bevy_app::{Last, Update};
 use bevy_ecs::prelude::*;
 use voidmc::components::{LoadedChunks, PlayerUuid};
 use voidmc::events::PlayerJoinEvent;
@@ -151,6 +151,12 @@ impl Probe {
     }
 }
 
+/// Makes every tick work at least 2 ms, longer than a `slow_tick_ms` of 1,
+/// which is compared with the time a tick works (#191).
+fn work_2_ms_per_tick(app: &mut bevy_app::App) {
+    app.add_systems(Update, || std::thread::sleep(Duration::from_millis(2)));
+}
+
 #[tokio::test]
 async fn every_option_reaches_the_client_or_the_running_server() {
     let metrics = TempDir::new("metrics");
@@ -202,6 +208,7 @@ async fn every_option_reaches_the_client_or_the_running_server() {
                 })
         })
         .plugin(move |app| installed.install(app))
+        .plugin(work_2_ms_per_tick)
         .start()
         .await;
 
@@ -299,7 +306,7 @@ async fn every_option_reaches_the_client_or_the_running_server() {
     assert!(ticks >= 30, "31 packets were handled in {ticks} ticks");
 
     // metrics_debug, metrics_tps_output and slow_tick_ms: TPS samples land in
-    // the configured file, and every 25 ms tick is slower than 1 ms.
+    // the configured file, and every tick works longer than 1 ms.
     let mut csv = String::new();
     for _ in 0..400 {
         csv = std::fs::read_to_string(&tps_csv).unwrap_or_default();
@@ -648,6 +655,7 @@ async fn an_untouched_builder_restores_the_documented_defaults() {
                 .metrics_tps_output(tps_output)
                 .slow_tick_ms(1)
         })
+        .plugin(work_2_ms_per_tick)
         .start()
         .await;
     let alice = first.join("Alice").await;
@@ -655,7 +663,7 @@ async fn an_untouched_builder_restores_the_documented_defaults() {
     first.wait_ticks(5).await;
     alice.sync().await;
     // metrics_tps_output and slow_tick_ms do nothing while metrics_debug is
-    // off: no file, no warning, although every tick is slower than 1 ms.
+    // off: no file, no warning, although every tick works longer than 1 ms.
     assert!(!metrics.0.exists(), "no TPS output without metrics_debug");
     assert!(
         !first

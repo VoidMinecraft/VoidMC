@@ -9,6 +9,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use crate::config::ServerConfigResource;
 use crate::schedule::VoidSystems;
+use crate::tick_time::{self, TickEnd, TickMeasured, TickWorkTime};
 
 const DEFAULT_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 const TPS_CSV_HEADER: &str = "timestamp_ms,tps,window_ms,last_tick_ms,total_ticks";
@@ -25,8 +26,10 @@ impl MetricsPlugin {
 
 impl Plugin for MetricsPlugin {
     fn build(&self, app: &mut App) {
+        tick_time::require(app);
         app.insert_resource(TpsMetrics::new(self.tps_output.clone()))
-            .add_systems(PostUpdate, track_tps.in_set(VoidSystems::Metrics));
+            .add_systems(PostUpdate, track_tps.in_set(VoidSystems::Metrics))
+            .add_systems(TickEnd, warn_slow_tick.after(TickMeasured));
     }
 }
 
@@ -93,19 +96,11 @@ impl TpsMetrics {
     }
 }
 
-pub fn track_tps(mut metrics: ResMut<TpsMetrics>, config: Res<ServerConfigResource>) {
+pub fn track_tps(mut metrics: ResMut<TpsMetrics>) {
     let now = Instant::now();
     let tick_delta = now.duration_since(metrics.last_tick);
     metrics.last_tick = now;
     metrics.last_tick_ms = tick_delta.as_secs_f64() * 1000.0;
-
-    if config.slow_tick_ms > 0 && metrics.last_tick_ms > config.slow_tick_ms as f64 {
-        tracing::warn!(
-            last_tick_ms = metrics.last_tick_ms,
-            slow_tick_ms = config.slow_tick_ms,
-            "Slow tick detected"
-        );
-    }
 
     metrics.total_ticks += 1;
     metrics.window_ticks += 1;
@@ -123,6 +118,19 @@ pub fn track_tps(mut metrics: ResMut<TpsMetrics>, config: Res<ServerConfigResour
         metrics.record_sample(tps, window_ms);
         metrics.window_start = now;
         metrics.window_ticks = 0;
+    }
+}
+
+/// Warns when the tick that just ended worked longer than `slow_tick_ms`: the
+/// time from the start of `First` to the end of `Last`, without the wait
+/// between ticks.
+fn warn_slow_tick(work: Res<TickWorkTime>, config: Res<ServerConfigResource>) {
+    if config.slow_tick_ms > 0 && work.last > Duration::from_millis(config.slow_tick_ms) {
+        tracing::warn!(
+            tick_work_ms = work.last.as_secs_f64() * 1000.0,
+            slow_tick_ms = config.slow_tick_ms,
+            "Slow tick detected"
+        );
     }
 }
 
