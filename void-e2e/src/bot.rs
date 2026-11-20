@@ -13,6 +13,7 @@ use azalea_protocol::common::tags::TagMap;
 use azalea_protocol::connect::{Connection, ReadConnection, WriteConnection};
 use azalea_protocol::packets::config::{
     ClientboundConfigPacket, ServerboundConfigPacket, s_client_information,
+    s_custom_payload::ServerboundCustomPayload,
     s_finish_configuration::ServerboundFinishConfiguration,
     s_keep_alive::ServerboundKeepAlive as ConfigKeepAlive,
     s_select_known_packs::ServerboundSelectKnownPacks,
@@ -35,6 +36,7 @@ use azalea_protocol::packets::status::{
     s_status_request::ServerboundStatusRequest,
 };
 use azalea_protocol::packets::{ClientIntention, PROTOCOL_VERSION, Packet, ProtocolPacket};
+use azalea_registry::identifier::Identifier;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -44,6 +46,9 @@ use crate::timeout;
 use crate::view::ClientView;
 
 static NEXT_BARRIER: AtomicU32 = AtomicU32::new(1);
+
+/// The brand every bot announces during configuration, like a vanilla client.
+const VANILLA_BRAND: &str = "vanilla";
 
 /// How a bot presents itself while joining.
 #[derive(Clone, Debug)]
@@ -698,6 +703,17 @@ async fn login(
         })
         .await
         .expect("client information");
+    // Like the vanilla client, which names itself right after: the brand is
+    // a protocol string, its length then its bytes.
+    let mut brand = vec![VANILLA_BRAND.len() as u8];
+    brand.extend(VANILLA_BRAND.as_bytes());
+    connection
+        .write(ServerboundCustomPayload {
+            identifier: Identifier::new("minecraft:brand"),
+            data: brand.into(),
+        })
+        .await
+        .expect("brand");
 
     let mut registries = RegistryHolder::default();
     loop {
