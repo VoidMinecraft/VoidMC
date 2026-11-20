@@ -21,6 +21,7 @@ mod metrics;
 pub mod network;
 mod observability;
 pub mod particles;
+pub(crate) mod placement;
 pub mod players;
 pub mod plugins;
 pub mod registry;

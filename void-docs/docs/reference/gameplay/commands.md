@@ -565,8 +565,9 @@ command, and the server accepts those ids.
 
 The server keeps applying the rules of the configured
 [`game_mode`](../server/configuration.md) to every player: block
-breaking and the creative-only inventory clicks (cloning a stack,
-middle-button drags) follow it, not `/gamemode`. On a Survival
+breaking, the reach of a click on a block, the item a placed block uses up,
+and the creative-only inventory clicks (cloning a stack, middle-button drags)
+follow it, not `/gamemode`. On a Survival
 server, a player shown Creative removes a block locally when it starts digging,
 but the server treats that as the start of a survival dig, so the block comes
 back. The mode is not stored either: a player who reconnects starts in the

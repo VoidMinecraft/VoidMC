@@ -594,12 +594,23 @@ fn the_wand_checks_permission_before_claiming_the_off_hand() {
         None
     );
 
-    // Without permission the wand is a plain item and the click places it.
+    // Without permission the wand is a plain item and the click places it,
+    // on top of the clicked stone (an empty block would be filled itself).
     server
         .app
         .world_mut()
         .entity_mut(server.player)
         .remove::<Operator>();
+    let stone_state = voidmc::ItemId::from_name("minecraft:stone")
+        .and_then(|item| item.default_block_state())
+        .unwrap();
+    voidmc::world::set_block_state(
+        server.app.world_mut(),
+        DimensionId::Overworld,
+        BlockPosition { x: 5, y: 63, z: 3 },
+        stone_state,
+        None,
+    );
     use_off_hand(&mut server, 5, 2);
     assert_eq!(server.block(5, 64, 3), stone());
 }

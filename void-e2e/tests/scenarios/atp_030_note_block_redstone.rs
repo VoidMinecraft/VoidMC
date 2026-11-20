@@ -141,7 +141,16 @@ async fn set(server: &TestServer, changes: Vec<(BlockPos, BlockState)>) {
         .await;
 }
 
+/// A use of `hand` on the top of `pos`. A click only reaches blocks a few
+/// blocks from the player's eyes, so the bot first stands two blocks west of
+/// `pos`, at its height, out of the way of the circuits.
 async fn use_on(bot: &Bot, pos: BlockPos, hand: InteractionHand, seq: u32) {
+    let beside = Vec3::new(
+        f64::from(pos.x) - 1.5,
+        f64::from(pos.y),
+        f64::from(pos.z) + 0.5,
+    );
+    bot.move_to(beside).await;
     bot.send(ServerboundUseItemOn {
         hand,
         block_hit: BlockHit {

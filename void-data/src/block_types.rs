@@ -5,6 +5,13 @@ use crate::Version;
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockType {
     pub name: &'static str,
+    /// The block's class in vanilla, from the `definition.type` of Mojang's
+    /// blocks report, e.g. `"minecraft:stair"` for every stairs block. Blocks
+    /// of one kind follow the same placement and behaviour rules.
+    pub kind: &'static str,
+    /// Whether vanilla lets a placement replace this block (air, water,
+    /// short grass, ...): the `#minecraft:replaceable` block tag.
+    pub replaceable: bool,
     pub min_state_id: i32,
     pub default_state_id: i32,
     pub properties: &'static [BlockProperty],
@@ -164,5 +171,46 @@ mod tests {
             repeater.property(repeater.default_state_id, "delay"),
             Some("1")
         );
+    }
+
+    #[test]
+    fn kinds_are_the_vanilla_block_classes() {
+        let kind = |name| block_type(V, name).unwrap().kind;
+        assert_eq!(kind("minecraft:oak_stairs"), "minecraft:stair");
+        assert_eq!(
+            kind("minecraft:cut_copper_stairs"),
+            "minecraft:weathering_copper_stair"
+        );
+        assert_eq!(kind("minecraft:oak_log"), "minecraft:rotated_pillar");
+        assert_eq!(kind("minecraft:lever"), "minecraft:lever");
+        assert_eq!(kind("minecraft:stone"), "minecraft:block");
+    }
+
+    #[test]
+    fn replaceable_blocks_are_the_ones_of_the_vanilla_tag() {
+        let replaceable: Vec<&str> = block_types(V)
+            .iter()
+            .filter(|block| block.replaceable)
+            .map(|block| block.name)
+            .collect();
+        assert_eq!(replaceable.len(), 29);
+        for name in [
+            "minecraft:air",
+            "minecraft:water",
+            "minecraft:lava",
+            "minecraft:short_grass",
+            "minecraft:tall_grass",
+            "minecraft:snow",
+            "minecraft:fire",
+        ] {
+            assert!(replaceable.contains(&name), "{name}");
+        }
+        for name in [
+            "minecraft:stone",
+            "minecraft:dandelion",
+            "minecraft:oak_slab",
+        ] {
+            assert!(!replaceable.contains(&name), "{name}");
+        }
     }
 }
