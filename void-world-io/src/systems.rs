@@ -5,7 +5,7 @@ use bevy_ecs::prelude::*;
 use voidmc::{ChunkData, ChunkDimension, ChunkDirty, ChunkPosition};
 
 use crate::config::PersistenceConfig;
-use crate::store::{ChunkStoreResource, save_chunk};
+use crate::store::{ChunkStoreResource, LoadFailuresResource, save_chunk};
 
 /// Counts ticks between periodic saves.
 #[derive(Resource, Default)]
@@ -25,9 +25,13 @@ type DirtyQuery<'w, 's> = Query<
 
 /// Writes dirty chunks to the store and clears their `ChunkDirty` marker on
 /// success. `limit` of `0` means unlimited. Returns the number saved.
+///
+/// A chunk whose stored bytes the loader could neither read nor copy is not
+/// written: its marker is cleared and the stored bytes stay as they are.
 fn flush_dirty(
     config: &PersistenceConfig,
     store: &ChunkStoreResource,
+    failures: Option<&LoadFailuresResource>,
     dirty: &DirtyQuery,
     commands: &mut Commands,
     limit: usize,
@@ -36,6 +40,16 @@ fn flush_dirty(
     for (entity, pos, dim, data) in dirty.iter() {
         if limit != 0 && saved >= limit {
             break;
+        }
+        if failures.is_some_and(|failures| failures.0.skips_saves_of(dim.0, pos.0)) {
+            tracing::warn!(
+                dim = dim.0.name(),
+                x = pos.0.x,
+                z = pos.0.z,
+                "not saving chunk: its stored bytes could not be read nor copied when it was loaded, and they are kept until the server stops"
+            );
+            commands.entity(entity).remove::<ChunkDirty>();
+            continue;
         }
         match save_chunk(store.0.as_ref(), config, dim.0, pos.0, data) {
             Ok(()) => {
@@ -55,6 +69,7 @@ pub fn save_dirty_chunks(
     mut ticker: ResMut<SaveTicker>,
     config: Res<PersistenceConfig>,
     store: Res<ChunkStoreResource>,
+    failures: Option<Res<LoadFailuresResource>>,
     dirty: DirtyQuery,
     mut commands: Commands,
 ) {
@@ -66,6 +81,7 @@ pub fn save_dirty_chunks(
     let saved = flush_dirty(
         &config,
         &store,
+        failures.as_deref(),
         &dirty,
         &mut commands,
         config.max_saves_per_flush,
@@ -84,6 +100,7 @@ pub fn flush_on_exit(
     mut exit: MessageReader<AppExit>,
     config: Res<PersistenceConfig>,
     store: Res<ChunkStoreResource>,
+    failures: Option<Res<LoadFailuresResource>>,
     dirty: DirtyQuery,
     mut commands: Commands,
 ) {
@@ -91,9 +108,24 @@ pub fn flush_on_exit(
         return;
     }
     exit.clear();
-    let saved = flush_dirty(&config, &store, &dirty, &mut commands, 0);
+    let saved = flush_dirty(
+        &config,
+        &store,
+        failures.as_deref(),
+        &dirty,
+        &mut commands,
+        0,
+    );
     if let Err(err) = store.0.flush() {
         tracing::error!(?err, "world persistence: shutdown flush failed");
     }
     tracing::info!(saved, "world persistence: flushed on shutdown");
+}
+
+/// Triggers a [`voidmc::ChunkLoadFailedEvent`] for each stored chunk the
+/// loader could not load since the last run.
+pub(crate) fn report_load_failures(failures: Res<LoadFailuresResource>, mut commands: Commands) {
+    for failure in failures.0.take_pending() {
+        commands.trigger(failure);
+    }
 }

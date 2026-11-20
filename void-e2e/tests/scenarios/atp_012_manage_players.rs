@@ -1,5 +1,5 @@
-//! VMC-ATP-012: the built-in `/list`, `/tell` (`/msg`), `/broadcast` and
-//! `/kick` commands affect the connected players as documented.
+//! VMC-ATP-012: the built-in `/list`, `/tell` (`/msg`), `/broadcast`, `/say`
+//! and `/kick` commands affect the connected players as documented.
 //!
 //! The default commands carry no permission requirement, so the harness
 //! server (which registers them) lets every player run them. Each scenario
@@ -669,6 +669,79 @@ async fn atp_012_broadcast_reaches_every_player_once() {
     for bot in everyone {
         bot.assert_healthy();
     }
+    server.stop().await;
+}
+
+/// `/say` shows its text after the sender's name to every connected player;
+/// like `/broadcast`, it refuses formatting codes and control characters, and
+/// a refused line reaches nobody.
+#[tokio::test]
+async fn atp_012_say_refuses_text_that_would_restyle_the_line() {
+    let server = TestServer::builder().operators().start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let everyone = [&alice, &bob];
+
+    for text in ["§cred §kobfuscated", "§r", "bell\u{7}", "nul\u{0}"] {
+        let [to_alice, to_bob] = run(&alice, &format!("say {text}"), everyone).await;
+        assert_eq!(
+            to_alice,
+            [plain("Illegal characters in chat", "red")],
+            "{text:?}"
+        );
+        assert!(to_bob.is_empty(), "{text:?}: {to_bob:?}");
+    }
+
+    // Clean text still reaches everyone, the sender included.
+    let text = "Grüße aus Köln 😀 <Bob> {\"text\":\"x\"} 100%";
+    let [to_alice, to_bob] = run(&alice, &format!("say {text}"), everyone).await;
+    let expected = [plain(&format!("[Alice] {text}"), "white")];
+    assert_eq!(to_alice, expected);
+    assert_eq!(to_bob, expected);
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// A kick reason is shown to the kicked player and to the kicker, so one
+/// holding formatting codes or control characters is refused like `/tell`
+/// text: nobody is kicked and only the kicker is answered. A clean reason
+/// still kicks and is shown.
+#[tokio::test]
+async fn atp_012_kick_refuses_a_reason_that_would_restyle_it() {
+    let server = TestServer::builder().operators().start().await;
+    let alice = server.join("Alice").await;
+    let mut bob = Raw::join(&server, "Bob", true).await;
+    let bob_uuid = bob.uuid;
+    alice
+        .wait_until("Bob listed", |view| view.players.contains_key(&bob_uuid))
+        .await;
+
+    for reason in ["§4§lBanned §kforever", "§r", "bell\u{7}", "nul\u{0}"] {
+        let [to_alice] = run(&alice, &format!("kick Bob {reason}"), [&alice]).await;
+        assert_eq!(
+            to_alice,
+            [plain("Illegal characters in chat", "red")],
+            "{reason:?}"
+        );
+        let heard = bob.sync().await;
+        assert!(heard.is_empty(), "{reason:?}: {heard:?}");
+    }
+    let [to_alice] = run(&alice, "list", [&alice]).await;
+    assert_eq!(listed(&to_alice), names(&["Alice", "Bob"]));
+    assert_status_online(&server, 2).await;
+
+    let reason = "Spamming, ça va? 100% <Alice>";
+    let [to_alice] = run(&alice, &format!("kick Bob {reason}"), [&alice]).await;
+    assert_eq!(
+        to_alice,
+        [plain(&format!("Kicked Bob (reason: {reason})"), "white")]
+    );
+    assert_eq!(bob.kicked().await, reason);
+    assert_status_online(&server, 1).await;
+
+    alice.assert_healthy();
     server.stop().await;
 }
 

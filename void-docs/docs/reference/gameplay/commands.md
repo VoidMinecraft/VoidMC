@@ -497,7 +497,7 @@ The player-management commands answer as follows. Every player counts as
 online once it is ready (it has loaded the world), the same set the tab list
 and the server-list player count show; a player still loading is not listed
 and cannot be named as a target. `/list` and `/tell` are open to every
-player; `/broadcast` and `/kick` require `Operator` (see
+player; `/broadcast`, `/say` and `/kick` require `Operator` (see
 [Permissions](#permissions)).
 
 | Command | Sender sees | Others see |
@@ -505,12 +505,15 @@ player; `/broadcast` and `/kick` require `Operator` (see
 | `/list` | `There are 2 player(s) online: Alice, Bob` (`There are 0 player(s) online.` when empty) | nothing |
 | `/tell Bob hi` | `You whisper to Bob: hi` | Bob only: `Alice whispers to you: hi` (gray) |
 | `/broadcast hi` | `[Broadcast] hi` | every online player: `[Broadcast] hi` |
+| `/say hi` | `[Alice] hi` | every online player: `[Alice] hi` |
 | `/kick Bob [reason]` | `Kicked Bob (reason: ...)` | Bob is disconnected with the reason in red (default `Kicked by an operator`); the others see Bob leave the world and the tab list |
 
 Errors (unknown or missing player, missing text) go to the sender only, in
-red, followed by the usage line. `/tell` and `/broadcast` refuse a message
-containing a `§` formatting code or a control character (`Illegal characters
-in chat`), as a vanilla server does, so the line shows exactly as typed.
+red, followed by the usage line. `/tell`, `/broadcast` and `/say` refuse a
+message, and `/kick` a reason, containing a `§` formatting code or a control
+character (`Illegal characters in chat`), as a vanilla server does, so the
+line shows exactly as typed. A refused message reaches nobody and a refused
+`/kick` kicks nobody.
 Message words are joined by single spaces: runs of spaces and line breaks in
 the command become one space.
 
@@ -614,7 +617,7 @@ and to nobody else.
 - `/help <command>` (a name or an alias) shows `--- /name ---`, the
   description and `  Usage: <usage>`. Any other word, a page number or a
   command the player may not run included, gets `Unknown command: /<word>` in
-  red.
+  red, the word echoed like an unknown command name (see below).
 - `/ping` answers `Pong!`.
 
 Invalid input gets a reply and never disconnects the player:
@@ -627,8 +630,10 @@ Invalid input gets a reply and never disconnects the player:
 | A command whose `requires` refuses the player | `You do not have permission to use this command` in red |
 
 Whitespace around and between words is ignored: `/ help  ping ` runs
-`/help ping`. An unknown name is echoed as typed, at any length the packet
-allows; a vanilla client shows `§` codes in it as formatting.
+`/help ping`. An unknown name is echoed at any length the packet allows,
+without its `§` formatting codes (each `§` and the character after it, which
+a vanilla client reads as one code) and control characters: `/§cnope` gets
+`Unknown command: /nope`, in plain red.
 
 ### Example-only Commands
 

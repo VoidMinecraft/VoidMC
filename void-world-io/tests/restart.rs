@@ -1,17 +1,20 @@
 //! End-to-end persistence tests: save, "restart" (drop + reopen), reload.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use bevy_app::{App, AppExit};
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::Schedule;
 use voidmc::{
-    ChunkData, ChunkDimension, ChunkDirty, ChunkLoader, ChunkPos, ChunkPosition, DimensionId,
+    ChunkData, ChunkDimension, ChunkDirty, ChunkLoadErrorKind, ChunkLoadFailedEvent, ChunkLoader,
+    ChunkLoaderResource, ChunkPos, ChunkPosition, DamagedChunkAction, DimensionId,
 };
 use voidmc_protocol::clientbound::chunk::{ChunkHeightmaps, ChunkSection, LightData};
 use voidmc_world_io::store::save_chunk;
 use voidmc_world_io::systems::{SaveTicker, save_dirty_chunks};
 use voidmc_world_io::{
-    ChunkStore, ChunkStoreResource, PersistenceConfig, RegionChunkStore, StoreLoader,
+    ChunkStore, ChunkStoreResource, PersistenceConfig, PersistenceError, RegionChunkStore, Result,
+    StoreLoader, WorldPersistencePlugin,
 };
 
 fn chunk_with_block(world_y: i32, id: i32) -> ChunkData {
@@ -90,4 +93,130 @@ fn unsaved_chunk_is_a_load_miss() {
             .load_chunk(DimensionId::Overworld, ChunkPos::new(5, 5))
             .is_none()
     );
+}
+
+/// A region store whose reads of one chunk fail, with an I/O error as a
+/// failing disk would, or with bytes that are not a chunk. It keeps no copy
+/// of a chunk it cannot decode. Records the chunks written through it.
+struct UnreadableChunk {
+    inner: RegionChunkStore,
+    unreadable: ChunkPos,
+    failure: ChunkLoadErrorKind,
+    written: Mutex<Vec<ChunkPos>>,
+}
+
+impl ChunkStore for UnreadableChunk {
+    fn read(&self, dimension: DimensionId, pos: ChunkPos) -> Result<Option<Vec<u8>>> {
+        if pos == self.unreadable {
+            return match self.failure {
+                ChunkLoadErrorKind::Io => Err(PersistenceError::Io(std::io::Error::other(
+                    "injected read failure",
+                ))),
+                ChunkLoadErrorKind::Decode => Ok(Some(b"not a chunk".to_vec())),
+            };
+        }
+        self.inner.read(dimension, pos)
+    }
+
+    fn write(&self, dimension: DimensionId, pos: ChunkPos, payload: &[u8]) -> Result<()> {
+        self.written.lock().unwrap().push(pos);
+        self.inner.write(dimension, pos, payload)
+    }
+
+    fn flush(&self) -> Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// The chunk load failures an observer saw.
+#[derive(Resource, Default)]
+struct Failures(Vec<ChunkLoadFailedEvent>);
+
+#[test]
+fn an_unreadable_chunk_is_generated_but_not_saved_over_for_the_session() {
+    generated_but_not_saved_over(ChunkLoadErrorKind::Io, "injected read failure");
+}
+
+#[test]
+fn an_undecodable_chunk_the_store_cannot_copy_is_not_saved_over_for_the_session() {
+    generated_but_not_saved_over(ChunkLoadErrorKind::Decode, "corrupt chunk data");
+}
+
+/// Loads a chunk that `UnreadableChunk` fails to read with `failure`, edits
+/// it, saves, stops; the stored chunk must be left as it was.
+fn generated_but_not_saved_over(failure: ChunkLoadErrorKind, error: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = PersistenceConfig::new(dir.path()).save_interval_ticks(1);
+    let (unreadable, readable) = (ChunkPos::new(0, 0), ChunkPos::new(1, 0));
+    {
+        let store = RegionChunkStore::new(dir.path());
+        let saved = chunk_with_block(70, 1234);
+        save_chunk(&store, &config, DimensionId::Overworld, unreadable, &saved).unwrap();
+        store.flush().unwrap();
+    }
+
+    let store = Arc::new(UnreadableChunk {
+        inner: RegionChunkStore::new(dir.path()),
+        unreadable,
+        failure,
+        written: Mutex::new(Vec::new()),
+    });
+    let mut app = App::new();
+    app.add_plugins(WorldPersistencePlugin::with_store(
+        config.clone(),
+        store.clone(),
+    ))
+    .init_resource::<Failures>()
+    .add_observer(
+        |event: On<ChunkLoadFailedEvent>, mut failures: ResMut<Failures>| {
+            failures.0.push(event.event().clone());
+        },
+    );
+    let loaded = app
+        .world()
+        .resource::<ChunkLoaderResource>()
+        .0
+        .load_chunk(DimensionId::Overworld, unreadable);
+    assert!(loaded.is_none(), "an unreadable chunk is generated");
+
+    // Gameplay edits the generated chunk and another one; a periodic save
+    // and the shutdown flush follow.
+    for pos in [unreadable, readable] {
+        app.world_mut().spawn((
+            ChunkPosition(pos),
+            ChunkDimension(DimensionId::Overworld),
+            chunk_with_block(64, 777),
+            ChunkDirty,
+        ));
+    }
+    app.update();
+    let failures = &app.world().resource::<Failures>().0;
+    assert_eq!(failures.len(), 1, "{failures:#?}");
+    let event = &failures[0];
+    assert_eq!(
+        (event.dimension, event.pos, event.kind, &event.action),
+        (
+            DimensionId::Overworld,
+            unreadable,
+            failure,
+            &DamagedChunkAction::SavesSkipped
+        )
+    );
+    assert!(event.error.contains(error), "{event:?}");
+    app.world_mut().write_message(AppExit::Success);
+    app.update();
+    assert_eq!(app.world().resource::<Failures>().0.len(), 1);
+
+    assert_eq!(*store.written.lock().unwrap(), [readable]);
+    assert!(
+        !dir.path().join("region/overworld/c.0.0.1.corrupt").exists(),
+        "nothing to copy after an I/O error"
+    );
+    drop(app);
+    drop(store);
+    let reopened: Arc<dyn ChunkStore> = Arc::new(RegionChunkStore::new(dir.path()));
+    let kept = StoreLoader::new(reopened)
+        .load_chunk(DimensionId::Overworld, unreadable)
+        .expect("the stored chunk is still on disk");
+    assert_eq!(kept.get_block(3, 70, 11), Some(1234));
 }

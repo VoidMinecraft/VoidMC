@@ -90,37 +90,33 @@ impl RegionFile {
     }
 
     /// Reads and decompresses the chunk payload at `(cx, cz)`, if present.
+    ///
+    /// Fails with [`PersistenceError::Io`] when the stored bytes cannot be
+    /// read, and with [`PersistenceError::Corrupt`] when they were read but
+    /// cannot be decoded.
     pub fn read_chunk(&mut self, cx: i32, cz: i32) -> Result<Option<Vec<u8>>> {
+        match self.read_slot(cx, cz)? {
+            Some(slot) => decode_slot(&slot),
+            None => Ok(None),
+        }
+    }
+
+    /// Reads the sectors allocated to the chunk at `(cx, cz)`, as stored and
+    /// undecoded, or `None` when no chunk is stored there. Sectors past the
+    /// end of the file are left out. Only fails with [`PersistenceError::Io`].
+    pub fn read_slot(&mut self, cx: i32, cz: i32) -> Result<Option<Vec<u8>>> {
         let loc = self.locations[Self::index(cx, cz)];
         if loc == 0 {
             return Ok(None);
         }
         let off = (loc >> 8) as u64;
+        let cnt = (loc & 0xFF) as u64;
         self.file.seek(SeekFrom::Start(off * SECTOR as u64))?;
-
-        let mut len_buf = [0u8; 4];
-        self.file.read_exact(&mut len_buf)?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        if len == 0 {
-            return Ok(None);
-        }
-
-        let mut comp = [0u8; 1];
-        self.file.read_exact(&mut comp)?;
-        let mut payload = vec![0u8; len - 1];
-        self.file.read_exact(&mut payload)?;
-
-        match comp[0] {
-            COMPRESSION_ZLIB => {
-                let mut decoder = ZlibDecoder::new(&payload[..]);
-                let mut out = Vec::new();
-                decoder.read_to_end(&mut out)?;
-                Ok(Some(out))
-            }
-            other => Err(PersistenceError::Corrupt(format!(
-                "unknown compression scheme {other}"
-            ))),
-        }
+        let mut slot = Vec::new();
+        (&mut self.file)
+            .take(cnt * SECTOR as u64)
+            .read_to_end(&mut slot)?;
+        Ok(Some(slot))
     }
 
     /// Compresses and writes the chunk payload at `(cx, cz)`.
@@ -217,5 +213,39 @@ impl RegionFile {
         self.file.flush()?;
         self.file.sync_all()?;
         Ok(())
+    }
+}
+
+/// Decodes the sectors of a chunk, `[u32 len][u8 compression][data]`, into
+/// its uncompressed payload; `None` for a zero length. Only fails with
+/// [`PersistenceError::Corrupt`].
+fn decode_slot(slot: &[u8]) -> Result<Option<Vec<u8>>> {
+    let Some((len, rest)) = slot.split_first_chunk::<4>() else {
+        return Err(PersistenceError::Corrupt(format!(
+            "chunk slot holds {} bytes, too few for its length",
+            slot.len()
+        )));
+    };
+    let len = u32::from_be_bytes(*len) as usize;
+    if len == 0 {
+        return Ok(None);
+    }
+    let Some((&compression, payload)) = rest.get(..len).and_then(<[u8]>::split_first) else {
+        return Err(PersistenceError::Corrupt(format!(
+            "chunk length {len} exceeds its {} stored bytes",
+            rest.len()
+        )));
+    };
+    match compression {
+        COMPRESSION_ZLIB => {
+            let mut out = Vec::new();
+            ZlibDecoder::new(payload)
+                .read_to_end(&mut out)
+                .map_err(|err| PersistenceError::Corrupt(format!("zlib: {err}")))?;
+            Ok(Some(out))
+        }
+        other => Err(PersistenceError::Corrupt(format!(
+            "unknown compression scheme {other}"
+        ))),
     }
 }
