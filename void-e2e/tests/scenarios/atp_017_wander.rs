@@ -782,7 +782,8 @@ async fn wanderer_pressed_against_a_wall_on_an_axis_is_sent_no_more_moves() {
         .await;
 
     // From then on a pressed pig does not move: no move or rotation packet
-    // reaches Alice for it.
+    // reaches Alice for it. Motion packets are not counted: they carry the
+    // velocity, not a move.
     server.wait_ticks(5).await;
     alice.sync().await;
     alice.clear();

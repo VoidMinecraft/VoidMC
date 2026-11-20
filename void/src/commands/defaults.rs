@@ -2,10 +2,9 @@ use std::sync::Arc;
 
 use bevy_app::AppExit;
 use bevy_ecs::prelude::{Entity, With, World};
-use rand::Rng;
 
 use crate::components::{
-    Operator, PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState, Wander,
+    Operator, PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState,
 };
 use crate::entity::{EntityBuilder, EntityKind};
 use crate::messages::TextColor;
@@ -530,24 +529,15 @@ fn handle_summon(ctx: &mut CommandContext) {
             .unwrap_or(DimensionId::Overworld)
     });
 
-    let wander = ctx.flag("wander");
     let builder = EntityBuilder::new(kind)
         .at(x, y, z)
         .in_dimension(dimension)
-        .wander(wander)
+        .wander(ctx.flag("wander"))
         .gravity(ctx.flag("gravity"))
         .block_collision(ctx.flag("block-checks"));
 
     ctx.with_world_mut(|world| {
-        let mut e = builder.spawn_in(world);
-        if wander {
-            let mut rng = rand::thread_rng();
-            e.insert(Wander {
-                ticks: rng.gen_range(40..140),
-                speed: 0.08,
-                yaw: rng.gen_range(0.0..360.0) as f32,
-            });
-        }
+        builder.spawn_in(world);
     });
 
     ctx.reply(&format!(
@@ -590,6 +580,7 @@ mod tests {
     use crate::commands::dispatch_command;
     use crate::components::{
         ClientId, EntityCollider, EntityType, MovementConfig, PreviousPosition, SpawnedEntity,
+        Wander,
     };
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
