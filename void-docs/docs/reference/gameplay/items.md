@@ -57,7 +57,11 @@ There is nothing to flag. Every setter (`set`, `set_cursor`, `give`, `clear`,
 per tick: one `SetContainerSlot` per changed slot, `SetCursorItem` for the
 cursor, `SetHeldSlot` for the selection, and a full `SetContainerContent` only
 when more than half the window changed or `clear` was called. Setting a slot to
-the value it already holds sends nothing. While a [menu](menus.md) is open,
+the value it already holds sends nothing, and neither does a change the
+client already shows: a slot or the cursor that a click in the player
+inventory left as the client predicted (see [Clicks](#clicks)), or the item a
+placed block uses up (see [The default placement](#the-default-placement)).
+While a [menu](menus.md) is open,
 main-inventory and hotbar changes go through the menu window instead; the rest
 is resent when the menu closes.
 

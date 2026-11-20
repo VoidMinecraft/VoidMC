@@ -30,7 +30,7 @@ The server sends a burst of packets to set up the client:
 5. **GameEvent(StartWaitingForLevelChunks)** — Tells the client to show the loading screen
 6. **SetCenterChunk** — Sets the client's chunk loading center
 7. **ChunkBatchStart** — Opens the batch of initial chunks
-8. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready. The chunk the player stands in is always sent: when it is not loaded (a spawn moved after startup, a negative `spawn_chunk_radius` set on the `ServerConfig` field), the join takes it from the `ChunkLoaderResource` if one is installed, or generates it, and adds it to the world
+8. **ChunkDataAndLight** (x N) — Initial chunks around spawn, within the join radius: `initial_chunk_radius` capped by the player's effective view distance, a negative result read as `0` (see [Chunk Streaming](./world.md#chunk-streaming)); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready. The chunk the player stands in is always sent: when it is not loaded (a spawn moved after startup, a negative `spawn_chunk_radius` set on the `ServerConfig` field), the join takes it from the `ChunkLoaderResource` if one is installed, or generates it, and adds it to the world
 9. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
 10. **ChunkBatchFinished** — Closes the batch with its chunk count
 
