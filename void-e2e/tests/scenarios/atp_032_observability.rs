@@ -4,18 +4,22 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bevy_app::Update;
+use bevy_app::{First, Update};
 use bevy_ecs::prelude::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use voidmc::components::KeepAliveState;
+use voidmc::components::{KeepAliveState, PlayerReady};
 use voidmc::network::PacketEvent;
-use voidmc::{ObservabilityAddress, ObservabilityConfig};
+use voidmc::systems::KeepAliveTicker;
+use voidmc::{
+    ExecutionMode, ObservabilityAddress, ObservabilityConfig, WorldMessages, WorldPlayers,
+};
 use voidmc_e2e::protocol::common::client_information::{ChatVisibility, ClientInformation};
-use voidmc_e2e::protocol::packets::game::ServerboundPaddleBoat;
+use voidmc_e2e::protocol::packets::game::{ClientboundGamePacket, ServerboundPaddleBoat};
 use voidmc_e2e::protocol::packets::game::{
     s_client_information::ServerboundClientInformation,
     s_client_tick_end::ServerboundClientTickEnd, s_interact::InteractionHand,
@@ -1082,6 +1086,263 @@ async fn bad_requests_are_rejected_without_blocking_the_server() {
     }
     drop(slow);
 
+    server.stop().await;
+}
+
+/// How long the tick the test asks for works, far above the idle ticks of a
+/// 50 TPS server.
+const SLOW_TICK: Duration = Duration::from_millis(300);
+/// The histogram bound the slow tick is counted above.
+const SLOW_BOUND: &str = "0.25";
+
+/// Ticks still to be slowed down, set by the test without waiting for a tick.
+#[derive(Resource, Clone, Default)]
+struct SlowTicks(Arc<AtomicU32>);
+
+/// Works [`SLOW_TICK`] in `First`, the first schedule a tick runs, when the
+/// test asked for a slow tick.
+fn work_slowly_when_asked(slow: Res<SlowTicks>) {
+    let asked = slow
+        .0
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            left.checked_sub(1)
+        });
+    if asked.is_ok() {
+        std::thread::sleep(SLOW_TICK);
+    }
+}
+
+/// Ticks that took longer than [`SLOW_BOUND`] seconds, from the histogram.
+fn ticks_above_slow_bound(scrape: &Scrape) -> f64 {
+    let count = scrape
+        .value("voidmc_tick_duration_seconds_count", &[])
+        .expect("a tick count");
+    let below = scrape
+        .value("voidmc_tick_duration_seconds_bucket", &[("le", SLOW_BOUND)])
+        .unwrap_or_else(|| panic!("no bucket for le={SLOW_BOUND}"));
+    count - below
+}
+
+/// Observability and `ExecutionMode::MultiThreaded` together: the systems
+/// run on the multi-threaded executor, and the endpoints still describe the
+/// server. The whole tick is measured, from the start of `First`: a tick
+/// slowed down by a system of `First` lands above the histogram bound that
+/// idle ticks stay under.
+#[tokio::test]
+async fn the_endpoints_describe_a_multi_threaded_server() {
+    let slow = SlowTicks::default();
+    let installed = slow.clone();
+    let server = observed()
+        .config(|config| config.execution_mode(ExecutionMode::MultiThreaded))
+        .plugin(move |app| {
+            app.insert_resource(installed)
+                .add_systems(First, work_slowly_when_asked);
+        })
+        .start()
+        .await;
+    assert_eq!(
+        server
+            .with_world(|world| *world.resource::<ExecutionMode>())
+            .await,
+        ExecutionMode::MultiThreaded
+    );
+    let address = endpoint(&server).await;
+    let health = health_until(address, "the server to be healthy", |response| {
+        response.status == 200
+    })
+    .await;
+    assert_eq!(health.health(), "ok");
+
+    let alice = server.join("Alice").await;
+    let joined = scrape_until(&server, address, "Alice online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    assert_eq!(joined.counter("voidmc_players_joined_total"), 1.0);
+    assert!(joined.counter("voidmc_ticks_total") >= 1.0);
+    assert!(joined.counter("voidmc_connections_accepted_total") >= 1.0);
+
+    let before = scrape(address).await;
+    slow.0.store(1, Ordering::SeqCst);
+    let after = scrape_until(&server, address, "the slow tick measured", |scrape| {
+        ticks_above_slow_bound(scrape) > ticks_above_slow_bound(&before)
+    })
+    .await;
+    let worked = after
+        .value("voidmc_tick_duration_seconds_sum", &[])
+        .unwrap()
+        - before
+            .value("voidmc_tick_duration_seconds_sum", &[])
+            .unwrap();
+    assert!(
+        worked >= SLOW_TICK.as_secs_f64(),
+        "the ticks in between worked {worked} s in all"
+    );
+    assert_counters_never_decrease(&before, &after);
+    let measured = scrape_until(&server, address, "a measured tick rate", |scrape| {
+        scrape.value("voidmc_ticks_per_second", &[]).is_some()
+    })
+    .await;
+    assert!(measured.gauge("voidmc_ticks_per_second") > 0.0);
+    health_until(address, "the server to be healthy again", |response| {
+        response.status == 200
+    })
+    .await;
+
+    alice.disconnect().await;
+    let left = scrape_until(&server, address, "Alice gone", |scrape| {
+        scrape.gauge("voidmc_players_online") == 0.0
+    })
+    .await;
+    assert_eq!(left.counter("voidmc_clients_kicked_total"), 0.0);
+    assert_eq!(left.counter("voidmc_packet_errors_total"), 0.0);
+    server.stop().await;
+}
+
+/// Chat lines this long make the flood outgrow the socket buffers fast.
+const FLOOD_LINE_BYTES: usize = 2048;
+/// Far more lines than the outbound queue holds
+/// (`OUTBOUND_QUEUE_CAPACITY`, 16 384) plus what the kernel buffers of a
+/// client that does not read take (a few megabytes).
+const FLOOD_LINES: usize = 40_000;
+
+/// A client that stops reading while the server keeps sending: its outbound
+/// queue fills up, the server disconnects it, and that counts as one kick.
+/// The end of its connection afterwards counts as nothing more, and a
+/// player that reads is not affected.
+#[tokio::test]
+async fn a_client_whose_outbound_queue_overflows_is_kicked_and_counted_once() {
+    // Uncompressed, so that every line takes its full size in the buffers.
+    let server = observed().compression_threshold(None).start().await;
+    let address = endpoint(&server).await;
+    let alice = server.join("Alice").await;
+    let mallory = server.join_silent("Mallory").await;
+    let mallory_entity = server.player_entity(mallory.uuid()).await;
+    let before = scrape(address).await;
+    assert_eq!(before.counter("voidmc_clients_kicked_total"), 0.0);
+
+    // Mallory never reads what follows.
+    server
+        .with_world(move |world| {
+            let line = "x".repeat(FLOOD_LINE_BYTES);
+            let packet = WorldMessages::new(world)
+                .message(mallory_entity, line)
+                .packet();
+            let players = WorldPlayers::new(world);
+            for _ in 0..FLOOD_LINES {
+                players.send(mallory_entity, packet.clone());
+            }
+        })
+        .await;
+    let kicked = scrape_until(&server, address, "Mallory kicked", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") >= 1.0
+    })
+    .await;
+    assert_eq!(kicked.counter("voidmc_clients_kicked_total"), 1.0);
+    server
+        .wait_for("Mallory's entity to be despawned", move |world| {
+            world.get_entity(mallory_entity).is_err().then_some(())
+        })
+        .await;
+    drop(mallory);
+
+    // Her connection has ended: one kick still, and Alice plays on.
+    alice.sync().await;
+    let after = scrape(address).await;
+    assert_eq!(after.counter("voidmc_clients_kicked_total"), 1.0);
+    assert_eq!(after.gauge("voidmc_players_online"), 1.0);
+    assert_eq!(after.counter("voidmc_packet_errors_total"), 0.0);
+    assert_counters_never_decrease(&before, &kicked);
+    assert_counters_never_decrease(&kicked, &after);
+    let overflows: Vec<String> = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.message.starts_with("Outbound queue full"))
+        .map(|record| record.to_string())
+        .collect();
+    assert_eq!(overflows.len(), 1, "{overflows:#?}");
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A client that enters the play state and never reports loaded is an
+/// accepted connection, not a player: neither the players gauge nor the
+/// joined counter counts it, before or after it is timed out (which counts
+/// as a kick). The same client reporting loaded becomes a player.
+#[tokio::test]
+async fn a_client_that_never_reports_loaded_is_a_connection_and_never_a_player() {
+    let server = observed().start().await;
+    let address = endpoint(&server).await;
+    let mut lurker = server.join_silent("Lurker").await;
+    let lurker_entity = server.player_entity(lurker.uuid()).await;
+    let mut loader = server.join_silent("Loader").await;
+    let loader_entity = server.player_entity(loader.uuid()).await;
+
+    // Both in the play state, neither loaded: no player yet.
+    lurker
+        .expect("the Login packet", |packet| {
+            matches!(packet, ClientboundGamePacket::Login(_)).then_some(())
+        })
+        .await;
+    server.wait_ticks(20).await;
+    let silent = scrape(address).await;
+    assert_eq!(silent.counter("voidmc_connections_accepted_total"), 2.0);
+    assert_eq!(silent.gauge("voidmc_players_online"), 0.0);
+    assert_eq!(silent.counter("voidmc_players_joined_total"), 0.0);
+
+    // One reports loaded and becomes a player; the other does not.
+    loader.report_loaded().await;
+    server
+        .wait_for("Loader to be ready", move |world| {
+            world.get::<PlayerReady>(loader_entity).map(|_| ())
+        })
+        .await;
+    let loaded = scrape_until(&server, address, "Loader online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    assert_eq!(loaded.counter("voidmc_players_joined_total"), 1.0);
+
+    // The lurker never answers its keep-alive. Backdating it past the 30 s
+    // timeout stands in for waiting that long.
+    server
+        .with_world(|world| {
+            let mut ticker = world.resource_mut::<KeepAliveTicker>();
+            ticker.interval_ticks = 3;
+            ticker.ticks_since_last = 0;
+        })
+        .await;
+    let id = lurker
+        .expect("a keep-alive", |packet| match packet {
+            ClientboundGamePacket::KeepAlive(keep_alive) => Some(keep_alive.id),
+            _ => None,
+        })
+        .await;
+    server
+        .with_world(move |world| {
+            let mut state = world.get_mut::<KeepAliveState>(lurker_entity).unwrap();
+            assert!(state.awaiting_response, "the keep-alive is pending");
+            assert_eq!(state.last_sent_id as u64, id);
+            state.last_sent_id -= 31_000;
+        })
+        .await;
+    assert_eq!(lurker.expect_disconnect().await, "Timed out");
+    server
+        .wait_for("the lurker's entity to be despawned", move |world| {
+            world.get_entity(lurker_entity).is_err().then_some(())
+        })
+        .await;
+    let gone = scrape_until(&server, address, "the time-out counted", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") == 1.0
+    })
+    .await;
+    assert_eq!(gone.counter("voidmc_connections_accepted_total"), 2.0);
+    assert_eq!(gone.counter("voidmc_players_joined_total"), 1.0);
+    assert_eq!(gone.gauge("voidmc_players_online"), 1.0);
+    assert_counters_never_decrease(&silent, &loaded);
+    assert_counters_never_decrease(&loaded, &gone);
+
+    drop(loader);
     server.stop().await;
 }
 
