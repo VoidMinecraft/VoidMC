@@ -2148,6 +2148,30 @@ mod tests {
     }
 
     #[test]
+    fn dispatching_a_list_of_arguments_joins_greedy_text_with_single_spaces() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let note = CommandBuilder::new("note")
+            .arg("topic", StringArg::single_word())
+            .arg_variadic_required("text", Arc::new(crate::GreedyStringArg))
+            .handler(move |ctx| {
+                let text = ctx.get::<String>("text").cloned().unwrap_or_default();
+                record.lock().unwrap().push(text);
+            })
+            .build();
+        let (mut world, player) = echo_world(note);
+        for args in [
+            vec!["idea", "a", "b", "c"],
+            vec!["idea", "a  b", "c"],
+            vec!["idea", "a", "", "b"],
+        ] {
+            let args = args.into_iter().map(String::from).collect();
+            dispatch_command(&mut world, 1, player, "note", args);
+        }
+        assert_eq!(*seen.lock().unwrap(), vec!["a b c", "a  b c", "a  b"]);
+    }
+
+    #[test]
     fn a_leading_flag_still_reaches_a_greedy_only_command() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = Arc::clone(&seen);
