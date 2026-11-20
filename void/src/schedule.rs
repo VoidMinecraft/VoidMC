@@ -21,7 +21,8 @@ pub enum VoidSystems {
     Redstone,
     /// `Update`, after `CommandDrain`.
     KeepAlive,
-    /// `Update`, after `KeepAlive`: settle, wander, physics.
+    /// `Update`, after `KeepAlive`: out-of-world removal, settle, wander,
+    /// physics.
     EntitySimulation,
     /// `Update`.
     ItemPickup,

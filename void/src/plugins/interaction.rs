@@ -1,12 +1,11 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::{component::Component, observer::On, system::Commands, world::EntityWorldMut};
-use voidmc_codec::Decode;
 use voidmc_protocol::{
     serverbound::{
-        CloseContainer, Interact, PlayerAction, PlayerCommand, PlayerInput, SetHeldItem, SwingArm,
-        UseItem, UseItemOn,
+        Attack, CloseContainer, Interact, PlayerAction, PlayerCommand, PlayerInput, SetHeldItem,
+        SwingArm, UseItem, UseItemOn,
     },
-    types::{Hand, PlayerActionStatus, PlayerCommandAction},
+    types::{PlayerActionStatus, PlayerCommandAction},
 };
 
 use crate::{
@@ -32,6 +31,7 @@ impl Plugin for InteractionPlugin {
         app.add_observer(handle_use_item);
         app.add_observer(handle_use_item_on);
         app.add_observer(handle_interact);
+        app.add_observer(handle_attack);
     }
 }
 
@@ -174,53 +174,27 @@ fn handle_use_item_on(event: On<PacketEvent<UseItemOn>>, mut commands: Commands)
 }
 
 fn handle_interact(event: On<PacketEvent<Interact>>, mut commands: Commands) {
-    let mut data = event.packet._data.as_slice();
+    let packet = &event.packet;
+    let location = packet.location;
+    commands.trigger(PlayerInteractEntityEvent {
+        entity: event.entity,
+        target_id: packet.entity_id,
+        attack: false,
+        hand: Some(packet.hand),
+        target_pos: Some((location.x as f32, location.y as f32, location.z as f32)),
+        sneaking: packet.using_secondary_action,
+    });
+}
 
-    let (attack, hand, target_pos) = match event.packet.interact_type {
-        0 => {
-            // Interact: hand + sneaking
-            let hand = match Hand::decode(&mut data) {
-                Ok(h) => Some(h),
-                Err(_) => return,
-            };
-            (false, hand, None)
-        }
-        1 => {
-            // Attack: sneaking only
-            (true, None, None)
-        }
-        2 => {
-            // Interact at: target_x/y/z + hand + sneaking
-            let tx = match f32::decode(&mut data) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let ty = match f32::decode(&mut data) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let tz = match f32::decode(&mut data) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let hand = match Hand::decode(&mut data) {
-                Ok(h) => Some(h),
-                Err(_) => return,
-            };
-            (false, hand, Some((tx, ty, tz)))
-        }
-        _ => return,
-    };
-
-    let sneaking: bool = bool::decode(&mut data).unwrap_or_default();
-
+/// Since 26.1 an attack is its own packet, which carries only the target.
+fn handle_attack(event: On<PacketEvent<Attack>>, mut commands: Commands) {
     commands.trigger(PlayerInteractEntityEvent {
         entity: event.entity,
         target_id: event.packet.entity_id,
-        attack,
-        hand,
-        target_pos,
-        sneaking,
+        attack: true,
+        hand: None,
+        target_pos: None,
+        sneaking: false,
     });
 }
 

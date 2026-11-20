@@ -187,6 +187,7 @@ const SPECS: &[EnumSpec] = &[
         direction: "serverbound",
         names: &[
             ("ConfirmTeleportation", "minecraft:accept_teleportation"),
+            ("Attack", "minecraft:attack"),
             ("ChatAck", "minecraft:chat_ack"),
             ("ChatCommand", "minecraft:chat_command"),
             ("SignedChatCommand", "minecraft:chat_command_signed"),
