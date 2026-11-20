@@ -219,6 +219,7 @@ fn main() {
         let entity_attributes =
             load_entity_attributes(&crate_dir, version, &entity_types, &attributes);
         let block_entity_hosts = load_block_entity_hosts(&crate_dir, version);
+        let equipment_slots = load_equipment_slots(&crate_dir, version);
         emit_blocks_module(
             &mut blocks_code,
             BlocksModuleInput {
@@ -232,6 +233,7 @@ fn main() {
                 attributes: &attributes,
                 entity_attributes: &entity_attributes,
                 block_entity_hosts: &block_entity_hosts,
+                equipment_slots: &equipment_slots,
             },
         );
     }
@@ -332,6 +334,7 @@ struct BlocksModuleInput<'a> {
     attributes: &'a [AttributeDef],
     entity_attributes: &'a [EntityAttributesDef],
     block_entity_hosts: &'a BTreeMap<String, Vec<String>>,
+    equipment_slots: &'a Map<String, Value>,
 }
 
 fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
@@ -346,6 +349,7 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
         attributes,
         entity_attributes,
         block_entity_hosts,
+        equipment_slots,
     } = input;
     let blocks_obj = blocks_json
         .as_object()
@@ -587,6 +591,7 @@ fn emit_blocks_module(out: &mut String, input: BlocksModuleInput) {
 
     // ---- items module
     emit_items_module(out, &defs, items);
+    emit_equipment_slots_module(out, items, equipment_slots);
 
     // ---- block entity hosts module
     emit_block_entity_hosts_module(out, &defs, block_entity_hosts);
@@ -690,6 +695,69 @@ fn load_block_entity_hosts(crate_dir: &Path, version: &str) -> BTreeMap<String, 
         .iter()
         .map(|(kind, blocks)| (kind.clone(), json_string_array(blocks)))
         .collect()
+}
+
+/// Reads `assets/<version>/equipment_slots.json` (item -> slot of its
+/// `minecraft:equippable` component, from Mojang's item components report by
+/// `scripts/extract_equipment_slots.py`).
+fn load_equipment_slots(crate_dir: &Path, version: &str) -> Map<String, Value> {
+    let path = crate_dir
+        .join("assets")
+        .join(version)
+        .join("equipment_slots.json");
+    load_json_object(
+        &path,
+        "scripts/extract_equipment_slots.py <version> <generated/reports>",
+    )
+}
+
+/// Emits the `equipment` submodule: `(item_id, EquipmentSlot)` for every
+/// item with an `equippable` component, sorted by item id. An item missing
+/// from the item registry or an unknown slot name fails the build.
+fn emit_equipment_slots_module(
+    out: &mut String,
+    items: &[(String, i32)],
+    slots: &Map<String, Value>,
+) {
+    let mut rows: Vec<(i32, &str)> = slots
+        .iter()
+        .map(|(item, slot)| {
+            let id = items
+                .iter()
+                .find(|(name, _)| name == item)
+                .map(|(_, id)| *id)
+                .unwrap_or_else(|| panic!("equipment_slots.json: unknown item {item}"));
+            let variant = match slot.as_str() {
+                Some("mainhand") => "MainHand",
+                Some("offhand") => "OffHand",
+                Some("feet") => "Feet",
+                Some("legs") => "Legs",
+                Some("chest") => "Chest",
+                Some("head") => "Head",
+                Some("body") => "Body",
+                Some("saddle") => "Saddle",
+                _ => panic!("equipment_slots.json: {item} has unknown slot {slot}"),
+            };
+            (id, variant)
+        })
+        .collect();
+    rows.sort_by_key(|row| row.0);
+
+    let _ = writeln!(out, "    /// The equipment slot of equippable items.");
+    let _ = writeln!(out, "    pub mod equipment {{");
+    let _ = writeln!(
+        out,
+        "        /// `(item_id, slot of its equippable component)` sorted by item id."
+    );
+    let _ = writeln!(
+        out,
+        "        pub static ITEM_EQUIPMENT_SLOTS: &[(i32, crate::EquipmentSlot)] = &["
+    );
+    for (id, variant) in rows {
+        let _ = writeln!(out, "            ({id}, crate::EquipmentSlot::{variant}),");
+    }
+    let _ = writeln!(out, "        ];");
+    let _ = writeln!(out, "    }}");
 }
 
 /// Emits the `block_entities` submodule: `(min_state_id, max_state_id,
