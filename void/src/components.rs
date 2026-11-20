@@ -78,10 +78,17 @@ pub struct KeepAliveState {
     pub latency: i32,
 }
 
+/// The settings the client last sent in Client Information, during
+/// configuration or while playing.
 #[derive(Component)]
 pub struct ClientSettings {
     pub locale: String,
     pub view_distance: u8,
+    /// The client's chat visibility. Only a client on [`ChatMode::Enabled`]
+    /// ("Shown") is sent other players' chat lines.
+    ///
+    /// [`ChatMode::Enabled`]: crate::ChatMode::Enabled
+    pub chat_mode: crate::ChatMode,
 }
 
 #[derive(Component)]

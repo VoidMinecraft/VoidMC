@@ -38,10 +38,13 @@ impl Plugin for ConfigurationPlugin {
     }
 }
 
+/// Client Information is valid in the configuration and the play state; this
+/// one observer stores it from either.
 fn handle_client_information(event: On<PacketEvent<ClientInformation>>, mut commands: Commands) {
     commands.entity(event.entity).insert(ClientSettings {
         locale: event.packet.locale.clone(),
         view_distance: event.packet.view_distance,
+        chat_mode: event.packet.chat_mode,
     });
 }
 
