@@ -39,6 +39,7 @@ mod connection;
 mod inventory;
 mod players;
 mod world;
+mod worldedit;
 
 use voidmc_e2e::Bot;
 use voidmc_e2e::core::direction::Direction;
