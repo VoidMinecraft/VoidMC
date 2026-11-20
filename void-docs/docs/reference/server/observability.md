@@ -84,6 +84,9 @@ The body is a small JSON object, served as `application/json`:
 Shutdown begins when the game loop receives `AppExit` (`/stop`, Ctrl-C or
 SIGTERM, or an application writing the message). From the end of that tick,
 `/health` answers `503` with `"status":"stopping"`, while the world is torn down.
+`stopping` is reported only once that tick's gauges are stored: a `/metrics`
+scrape made after `/health` answered `stopping` shows their final values, with
+`voidmc_players_online` at `0` since the players still online leave in that tick.
 The listener is closed before `VoidServer::run` returns; from then on the port
 refuses connections. A monitor should treat `503` and a refused connection alike:
 the server is not serving players.
