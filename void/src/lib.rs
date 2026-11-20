@@ -106,9 +106,10 @@ pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
 pub use world::{
     Attribute, Banner, BannerLayer, BannerPattern, BiomeBuilder, BiomeError, BiomeId,
     BlockEntities, BlockEntity, BlockEntityError, BlockEntityKind, ChunkData, ChunkDimension,
-    ChunkDirty, ChunkIndex, ChunkLoader, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
-    DyeColor, GrassColorModifier, Sign, SignSide, Skull, biome_at, block_entity_at,
-    load_or_generate, remove_block_entity, set_biome, set_block_entity,
+    ChunkDirty, ChunkIndex, ChunkLoadErrorKind, ChunkLoadFailedEvent, ChunkLoader,
+    ChunkLoaderResource, ChunkPos, ChunkPosition, DamagedChunkAction, DimensionId, DyeColor,
+    GrassColorModifier, Sign, SignSide, Skull, biome_at, block_entity_at, load_or_generate,
+    remove_block_entity, set_biome, set_block_entity,
 };
 
 // Re-export commonly used bevy_ecs types for plugin developers

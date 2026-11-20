@@ -194,6 +194,12 @@ A client entity despawned by game code gets no quit event; kick it instead (see
 | `BlockBreakEvent` | `entity`, `dimension`, `position`, `broken_state` | A player broke a block; `broken_state` is the block it had, the world already holds air. Not fired for a dig on air or when an item's `before_break_block` keeps the block. |
 | `BlockPlaceEvent` | `entity`, `dimension`, `position`, `face`, `placed_state` | A block was placed for a player: `position` is where it went (the clicked block offset by `face`) and the world already holds `placed_state`. Also fired by `ItemUseContext::place_block` and `set_block` (with `face` `Top`). Not fired when nothing changes: an empty hand, an item that is not a block, an unloaded chunk or the same state. |
 
+### World storage
+
+| Event | Fields | When |
+|---|---|---|
+| `ChunkLoadFailedEvent` | `dimension`, `pos`, `kind: ChunkLoadErrorKind` (`Decode` or `Io`), `error`, `action: DamagedChunkAction` (`Quarantined(path)` or `SavesSkipped`) | A chunk loader found a stored chunk it could not load, and the chunk was generated instead. Triggered by `voidmc-world-io` at the end of the tick in which the chunk was loaded (startup or streaming). See [Damaged chunks](/reference/server/world-serialization#damaged-chunks). |
+
 ## Firing events from your code
 
 ```rust

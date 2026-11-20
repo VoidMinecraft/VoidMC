@@ -3,6 +3,8 @@
 mod file;
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,6 +16,8 @@ use crate::store::ChunkStore;
 use file::RegionFile;
 
 /// Stores chunks in `<root>/region/<dim>/r.<rx>.<rz>.vrm`, 32×32 chunks per file.
+/// A chunk that cannot be decoded is quarantined next to its region file, in
+/// `c.<cx>.<cz>.<n>.corrupt` (see [`ChunkStore::quarantine`]).
 pub struct RegionChunkStore {
     root: PathBuf,
     open: Mutex<HashMap<(DimensionId, i32, i32), RegionFile>>,
@@ -95,6 +99,44 @@ impl ChunkStore for RegionChunkStore {
         }
         Ok(())
     }
+
+    /// Copies the sectors of the chunk, as stored, to
+    /// `<root>/region/<dim>/c.<cx>.<cz>.<n>.corrupt` next to its region
+    /// file, with `n` the lowest number from 1 not taken yet. The file is
+    /// created only if no file has that name, so an existing one is never
+    /// overwritten, and it is synced to disk before this returns.
+    fn quarantine(&self, dimension: DimensionId, pos: ChunkPos) -> Result<Option<PathBuf>> {
+        let (rx, rz) = region_coords(pos);
+        let path = self.region_path(dimension, rx, rz);
+        let mut map = self.open.lock().expect("region store mutex poisoned");
+
+        let key = (dimension, rx, rz);
+        if !map.contains_key(&key) {
+            if !path.exists() {
+                return Ok(None);
+            }
+            map.insert(key, RegionFile::open(&path)?);
+        }
+        let region = map.get_mut(&key).unwrap();
+        let Some(slot) = region.read_slot(pos.x, pos.z)? else {
+            return Ok(None);
+        };
+
+        let dir = self.region_dir(dimension);
+        for n in 1u32.. {
+            let side = dir.join(format!("c.{}.{}.{n}.corrupt", pos.x, pos.z));
+            match OpenOptions::new().write(true).create_new(true).open(&side) {
+                Ok(mut file) => {
+                    file.write_all(&slot)?;
+                    file.sync_all()?;
+                    return Ok(Some(side));
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err.into()),
+            }
+        }
+        unreachable!("u32::MAX quarantine files for one chunk")
+    }
 }
 
 impl Drop for RegionChunkStore {
@@ -146,6 +188,91 @@ mod tests {
         assert!(
             matches!(result, Err(crate::PersistenceError::Corrupt(_))),
             "{result:?}"
+        );
+    }
+
+    #[test]
+    fn a_length_past_the_stored_sectors_reads_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let pos = ChunkPos::new(0, 0);
+        {
+            let store = RegionChunkStore::new(dir.path());
+            store
+                .write(DimensionId::Overworld, pos, &payload(0x33))
+                .unwrap();
+        }
+        let path = region_0_0(dir.path());
+        let mut file = std::fs::read(&path).unwrap();
+        file[2 * 4096..2 * 4096 + 4].copy_from_slice(&0xFFFF_FFF0u32.to_be_bytes());
+        std::fs::write(&path, file).unwrap();
+
+        let store = RegionChunkStore::new(dir.path());
+        let result = store.read(DimensionId::Overworld, pos);
+        assert!(
+            matches!(result, Err(crate::PersistenceError::Corrupt(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn quarantine_copies_the_stored_sectors_to_a_new_file_each_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RegionChunkStore::new(dir.path());
+        let pos = ChunkPos::new(0, 0);
+        store
+            .write(DimensionId::Overworld, pos, &payload(0x33))
+            .unwrap();
+        store.flush().unwrap();
+        damage_only_chunk(&region_0_0(dir.path()));
+        let stored = std::fs::read(region_0_0(dir.path())).unwrap()[2 * 4096..3 * 4096].to_vec();
+
+        // A file an operator left under the first name is not overwritten.
+        let side_dir = dir.path().join("region/overworld");
+        std::fs::write(side_dir.join("c.0.0.1.corrupt"), b"operator notes").unwrap();
+
+        let first = store
+            .quarantine(DimensionId::Overworld, pos)
+            .unwrap()
+            .expect("a copy");
+        assert_eq!(first, side_dir.join("c.0.0.2.corrupt"));
+        assert_eq!(std::fs::read(&first).unwrap(), stored);
+
+        // A save over the slot, then a second failure of the same chunk.
+        store
+            .write(DimensionId::Overworld, pos, &payload(0x44))
+            .unwrap();
+        let rewritten = std::fs::read(region_0_0(dir.path())).unwrap()[2 * 4096..3 * 4096].to_vec();
+        let second = store
+            .quarantine(DimensionId::Overworld, pos)
+            .unwrap()
+            .expect("a copy");
+        assert_eq!(second, side_dir.join("c.0.0.3.corrupt"));
+        assert_eq!(std::fs::read(&second).unwrap(), rewritten);
+        assert_eq!(std::fs::read(&first).unwrap(), stored);
+        assert_eq!(
+            std::fs::read(side_dir.join("c.0.0.1.corrupt")).unwrap(),
+            b"operator notes"
+        );
+    }
+
+    #[test]
+    fn quarantine_of_a_chunk_not_stored_copies_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = RegionChunkStore::new(dir.path());
+        assert_eq!(
+            store
+                .quarantine(DimensionId::Overworld, ChunkPos::new(0, 0))
+                .unwrap(),
+            None
+        );
+        store
+            .write(DimensionId::Overworld, ChunkPos::new(1, 0), &payload(1))
+            .unwrap();
+        assert_eq!(
+            store
+                .quarantine(DimensionId::Overworld, ChunkPos::new(0, 0))
+                .unwrap(),
+            None
         );
     }
 

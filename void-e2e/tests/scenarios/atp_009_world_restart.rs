@@ -16,10 +16,12 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use bevy_ecs::prelude::{On, ResMut, Resource};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use voidmc::{
-    BlockFace, ChunkDirty, ChunkIndex, ChunkPos as VoidChunkPos, DimensionId, ItemBehavior,
-    ItemBehaviorRegistry, ItemUseContext, ObservabilityAddress, ObservabilityConfig, UseResult,
+    BlockFace, ChunkDirty, ChunkIndex, ChunkLoadErrorKind, ChunkLoadFailedEvent,
+    ChunkPos as VoidChunkPos, DamagedChunkAction, DimensionId, ItemBehavior, ItemBehaviorRegistry,
+    ItemUseContext, ObservabilityAddress, ObservabilityConfig, UseResult,
 };
 use voidmc_e2e::block::{BlockState, blocks, properties::Axis};
 use voidmc_e2e::core::direction::Direction;
@@ -623,11 +625,50 @@ async fn a_later_session_writes_into_a_region_file_without_damaging_it() {
 
 // --- A chunk whose stored bytes are damaged ------------------------------
 
+/// The chunk load failures the server triggered, in order.
+#[derive(Resource, Default)]
+struct LoadFailures(Vec<ChunkLoadFailedEvent>);
+
 /// [`persistent`] without periodic saves, with the metrics endpoint on a free
-/// port.
+/// port, recording [`ChunkLoadFailedEvent`]s in [`LoadFailures`].
 fn persistent_observed(world: &TempWorld) -> TestServerBuilder {
     persistent(world, NO_PERIODIC_SAVE)
         .config(|config| config.observability(ObservabilityConfig::localhost(0)))
+        .plugin(|app| {
+            app.init_resource::<LoadFailures>().add_observer(
+                |event: On<ChunkLoadFailedEvent>, mut failures: ResMut<LoadFailures>| {
+                    failures.0.push(event.event().clone());
+                },
+            );
+        })
+}
+
+async fn load_failures(server: &TestServer) -> Vec<ChunkLoadFailedEvent> {
+    server
+        .with_world(|world| world.resource::<LoadFailures>().0.clone())
+        .await
+}
+
+/// Checks that the only load failure of the run is the decoding of the
+/// chunk at `pos`, quarantined in the side file `name`.
+async fn assert_quarantined(server: &TestServer, world: &Path, pos: (i32, i32), name: &str) {
+    let failures = load_failures(server).await;
+    assert_eq!(failures.len(), 1, "{failures:#?}");
+    let failure = &failures[0];
+    assert_eq!(
+        (
+            failure.dimension,
+            failure.pos,
+            failure.kind,
+            &failure.action
+        ),
+        (
+            DimensionId::Overworld,
+            void_pos(pos),
+            ChunkLoadErrorKind::Decode,
+            &DamagedChunkAction::Quarantined(world.join("region").join("overworld").join(name)),
+        )
+    );
 }
 
 const SECTOR: usize = 4096;
@@ -735,6 +776,7 @@ async fn a_chunk_that_cannot_be_decoded_is_quarantined_then_generated_again() {
     alice.sync().await;
     let built = seen(&alice, intact);
     alice.assert_healthy();
+    assert!(load_failures(&server).await.is_empty());
     server.stop().await;
 
     let first_damage = damage(world.path(), damaged, 0x5A);
@@ -768,6 +810,7 @@ async fn a_chunk_that_cannot_be_decoded_is_quarantined_then_generated_again() {
     );
     assert_eq!(chunk_load_errors(&server, "decode").await, Some(1.0));
     assert_eq!(chunk_load_errors(&server, "io").await, Some(0.0));
+    assert_quarantined(&server, world.path(), damaged, "c.1.0.1.corrupt").await;
 
     // An edit in the generated chunk is saved over the damaged slot; the side
     // file is left as it was.
@@ -817,6 +860,7 @@ async fn a_chunk_that_cannot_be_decoded_is_quarantined_then_generated_again() {
     );
     assert_eq!(chunk_load_errors(&server, "decode").await, Some(1.0));
     alice.assert_healthy();
+    assert_quarantined(&server, world.path(), damaged, "c.1.0.2.corrupt").await;
     let failures = server.stop_expecting(is_chunk_load_error).await;
     assert_eq!(failures.len(), 1, "{failures:#?}");
     assert_eq!(side_files(world.path()), second_side, "after the third run");
