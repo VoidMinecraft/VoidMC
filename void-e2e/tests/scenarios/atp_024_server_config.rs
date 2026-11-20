@@ -4,9 +4,10 @@
 //!
 //! The reference table (names, types, defaults), the startup log line and an
 //! address that cannot be bound are checked in `void/tests/server_config.rs`.
-//! `packet_ingest_budget_ms` has no assertion here: it only bounds the
-//! microseconds spent draining the incoming channel, which no test can
-//! exceed deterministically. `execution_mode` and `observability` are not set
+//! `packet_ingest_budget_ms` bounds the time spent draining the incoming
+//! channel: a flood of packets queued while the game thread is held takes
+//! milliseconds to drain, so a 1 ms budget spreads it over several ticks
+//! where no budget takes it in one. `execution_mode` and `observability` are not set
 //! here: `atp_028_parallel_regions` runs a server built with
 //! `execution_mode(ExecutionMode::MultiThreaded)` and checks its systems and
 //! regions run concurrently, and `atp_032_observability` queries the
@@ -25,16 +26,20 @@ use bevy_app::Last;
 use bevy_ecs::prelude::*;
 use voidmc::components::{LoadedChunks, PlayerUuid};
 use voidmc::events::PlayerJoinEvent;
+use voidmc::network::{NetworkChannels, PacketEvent};
 use voidmc::{
     ChunkIndex, DefaultWorldGenerator, FrameLimits, RegistriesAlreadySent, RegistryDataStore,
     ServerConfigBuilder, SpawnPosition, WorldGenerator, default_registry_data,
 };
 use voidmc_e2e::core::game_type::GameMode;
 use voidmc_e2e::core::position::{ChunkPos, Vec3};
-use voidmc_e2e::protocol::packets::game::{ClientboundGamePacket, c_login::ClientboundLogin};
+use voidmc_e2e::protocol::packets::game::{
+    ClientboundGamePacket, c_login::ClientboundLogin, s_pong::ServerboundPong,
+};
 use voidmc_e2e::protocol::simdnbt::owned::NbtCompound;
 use voidmc_e2e::{Bot, LoginRefused, TestServer};
 use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
+use voidmc_protocol::serverbound;
 
 use crate::{feet, ground, wait_until_ready};
 
@@ -971,4 +976,145 @@ async fn the_largest_compression_threshold_is_announced_as_i32_max() {
     alice.sync().await;
     alice.assert_healthy();
     server.stop().await;
+}
+
+/// Marks the pongs of the flood, so that none is taken for an answer to the
+/// server's own pings or for a harness barrier (the high bit).
+const FLOOD_TAG: u32 = 0x4000_0000;
+/// Pongs in the flood: enough that draining them from the channel takes
+/// several milliseconds even on a fast machine.
+const FLOOD_PONGS: u32 = 200_000;
+
+/// The flood's pongs handled by the game thread, by tick.
+#[derive(Resource, Default)]
+struct IngestedPongs {
+    this_tick: Vec<u32>,
+    /// One entry per tick that handled at least one, in order.
+    per_tick: Vec<Vec<u32>>,
+}
+
+fn count_flooded_pong(
+    event: On<PacketEvent<serverbound::Pong>>,
+    mut ingested: ResMut<IngestedPongs>,
+) {
+    let id = event.packet.id as u32;
+    if id & 0xc000_0000 == FLOOD_TAG {
+        ingested.this_tick.push(id & !FLOOD_TAG);
+    }
+}
+
+fn close_ingest_tick(mut ingested: ResMut<IngestedPongs>) {
+    if !ingested.this_tick.is_empty() {
+        let tick = std::mem::take(&mut ingested.this_tick);
+        ingested.per_tick.push(tick);
+    }
+}
+
+/// Holds the game thread while Alice sends [`FLOOD_PONGS`] pongs, until all
+/// of them wait in the incoming channel, then returns how many the ticks
+/// after that handled, tick by tick, and the throttling warnings logged.
+/// `max_packets_per_tick` is unlimited, so only the time budget can stop a
+/// tick from taking every queued packet.
+async fn ingest_flood(budget_ms: u64) -> (Vec<Vec<u32>>, Vec<String>) {
+    let server = TestServer::builder()
+        .config(move |config| {
+            config
+                .max_packets_per_tick(0)
+                .packet_ingest_budget_ms(budget_ms)
+        })
+        .plugin(|app| {
+            app.init_resource::<IngestedPongs>()
+                .add_observer(count_flooded_pong)
+                .add_systems(Last, close_ingest_tick);
+        })
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    alice.sync().await;
+
+    let (queued, ()) = tokio::join!(
+        server.with_world(|world| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                let waiting = world.resource::<NetworkChannels>().incoming.len();
+                if waiting >= FLOOD_PONGS as usize {
+                    return Ok(waiting);
+                }
+                if Instant::now() > deadline {
+                    return Err(waiting);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }),
+        async {
+            for id in 0..FLOOD_PONGS {
+                alice.send(ServerboundPong { id: FLOOD_TAG | id }).await;
+            }
+        },
+    );
+    let queued = queued.unwrap_or_else(|waiting| {
+        panic!("only {waiting} of the {FLOOD_PONGS} pongs reached the incoming channel")
+    });
+    assert!(queued >= FLOOD_PONGS as usize);
+
+    let per_tick = server
+        .wait_for("every pong of the flood handled", |world| {
+            let ingested = world.resource::<IngestedPongs>();
+            let handled: usize = ingested.per_tick.iter().map(Vec::len).sum();
+            (handled == FLOOD_PONGS as usize).then(|| ingested.per_tick.clone())
+        })
+        .await;
+    let ids: Vec<u32> = per_tick.iter().flatten().copied().collect();
+    assert!(
+        ids.iter().copied().eq(0..FLOOD_PONGS),
+        "every pong handled once, in the order sent"
+    );
+    let throttled = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.message.starts_with("Packet ingest throttled"))
+        .map(|record| record.message)
+        .collect();
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+    (per_tick, throttled)
+}
+
+/// `packet_ingest_budget_ms` on a running server: with a 1 ms budget, a
+/// tick stops draining the incoming channel once the budget is spent, warns,
+/// and the next ticks take the rest, in order and without loss. Without a
+/// budget, the same flood is taken in one tick.
+#[tokio::test]
+async fn the_packet_ingest_budget_spreads_a_flood_over_several_ticks() {
+    let (unlimited, unlimited_warnings) = ingest_flood(0).await;
+    assert_eq!(
+        unlimited.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![FLOOD_PONGS as usize],
+        "without a budget, one tick takes the whole flood"
+    );
+    assert_eq!(unlimited_warnings, Vec::<String>::new());
+
+    let (budgeted, warnings) = ingest_flood(1).await;
+    let sizes: Vec<usize> = budgeted.iter().map(Vec::len).collect();
+    assert!(
+        sizes.len() >= 2,
+        "a 1 ms budget took the flood in {} tick(s): {sizes:?}",
+        sizes.len()
+    );
+    assert!(sizes[0] > 0, "the first tick drained some: {sizes:?}");
+    assert!(!warnings.is_empty(), "throttling is logged");
+    for warning in &warnings {
+        assert!(
+            warning.contains("packet_ingest_budget_ms=1")
+                && warning.contains("max_packets_per_tick=0"),
+            "{warning}"
+        );
+    }
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| !warning.contains("backlog=0")),
+        "a throttled tick leaves a backlog: {warnings:#?}"
+    );
 }
