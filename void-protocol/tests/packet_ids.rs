@@ -69,6 +69,7 @@ const SPECS: &[EnumSpec] = &[
         state: "configuration",
         direction: "clientbound",
         names: &[
+            ("ConfigurationDisconnect", "minecraft:disconnect"),
             ("FinishConfiguration", "minecraft:finish_configuration"),
             ("RegistryData", "minecraft:registry_data"),
             ("KnownPacks", "minecraft:select_known_packs"),

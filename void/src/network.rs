@@ -16,6 +16,7 @@ use crate::components::{Client, ClientId, ConnectionState};
 use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
 use crate::observability::TelemetryHandle;
+use crate::players::{DisconnectReason, WorldPlayers};
 use crate::schedule::VoidSystems;
 
 pub struct IncomingPacket {
@@ -32,6 +33,22 @@ pub struct OutgoingPacket {
 /// burst: the biggest single-tick burst (a join at view distance 10) is ~450
 /// chunk packets, and a busy steady state is a few hundred packets per tick.
 pub const OUTBOUND_QUEUE_CAPACITY: usize = 16 * 1024;
+
+/// How long a connection may take, from being accepted, to reach the play
+/// state: handshake, status, login and configuration together. Past it, a
+/// client in the login or configuration state is disconnected with vanilla's
+/// "Took too long to log in" ([`DisconnectReason::slow_login`]); a connection
+/// in the handshake or status state, which has no disconnect packet, is just
+/// closed. Like vanilla, the default is 30 seconds. Once in the play state,
+/// a client is timed out by its keep-alives instead.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrePlayTimeout(pub Duration);
+
+impl Default for PrePlayTimeout {
+    fn default() -> Self {
+        Self(Duration::from_secs(30))
+    }
+}
 
 /// Sent by the network thread on accept, before the client's task starts, so it
 /// is always visible to the game thread before any packet from that client.
@@ -76,9 +93,15 @@ impl Plugin for NetworkPlugin {
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
         .insert_resource(ClientSenders::new(self.connected_rx.clone()))
+        .init_resource::<PrePlayTimeout>()
         .add_systems(
             PreUpdate,
-            ingest_network_packets.in_set(VoidSystems::NetworkIngest),
+            (
+                ingest_network_packets,
+                close_connections_past_pre_play_timeout,
+            )
+                .chain()
+                .in_set(VoidSystems::NetworkIngest),
         )
         .add_systems(Last, disconnect_clients_on_exit)
         .add_observer(close_despawned_client);
@@ -132,6 +155,9 @@ pub struct ClientSenders {
     connected: Receiver<ClientConnected>,
     pending: HashMap<u32, Sender<OutgoingPacket>>,
     active: HashMap<Entity, ClientSender>,
+    /// When each connection was announced, until [`PrePlayTimeout`] has
+    /// checked it.
+    announced: HashMap<u32, Instant>,
 }
 
 impl ClientSenders {
@@ -140,6 +166,7 @@ impl ClientSenders {
             connected,
             pending: HashMap::new(),
             active: HashMap::new(),
+            announced: HashMap::new(),
         }
     }
 
@@ -165,8 +192,25 @@ impl ClientSenders {
 
     pub fn sync(&mut self) {
         while let Ok(connected) = self.connected.try_recv() {
+            self.announced.insert(connected.client_id, Instant::now());
             self.pending.insert(connected.client_id, connected.outgoing);
         }
+    }
+
+    /// The connections announced at or before `cutoff`, in client id order;
+    /// each is returned once.
+    fn take_announced_before(&mut self, cutoff: Instant) -> Vec<u32> {
+        let mut expired: Vec<u32> = self
+            .announced
+            .iter()
+            .filter(|(_, announced)| **announced <= cutoff)
+            .map(|(client_id, _)| *client_id)
+            .collect();
+        expired.sort_unstable();
+        for client_id in &expired {
+            self.announced.remove(client_id);
+        }
+        expired
     }
 
     pub fn take_pending(&mut self, client_id: u32) -> Option<Sender<OutgoingPacket>> {
@@ -182,6 +226,7 @@ impl ClientSenders {
 
     pub fn detach(&mut self, client_id: u32, entity: Option<Entity>) {
         self.pending.remove(&client_id);
+        self.announced.remove(&client_id);
         if let Some(entity) = entity {
             self.active.remove(&entity);
         }
@@ -314,6 +359,48 @@ pub fn ingest_network_packets(world: &mut World) {
 
     for disc_client_id in disconnected {
         disconnect_client(world, disc_client_id);
+    }
+}
+
+/// Closes every connection still short of the play state [`PrePlayTimeout`]
+/// after it was announced, which the network thread does as it accepts it.
+fn close_connections_past_pre_play_timeout(world: &mut World) {
+    let timeout = world.resource::<PrePlayTimeout>().0;
+    let Some(cutoff) = Instant::now().checked_sub(timeout) else {
+        return;
+    };
+    let expired = world
+        .resource_mut::<ClientSenders>()
+        .take_announced_before(cutoff);
+    for client_id in expired {
+        let entity = world
+            .resource::<ClientToEntityMap>()
+            .0
+            .get(&client_id)
+            .copied();
+        let state = entity
+            .and_then(|entity| world.get::<ConnectionState>(entity))
+            .map(|state| state.0);
+        if state == Some(voidmc_protocol::State::Play) {
+            continue;
+        }
+        tracing::info!(
+            client_id,
+            ?state,
+            timeout_ms = timeout.as_millis() as u64,
+            "Client did not reach the play state in time; disconnecting"
+        );
+        match entity {
+            Some(entity) => {
+                WorldPlayers::new(world).kick_with(entity, DisconnectReason::slow_login());
+            }
+            // No packet of it handled yet (or only status requests, answered
+            // on the network thread): no state to tell it in, so the
+            // connection is just closed.
+            None => {
+                let _ = world.resource::<NetworkChannels>().kick.send(client_id);
+            }
+        }
     }
 }
 
@@ -1195,5 +1282,74 @@ mod tests {
             "the packet spawned no new client entity"
         );
         assert!(h.app.world().resource::<Quits>().0.is_empty());
+    }
+
+    fn set_pre_play_timeout(h: &mut Harness, timeout: Duration) {
+        h.app.world_mut().resource_mut::<PrePlayTimeout>().0 = timeout;
+    }
+
+    #[test]
+    fn a_fresh_connection_is_left_alone_until_the_pre_play_timeout() {
+        let mut h = harness();
+        let _rx = h.connect(1);
+        let (_, _rx2) = client_in(&mut h, 2, voidmc_protocol::State::Login, "early");
+        h.app.update();
+
+        assert_eq!(
+            *h.app.world().resource::<PrePlayTimeout>(),
+            PrePlayTimeout(Duration::from_secs(30))
+        );
+        assert!(h._kick_rx.is_empty());
+    }
+
+    #[test]
+    fn past_the_pre_play_timeout_each_state_is_told_why_and_closed_once() {
+        let mut h = harness();
+        let silent = h.connect(1);
+        let (_, handshake) = client_in(&mut h, 2, voidmc_protocol::State::Handshake, "a");
+        let (_, login) = client_in(&mut h, 3, voidmc_protocol::State::Login, "b");
+        let (_, configuring) = client_in(&mut h, 4, voidmc_protocol::State::Configuration, "c");
+        let (_, playing) = client_in(&mut h, 5, voidmc_protocol::State::Play, "d");
+
+        set_pre_play_timeout(&mut h, Duration::ZERO);
+        h.app.update();
+        h.app.update();
+
+        assert_eq!(h._kick_rx.try_iter().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert!(silent.is_empty());
+        assert!(handshake.is_empty());
+        let sent: Vec<_> = login.try_iter().map(|out| out.packet).collect();
+        let [
+            voidmc_protocol::clientbound::ClientboundPacket::Login(
+                voidmc_protocol::clientbound::LoginPacket::LoginDisconnect(disconnect),
+            ),
+        ] = sent.as_slice()
+        else {
+            panic!("expected one LoginDisconnect, got {sent:?}");
+        };
+        assert_eq!(
+            disconnect.reason.translate.as_deref(),
+            Some(DisconnectReason::SLOW_LOGIN)
+        );
+        let sent: Vec<_> = configuring.try_iter().map(|out| out.packet).collect();
+        let [
+            voidmc_protocol::clientbound::ClientboundPacket::Configuration(
+                voidmc_protocol::clientbound::ConfigurationPacket::ConfigurationDisconnect(
+                    disconnect,
+                ),
+            ),
+        ] = sent.as_slice()
+        else {
+            panic!("expected one ConfigurationDisconnect, got {sent:?}");
+        };
+        assert!(
+            format!("{:?}", disconnect.reason).contains(DisconnectReason::SLOW_LOGIN),
+            "{:?}",
+            disconnect.reason
+        );
+        assert!(
+            playing.is_empty(),
+            "a client in the play state is left alone"
+        );
     }
 }

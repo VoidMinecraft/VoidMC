@@ -288,7 +288,16 @@ impl DisconnectReason {
         Self::translatable(Self::SERVER_FULL)
     }
 
-    /// The NBT form the play state uses.
+    /// Vanilla's translation key for a connection that took too long to
+    /// reach the play state.
+    pub const SLOW_LOGIN: &'static str = "multiplayer.disconnect.slow_login";
+
+    /// Vanilla's "Took too long to log in".
+    pub fn slow_login() -> Self {
+        Self::translatable(Self::SLOW_LOGIN)
+    }
+
+    /// The NBT form the configuration and play states use.
     fn nbt(&self) -> Nbt {
         match self {
             Self::Text(text) => text.component(TextColor::Red),
@@ -316,9 +325,10 @@ impl DisconnectReason {
 }
 
 /// The disconnect packet of the client's state carrying `reason`: the
-/// play-state `Disconnect` (also when the state is unknown), or the login
-/// state's `LoginDisconnect`. The configuration state has no disconnect
-/// packet in `voidmc-protocol`, so its connection is just closed.
+/// play-state `Disconnect` (also when the state is unknown), the
+/// configuration state's `ConfigurationDisconnect` or the login state's
+/// `LoginDisconnect`. The handshake and status states have none, so their
+/// connection is just closed.
 fn disconnect_packet(
     state: Option<&ConnectionState>,
     reason: &DisconnectReason,
@@ -326,6 +336,12 @@ fn disconnect_packet(
     match state.map(|state| state.0) {
         None | Some(State::Play) => Some(
             clientbound::Disconnect {
+                reason: reason.nbt(),
+            }
+            .into(),
+        ),
+        Some(State::Configuration) => Some(
+            clientbound::ConfigurationDisconnect {
                 reason: reason.nbt(),
             }
             .into(),
@@ -397,13 +413,14 @@ impl Players<'_, '_> {
         }
     }
 
-    /// Disconnects a client: a client in the play or login state is sent
-    /// its state's disconnect packet with `reason` (shown in red), then the
-    /// server closes the connection once the packets queued before it are
-    /// written, whether or not the client cooperates. Nothing else is sent to
-    /// it. The disconnect is then handled like any other: a player who joined
-    /// gets its `PlayerQuitEvent` and its entity is despawned at the next
-    /// network ingest. Calling it again for the same client does nothing.
+    /// Disconnects a client: a client in the play, configuration or login
+    /// state is sent its state's disconnect packet with `reason` (shown in
+    /// red), then the server closes the connection once the packets queued
+    /// before it are written, whether or not the client cooperates. Nothing
+    /// else is sent to it. The disconnect is then handled like any other: a
+    /// player who joined gets its `PlayerQuitEvent` and its entity is
+    /// despawned at the next network ingest. Calling it again for the same
+    /// client does nothing.
     pub fn kick(&self, entity: Entity, reason: &str) {
         self.kick_with(entity, DisconnectReason::text(reason));
     }
@@ -963,9 +980,15 @@ mod tests {
             reason.contains("\"bye\""),
             "the first reason is sent: {reason}"
         );
+        let loading_sent: Vec<_> = loading_rx.try_iter().map(|out| out.packet).collect();
         assert!(
-            loading_rx.is_empty(),
-            "no play packet for a configuring client"
+            matches!(
+                loading_sent.as_slice(),
+                [ClientboundPacket::Configuration(
+                    clientbound::ConfigurationPacket::ConfigurationDisconnect(_)
+                )]
+            ),
+            "a configuring client gets the configuration Disconnect, no play packet: {loading_sent:?}"
         );
         assert_eq!(
             kick_rx.try_iter().collect::<Vec<_>>(),
