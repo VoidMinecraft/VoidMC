@@ -38,6 +38,17 @@ only as a query filter (`With<SpawnedEntity>`).
 Other builder methods: `velocity(Velocity)`, `collider(EntityCollider)`,
 `movement(MovementConfig)`, `wander(bool)`, `settle_ticks(u8)`.
 
+## Wandering
+
+`wander(true)` (`--wander` on `/summon`) gives the entity the demo random walk:
+`spawn`/`spawn_in` attach a `Wander` component with the `Wander::random()`
+defaults, a speed of `Wander::SPEED` (0.08 blocks per tick) and a random
+heading kept for a random `Wander::TICKS` (40 to 139) ticks before the next
+one is drawn. The entity faces where it walks; viewers are sent a rotation
+only when the heading changes. To choose the walk yourself, stage your own
+`Wander` with `.with(Wander { .. })`, which replaces the default one.
+`bundle()` does not include the `Wander` component.
+
 ## Gravity and block collision
 
 `gravity(true)` and `block_collision(true)` (`--gravity` and `--block-checks`

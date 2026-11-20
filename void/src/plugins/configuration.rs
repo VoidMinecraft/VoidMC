@@ -53,7 +53,7 @@ fn handle_known_packs(
     registries: Res<RegistryDataStore>,
 ) {
     registries.mark_sent();
-    for registry in &registries.registries {
+    for registry in registries.registries() {
         players.send(event.entity, registry.clone());
     }
 

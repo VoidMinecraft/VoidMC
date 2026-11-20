@@ -32,14 +32,14 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
 | `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
-| `Grounded(bool)` | On-ground flag | The on-ground flag of the client's last movement packet, relayed in the movement packets other players receive |
+| `Grounded(bool)` | On-ground flag | The on-ground flag of the client's last movement packet, relayed in the movement packets other players receive; a change reported alone (`SetPlayerMovementFlags`) is relayed as a position sync, like vanilla |
 | `Sneaking(bool)` | Shift key | From the client's Player Input; other players see the player crouch (shared sneaking flag + crouching pose) while it sneaks without flying. The flag goes out in the complete shared flags byte, with the glowing and invisible bits of `Glowing`, `Invisible` and the glowing / invisibility effects, whichever of them changes; the player's own client is not sent its flags |
 
 ### Teleportation
 
 | Component | Fields | Description |
 |---|---|---|
-| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms; until then client positions are ignored |
+| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms; until then client movement packets are ignored whole (position, rotation and on-ground flag) |
 | `ServerControlledPosition` | Marker | Server owns the position; client movement packets update `Rotation` only |
 | `Teleport { x, y, z, .. }` | Destination + options | Teleport with loading barrier; removed once the client confirms, times out or it is cancelled (see [Players](../gameplay/players.md#teleportation)) |
 | `PlayerAbilities { flying, allow_flight, .. }` | Flags + speeds | Opt-in; changes are sent as Player Abilities packets |
@@ -88,7 +88,7 @@ to ready players by `systems::entities`.
 | `MovementConfig` | Feature flags | Enables wandering, gravity, and block collision checks |
 | `VerticalVelocity(f64)` | Vertical speed | Gravity state kept separately from protocol velocity |
 | `Grounded(bool)` | Contact state | Whether physics found support directly below the collision box |
-| `Wander` | Direction state | Optional demo random-walk behavior attached by `/summon --wander` |
+| `Wander` | Direction state | Optional demo random-walk behavior attached by `EntityBuilder::wander(true)` and `/summon --wander` |
 
 ### Chunk Entity Components
 

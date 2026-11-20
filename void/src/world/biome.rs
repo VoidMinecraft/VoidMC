@@ -488,6 +488,7 @@ impl BiomeBuilder {
         }
         let registry = store
             .get_registry_mut(BIOME_REGISTRY)
+            .map_err(|_| BiomeError::RegistriesAlreadySent(self.name.clone()))?
             .ok_or(BiomeError::NoBiomeRegistry)?;
         registry.entries.push(RegistryEntry {
             entry_id: self.name.clone(),

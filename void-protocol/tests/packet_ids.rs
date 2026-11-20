@@ -48,6 +48,7 @@ const SPECS: &[EnumSpec] = &[
         state: "login",
         direction: "clientbound",
         names: &[
+            ("LoginDisconnect", "minecraft:login_disconnect"),
             ("LoginSuccess", "minecraft:login_finished"),
             ("SetCompression", "minecraft:login_compression"),
         ],
@@ -204,6 +205,10 @@ const SPECS: &[EnumSpec] = &[
             ("SetPlayerPos", "minecraft:move_player_pos"),
             ("SetPlayerPosAndRot", "minecraft:move_player_pos_rot"),
             ("SetPlayerRotation", "minecraft:move_player_rot"),
+            (
+                "SetPlayerMovementFlags",
+                "minecraft:move_player_status_only",
+            ),
             ("PlayerAbilities", "minecraft:player_abilities"),
             ("PlayerAction", "minecraft:player_action"),
             ("PlayerCommand", "minecraft:player_command"),

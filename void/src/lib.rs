@@ -75,7 +75,7 @@ pub use menu::{
 pub use messages::{MessageRequest, Messages, Text, TextColor, TextTooLong, WorldMessages};
 pub use observability::{DEFAULT_OBSERVABILITY_HOST, ObservabilityAddress, ObservabilityConfig};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
-pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
+pub use players::{Audience, DisconnectReason, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
 pub use plugins::scoreboard::{
@@ -93,7 +93,7 @@ pub use plugins::world_border::{WorldBorder, WorldBorderState};
 pub use plugins::world_time::{
     GameTime, TICKS_PER_DAY, TIME_SYNC_INTERVAL, WorldClock, WorldTime, WorldTimeState,
 };
-pub use registry::{RegistryDataStore, default_registry_data};
+pub use registry::{RegistriesAlreadySent, RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
 pub use sounds::{Sound, SoundPosition, SoundSource, SoundStop, Sounds, WorldSounds};
