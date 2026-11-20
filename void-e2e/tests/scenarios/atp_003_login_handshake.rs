@@ -22,10 +22,10 @@ use voidmc::components::{
     ClientSettings, ConnectionState, PlayerReady, PlayerUuid, ProtocolVersion, TeleportState,
 };
 use voidmc::network::PacketEvent;
-use voidmc::{CommandRegistry, RegistryDataStore};
+use voidmc::{ChatMode, CommandRegistry, RegistryDataStore};
 use voidmc_e2e::TestServer;
 use voidmc_e2e::core::entity_id::MinecraftEntityId;
-use voidmc_e2e::protocol::common::client_information::ClientInformation;
+use voidmc_e2e::protocol::common::client_information::{ChatVisibility, ClientInformation};
 use voidmc_e2e::protocol::common::movements::MoveFlags;
 use voidmc_e2e::protocol::connect::Connection;
 use voidmc_e2e::protocol::packets::config::{
@@ -36,6 +36,7 @@ use voidmc_e2e::protocol::packets::config::{
 use voidmc_e2e::protocol::packets::game::c_commands::NodeType;
 use voidmc_e2e::protocol::packets::game::{
     ClientboundGamePacket, s_accept_teleportation::ServerboundAcceptTeleportation,
+    s_client_information::ServerboundClientInformation as PlayClientInformation,
     s_keep_alive::ServerboundKeepAlive, s_move_player_pos_rot::ServerboundMovePlayerPosRot,
     s_player_loaded::ServerboundPlayerLoaded,
 };
@@ -600,5 +601,62 @@ async fn atp_003_handshake_reaches_the_ready_play_state() {
     );
 
     drop(connection);
+    server.stop().await;
+}
+
+/// The server stores the client settings from the Client Information sent in
+/// configuration, then from one sent while playing.
+#[tokio::test]
+async fn client_settings_are_stored_from_configuration_and_from_play() {
+    let server = TestServer::start().await;
+    let alice = server
+        .join_with_information(
+            "Alice",
+            ClientInformation {
+                language: "fr_fr".to_string(),
+                view_distance: 5,
+                chat_visibility: ChatVisibility::System,
+                ..Default::default()
+            },
+        )
+        .await;
+    let uuid = alice.uuid();
+    let stored = move |world: &mut World| {
+        world
+            .query::<(&PlayerUuid, &ClientSettings)>()
+            .iter(world)
+            .find(|(id, _)| id.0 == uuid)
+            .map(|(_, settings)| {
+                (
+                    settings.locale.clone(),
+                    settings.view_distance,
+                    settings.chat_mode,
+                )
+            })
+    };
+    assert_eq!(
+        server.with_world(stored).await,
+        Some(("fr_fr".to_string(), 5, ChatMode::CommandOnly)),
+        "the settings sent in configuration"
+    );
+
+    alice
+        .send(PlayClientInformation {
+            client_information: ClientInformation {
+                language: "de_de".to_string(),
+                view_distance: 3,
+                chat_visibility: ChatVisibility::Hidden,
+                ..Default::default()
+            },
+        })
+        .await;
+    alice.sync().await;
+    assert_eq!(
+        server.with_world(stored).await,
+        Some(("de_de".to_string(), 3, ChatMode::Hidden)),
+        "the settings sent while playing"
+    );
+
+    alice.assert_healthy();
     server.stop().await;
 }

@@ -31,7 +31,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `Rotation { yaw, pitch }` | `f32` angles | Current look direction |
 | `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
-| `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
+| `ClientSettings { locale, view_distance, chat_mode }` | Settings | The client's last Client Information, sent during configuration and again whenever the player changes a setting while playing. `chat_mode` (`voidmc::ChatMode`) decides who is sent player chat: only `ChatMode::Enabled` |
 | `Grounded(bool)` | On-ground flag | The on-ground flag of the client's last movement packet, relayed in the movement packets other players receive; a change reported alone (`SetPlayerMovementFlags`) is relayed as a position sync, like vanilla |
 | `Sneaking(bool)` | Shift key | From the client's Player Input; other players see the player crouch (shared sneaking flag + crouching pose) while it sneaks without flying. The flag goes out in the complete shared flags byte, with the glowing and invisible bits of `Glowing`, `Invisible` and the glowing / invisibility effects, whichever of them changes; the player's own client is not sent its flags |
 
@@ -133,7 +133,7 @@ As the client progresses through protocol states, handlers insert additional com
 
 1. **Handshake**: `ProtocolVersion`, updated `ConnectionState`
 2. **Login**: `PlayerName`, `PlayerUuid`
-3. **Configuration**: `ClientSettings`
+3. **Configuration**: `ClientSettings` (replaced by each later Client Information, in configuration or play)
 4. **Finish Configuration** (transition to Play): `MinecraftEntityId`, `Position`, `PreviousPosition`, `Rotation`, `TeleportState`, `KeepAliveState`, `CurrentChunkPos`, `EffectiveViewDistance`, `LoadedChunks`, `PlayerDimension`
 5. **Play (PlayerLoaded)**: `PlayerReady` marker
 

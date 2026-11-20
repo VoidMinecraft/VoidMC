@@ -102,6 +102,7 @@ pub use toasts::{ToastFrame, ToastRequest, Toasts, WorldToasts};
 pub use ussr_nbt::owned::Tag;
 pub use voidmc_codec::{DecodeLimits, LimitKind};
 pub use voidmc_net::socket::FrameLimits;
+pub use voidmc_protocol::serverbound::ChatMode;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
 pub use world::{

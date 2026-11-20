@@ -160,7 +160,7 @@ A client entity despawned by game code gets no quit event; kick it instead (see
 
 | Event | Fields | When |
 |---|---|---|
-| `ChatMessageEvent` | `entity`, `client_id`, `message` | A chat line not starting with `/`, after `<name> message` was broadcast: an observer sees it but cannot cancel or rewrite it. `message` is the text exactly as sent. |
+| `ChatMessageEvent` | `entity`, `client_id`, `message` | A chat line not starting with `/`, after `<name> message` was sent to every play-state client whose chat is shown: an observer sees it but cannot cancel or rewrite it. `message` is the text exactly as sent. |
 | `ChatCommandEvent` | `entity`, `client_id`, `command`, `args` | A command was enqueued (found or not), from a command packet or a chat line starting with `/` (which fires no `ChatMessageEvent`). Execution happens later in `VoidSystems::CommandDrain`. |
 
 ### Interaction

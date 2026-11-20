@@ -395,6 +395,12 @@ On a running server:
   server refuses the login: its `reason` as the client shows it ("The server
   is full!") and its text `component` as JSON. The harness also checks that
   the server closed the connection after the refusal.
+- `join_with_information(name, ClientInformation { .. })` joins like `join`,
+  with that Client Information (language, view distance, chat visibility,
+  ...) sent during configuration.
+- `join_still_loading(name)` plays a bot into the play state that never sends
+  `PlayerLoaded`, like a client still loading the world: its player never
+  becomes ready. It returns once the bot has the server's Login packet.
 - `log_in(name)` logs a client in and leaves it in the configuration state,
   holding its connection without ever playing, until its `disconnect()`.
 - `with_world(|world| ...)` runs a closure on the game thread at the start of
@@ -497,6 +503,9 @@ least one scenario fail.
 | Terrain generated from chunk-local coordinates | `optimized_and_reference_paths_generate_identical_terrain` |
 | One more dirt layer in `DefaultWorldGenerator` | `optimized_and_reference_paths_generate_identical_terrain` |
 | Join radius larger than the spawn area leaves holes | `the_whole_view_arrives_when_the_spawn_area_is_smaller_than_the_join_radius` |
+| Client Information not stored | `client_settings_are_stored_from_configuration_and_from_play` |
+| Player chat sent to clients on "Commands Only" or "Hidden" | `players_who_hide_chat_are_sent_no_player_chat_but_still_command_feedback`, `a_chat_setting_changed_while_playing_applies_to_the_next_line` |
+| Player chat sent to ready players only | `a_player_still_loading_the_world_is_sent_chat` |
 
 ## Testing Best Practices
 
