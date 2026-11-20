@@ -476,7 +476,7 @@ The Description column is what `/help` shows.
 | `/tell` | `/msg` | Send a private message to a player | `<player:player> <message:text>...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/list` | | List online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
-| `/summon` | | Summon an entity at a position | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]` |
+| `/summon` | | Summon an entity at a position | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]`; rejects positions outside the `/tp` bounds (±30,000,000 horizontally, ±20,000,000 vertically) with "Invalid position for summon" |
 | `/give` | | Give yourself an item | `<item:item> [count:integer(1..64)]` |
 | `/clear` | | Clear your inventory | (none) |
 | `/stop` | | Gracefully stop the server | (none) |
