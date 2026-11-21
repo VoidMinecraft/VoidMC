@@ -1,0 +1,53 @@
+ATP fixture for VMC-ATP-014. Test instrumentation, not part of the product.
+
+After every inventory change, the server log gets one line per player:
+  ATP inventory player=<name> slots=[(<slot>, "<item>", <count>), ...] cursor_item=... cursor_count=<n>
+Slots: 9-35 main inventory (rows from top-left), 36-44 hotbar (from left), 45 offhand.
+
+Apply at the repository root:   git apply tools/atp/patches/<this file>
+Remove it after the test:       git apply -R tools/atp/patches/<this file>
+
+diff --git i/void-example/src/main.rs w/void-example/src/main.rs
+index 07b50c4..e8af7ac 100644
+--- i/void-example/src/main.rs
++++ w/void-example/src/main.rs
+@@ -95,6 +95,10 @@ fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
+     let _log_guards = setup_logging(&metrics_env)?;
+ 
+     let exit = VoidServer::new(server_config(&metrics_env, env_var))
++        .add_plugin(|app| {
++            // ATP: log the server's own inventory after every change.
++            app.add_systems(bevy_app::Last, atp_inventory_trace);
++        })
+         .add_plugin(|app| {
+             // Persist modified chunks to ./world and reload them on restart.
+             app.add_plugins(WorldPersistencePlugin::new(
+@@ -421,6 +425,28 @@ fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>)
+     );
+ }
+ 
++/// ATP: prints the server-side inventory of every player whose inventory changed.
++fn atp_inventory_trace(
++    players: Query<(&PlayerName, &Inventory), bevy_ecs::prelude::Changed<Inventory>>,
++) {
++    for (name, inventory) in &players {
++        let slots: Vec<_> = (0..Inventory::SIZE)
++            .filter_map(|index| {
++                let stack = inventory.get(index);
++                (!stack.is_empty()).then(|| (index, stack.item.name().unwrap_or("?"), stack.count))
++            })
++            .collect();
++        let cursor = inventory.cursor();
++        tracing::info!(
++            player = %name.0,
++            ?slots,
++            cursor_item = ?cursor.item.name(),
++            cursor_count = cursor.count,
++            "ATP inventory"
++        );
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;

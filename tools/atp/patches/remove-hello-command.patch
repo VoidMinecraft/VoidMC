@@ -1,0 +1,36 @@
+ATP fixture for VMC-ATP-021. Test instrumentation, not part of the product.
+
+Removes the example's /hello registration (CommandBuilder::new("hello") in main.rs).
+Nothing else changes.
+
+Apply at the repository root:   git apply tools/atp/patches/<this file>
+Remove it after the test:       git apply -R tools/atp/patches/<this file>
+
+diff --git i/void-example/src/main.rs w/void-example/src/main.rs
+index 07b50c4..e9cfe53 100644
+--- i/void-example/src/main.rs
++++ w/void-example/src/main.rs
+@@ -12,7 +12,7 @@ use voidmc::events::{PlayerReadyEvent, PlayerStartDiggingEvent};
+ use voidmc::item_behavior::{ItemBehavior, ItemBehaviorRegistry, ItemUseContext, UseResult};
+ use voidmc::plugins::redstone::RedstonePlugin;
+ use voidmc::{
+-    Audience, CommandBuilder, CommandRegistry, Inventory, ItemStack, Messages, ObservabilityConfig,
++    Audience, CommandRegistry, Inventory, ItemStack, Messages, ObservabilityConfig,
+     On, Query, ServerConfig, ServerConfigBuilder, TextColor, VoidServer, register_default_commands,
+ };
+ use voidmc_navigation::{NavRemotePlugin, NavigationPlugin, RemoteAccess};
+@@ -178,14 +178,6 @@ fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
+             app.add_observer(give_starter_kit);
+             app.add_observer(announce_join);
+         })
+-        .add_command(
+-            CommandBuilder::new("hello")
+-                .description("Greet the player")
+-                .handler(|ctx| {
+-                    ctx.reply("Hello from void-example!");
+-                })
+-                .build(),
+-        )
+         .run();
+ 
+     Ok(exit)

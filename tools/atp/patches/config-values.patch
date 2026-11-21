@@ -1,0 +1,31 @@
+ATP fixture for VMC-ATP-024. Test instrumentation, not part of the product.
+
+Sets these ServerConfigBuilder values in the example:
+  spawn_chunk_radius 4 -> 1, initial_chunk_radius 4 -> 1, view_distance 10 (default) -> 3,
+  tick_rate 20 (default) -> 10, motd "Welcome to Void Server!" -> "ATP configuration check",
+  max_players 100 -> 7.
+
+Apply at the repository root:   git apply tools/atp/patches/<this file>
+Remove it after the test:       git apply -R tools/atp/patches/<this file>
+
+diff --git i/void-example/src/main.rs w/void-example/src/main.rs
+index 07b50c4..e123237 100644
+--- i/void-example/src/main.rs
++++ w/void-example/src/main.rs
+@@ -195,10 +195,12 @@ fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
+ /// address variables, as [`MetricsEnv::from_lookup`] does the diagnostics.
+ fn server_config(metrics_env: &MetricsEnv, var: impl Fn(&str) -> Option<String>) -> ServerConfig {
+     let mut config_builder = ServerConfigBuilder::new()
+-        .spawn_chunk_radius(4)
+-        .initial_chunk_radius(4)
+-        .motd("Welcome to Void Server!")
+-        .max_players(100)
++        .spawn_chunk_radius(1)
++        .initial_chunk_radius(1)
++        .view_distance(3)
++        .tick_rate(10)
++        .motd("ATP configuration check")
++        .max_players(7)
+         .configure_registries(biome::register_crimson_sky);
+ 
+     if metrics_env.metrics_debug {
