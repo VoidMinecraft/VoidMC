@@ -276,6 +276,51 @@ async fn the_join_sends_only_the_capped_view_distance() {
 }
 
 #[tokio::test]
+async fn chunks_come_nearest_first_from_the_join_on_past_the_join_radius() {
+    // The example server's radii (issue #236): the effective view distance
+    // reaches past the join radius, so streaming picks up where the join
+    // stopped. With a spawn area smaller than the join radius, the join holds
+    // back at the first chunk that is not generated yet.
+    for spawn_radius in [4, 2] {
+        let server = TestServer::builder()
+            .config(move |config| {
+                config
+                    .view_distance(10)
+                    .initial_chunk_radius(4)
+                    .spawn_chunk_radius(spawn_radius)
+            })
+            .start()
+            .await;
+
+        // The client asks for exactly the server view distance, then for more.
+        for (name, requested) in [("Alice", 10), ("Bob", 32)] {
+            let bot = server
+                .join_with(
+                    name,
+                    BotOptions {
+                        view_distance: requested,
+                    },
+                )
+                .await;
+            let spawn = ChunkPos::from(feet(&bot));
+            // One nearest-first sequence around spawn, from the join batch on.
+            let mut stream = Stream::new(10);
+            let replayed = settle(&bot, &mut stream, spawn, 10).await;
+            assert_eq!(replayed.centres, vec![spawn], "the centre did not move");
+            assert!(
+                replayed.forgotten.is_empty(),
+                "{name} was sent chunks it then had to forget: {:?}",
+                replayed.forgotten
+            );
+            assert_eq!(as_set(&replayed.sent), square(spawn, 10));
+            bot.assert_healthy();
+            bot.disconnect().await;
+        }
+        server.stop().await;
+    }
+}
+
+#[tokio::test]
 async fn a_view_distance_change_mid_session_shrinks_and_grows_the_square() {
     let server = TestServer::builder()
         .config(|config| config.view_distance(4))

@@ -122,10 +122,9 @@ fn handle_finish_configuration(
 ) {
     // The join never sends chunks the player's effective view distance would
     // forget on the first streaming pass.
-    let join_radius = config.initial_chunk_radius.min(effective_view_distance(
-        settings.get(event.entity).ok(),
-        config.view_distance,
-    ));
+    let view_distance =
+        effective_view_distance(settings.get(event.entity).ok(), config.view_distance);
+    let join_radius = config.initial_chunk_radius.min(view_distance);
     // Determine spawn position
     let spawn_y = config.spawn_y.unwrap_or_else(|| {
         world_gen
@@ -260,7 +259,7 @@ fn handle_finish_configuration(
         chunk_data
     });
 
-    let join_chunks = spawn_chunk.chunks_in_radius(join_radius.max(0));
+    let join_chunks = join_chunks(spawn_chunk, join_radius, view_distance);
     let join_chunk_count = join_chunks.len();
     for pos in join_chunks {
         let key = (DimensionId::Overworld, pos);
@@ -274,10 +273,14 @@ fn handle_finish_configuration(
                 .map(|chunk_data| chunk_data.to_packet(pos.x, pos.z)),
             None => None,
         };
-        if let Some(packet) = packet {
-            players.send(event.entity, packet);
-            loaded.insert(pos);
-        }
+        // Nearest-first: a chunk that is not ready yet (outside the spawn
+        // area, or still pending spawn) holds back every farther one, which
+        // chunk streaming then sends in order.
+        let Some(packet) = packet else {
+            break;
+        };
+        players.send(event.entity, packet);
+        loaded.insert(pos);
 
         // After the first 9 chunks (center 3×3), send the teleport
         if !teleport_sent && loaded.len() >= early_teleport_threshold {
@@ -328,7 +331,7 @@ fn handle_finish_configuration(
         });
     }
 
-    // Chunks outside the pre-generated spawn area were skipped. A backlog
+    // Chunks outside the pre-generated spawn area were held back. A backlog
     // makes chunk streaming generate them on its first pass, even when the
     // player's view distance equals the join radius and nothing else would
     // trigger it.
@@ -342,6 +345,30 @@ fn handle_finish_configuration(
         client_id: event.client_id,
         entity: event.entity,
     });
+}
+
+/// The chunks the join sends, nearest-first (squared Euclidean distance from
+/// `spawn_chunk`, the order of [`ChunkPos::chunks_in_radius`]).
+///
+/// When the join radius covers the whole effective view distance, that is the
+/// whole square. Otherwise chunk streaming sends the rest of the view square
+/// right after the join, so the join stops before the first chunk outside its
+/// square: it sends the chunks of the square strictly nearer than
+/// `join_radius + 1`, and every chunk streaming sends next is at least as far
+/// as the farthest chunk of the join. The whole sequence from the join on is
+/// then nearest-first.
+fn join_chunks(spawn_chunk: ChunkPos, join_radius: i32, view_distance: i32) -> Vec<ChunkPos> {
+    let join_radius = join_radius.max(0);
+    let mut chunks = spawn_chunk.chunks_in_radius(join_radius);
+    if join_radius < view_distance {
+        let bound = (join_radius + 1) * (join_radius + 1);
+        chunks.retain(|pos| {
+            let dx = pos.x - spawn_chunk.x;
+            let dz = pos.z - spawn_chunk.z;
+            dx * dx + dz * dz < bound
+        });
+    }
+    chunks
 }
 
 fn send_teleport(players: &Players, player: Entity, x: f64, y: f64, z: f64) {
@@ -360,4 +387,92 @@ fn send_teleport(players: &Players, player: Entity, x: f64, y: f64, z: f64) {
             flags: clientbound::TeleportFlags::empty(),
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn squared_distance(a: ChunkPos, b: ChunkPos) -> i32 {
+        (a.x - b.x).pow(2) + (a.z - b.z).pow(2)
+    }
+
+    /// The chunks the join sends followed by the chunks the first streaming
+    /// pass sends (the view square nearest-first, minus what the client holds).
+    fn join_then_stream(spawn: ChunkPos, initial: i32, view_distance: i32) -> Vec<ChunkPos> {
+        let join_radius = initial.min(view_distance);
+        let mut sent = join_chunks(spawn, join_radius, view_distance);
+        let held: HashSet<ChunkPos> = sent.iter().copied().collect();
+        sent.extend(
+            spawn
+                .chunks_in_radius(view_distance)
+                .into_iter()
+                .filter(|pos| !held.contains(pos)),
+        );
+        sent
+    }
+
+    #[test]
+    fn the_join_sends_its_whole_square_when_it_covers_the_view_distance() {
+        let spawn = ChunkPos::new(3, -2);
+        for (initial, view_distance) in [(4, 4), (4, 3), (3, 2), (0, 0)] {
+            let join_radius = initial.min(view_distance);
+            assert_eq!(
+                join_chunks(spawn, join_radius, view_distance),
+                spawn.chunks_in_radius(join_radius),
+                "initial {initial}, view distance {view_distance}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_view_distance_beyond_the_join_radius_cuts_the_corners_of_the_join() {
+        let spawn = ChunkPos::new(0, 0);
+        let chunks = join_chunks(spawn, 4, 10);
+        // Every chunk strictly nearer than (5, 0), all of them in the square.
+        let expected = spawn
+            .chunks_in_radius(4)
+            .into_iter()
+            .filter(|pos| squared_distance(*pos, spawn) < 25)
+            .count();
+        assert_eq!(chunks.len(), expected);
+        assert!(chunks.contains(&ChunkPos::new(4, 2)));
+        assert!(!chunks.contains(&ChunkPos::new(4, 3)));
+        assert!(!chunks.contains(&ChunkPos::new(4, 4)));
+        assert_eq!(chunks[0], spawn, "the spawn chunk comes first");
+    }
+
+    #[test]
+    fn a_join_radius_of_one_still_sends_the_centre_three_by_three() {
+        let spawn = ChunkPos::new(-7, 5);
+        assert_eq!(join_chunks(spawn, 1, 10).len(), 9);
+        assert_eq!(join_chunks(spawn, 0, 10), vec![spawn]);
+        assert_eq!(join_chunks(spawn, -1, 10), vec![spawn]);
+    }
+
+    #[test]
+    fn chunks_are_nearest_first_from_the_join_through_the_first_stream() {
+        let spawn = ChunkPos::new(2, -3);
+        for initial in 0..=6 {
+            for view_distance in 0..=12 {
+                let sent = join_then_stream(spawn, initial, view_distance);
+                let unique: HashSet<ChunkPos> = sent.iter().copied().collect();
+                assert_eq!(unique.len(), sent.len(), "a chunk was sent twice");
+                assert_eq!(
+                    unique,
+                    spawn.chunks_in_radius(view_distance).into_iter().collect(),
+                    "initial {initial}, view distance {view_distance}"
+                );
+                for pair in sent.windows(2) {
+                    assert!(
+                        squared_distance(pair[0], spawn) <= squared_distance(pair[1], spawn),
+                        "initial {initial}, view distance {view_distance}: {:?} sent before \
+                         the nearer {:?}",
+                        pair[0],
+                        pair[1]
+                    );
+                }
+            }
+        }
+    }
 }

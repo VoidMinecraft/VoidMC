@@ -708,9 +708,17 @@ async fn an_untouched_builder_restores_the_documented_defaults() {
         .await;
     assert_eq!(ground(&bob).y, surface - 1);
 
-    // initial_chunk_radius 3, then Bob's own 8 under the cap of 10.
+    // initial_chunk_radius 3, then Bob's own 8 under the cap of 10. Bob's
+    // view distance reaches past the join radius, so the join sends the
+    // chunks of the square of 3 nearer than 4 (not the corners), and
+    // streaming carries on nearest-first.
     let joined_with = probe.joined_with.lock().unwrap().clone();
-    assert_eq!(joined_with, Some(square(spawn_chunk, 3)));
+    let join_disc: HashSet<ChunkPos> = square(spawn_chunk, 3)
+        .into_iter()
+        .filter(|pos| pos.x * pos.x + pos.z * pos.z < 16)
+        .collect();
+    assert_eq!(join_disc.len(), 45);
+    assert_eq!(joined_with, Some(join_disc));
     bob.wait_until("the chunks Bob asked for", |view| {
         view.chunks.keys().copied().collect::<HashSet<_>>() == square(spawn_chunk, 8)
     })
