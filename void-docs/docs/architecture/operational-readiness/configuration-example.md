@@ -5,9 +5,10 @@ VoidMC configuration is currently code-first through `ServerConfigBuilder`. The 
 ## Development Configuration
 
 ```rust
+use bevy_app::AppExit;
 use voidmc::{ServerConfigBuilder, VoidServer};
 
-fn main() {
+fn main() -> AppExit {
     let config = ServerConfigBuilder::new()
         .address("127.0.0.1:25565")
         .tick_rate(20)
@@ -21,7 +22,7 @@ fn main() {
         .metrics_tps_output("logs/tps-dev.csv")
         .build();
 
-    VoidServer::new(config).run();
+    VoidServer::new(config).run()
 }
 ```
 
@@ -30,9 +31,10 @@ Use this shape for local development because it keeps startup fast and enables T
 ## Demo/Review Configuration
 
 ```rust
+use bevy_app::AppExit;
 use voidmc::{ServerConfigBuilder, VoidServer};
 
-fn main() {
+fn main() -> AppExit {
     let config = ServerConfigBuilder::new()
         .address("0.0.0.0:25565")
         .tick_rate(20)
@@ -46,7 +48,7 @@ fn main() {
         .motd("VoidMC review server")
         .build();
 
-    VoidServer::new(config).run();
+    VoidServer::new(config).run()
 }
 ```
 

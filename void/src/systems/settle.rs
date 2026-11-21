@@ -2,8 +2,8 @@ use bevy_ecs::prelude::*;
 use tracing::instrument;
 
 use crate::components::{
-    EntityDimension, Grounded, MovementConfig, Position, PreviousPosition, RecentlySpawned,
-    SpawnedEntity, VerticalVelocity,
+    EntityCollider, EntityDimension, Grounded, MovementConfig, Position, PreviousPosition,
+    RecentlySpawned, SpawnedEntity, VerticalVelocity,
 };
 use crate::config::ExecutionMode;
 use crate::world::{
@@ -11,8 +11,14 @@ use crate::world::{
     is_solid_block_state,
 };
 
-/// Settle newly spawned gravity-enabled entities by scanning downward and snapping them
-/// onto the first solid block found within `MAX_SCAN` blocks.
+/// Keeps a footprint edge that only touches a block face from counting that
+/// block, like the physics step's collision checks.
+const FOOTPRINT_EPSILON: f64 = 1.0e-7;
+
+/// Settle newly spawned gravity-enabled entities: scan down under the whole
+/// collision box and snap them onto the highest solid block top found within
+/// `MAX_SCAN` blocks. An entity already standing on that top (within 0.1
+/// blocks) is settled where it is.
 ///
 /// Like the physics step, entities are processed per region with
 /// [`for_each_region`]: each one only reads chunk data and writes its own
@@ -32,6 +38,7 @@ pub fn settle_recent_spawns(
             &PreviousPosition,
             &MovementConfig,
             &EntityDimension,
+            Option<&EntityCollider>,
             &mut VerticalVelocity,
             &mut Grounded,
             &mut RecentlySpawned,
@@ -49,7 +56,9 @@ pub fn settle_recent_spawns(
         entities,
         |(pos, _, _, dimension, ..)| RegionPos::of_block(dimension.0, pos.x, pos.z),
         |_, entities| {
-            for (pos, prev_pos, movement, dimension, velocity, grounded, marker) in entities {
+            for (pos, prev_pos, movement, dimension, collider, velocity, grounded, marker) in
+                entities
+            {
                 settle_entity(
                     &chunk_index,
                     &chunks,
@@ -57,6 +66,7 @@ pub fn settle_recent_spawns(
                     prev_pos,
                     movement,
                     dimension,
+                    collider.copied().unwrap_or_default(),
                     velocity,
                     grounded,
                     marker,
@@ -73,6 +83,7 @@ fn settle_entity(
     prev_pos: &PreviousPosition,
     movement: &MovementConfig,
     dimension: &EntityDimension,
+    collider: EntityCollider,
     velocity: &mut Mut<VerticalVelocity>,
     grounded: &mut Mut<Grounded>,
     marker: &mut Mut<RecentlySpawned>,
@@ -95,26 +106,36 @@ fn settle_entity(
 
     let start_y = pos.y.floor() as i32 - 1;
     let min_y = start_y - MAX_SCAN;
-    let tx = pos.x.floor() as i32;
-    let tz = pos.z.floor() as i32;
+    let min_x = (pos.x - collider.half_width + FOOTPRINT_EPSILON).floor() as i32;
+    let max_x = (pos.x + collider.half_width - FOOTPRINT_EPSILON).floor() as i32;
+    let min_z = (pos.z - collider.half_width + FOOTPRINT_EPSILON).floor() as i32;
+    let max_z = (pos.z + collider.half_width - FOOTPRINT_EPSILON).floor() as i32;
+    let solid_under_footprint = |y: i32| {
+        (min_x..=max_x).any(|x| {
+            (min_z..=max_z).any(|z| {
+                block_state_at_world(chunk_index, chunks, dimension.0, x, y, z)
+                    .is_some_and(is_solid_block_state)
+            })
+        })
+    };
 
-    for y in (min_y..=start_y).rev() {
-        if let Some(block_state) = block_state_at_world(chunk_index, chunks, dimension.0, tx, y, tz)
-        {
-            if is_solid_block_state(block_state) {
-                let ground_y = (y as f64) + 1.0;
-                let fall_distance = prev_pos.y - ground_y;
+    // The first solid layer going down holds the highest block top under
+    // any part of the box.
+    let Some(ground_y) = (min_y..=start_y)
+        .rev()
+        .find(|&y| solid_under_footprint(y))
+        .map(|y| f64::from(y) + 1.0)
+    else {
+        return;
+    };
 
-                if fall_distance > 0.1 {
-                    pos.y = ground_y;
-                    velocity.0 = 0.0;
-                    grounded.0 = true;
-                    marker.0 = 0;
-                    break;
-                }
-            }
-        }
+    if prev_pos.y - ground_y > 0.1 {
+        pos.y = ground_y;
+        velocity.0 = 0.0;
+        grounded.0 = true;
     }
+    // Snapped, or already standing on the top: settled either way.
+    marker.0 = 0;
 }
 
 #[cfg(test)]

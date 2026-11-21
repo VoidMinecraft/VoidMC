@@ -16,15 +16,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use bevy_app::{App, AppExit, First, Last, MainScheduleOrder, Plugin};
+use bevy_app::{App, AppExit, Plugin};
 use bevy_ecs::prelude::*;
-use bevy_ecs::schedule::ScheduleLabel;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use voidmc_net::socket::SocketError;
 
 use crate::components::PlayerReady;
 use crate::config::ServerConfigResource;
+use crate::tick_time::{self, TickEnd, TickMeasured, TickWorkTime};
+use crate::world::{ChunkLoadErrorKind, ChunkLoadFailedEvent};
 use exposition::{MetricKind, TextEncoder};
 use http::{Method, Request, Response};
 
@@ -136,6 +137,9 @@ impl ConnectionErrorKind {
     }
 }
 
+const CHUNK_LOAD_ERROR_KINDS: [ChunkLoadErrorKind; 2] =
+    [ChunkLoadErrorKind::Decode, ChunkLoadErrorKind::Io];
+
 const NO_SAMPLE: u64 = u64::MAX;
 
 /// Counters and gauges shared by the game thread, the network thread and the
@@ -163,6 +167,21 @@ pub(crate) struct Telemetry {
     clients_kicked: AtomicU64,
     packets_unrecognized: AtomicU64,
     packet_errors: AtomicU64,
+    /// Indexed like [`CHUNK_LOAD_ERROR_KINDS`].
+    chunk_load_errors: [AtomicU64; 2],
+    #[cfg(test)]
+    probe: std::sync::OnceLock<Probe>,
+}
+
+/// A reader on another thread that a test lets read the telemetry after each
+/// write of the game thread's end of tick, while that thread waits.
+#[cfg(test)]
+#[derive(Debug)]
+struct Probe {
+    /// Sends the name of the write that just completed.
+    written: flume::Sender<Option<&'static str>>,
+    /// Receives once the reader is done reading.
+    read: flume::Receiver<()>,
 }
 
 impl Telemetry {
@@ -185,6 +204,25 @@ impl Telemetry {
             clients_kicked: AtomicU64::new(0),
             packets_unrecognized: AtomicU64::new(0),
             packet_errors: AtomicU64::new(0),
+            chunk_load_errors: Default::default(),
+            #[cfg(test)]
+            probe: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Under test, lets the probe, if one is set, read the telemetry before
+    /// the game thread writes anything else. Does nothing otherwise.
+    fn written(&self, _write: &'static str) {
+        #[cfg(test)]
+        if let Some(probe) = self.probe.get() {
+            probe
+                .written
+                .send(Some(_write))
+                .expect("the probe reads until the test ends");
+            probe
+                .read
+                .recv()
+                .expect("the probe reads until the test ends");
         }
     }
 
@@ -206,15 +244,18 @@ impl Telemetry {
         self.last_tick_end
             .store(self.nanos_since_epoch(ended_at), Ordering::Relaxed);
         self.ticks.fetch_add(1, Ordering::Release);
+        self.written("record_tick");
     }
 
     fn record_measured_tps(&self, tps: f64) {
         self.measured_tps.store(tps.to_bits(), Ordering::Relaxed);
+        self.written("record_measured_tps");
     }
 
     fn set_players(&self, online: usize, max: i32) {
         self.players_online.store(online as u64, Ordering::Relaxed);
         self.players_max.store(max.into(), Ordering::Relaxed);
+        self.written("set_players");
     }
 
     fn add_players_joined(&self, joined: usize) {
@@ -222,6 +263,7 @@ impl Telemetry {
             self.players_joined
                 .fetch_add(joined as u64, Ordering::Relaxed);
         }
+        self.written("add_players_joined");
     }
 
     pub(crate) fn connection_accepted(&self) {
@@ -252,8 +294,19 @@ impl Telemetry {
         self.packet_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn chunk_load_failed(&self, kind: ChunkLoadErrorKind) {
+        let index = CHUNK_LOAD_ERROR_KINDS
+            .iter()
+            .position(|known| *known == kind)
+            .expect("every kind is listed");
+        self.chunk_load_errors[index].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Reports `stopping`. Called after the last gauges are stored: a reader
+    /// that sees `stopping` then sees them too.
     pub(crate) fn begin_stopping(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.written("begin_stopping");
     }
 
     /// Time since the last tick completed, `None` before the first one.
@@ -451,6 +504,19 @@ impl Telemetry {
         );
         out.sample("voidmc_packet_errors_total", &[], load(&self.packet_errors));
 
+        out.family(
+            "voidmc_chunk_load_errors_total",
+            MetricKind::Counter,
+            "Stored chunks that could not be loaded and were generated instead: decode (stored bytes undecodable) or io (stored bytes unreadable).",
+        );
+        for (kind, count) in CHUNK_LOAD_ERROR_KINDS.iter().zip(&self.chunk_load_errors) {
+            out.sample(
+                "voidmc_chunk_load_errors_total",
+                &[("kind", kind.as_str())],
+                load(count),
+            );
+        }
+
         out.finish()
     }
 
@@ -479,48 +545,37 @@ pub(crate) struct ObservabilityPlugin {
     address: SocketAddr,
 }
 
-/// Runs before `First` and after `Last`, so that a tick is measured whole.
-#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
-struct TickStart;
-
-#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
-struct TickEnd;
-
 #[derive(Resource, Clone)]
 pub(crate) struct TelemetryHandle(pub(crate) Arc<Telemetry>);
 
+/// The window the measured tick rate is counted over.
 #[derive(Resource)]
 struct TickClock {
-    started: Option<Instant>,
     window_start: Instant,
     window_ticks: u32,
 }
 
 impl Plugin for ObservabilityPlugin {
     fn build(&self, app: &mut App) {
-        {
-            let mut order = app.world_mut().resource_mut::<MainScheduleOrder>();
-            order.insert_before(First, TickStart);
-            order.insert_after(Last, TickEnd);
-        }
+        tick_time::require(app);
         app.insert_resource(TelemetryHandle(self.telemetry.clone()))
             .insert_resource(ObservabilityAddress(self.address))
             .insert_resource(TickClock {
-                started: None,
                 window_start: Instant::now(),
                 window_ticks: 0,
             })
-            .add_systems(TickStart, start_tick)
-            .add_systems(TickEnd, end_tick);
+            .add_systems(TickEnd, end_tick.after(TickMeasured))
+            .add_observer(count_chunk_load_failure);
     }
 }
 
-fn start_tick(mut clock: ResMut<TickClock>) {
-    clock.started = Some(Instant::now());
+fn count_chunk_load_failure(event: On<ChunkLoadFailedEvent>, telemetry: Res<TelemetryHandle>) {
+    telemetry.0.chunk_load_failed(event.kind);
 }
 
 fn end_tick(
     telemetry: Res<TelemetryHandle>,
+    work: Res<TickWorkTime>,
     mut clock: ResMut<TickClock>,
     config: Option<Res<ServerConfigResource>>,
     online: Query<(), With<PlayerReady>>,
@@ -528,20 +583,12 @@ fn end_tick(
     mut exits: MessageReader<AppExit>,
 ) {
     let telemetry = &telemetry.0;
-    if !exits.is_empty() {
-        exits.clear();
-        telemetry.begin_stopping();
-    }
     let max_players = config.map_or(0, |config| config.max_players);
     telemetry.set_players(online.iter().count(), max_players);
     telemetry.add_players_joined(joined.iter().count());
 
-    let now = Instant::now();
-    let duration = clock
-        .started
-        .take()
-        .map_or(Duration::ZERO, |started| now - started);
-    telemetry.record_tick(duration, now);
+    let now = work.ended_at;
+    telemetry.record_tick(work.last, now);
 
     clock.window_ticks += 1;
     let window = now - clock.window_start;
@@ -549,6 +596,14 @@ fn end_tick(
         telemetry.record_measured_tps(f64::from(clock.window_ticks) / window.as_secs_f64());
         clock.window_start = now;
         clock.window_ticks = 0;
+    }
+
+    // Last, so that `stopping` implies the gauges are final: they are stored
+    // before this `Release` store, so a reader whose `Acquire` load sees
+    // `stopping` (as `/health` does) sees them or later values, never older.
+    if !exits.is_empty() {
+        exits.clear();
+        telemetry.begin_stopping();
     }
 }
 
@@ -823,6 +878,7 @@ mod tests {
         telemetry.packet_unrecognized();
         telemetry.packet_unrecognized();
         telemetry.packet_failed();
+        telemetry.chunk_load_failed(ChunkLoadErrorKind::Io);
         telemetry.record_measured_tps(19.5);
         let text = telemetry.render_metrics(now);
 
@@ -837,6 +893,8 @@ mod tests {
             "voidmc_clients_kicked_total 1\n",
             "voidmc_packets_unrecognized_total 2\n",
             "voidmc_packet_errors_total 1\n",
+            "voidmc_chunk_load_errors_total{kind=\"decode\"} 0\n",
+            "voidmc_chunk_load_errors_total{kind=\"io\"} 1\n",
             "voidmc_ticks_per_second 19.5\n",
             "voidmc_target_ticks_per_second 20\n",
         ] {
@@ -886,6 +944,114 @@ mod tests {
         app.world_mut().write_message(AppExit::Success);
         app.update();
         assert_eq!(telemetry.health(Instant::now()), Health::Stopping);
+    }
+
+    /// Reads `/health` and `/metrics` from another thread after each write of
+    /// the exit tick, the way a scrape can land between any two of them, and
+    /// checks that every read reporting `stopping` also reports the gauges of
+    /// that tick.
+    #[test]
+    fn a_reader_that_sees_stopping_sees_the_gauges_of_the_exit_tick() {
+        let telemetry = Arc::new(telemetry());
+        let mut app = App::new();
+        app.add_plugins(ObservabilityPlugin {
+            telemetry: telemetry.clone(),
+            address: "127.0.0.1:1".parse().unwrap(),
+        })
+        .insert_resource(ServerConfigResource::from(&crate::ServerConfig {
+            max_players: 7,
+            ..Default::default()
+        }));
+        let alice = app.world_mut().spawn(PlayerReady).id();
+        let bob = app.world_mut().spawn(PlayerReady).id();
+        app.update();
+        app.update();
+        let before = telemetry.render_metrics(Instant::now());
+        assert!(before.contains("voidmc_players_online 2\n"), "{before}");
+
+        let (written_tx, written_rx) = flume::bounded(0);
+        let (read_tx, read_rx) = flume::bounded(0);
+        telemetry
+            .probe
+            .set(Probe {
+                written: written_tx.clone(),
+                read: read_rx,
+            })
+            .unwrap();
+        let reader = std::thread::spawn({
+            let telemetry = telemetry.clone();
+            move || {
+                let mut reads = Vec::new();
+                while let Ok(Some(write)) = written_rx.recv() {
+                    let now = Instant::now();
+                    let health = telemetry.health_response(now).body;
+                    let metrics = telemetry.render_metrics(now);
+                    reads.push((write, health, metrics));
+                    read_tx.send(()).unwrap();
+                }
+                reads
+            }
+        });
+
+        // The exit tick: the players have left and the server stops.
+        app.world_mut().despawn(alice);
+        app.world_mut().despawn(bob);
+        app.world_mut().write_message(AppExit::Success);
+        app.update();
+        written_tx.send(None).unwrap();
+        let reads = reader.join().unwrap();
+
+        let stopping: Vec<_> = reads
+            .iter()
+            .filter(|(_, health, _)| health.starts_with("{\"status\":\"stopping\""))
+            .collect();
+        assert!(!stopping.is_empty(), "never saw stopping in {reads:#?}");
+        for (write, health, metrics) in stopping {
+            for line in [
+                "voidmc_players_online 0\n",
+                "voidmc_players_max 7\n",
+                "voidmc_players_joined_total 2\n",
+                "voidmc_ticks_total 3\n",
+            ] {
+                assert!(
+                    metrics.contains(line),
+                    "after {write}, /health reports stopping but /metrics lacks {line:?}:\n{health}{metrics}"
+                );
+            }
+            assert!(
+                health.contains("\"ticks\":3,"),
+                "after {write}, /health reports stopping before the exit tick is counted: {health}"
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_counts_chunk_load_failures_by_kind() {
+        let telemetry = Arc::new(telemetry());
+        let mut app = App::new();
+        app.add_plugins(ObservabilityPlugin {
+            telemetry: telemetry.clone(),
+            address: "127.0.0.1:1".parse().unwrap(),
+        });
+        let failure = |kind| ChunkLoadFailedEvent {
+            dimension: crate::world::DimensionId::Overworld,
+            pos: crate::world::ChunkPos::new(1, 0),
+            kind,
+            error: "test".into(),
+            action: crate::world::DamagedChunkAction::SavesSkipped,
+        };
+        app.world_mut().trigger(failure(ChunkLoadErrorKind::Decode));
+        app.world_mut().trigger(failure(ChunkLoadErrorKind::Decode));
+        app.world_mut().trigger(failure(ChunkLoadErrorKind::Io));
+
+        let text = telemetry.render_metrics(Instant::now());
+        for line in [
+            "# TYPE voidmc_chunk_load_errors_total counter\n",
+            "voidmc_chunk_load_errors_total{kind=\"decode\"} 2\n",
+            "voidmc_chunk_load_errors_total{kind=\"io\"} 1\n",
+        ] {
+            assert!(text.contains(line), "missing {line:?} in\n{text}");
+        }
     }
 
     #[test]

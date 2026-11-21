@@ -48,6 +48,7 @@ const SPECS: &[EnumSpec] = &[
         state: "login",
         direction: "clientbound",
         names: &[
+            ("LoginDisconnect", "minecraft:login_disconnect"),
             ("LoginSuccess", "minecraft:login_finished"),
             ("SetCompression", "minecraft:login_compression"),
         ],
@@ -68,6 +69,7 @@ const SPECS: &[EnumSpec] = &[
         state: "configuration",
         direction: "clientbound",
         names: &[
+            ("ConfigurationDisconnect", "minecraft:disconnect"),
             ("FinishConfiguration", "minecraft:finish_configuration"),
             ("RegistryData", "minecraft:registry_data"),
             ("KnownPacks", "minecraft:select_known_packs"),
@@ -108,6 +110,7 @@ const SPECS: &[EnumSpec] = &[
             ("SetContainerSlot", "minecraft:container_set_slot"),
             ("SetCooldown", "minecraft:cooldown"),
             ("Disconnect", "minecraft:disconnect"),
+            ("EntityEvent", "minecraft:entity_event"),
             ("EntityPositionSync", "minecraft:entity_position_sync"),
             ("UnloadChunk", "minecraft:forget_level_chunk"),
             ("GameEvent", "minecraft:game_event"),
@@ -131,6 +134,7 @@ const SPECS: &[EnumSpec] = &[
             ("SoundEffect", "minecraft:sound"),
             ("StopSound", "minecraft:stop_sound"),
             ("SetEntityMotion", "minecraft:set_entity_motion"),
+            ("SetEquipment", "minecraft:set_equipment"),
             ("SetBorderCenter", "minecraft:set_border_center"),
             ("SetBorderLerpSize", "minecraft:set_border_lerp_size"),
             ("SetBorderSize", "minecraft:set_border_size"),
@@ -146,6 +150,10 @@ const SPECS: &[EnumSpec] = &[
             ("ChunkBatchStart", "minecraft:chunk_batch_start"),
             ("SetCenterChunk", "minecraft:set_chunk_cache_center"),
             ("SetCursorItem", "minecraft:set_cursor_item"),
+            (
+                "SetDefaultSpawnPosition",
+                "minecraft:set_default_spawn_position",
+            ),
             ("SetEntityData", "minecraft:set_entity_data"),
             ("SetHeldSlot", "minecraft:set_held_slot"),
             ("ResetScore", "minecraft:reset_score"),
@@ -185,6 +193,7 @@ const SPECS: &[EnumSpec] = &[
         direction: "serverbound",
         names: &[
             ("ConfirmTeleportation", "minecraft:accept_teleportation"),
+            ("Attack", "minecraft:attack"),
             ("ChatAck", "minecraft:chat_ack"),
             ("ChatCommand", "minecraft:chat_command"),
             ("SignedChatCommand", "minecraft:chat_command_signed"),
@@ -201,6 +210,10 @@ const SPECS: &[EnumSpec] = &[
             ("SetPlayerPos", "minecraft:move_player_pos"),
             ("SetPlayerPosAndRot", "minecraft:move_player_pos_rot"),
             ("SetPlayerRotation", "minecraft:move_player_rot"),
+            (
+                "SetPlayerMovementFlags",
+                "minecraft:move_player_status_only",
+            ),
             ("PlayerAbilities", "minecraft:player_abilities"),
             ("PlayerAction", "minecraft:player_action"),
             ("PlayerCommand", "minecraft:player_command"),

@@ -21,6 +21,7 @@ mod metrics;
 pub mod network;
 mod observability;
 pub mod particles;
+pub(crate) mod placement;
 pub mod players;
 pub mod plugins;
 pub mod registry;
@@ -29,6 +30,7 @@ mod server;
 mod server_status;
 pub mod sounds;
 pub mod systems;
+mod tick_time;
 pub mod titles;
 pub mod toasts;
 pub(crate) mod window;
@@ -74,7 +76,7 @@ pub use menu::{
 pub use messages::{MessageRequest, Messages, Text, TextColor, TextTooLong, WorldMessages};
 pub use observability::{DEFAULT_OBSERVABILITY_HOST, ObservabilityAddress, ObservabilityConfig};
 pub use particles::{Particle, ParticleColor, ParticleRequest, Particles, WorldParticles};
-pub use players::{Audience, Players, Recipient, Recipients, WorldPlayers};
+pub use players::{Audience, DisconnectReason, Players, Recipient, Recipients, WorldPlayers};
 pub use plugins::abilities::PlayerAbilities;
 pub use plugins::boss_bar::{BossBar, BossBarColor, BossBarDivision, BossBarFlags};
 pub use plugins::scoreboard::{
@@ -92,7 +94,7 @@ pub use plugins::world_border::{WorldBorder, WorldBorderState};
 pub use plugins::world_time::{
     GameTime, TICKS_PER_DAY, TIME_SYNC_INTERVAL, WorldClock, WorldTime, WorldTimeState,
 };
-pub use registry::{RegistryDataStore, default_registry_data};
+pub use registry::{RegistriesAlreadySent, RegistryDataStore, default_registry_data};
 pub use schedule::VoidSystems;
 pub use server::Server;
 pub use sounds::{Sound, SoundPosition, SoundSource, SoundStop, Sounds, WorldSounds};
@@ -101,14 +103,16 @@ pub use toasts::{ToastFrame, ToastRequest, Toasts, WorldToasts};
 pub use ussr_nbt::owned::Tag;
 pub use voidmc_codec::{DecodeLimits, LimitKind};
 pub use voidmc_net::socket::FrameLimits;
+pub use voidmc_protocol::serverbound::ChatMode;
 pub use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 pub use world::generation::{DefaultWorldGenerator, WorldGen, WorldGenerator};
 pub use world::{
     Attribute, Banner, BannerLayer, BannerPattern, BiomeBuilder, BiomeError, BiomeId,
     BlockEntities, BlockEntity, BlockEntityError, BlockEntityKind, ChunkData, ChunkDimension,
-    ChunkDirty, ChunkIndex, ChunkLoader, ChunkLoaderResource, ChunkPos, ChunkPosition, DimensionId,
-    DyeColor, GrassColorModifier, Sign, SignSide, Skull, biome_at, block_entity_at,
-    load_or_generate, remove_block_entity, set_biome, set_block_entity,
+    ChunkDirty, ChunkIndex, ChunkLoadErrorKind, ChunkLoadFailedEvent, ChunkLoader,
+    ChunkLoaderResource, ChunkPos, ChunkPosition, DamagedChunkAction, DimensionId, DyeColor,
+    GrassColorModifier, Sign, SignSide, Skull, biome_at, block_entity_at, load_or_generate,
+    remove_block_entity, set_biome, set_block_entity,
 };
 
 // Re-export commonly used bevy_ecs types for plugin developers

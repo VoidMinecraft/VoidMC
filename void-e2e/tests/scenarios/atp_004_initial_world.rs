@@ -1,12 +1,15 @@
 //! VMC-ATP-004: the connected player receives the initial chunk area around
-//! spawn, can look around and walk away and back, and finds the world as it
-//! left it.
+//! spawn and the world spawn point, can look around and walk away and back,
+//! and finds the world as it left it.
 
 use std::collections::{HashMap, HashSet};
 
 use azalea_entity::LookDirection;
+use bevy_app::PostStartup;
+use bevy_ecs::system::ResMut;
 use voidmc::components::{KeepAliveState, Position, Rotation};
 use voidmc::systems::KeepAliveTicker;
+use voidmc::{ServerConfigResource, SpawnPosition};
 use voidmc_e2e::core::position::{BlockPos, ChunkPos, Vec3};
 use voidmc_e2e::protocol::common::movements::MoveFlags;
 use voidmc_e2e::protocol::packets::game::{
@@ -16,7 +19,7 @@ use voidmc_e2e::protocol::packets::game::{
 };
 use voidmc_e2e::{Bot, BotOptions, ClientView, TestServer};
 
-use crate::{feet, ground};
+use crate::{feet, ground, wait_until_ready};
 
 /// The `TestServer` default view distance; bots ask for more, so it is the
 /// effective one.
@@ -25,7 +28,15 @@ const VIEW_DISTANCE: i32 = 4;
 /// What the vanilla client acts on while it loads terrain, in arrival order.
 #[derive(Clone, Debug, PartialEq)]
 enum Seen {
-    Login { chunk_radius: u32 },
+    Login {
+        chunk_radius: u32,
+    },
+    DefaultSpawn {
+        dimension: String,
+        pos: BlockPos,
+        yaw: f32,
+        pitch: f32,
+    },
     WaitForLevelChunks,
     Center(ChunkPos),
     BatchStart,
@@ -40,6 +51,12 @@ fn trace(bot: &Bot) -> Vec<Seen> {
     bot.queued(|packet| match packet {
         ClientboundGamePacket::Login(login) => Some(Seen::Login {
             chunk_radius: login.chunk_radius,
+        }),
+        ClientboundGamePacket::SetDefaultSpawnPosition(spawn) => Some(Seen::DefaultSpawn {
+            dimension: spawn.global_pos.dimension.to_string(),
+            pos: spawn.global_pos.pos,
+            yaw: spawn.yaw,
+            pitch: spawn.pitch,
         }),
         ClientboundGamePacket::GameEvent(event) if event.event == EventType::WaitForLevelChunks => {
             Some(Seen::WaitForLevelChunks)
@@ -454,6 +471,151 @@ async fn walking_away_and_back_streams_terrain_and_keeps_the_world_intact() {
     assert_eq!(ground(&alice).y, feet(&alice).y - 1);
 
     acknowledge_batches(&alice, &trace).await;
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// The world spawn point the client was sent, checked to be sent once, right
+/// where vanilla sends it: after the Login, as the last level information
+/// before the client is told to wait for level chunks.
+fn default_spawn(trace: &[Seen]) -> (String, BlockPos, f32, f32) {
+    let spawns: Vec<&Seen> = trace
+        .iter()
+        .filter(|seen| matches!(seen, Seen::DefaultSpawn { .. }))
+        .collect();
+    assert_eq!(
+        spawns.len(),
+        1,
+        "the spawn point is sent exactly once: {trace:?}"
+    );
+    assert!(
+        matches!(
+            trace,
+            [
+                Seen::Login { .. },
+                Seen::DefaultSpawn { .. },
+                Seen::WaitForLevelChunks,
+                ..
+            ]
+        ),
+        "the spawn point comes between the Login and the wait for level chunks: {trace:?}"
+    );
+    let Seen::DefaultSpawn {
+        dimension,
+        pos,
+        yaw,
+        pitch,
+    } = spawns[0].clone()
+    else {
+        unreachable!()
+    };
+    (dimension, pos, yaw, pitch)
+}
+
+#[tokio::test]
+async fn the_spawn_point_is_the_configured_spawn_position() {
+    let server = TestServer::builder()
+        .config(|config| {
+            config.spawn_position(SpawnPosition {
+                x: -20.5,
+                z: 37.25,
+                y: Some(90.0),
+            })
+        })
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    alice.sync().await;
+
+    assert_eq!(
+        default_spawn(&trace(&alice)),
+        (
+            "minecraft:overworld".to_string(),
+            BlockPos::new(-21, 90, 37),
+            0.0,
+            0.0
+        ),
+        "the spawn point is the block of the configured spawn position"
+    );
+    assert_eq!(alice.position(), Vec3::new(-20.5, 90.0, 37.25));
+
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn the_spawn_point_without_a_configured_height_is_on_the_generated_surface() {
+    let server = TestServer::start().await;
+    let alice = server.join("Alice").await;
+    alice.sync().await;
+
+    let (dimension, pos, yaw, pitch) = default_spawn(&trace(&alice));
+    assert_eq!(dimension, "minecraft:overworld");
+    assert_eq!((yaw, pitch), (0.0, 0.0));
+    assert_eq!(
+        pos,
+        feet(&alice),
+        "the spawn point is the block the player is placed in"
+    );
+    assert_eq!(
+        ground(&alice),
+        pos.down(1),
+        "the spawn point stands on the generated surface"
+    );
+
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A plugin moves the spawn after startup into a chunk the spawn area does not
+/// hold: the join generates it, so the client gets the chunk it stands in and
+/// leaves its loading screen.
+#[tokio::test]
+async fn a_spawn_moved_outside_the_pregenerated_area_still_lets_players_in() {
+    let server = TestServer::builder()
+        .plugin(|app| {
+            app.add_systems(PostStartup, |mut config: ResMut<ServerConfigResource>| {
+                config.spawn_x = 200.5;
+                config.spawn_z = -300.5;
+            });
+        })
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    wait_until_ready(&server, &alice).await;
+
+    let spawn = ChunkPos::from(feet(&alice));
+    assert_eq!(
+        spawn,
+        ChunkPos::new(12, -19),
+        "the player is at the moved spawn"
+    );
+    assert_eq!(
+        ground(&alice).y,
+        feet(&alice).y - 1,
+        "a floor under the player"
+    );
+    let joined = trace(&alice);
+    let join_batch: Vec<&Seen> = joined
+        .iter()
+        .take_while(|seen| !matches!(seen, Seen::BatchFinished(_)))
+        .collect();
+    assert!(
+        join_batch.contains(&&Seen::Chunk(spawn)),
+        "the chunk the player stands in comes in the join batch: {joined:?}"
+    );
+    wait_for_the_square(
+        &alice,
+        "the area around the moved spawn",
+        spawn,
+        VIEW_DISTANCE,
+    )
+    .await;
+    alice.sync().await;
+    assert_each_chunk_sent_once(&trace(&alice), &square(spawn, VIEW_DISTANCE));
+
+    acknowledge_batches(&alice, &trace(&alice)).await;
     alice.sync().await;
     alice.assert_healthy();
     server.stop().await;

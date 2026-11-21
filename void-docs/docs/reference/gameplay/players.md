@@ -24,15 +24,17 @@ Upon receiving `FinishConfigurationAcknowledged`:
 The server sends a burst of packets to set up the client:
 
 1. **Play Login** — Game settings (entity ID, dimensions, game mode, view distance, etc.)
-2. **Commands** — Protocol command tree for tab-completion
-3. **GameEvent(StartWaitingForLevelChunks)** — Tells the client to show the loading screen
-4. **SetCenterChunk** — Sets the client's chunk loading center
-5. **ChunkBatchStart** — Opens the batch of initial chunks
-6. **ChunkDataAndLight** (x N) — Initial chunks around spawn (`initial_chunk_radius`); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready
-7. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
-8. **ChunkBatchFinished** — Closes the batch with its chunk count
+2. **EntityEvent** — The player's permission level (status 28 with `Operator`, 24 without)
+3. **Commands** — Protocol command tree for tab-completion, holding only the commands the player may run
+4. **SetDefaultSpawnPosition** — The world spawn point the client shows and points compasses at: the block of the configured spawn position (its Y from the generator's surface when none is configured) in the overworld, with yaw and pitch `0`. Sent once, where vanilla sends it: the last level information before the wait for chunks
+5. **GameEvent(StartWaitingForLevelChunks)** — Tells the client to show the loading screen
+6. **SetCenterChunk** — Sets the client's chunk loading center
+7. **ChunkBatchStart** — Opens the batch of initial chunks
+8. **ChunkDataAndLight** (x N) — Initial chunks around spawn, within the join radius: `initial_chunk_radius` capped by the player's effective view distance, a negative result read as `0` (see [Chunk Streaming](./world.md#chunk-streaming)); chunks outside the pre-generated spawn area are skipped here and streamed, in later batches, once the player is ready. The chunk the player stands in is always sent: when it is not loaded (a spawn moved after startup, a negative `spawn_chunk_radius` set on the `ServerConfig` field), the join takes it from the `ChunkLoaderResource` if one is installed, or generates it, and adds it to the world
+9. **SynchronizePlayerPosition** — Teleport the player to spawn coordinates
+10. **ChunkBatchFinished** — Closes the batch with its chunk count
 
-An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive. The vanilla client answers the batch with `ChunkBatchReceived`, which the server accepts and ignores.
+An optimization sends the teleport after 9 chunks (3x3 center) are sent, so the player can start rendering while remaining chunks arrive. The vanilla client leaves its loading screen, and sends `PlayerLoaded`, only once it holds the chunk it stands in, hence that chunk is never left to streaming. The vanilla client answers the batch with `ChunkBatchReceived`, which the server accepts and ignores.
 
 ### 3. PlayerJoinEvent
 
@@ -231,10 +233,13 @@ The `/tp` command shows the underlying steps:
 
 While `pending_id` is `Some`, the server knows a teleportation is in-flight and
 the client has not yet acknowledged it. Like vanilla, the movement handlers
-then ignore the position of `SetPlayerPos`/`SetPlayerPosAndRot` (no
-`PlayerMoveEvent`; the rotation still applies): the client sent them from its
-old position before it processed the teleport, and they would pull the player
-back. Only the latest id confirms; an older, unknown or repeated id is logged
+then ignore every movement packet whole (`SetPlayerPos`, `SetPlayerPosAndRot`,
+`SetPlayerRotation` and `SetPlayerMovementFlags`): neither the position, the
+rotation nor the on-ground flag applies, no `PlayerMoveEvent` or
+`PlayerRotateEvent` fires and the other players are shown nothing. The client
+sent them from its old position before it processed the teleport, and they
+would pull the player back. Only the latest id confirms; an older, unknown or
+repeated id is logged
 at `warn` and ignored. The first position packet after the confirmation (the
 client's echo of the destination) moves the player as usual. This also holds
 after a `Teleport` times out: the player stays at the destination until the
@@ -269,7 +274,7 @@ round trip. If flight is not allowed the component is left with
 When a player sends a chat message:
 
 1. The server formats it as `<PlayerName> message`, keeping the text exactly as typed
-2. A `SystemChat` packet (one literal text component, shown in the chat box) is broadcast to all ready players, the sender included
+2. A `SystemChat` packet (one literal text component, shown in the chat box) is sent, like on a vanilla server, to every connection in the play state whose chat visibility (`ClientSettings::chat_mode`) is `ChatMode::Enabled` ("Shown"), the sender included. A player still loading the world (no `PlayerReady` yet) gets it too; a client on "Commands Only" or "Hidden" does not. A client that never sent its settings is treated as "Shown". Command feedback and the server's own messages (`Messages`) are not filtered by this setting.
 3. `ChatMessageEvent` is triggered for plugin observers
 
 A line a vanilla server would refuse is not broadcast and fires no event; the sender alone gets a red

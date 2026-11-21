@@ -121,7 +121,7 @@ fn seen(bot: &Bot, id: i32) -> Option<SeenEntity> {
 
 #[tokio::test]
 async fn summoned_pig_is_visible_with_a_stable_identity_to_every_player() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let before = server_entities(&server).await;
@@ -297,7 +297,7 @@ async fn summoned_pig_is_visible_with_a_stable_identity_to_every_player() {
 
 #[tokio::test]
 async fn invalid_summons_are_rejected_without_spawning_anything() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     alice.sync().await;
@@ -398,6 +398,112 @@ async fn invalid_summons_are_rejected_without_spawning_anything() {
     let (id, pig) = expect_pig(&alice).await;
     bob.wait_until("the valid pig", |view| view.entities.get(&id) == Some(&pig))
         .await;
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// `/summon` shares the `/tp` position bound, vanilla's spawnable bounds:
+/// the floored position must lie in [-30,000,000, 30,000,000) horizontally
+/// and in [-20,000,000, 20,000,000) vertically.
+#[tokio::test]
+async fn summon_outside_the_world_bounds_is_rejected_without_spawning_anything() {
+    let server = TestServer::builder().operators().start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    alice.sync().await;
+    bob.sync().await;
+    alice.clear();
+    bob.clear();
+    let before = server_entities(&server).await;
+
+    let out_of_bounds = [
+        "1e9 64 0",
+        "-1e9 64 0",
+        "30000000 64 0",
+        "-30000000.5 64 0",
+        "0 64 30000000",
+        "0 64 -30000001",
+        "0 20000000 0",
+        "0 -20000000.5 0",
+        "~1e300 ~ ~",
+        "~ ~-1e300 ~",
+    ];
+    for position in out_of_bounds {
+        let input = format!("summon minecraft:pig {position}");
+        alice.command(&input).await;
+        expect_error(&alice, &input, "Invalid position for summon").await;
+    }
+
+    // Nothing was created: no add for anyone, nothing on the server.
+    alice.sync().await;
+    bob.sync().await;
+    for bot in [&alice, &bob] {
+        let added = bot.queued(|packet| match packet {
+            ClientboundGamePacket::AddEntity(add) => Some((add.id.0, add.entity_type)),
+            _ => None,
+        });
+        assert_eq!(added, [], "{} was sent an entity", bot.name());
+        let kinds: Vec<EntityKind> =
+            bot.view(|view| view.entities.values().map(|entity| entity.kind).collect());
+        assert_eq!(
+            kinds,
+            [EntityKind::Player],
+            "{} sees only the other player",
+            bot.name()
+        );
+    }
+    assert_eq!(
+        server_entities(&server).await,
+        before,
+        "no entity was created"
+    );
+    let confirmations = alice.queued(|packet| match packet {
+        ClientboundGamePacket::SystemChat(chat) => {
+            let text = chat.content.to_string();
+            text.starts_with("Summoned").then_some(text)
+        }
+        _ => None,
+    });
+    assert_eq!(confirmations, Vec::<String>::new(), "nothing was confirmed");
+    alice.clear();
+
+    // Positions just inside each bound are accepted.
+    let inside = [
+        [29_999_999.5, 64.0, 0.0],
+        [-30_000_000.0, 64.0, 0.0],
+        [0.0, 64.0, 29_999_999.5],
+        [0.0, 64.0, -30_000_000.0],
+        [0.0, 19_999_999.5, 0.0],
+        [0.0, -20_000_000.0, 0.0],
+    ];
+    for [x, y, z] in inside {
+        alice
+            .command(&format!("summon minecraft:pig {x} {y} {z}"))
+            .await;
+        assert_eq!(
+            expect_confirmation(&alice).await,
+            format!("Summoned minecraft:pig at {x:.1}, {y:.1}, {z:.1}")
+        );
+    }
+
+    // The server holds a pig at each accepted position, except the one far
+    // below the world, which the out-of-world rule removes on the next tick.
+    server.wait_ticks(5).await;
+    let mut added: Vec<[f64; 3]> = server_entities(&server)
+        .await
+        .into_iter()
+        .filter(|entity| !before.contains(entity))
+        .map(|entity| {
+            assert_eq!(entity.kind, VoidKind::Pig.id());
+            entity.position
+        })
+        .collect();
+    added.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut expected: Vec<[f64; 3]> = inside[..5].to_vec();
+    expected.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(added, expected, "one pig per accepted position");
 
     alice.assert_healthy();
     bob.assert_healthy();

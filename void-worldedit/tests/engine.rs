@@ -24,13 +24,12 @@ use voidmc_protocol::types::{BlockFace, BlockPosition, Hand, PlayerActionStatus}
 use voidmc_worldedit::engine::{EditQueue, EditSession, Permission};
 use voidmc_worldedit::{BlockPos, BlockState, WorldEditPlugin};
 
-/// A per-tick wall-clock budget no test tick comes near. The production
-/// default (15 ms) lets a stalled or slow (e.g. coverage-instrumented) test
-/// thread split an edit over extra ticks, which changes how many sections each
-/// flush covers and so which packets go out. The block budget still applies,
-/// so tests that spread an edit over ticks do it with `blocks_per_tick`.
-/// Not `Duration::MAX`: the budget adds this to `Instant::now()`.
-const NO_TIME_LIMIT: Duration = Duration::from_secs(24 * 60 * 60);
+/// No per-tick wall-clock budget. The production default (15 ms) lets a
+/// stalled or slow (e.g. coverage-instrumented) test thread split an edit over
+/// extra ticks, which changes how many sections each flush covers and so which
+/// packets go out. The block budget still applies, so tests that spread an
+/// edit over ticks do it with `blocks_per_tick`.
+const NO_TIME_LIMIT: Duration = Duration::MAX;
 
 /// The plugin under test, with only the deterministic block budget per tick.
 fn plugin() -> WorldEditPlugin {
@@ -594,12 +593,23 @@ fn the_wand_checks_permission_before_claiming_the_off_hand() {
         None
     );
 
-    // Without permission the wand is a plain item and the click places it.
+    // Without permission the wand is a plain item and the click places it,
+    // on top of the clicked stone (an empty block would be filled itself).
     server
         .app
         .world_mut()
         .entity_mut(server.player)
         .remove::<Operator>();
+    let stone_state = voidmc::ItemId::from_name("minecraft:stone")
+        .and_then(|item| item.default_block_state())
+        .unwrap();
+    voidmc::world::set_block_state(
+        server.app.world_mut(),
+        DimensionId::Overworld,
+        BlockPosition { x: 5, y: 63, z: 3 },
+        stone_state,
+        None,
+    );
     use_off_hand(&mut server, 5, 2);
     assert_eq!(server.block(5, 64, 3), stone());
 }

@@ -12,8 +12,9 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryEntityError;
 use bevy_ecs::system::SystemParam;
 use flume::{Sender, TrySendError};
+use ussr_nbt::owned::{Nbt, Tag};
 use voidmc_protocol::State;
-use voidmc_protocol::clientbound::{self, ClientboundPacket};
+use voidmc_protocol::clientbound::{self, ClientboundPacket, JsonTextComponent};
 
 use crate::components::{ClientId, ConnectionState, LoadedChunks, PlayerDimension, PlayerReady};
 use crate::messages::{Text, TextColor};
@@ -258,16 +259,101 @@ impl Outbox<'_> {
     }
 }
 
-/// The play-state `Disconnect` carrying `reason`, unless the client is known
-/// to be in another state: those have no disconnect packet in
-/// `voidmc-protocol`, so their connection is just closed.
-fn disconnect_packet(state: Option<&ConnectionState>, reason: &str) -> Option<ClientboundPacket> {
-    state.is_none_or(|state| state.0 == State::Play).then(|| {
-        clientbound::Disconnect {
-            reason: Text::truncated(reason).component(TextColor::Red),
+/// What a disconnected client is shown on its disconnect screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DisconnectReason {
+    /// A literal text, shown in red: what [`Players::kick`] sends.
+    Text(Text),
+    /// A key the client looks up in its language file, such as
+    /// `multiplayer.disconnect.server_full`.
+    Translatable(String),
+}
+
+impl DisconnectReason {
+    /// Vanilla's translation key for a login refused because the server is
+    /// full.
+    pub const SERVER_FULL: &'static str = "multiplayer.disconnect.server_full";
+
+    /// A literal reason shown in red, truncated to what the client decodes.
+    pub fn text(reason: impl Into<String>) -> Self {
+        Self::Text(Text::truncated(reason))
+    }
+
+    pub fn translatable(key: impl Into<String>) -> Self {
+        Self::Translatable(key.into())
+    }
+
+    /// Vanilla's "The server is full!".
+    pub fn server_full() -> Self {
+        Self::translatable(Self::SERVER_FULL)
+    }
+
+    /// Vanilla's translation key for a connection that took too long to
+    /// reach the play state.
+    pub const SLOW_LOGIN: &'static str = "multiplayer.disconnect.slow_login";
+
+    /// Vanilla's "Took too long to log in".
+    pub fn slow_login() -> Self {
+        Self::translatable(Self::SLOW_LOGIN)
+    }
+
+    /// The NBT form the configuration and play states use.
+    fn nbt(&self) -> Nbt {
+        match self {
+            Self::Text(text) => text.component(TextColor::Red),
+            Self::Translatable(key) => Nbt {
+                name: "".into(),
+                compound: vec![("translate".into(), Tag::String(key.as_str().into()))].into(),
+            },
         }
-        .into()
-    })
+    }
+
+    /// The JSON form the login state uses.
+    fn json(&self) -> JsonTextComponent {
+        match self {
+            Self::Text(text) => JsonTextComponent {
+                text: Some(text.as_str().to_string()),
+                color: Some(TextColor::Red.to_string()),
+                ..Default::default()
+            },
+            Self::Translatable(key) => JsonTextComponent {
+                translate: Some(key.clone()),
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// The disconnect packet of the client's state carrying `reason`: the
+/// play-state `Disconnect` (also when the state is unknown), the
+/// configuration state's `ConfigurationDisconnect` or the login state's
+/// `LoginDisconnect`. The handshake and status states have none, so their
+/// connection is just closed.
+fn disconnect_packet(
+    state: Option<&ConnectionState>,
+    reason: &DisconnectReason,
+) -> Option<ClientboundPacket> {
+    match state.map(|state| state.0) {
+        None | Some(State::Play) => Some(
+            clientbound::Disconnect {
+                reason: reason.nbt(),
+            }
+            .into(),
+        ),
+        Some(State::Configuration) => Some(
+            clientbound::ConfigurationDisconnect {
+                reason: reason.nbt(),
+            }
+            .into(),
+        ),
+        Some(State::Login) => Some(
+            clientbound::LoginDisconnect {
+                reason: reason.json(),
+            }
+            .into(),
+        ),
+        Some(_) => None,
+    }
 }
 
 fn resolve_client(world: &World, entity: Entity) -> Option<u32> {
@@ -327,19 +413,26 @@ impl Players<'_, '_> {
         }
     }
 
-    /// Disconnects a client: a play-state client is sent a `Disconnect` with
-    /// `reason` (shown in red), then the server closes the connection once
-    /// the packets queued before it are written, whether or not the client
-    /// cooperates. Nothing else is sent to it. The disconnect is then handled
-    /// like any other: a player who joined gets its `PlayerQuitEvent` and its
-    /// entity is despawned at the next network ingest. Calling it again for
-    /// the same client does nothing.
+    /// Disconnects a client: a client in the play, configuration or login
+    /// state is sent its state's disconnect packet with `reason` (shown in
+    /// red), then the server closes the connection once the packets queued
+    /// before it are written, whether or not the client cooperates. Nothing
+    /// else is sent to it. The disconnect is then handled like any other: a
+    /// player who joined gets its `PlayerQuitEvent` and its entity is
+    /// despawned at the next network ingest. Calling it again for the same
+    /// client does nothing.
     pub fn kick(&self, entity: Entity, reason: &str) {
+        self.kick_with(entity, DisconnectReason::text(reason));
+    }
+
+    /// [`Players::kick`] with any [`DisconnectReason`], such as a translated
+    /// one.
+    pub fn kick_with(&self, entity: Entity, reason: DisconnectReason) {
         match self.clients.get(entity) {
             Ok(client_id) => self.outbox().kick(
                 entity,
                 client_id.0,
-                disconnect_packet(self.states.get(entity).ok(), reason),
+                disconnect_packet(self.states.get(entity).ok(), &reason),
             ),
             Err(QueryEntityError::NotSpawned(_)) => {
                 tracing::debug!(?entity, "Cannot kick: entity no longer exists");
@@ -428,10 +521,15 @@ impl<'w> WorldPlayers<'w> {
 
     /// See [`Players::kick`].
     pub fn kick(&self, entity: Entity, reason: &str) {
+        self.kick_with(entity, DisconnectReason::text(reason));
+    }
+
+    /// See [`Players::kick_with`].
+    pub fn kick_with(&self, entity: Entity, reason: DisconnectReason) {
         if let Some(client_id) = resolve_client(self.world, entity) {
             let state = self.world.get::<ConnectionState>(entity);
             self.outbox()
-                .kick(entity, client_id, disconnect_packet(state, reason));
+                .kick(entity, client_id, disconnect_packet(state, &reason));
         }
     }
 
@@ -882,15 +980,83 @@ mod tests {
             reason.contains("\"bye\""),
             "the first reason is sent: {reason}"
         );
+        let loading_sent: Vec<_> = loading_rx.try_iter().map(|out| out.packet).collect();
         assert!(
-            loading_rx.is_empty(),
-            "no play packet for a configuring client"
+            matches!(
+                loading_sent.as_slice(),
+                [ClientboundPacket::Configuration(
+                    clientbound::ConfigurationPacket::ConfigurationDisconnect(_)
+                )]
+            ),
+            "a configuring client gets the configuration Disconnect, no play packet: {loading_sent:?}"
         );
         assert_eq!(
             kick_rx.try_iter().collect::<Vec<_>>(),
             vec![1, 2],
             "one close request per client"
         );
+    }
+
+    #[test]
+    fn kick_sends_the_disconnect_packet_of_the_login_state_too() {
+        let (mut app, _fallback) = test_app();
+        let kick_rx = with_registry(&mut app);
+        let (text, text_rx) = direct_client(&mut app, 1, 64);
+        let (full, full_rx) = direct_client(&mut app, 2, 64);
+        let (player, player_rx) = direct_client(&mut app, 3, 64);
+        for entity in [text, full] {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(ConnectionState(State::Login));
+        }
+        app.world_mut()
+            .entity_mut(player)
+            .insert(ConnectionState(State::Play));
+
+        app.add_systems(Update, move |players: Players| {
+            players.kick(text, "bye");
+            players.kick_with(full, DisconnectReason::server_full());
+        });
+        app.update();
+        WorldPlayers::new(app.world()).kick_with(player, DisconnectReason::server_full());
+
+        let login_reason = |rx: &Receiver<OutgoingPacket>| {
+            let sent: Vec<_> = rx.try_iter().map(|out| out.packet).collect();
+            let [ClientboundPacket::Login(clientbound::LoginPacket::LoginDisconnect(disconnect))] =
+                sent.as_slice()
+            else {
+                panic!("expected one LoginDisconnect, got {sent:?}");
+            };
+            disconnect.reason.clone()
+        };
+        assert_eq!(
+            login_reason(&text_rx),
+            JsonTextComponent {
+                text: Some("bye".to_string()),
+                color: Some("red".to_string()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            login_reason(&full_rx),
+            JsonTextComponent {
+                translate: Some("multiplayer.disconnect.server_full".to_string()),
+                ..Default::default()
+            }
+        );
+
+        let sent: Vec<_> = player_rx.try_iter().map(|out| out.packet).collect();
+        let [ClientboundPacket::Play(clientbound::PlayPacket::Disconnect(disconnect))] =
+            sent.as_slice()
+        else {
+            panic!("expected one Disconnect, got {sent:?}");
+        };
+        let reason = format!("{:?}", disconnect.reason);
+        assert!(
+            reason.contains("translate") && reason.contains("multiplayer.disconnect.server_full"),
+            "{reason}"
+        );
+        assert_eq!(kick_rx.try_iter().collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod attack;
 mod chat_ack;
 mod chat_command;
 mod chat_message;
@@ -18,6 +19,7 @@ mod player_loaded;
 mod pong;
 mod set_creative_mode_slot;
 mod set_held_item;
+mod set_player_movement_flags;
 mod set_player_pos;
 mod set_player_pos_and_rot;
 mod set_player_rotation;
@@ -27,6 +29,7 @@ mod tick_end;
 mod use_item;
 mod use_item_on;
 
+pub use attack::*;
 pub use chat_ack::*;
 pub use chat_command::*;
 pub use chat_message::*;
@@ -47,6 +50,7 @@ pub use player_loaded::*;
 pub use pong::*;
 pub use set_creative_mode_slot::*;
 pub use set_held_item::*;
+pub use set_player_movement_flags::*;
 pub use set_player_pos::*;
 pub use set_player_pos_and_rot::*;
 pub use set_player_rotation::*;
@@ -62,6 +66,8 @@ use voidmc_codec::{Decode, Encode};
 pub enum PlayPacket {
     #[codec(packet_id = 0x00)]
     ConfirmTeleportation(ConfirmTeleportation),
+    #[codec(packet_id = 0x01)]
+    Attack(Attack),
     #[codec(packet_id = 0x06)]
     ChatAck(ChatAck),
     #[codec(packet_id = 0x07)]
@@ -94,6 +100,8 @@ pub enum PlayPacket {
     SetPlayerPosAndRot(SetPlayerPosAndRot),
     #[codec(packet_id = 0x20)]
     SetPlayerRotation(SetPlayerRotation),
+    #[codec(packet_id = 0x21)]
+    SetPlayerMovementFlags(SetPlayerMovementFlags),
     #[codec(packet_id = 0x28)]
     PlayerAbilities(PlayerAbilities),
     #[codec(packet_id = 0x29)]

@@ -10,6 +10,7 @@ mod close_container;
 mod command_suggestions_response;
 pub mod commands;
 mod disconnect;
+mod entity_event;
 pub mod entity_metadata;
 mod entity_position_sync;
 mod game_event;
@@ -30,9 +31,11 @@ mod set_container_content;
 mod set_container_slot;
 mod set_cooldown;
 mod set_cursor_item;
+mod set_default_spawn_position;
 mod set_display_objective;
 mod set_entity_data;
 mod set_entity_motion;
+mod set_equipment;
 mod set_head_rotation;
 mod set_held_slot;
 mod set_objective;
@@ -72,6 +75,7 @@ pub use close_container::*;
 pub use command_suggestions_response::*;
 pub use commands::*;
 pub use disconnect::*;
+pub use entity_event::*;
 pub use entity_metadata::{
     Billboard, DisplayTransform, ItemDisplayContext, MAX_TELEPORT_TICKS, pack_brightness,
 };
@@ -94,9 +98,11 @@ pub use set_container_content::*;
 pub use set_container_slot::*;
 pub use set_cooldown::*;
 pub use set_cursor_item::*;
+pub use set_default_spawn_position::*;
 pub use set_display_objective::*;
 pub use set_entity_data::*;
 pub use set_entity_motion::*;
+pub use set_equipment::*;
 pub use set_head_rotation::*;
 pub use set_held_slot::*;
 pub use set_objective::*;
@@ -158,6 +164,8 @@ pub enum PlayPacket {
     SetCooldown(SetCooldown),
     #[codec(packet_id = 0x20)]
     Disconnect(Disconnect),
+    #[codec(packet_id = 0x22)]
+    EntityEvent(EntityEvent),
     #[codec(packet_id = 0x23)]
     EntityPositionSync(EntityPositionSync),
     #[codec(packet_id = 0x25)]
@@ -208,12 +216,16 @@ pub enum PlayPacket {
     SetCenterChunk(SetCenterChunk),
     #[codec(packet_id = 0x60)]
     SetCursorItem(SetCursorItem),
+    #[codec(packet_id = 0x61)]
+    SetDefaultSpawnPosition(SetDefaultSpawnPosition),
     #[codec(packet_id = 0x62)]
     SetDisplayObjective(SetDisplayObjective),
     #[codec(packet_id = 0x63)]
     SetEntityData(SetEntityData),
     #[codec(packet_id = 0x65)]
     SetEntityMotion(SetEntityMotion),
+    #[codec(packet_id = 0x66)]
+    SetEquipment(SetEquipment),
     #[codec(packet_id = 0x69)]
     SetHeldSlot(SetHeldSlot),
     #[codec(packet_id = 0x6A)]

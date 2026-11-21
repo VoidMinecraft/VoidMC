@@ -87,13 +87,22 @@ pub struct PlayerInputEvent {
     pub sprint: bool,
 }
 
+/// A player attacked (Attack packet) or right-clicked (Interact packet) an
+/// entity.
 #[derive(Event)]
 pub struct PlayerInteractEntityEvent {
     pub entity: Entity,
+    /// The network id of the clicked entity, as the client sent it.
     pub target_id: i32,
+    /// `true` for an attack, `false` for a right-click.
     pub attack: bool,
+    /// The hand of a right-click; `None` for an attack.
     pub hand: Option<Hand>,
+    /// Where a right-click hit, relative to the entity's position; `None`
+    /// for an attack.
     pub target_pos: Option<(f32, f32, f32)>,
+    /// Whether the sneak key was pressed during a right-click; always
+    /// `false` for an attack, whose packet has no such flag.
     pub sneaking: bool,
 }
 

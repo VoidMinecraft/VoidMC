@@ -426,8 +426,10 @@ impl ChunkSection {
     /// the previous value.
     ///
     /// Promotes a `SingleValue` palette to `Indirect` on the first heterogeneous
-    /// write, and grows `bits_per_entry` as the palette outgrows the current
-    /// width. The block count is updated to track the number of non-air blocks.
+    /// write, grows `bits_per_entry` as the palette outgrows the current
+    /// width, and switches to a `Direct` palette of global ids when a new state
+    /// would need more than 8 bits. The block count is updated to track the
+    /// number of non-air blocks.
     pub fn set_block_state(&mut self, x: u8, y: u8, z: u8, new_id: i32) -> i32 {
         debug_assert!(x < 16 && y < 16 && z < 16);
         let idx = (y as usize) * 256 + (z as usize) * 16 + (x as usize);
@@ -435,6 +437,21 @@ impl ChunkSection {
         let old_id = self.get_block_state(x, y, z);
         if old_id == new_id {
             return old_id;
+        }
+
+        if let PaletteData::Indirect { palette, .. } = &self.block_state
+            && palette.len() >= 1 << BLOCK_MAX_INDIRECT_BITS
+            && !palette.contains(&new_id)
+        {
+            let bits = block_direct_bits();
+            let mut data = vec![0u64; packed_len(bits, 4096)];
+            for index in 0..4096 {
+                packed_set(&mut data, bits, index, self.block_state.entry(index) as u64);
+            }
+            self.block_state = PaletteData::Direct {
+                bits_per_entry: bits,
+                data,
+            };
         }
 
         match &mut self.block_state {

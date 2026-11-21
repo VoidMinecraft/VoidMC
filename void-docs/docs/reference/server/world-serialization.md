@@ -96,6 +96,74 @@ The `ChunkDirty` marker is removed only after a **successful** write, so a faile
 save is retried on the next interval. Loaded chunks are inserted exactly like
 generated ones and are not marked dirty (they already match disk).
 
+`save_dirty_chunks` runs in `PostUpdate` after `VoidSystems::BlockEntitySync`,
+which marks the chunks whose block entities changed. A block-entity change
+made later in the tick is marked in the next tick and saved by a later save.
+
+## Damaged chunks
+
+A stored chunk that cannot be loaded is **generated again**, so that players are
+not stuck, but its stored bytes are never silently lost:
+
+- **Undecodable** (the bytes were read, but the length, the compression or the
+  NBT inside are wrong): before the chunk is generated, the sectors that hold
+  it are copied, exactly as found on disk, to a **quarantine file** next to its
+  region file. Saves of the chunk then go on as usual: the first edit marks it
+  dirty and the next save writes the new chunk over the damaged one.
+- **Unreadable** (an I/O error, so there is nothing to copy), or undecodable
+  but the copy failed: the chunk is generated for play, but **every save of it
+  is skipped until the server stops** (logged as a warning), so the stored
+  bytes stay as they are. Edits made to it in that session are lost.
+
+Either way the server logs an error naming the chunk and what it did, triggers
+a [`ChunkLoadFailedEvent`](/reference/server/events#world-storage) and counts
+the failure in `voidmc_chunk_load_errors_total{kind="decode"|"io"}` on the
+[metrics endpoint](/reference/server/observability#errors).
+
+```rust
+use voidmc::{ChunkLoadFailedEvent, DamagedChunkAction, On};
+
+app.add_observer(|event: On<ChunkLoadFailedEvent>| {
+    let pos = event.pos;
+    match &event.action {
+        DamagedChunkAction::Quarantined(path) => {
+            tracing::warn!(?pos, path = %path.display(), "chunk regenerated, old data kept");
+        }
+        DamagedChunkAction::SavesSkipped => {
+            tracing::warn!(?pos, "chunk regenerated, its saves are skipped");
+        }
+    }
+});
+```
+
+### Quarantine files
+
+A quarantine file is written to
+`<directory>/region/<dimension>/c.<cx>.<cz>.<n>.corrupt`, where `cx` and `cz`
+are the chunk coordinates (not the region's) and `n` is the lowest number from
+`1` that no file of that chunk has yet. The file is created only if no file has
+that name and is synced to disk before the chunk is generated. The server never
+overwrites nor deletes a quarantine file: a later failure of the same chunk
+gets the next number.
+
+It holds the chunk's sectors as the region file's location table gave them:
+`[u32 length][u8 compression][zlib data]` and the zero padding to the sector
+boundary, damaged as they were. To recover what can be recovered, stop the
+server and work on a copy:
+
+- skip the 5-byte prefix and inflate the rest (`tail -c +6 c.1.0.1.corrupt |
+  zlib-flate -uncompress`, or any zlib library that returns partial output)
+  to get the chunk's NBT, or as much of it as survived;
+- inspect or repair that NBT with any NBT tool, and rebuild the chunk in game
+  (for example with world edit) or write it back with your own
+  `RegionChunkStore::write` call.
+
+Once you no longer need it, delete the file yourself.
+
+A custom `ChunkStore` keeps such copies by implementing `ChunkStore::quarantine`;
+without it, an undecodable chunk is treated like an unreadable one and its saves
+are skipped for the session.
+
 ## Custom storage backends
 
 `WorldPersistencePlugin::new` uses the built-in region-file store. To plug in a
@@ -116,6 +184,10 @@ app.add_plugins(WorldPersistencePlugin::with_store(
 The engine-facing hook is the `voidmc::ChunkLoader` trait (with the
 `ChunkLoaderResource` it is installed as); `voidmc-world-io` provides a
 `StoreLoader` adapter that bridges any `ChunkStore` to it.
+
+`ChunkStore::read` reports bytes it cannot read as `PersistenceError::Io` and
+bytes it read but cannot decode as `PersistenceError::Corrupt`: the loader
+handles the two as described in [Damaged chunks](#damaged-chunks).
 
 ## Limitations
 

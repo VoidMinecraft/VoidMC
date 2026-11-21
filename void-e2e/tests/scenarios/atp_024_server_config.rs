@@ -4,34 +4,44 @@
 //!
 //! The reference table (names, types, defaults), the startup log line and an
 //! address that cannot be bound are checked in `void/tests/server_config.rs`.
-//! `packet_ingest_budget_ms` has no assertion here: it only bounds the
-//! microseconds spent draining the incoming channel, which no test can
-//! exceed deterministically. `execution_mode` and `observability` are not set
+//! `packet_ingest_budget_ms` bounds the time spent draining the incoming
+//! channel: a flood of packets queued while the game thread is held takes
+//! milliseconds to drain, so a 1 ms budget spreads it over several ticks
+//! where no budget takes it in one. `execution_mode` and `observability` are not set
 //! here: `atp_028_parallel_regions` runs a server built with
 //! `execution_mode(ExecutionMode::MultiThreaded)` and checks its systems and
 //! regions run concurrently, and `atp_032_observability` queries the
 //! endpoints a server built with `observability(..)` serves.
+//!
+//! The registries `configure_registries` edits are frozen once a client has
+//! received them: later changes are refused, so every client gets the same.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bevy_app::Last;
+use bevy_app::{Last, Update};
 use bevy_ecs::prelude::*;
 use voidmc::components::{LoadedChunks, PlayerUuid};
 use voidmc::events::PlayerJoinEvent;
+use voidmc::network::{NetworkChannels, PacketEvent};
 use voidmc::{
-    ChunkIndex, DefaultWorldGenerator, FrameLimits, RegistryDataStore, ServerConfigBuilder,
-    SpawnPosition, WorldGenerator,
+    ChunkIndex, DefaultWorldGenerator, FrameLimits, RegistriesAlreadySent, RegistryDataStore,
+    ServerConfigBuilder, SpawnPosition, WorldGenerator, default_registry_data,
 };
 use voidmc_e2e::core::game_type::GameMode;
 use voidmc_e2e::core::position::{ChunkPos, Vec3};
-use voidmc_e2e::protocol::packets::game::{ClientboundGamePacket, c_login::ClientboundLogin};
-use voidmc_e2e::{Bot, TestServer};
+use voidmc_e2e::protocol::packets::game::{
+    ClientboundGamePacket, c_login::ClientboundLogin, s_pong::ServerboundPong,
+};
+use voidmc_e2e::protocol::simdnbt::owned::NbtCompound;
+use voidmc_e2e::{Bot, LoginRefused, TestServer};
+use voidmc_protocol::clientbound::{RegistryData, RegistryEntry};
+use voidmc_protocol::serverbound;
 
-use crate::{feet, ground};
+use crate::{feet, ground, wait_until_ready};
 
 fn square(center: ChunkPos, radius: i32) -> HashSet<ChunkPos> {
     (-radius..=radius)
@@ -141,6 +151,12 @@ impl Probe {
     }
 }
 
+/// Makes every tick work at least 2 ms, longer than a `slow_tick_ms` of 1,
+/// which is compared with the time a tick works (#191).
+fn work_2_ms_per_tick(app: &mut bevy_app::App) {
+    app.add_systems(Update, || std::thread::sleep(Duration::from_millis(2)));
+}
+
 #[tokio::test]
 async fn every_option_reaches_the_client_or_the_running_server() {
     let metrics = TempDir::new("metrics");
@@ -185,12 +201,14 @@ async fn every_option_reaches_the_client_or_the_running_server() {
                 .compression_threshold(Some(128))
                 .world_generator(flat())
                 .configure_registries(|registries| {
-                    let removed =
-                        registries.remove_entry("minecraft:painting_variant", "minecraft:alban");
+                    let removed = registries
+                        .remove_entry("minecraft:painting_variant", "minecraft:alban")
+                        .expect("no client has the registries yet");
                     assert!(removed.is_some(), "the default registries hold alban");
                 })
         })
         .plugin(move |app| installed.install(app))
+        .plugin(work_2_ms_per_tick)
         .start()
         .await;
 
@@ -288,7 +306,7 @@ async fn every_option_reaches_the_client_or_the_running_server() {
     assert!(ticks >= 30, "31 packets were handled in {ticks} ticks");
 
     // metrics_debug, metrics_tps_output and slow_tick_ms: TPS samples land in
-    // the configured file, and every 25 ms tick is slower than 1 ms.
+    // the configured file, and every tick works longer than 1 ms.
     let mut csv = String::new();
     for _ in 0..400 {
         csv = std::fs::read_to_string(&tps_csv).unwrap_or_default();
@@ -326,6 +344,259 @@ async fn every_option_reaches_the_client_or_the_running_server() {
         })
         .await;
 
+    server.stop().await;
+}
+
+const PAINTINGS: &str = "minecraft:painting_variant";
+
+type Names = Vec<(String, Vec<String>)>;
+
+/// Registry ids in sending order, each with its entry ids in order.
+fn names_of(registries: &[RegistryData]) -> Names {
+    registries
+        .iter()
+        .map(|registry| {
+            let entries = registry.entries.iter().map(|entry| entry.entry_id.clone());
+            (registry.registry_id.clone(), entries.collect())
+        })
+        .collect()
+}
+
+fn entries_mut<'a>(names: &'a mut Names, id: &str) -> &'a mut Vec<String> {
+    let (_, entries) = names
+        .iter_mut()
+        .find(|(other, _)| other == id)
+        .unwrap_or_else(|| panic!("the registry {id}"));
+    entries
+}
+
+/// Each registry a bot received, in arrival order, with its entries as Azalea
+/// decoded them. Azalea decodes `dimension_type` and `enchantment` into its
+/// own types, so only their entry names are kept.
+type Received = Vec<(String, Vec<(String, Option<NbtCompound>)>)>;
+
+fn received(bot: &Bot) -> Received {
+    let transcript = bot.transcript();
+    let data = &transcript.registry_data;
+    let mut by_id: HashMap<String, Vec<(String, Option<NbtCompound>)>> = data
+        .extra
+        .iter()
+        .map(|(id, registry)| {
+            let entries = registry
+                .map
+                .iter()
+                .map(|(name, nbt)| (name.to_string(), Some(nbt.clone())));
+            (id.to_string(), entries.collect())
+        })
+        .collect();
+    let dimension_types = data.dimension_type.map.keys();
+    by_id.insert(
+        "minecraft:dimension_type".into(),
+        dimension_types
+            .map(|name| (name.to_string(), None))
+            .collect(),
+    );
+    let enchantments = data.enchantment.map.keys();
+    by_id.insert(
+        "minecraft:enchantment".into(),
+        enchantments.map(|name| (name.to_string(), None)).collect(),
+    );
+    let mut seen = HashSet::new();
+    transcript
+        .registries
+        .iter()
+        .filter(|id| seen.insert(id.as_str()))
+        .map(|id| (id.clone(), by_id.remove(id).unwrap_or_default()))
+        .collect()
+}
+
+fn received_names(received: &Received) -> Names {
+    received
+        .iter()
+        .map(|(id, entries)| {
+            let names = entries.iter().map(|(name, _)| name.clone());
+            (id.clone(), names.collect())
+        })
+        .collect()
+}
+
+/// Ids of the registries that differ between two clients.
+fn differing(first: &Received, second: &Received) -> Vec<String> {
+    let mut ids: Vec<&String> = Vec::new();
+    for (id, _) in first.iter().chain(second) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    let find = |received: &Received, id: &String| {
+        received
+            .iter()
+            .find(|(other, _)| other == id)
+            .map(|(_, entries)| entries.clone())
+    };
+    ids.into_iter()
+        .filter(|id| find(first, id) != find(second, id))
+        .cloned()
+        .collect()
+}
+
+fn painting(received: &Received, name: &str) -> Option<NbtCompound> {
+    let (_, paintings) = received
+        .iter()
+        .find(|(id, _)| id == PAINTINGS)
+        .expect("the painting registry");
+    let (_, data) = paintings
+        .iter()
+        .find(|(entry, _)| entry == name)
+        .unwrap_or_else(|| panic!("the painting {name}"));
+    data.clone()
+}
+
+/// Before any client joins, every kind of registry change succeeds and is
+/// sent. Once a client has received the registries, each is refused, and a
+/// client joining later is sent exactly what the first one got.
+#[tokio::test]
+async fn registries_change_until_a_client_receives_them() {
+    let server = TestServer::builder()
+        .config(|config| {
+            config.configure_registries(|registries| {
+                const UNSENT: &str = "no client has the registries yet";
+                let aztec = registries
+                    .get_entry(PAINTINGS, "minecraft:aztec")
+                    .expect("the aztec painting")
+                    .data
+                    .clone();
+                let early = RegistryEntry {
+                    entry_id: "atp024:early".into(),
+                    data: aztec.clone(),
+                };
+                registries.add_entry(PAINTINGS, early).expect(UNSENT);
+                let alban = registries.remove_entry(PAINTINGS, "minecraft:alban");
+                assert!(alban.expect(UNSENT).is_some());
+                registries
+                    .get_entry_mut(PAINTINGS, "minecraft:kebab")
+                    .expect(UNSENT)
+                    .expect("the kebab painting")
+                    .data = aztec;
+                registries
+                    .get_registry_mut("minecraft:wolf_variant")
+                    .expect(UNSENT)
+                    .expect("the wolf variants")
+                    .entries
+                    .reverse();
+                let cats = registries
+                    .remove_registry("minecraft:cat_variant")
+                    .expect(UNSENT)
+                    .expect("the cat variants");
+                registries.add_registry(cats).expect(UNSENT);
+            })
+        })
+        .start()
+        .await;
+
+    // The default registries, with each change above applied.
+    let mut expected = names_of(&default_registry_data());
+    let paintings = entries_mut(&mut expected, PAINTINGS);
+    paintings.retain(|name| name != "minecraft:alban");
+    paintings.push("atp024:early".into());
+    entries_mut(&mut expected, "minecraft:wolf_variant").reverse();
+    let cats = expected
+        .iter()
+        .position(|(id, _)| id == "minecraft:cat_variant")
+        .expect("the cat variants");
+    let cats = expected.remove(cats);
+    expected.push(cats);
+    let configured = server
+        .with_world(|world| names_of(world.resource::<RegistryDataStore>().registries()))
+        .await;
+    assert_eq!(configured, expected, "every change before login applies");
+
+    let alice = server.join("Alice").await;
+    let first = received(&alice);
+    assert_eq!(received_names(&first), configured, "and is sent");
+    let aztec = painting(&first, "minecraft:aztec");
+    assert!(aztec.is_some());
+    assert_eq!(painting(&first, "minecraft:kebab"), aztec);
+    assert_eq!(painting(&first, "atp024:early"), aztec);
+
+    let refused = server
+        .with_world(|world| {
+            let mut registries = world.resource_mut::<RegistryDataStore>();
+            let aztec = registries
+                .get_entry(PAINTINGS, "minecraft:aztec")
+                .expect("the aztec painting")
+                .data
+                .clone();
+            let late = RegistryEntry {
+                entry_id: "atp024:late".into(),
+                data: aztec.clone(),
+            };
+            vec![
+                ("add_entry", registries.add_entry(PAINTINGS, late)),
+                (
+                    "remove_entry",
+                    registries
+                        .remove_entry(PAINTINGS, "minecraft:aztec")
+                        .map(drop),
+                ),
+                (
+                    "get_entry_mut",
+                    registries
+                        .get_entry_mut(PAINTINGS, "minecraft:bust")
+                        .map(|entry| {
+                            if let Some(entry) = entry {
+                                entry.data = aztec;
+                            }
+                        }),
+                ),
+                (
+                    "get_registry_mut",
+                    registries
+                        .get_registry_mut("minecraft:chicken_variant")
+                        .map(|registry| {
+                            if let Some(registry) = registry {
+                                registry.entries.reverse();
+                            }
+                        }),
+                ),
+                (
+                    "add_registry",
+                    registries.add_registry(RegistryData {
+                        registry_id: "atp024:late".into(),
+                        entries: Vec::new(),
+                    }),
+                ),
+                (
+                    "remove_registry",
+                    registries
+                        .remove_registry("minecraft:frog_variant")
+                        .map(drop),
+                ),
+            ]
+        })
+        .await;
+    for (change, result) in refused {
+        assert_eq!(result, Err(RegistriesAlreadySent), "{change} after login");
+    }
+
+    let bob = server.join("Bob").await;
+    let second = received(&bob);
+    assert_eq!(
+        differing(&first, &second),
+        Vec::<String>::new(),
+        "registries Bob was sent differently from Alice"
+    );
+    assert_eq!(bob.transcript().registries, alice.transcript().registries);
+    assert!(second == first, "Bob was sent exactly what Alice got");
+    let after = server
+        .with_world(|world| names_of(world.resource::<RegistryDataStore>().registries()))
+        .await;
+    assert_eq!(after, configured, "the store kept what Alice got");
+
+    for bot in [&alice, &bob] {
+        bot.sync().await;
+        bot.assert_healthy();
+    }
     server.stop().await;
 }
 
@@ -384,6 +655,7 @@ async fn an_untouched_builder_restores_the_documented_defaults() {
                 .metrics_tps_output(tps_output)
                 .slow_tick_ms(1)
         })
+        .plugin(work_2_ms_per_tick)
         .start()
         .await;
     let alice = first.join("Alice").await;
@@ -391,7 +663,7 @@ async fn an_untouched_builder_restores_the_documented_defaults() {
     first.wait_ticks(5).await;
     alice.sync().await;
     // metrics_tps_output and slow_tick_ms do nothing while metrics_debug is
-    // off: no file, no warning, although every tick is slower than 1 ms.
+    // off: no file, no warning, although every tick works longer than 1 ms.
     assert!(!metrics.0.exists(), "no TPS output without metrics_debug");
     assert!(
         !first
@@ -456,33 +728,162 @@ async fn an_untouched_builder_restores_the_documented_defaults() {
     server.stop().await;
 }
 
-/// `max_players` is advertised, not enforced: the configuration promises no
-/// capacity.
+const SERVER_FULL: &str = "multiplayer.disconnect.server_full";
+
+/// The login of `name` is refused with vanilla's "server is full" reason.
+async fn assert_refused_as_full(server: &TestServer, name: &str) {
+    let refused = match server.try_join(name).await {
+        Ok(bot) => panic!("{} joined a full server", bot.name()),
+        Err(refused) => refused,
+    };
+    assert_server_full(&refused);
+}
+
+fn assert_server_full(refused: &LoginRefused) {
+    assert_eq!(refused.component["translate"], SERVER_FULL, "{refused}");
+    assert_eq!(refused.reason, "The server is full!");
+}
+
+/// Waits until the server holds no logged-in connection any more.
+async fn wait_until_empty(server: &TestServer) {
+    server
+        .wait_for("every player to be gone", |world| {
+            let online = world.query::<&PlayerUuid>().iter(world).count();
+            (online == 0).then_some(())
+        })
+        .await;
+}
+
+/// `max_players` is advertised and enforced: once that many players are
+/// connected, the next login is refused with vanilla's "server is full"
+/// reason, and the players already in are unaffected.
 #[tokio::test]
-async fn max_players_is_advertised_but_not_enforced() {
+async fn max_players_is_advertised_and_enforced() {
     let server = TestServer::builder()
         .config(|config| config.max_players(1))
         .start()
         .await;
     let alice = server.join("Alice").await;
-    let bob = server.join("Bob").await;
+    assert_refused_as_full(&server, "Bob").await;
 
     let mut status = server.status().await;
     for _ in 0..100 {
-        if status.players.online == 2 {
+        if status.players.online == 1 {
             break;
         }
         server.wait_ticks(1).await;
         status = server.status().await;
     }
     assert_eq!(status.players.max, 1);
-    assert_eq!(status.players.online, 2);
-    assert_eq!(login_packet(&bob).await.max_players, 1);
+    assert_eq!(status.players.online, 1);
+    assert_eq!(login_packet(&alice).await.max_players, 1);
 
     alice.sync().await;
-    bob.sync().await;
     alice.assert_healthy();
-    bob.assert_healthy();
+    server.stop().await;
+}
+
+/// A player leaving frees its slot, and a refused login never took one.
+#[tokio::test]
+async fn a_slot_frees_up_when_its_player_leaves() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(1))
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    assert_refused_as_full(&server, "Bob").await;
+
+    alice.disconnect().await;
+    wait_until_empty(&server).await;
+    let carol = server
+        .try_join("Carol")
+        .await
+        .unwrap_or_else(|refused| panic!("Carol was refused a free slot: {refused}"));
+
+    carol.sync().await;
+    carol.assert_healthy();
+    server.stop().await;
+}
+
+/// Every connection past login holds a slot, also one still configuring that
+/// has not entered the play state.
+#[tokio::test]
+async fn a_player_still_configuring_holds_a_slot() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(1))
+        .start()
+        .await;
+    let alice = server
+        .log_in("Alice")
+        .await
+        .unwrap_or_else(|refused| panic!("Alice was refused an empty server: {refused}"));
+    assert_refused_as_full(&server, "Bob").await;
+
+    alice.disconnect().await;
+    wait_until_empty(&server).await;
+    let carol = server
+        .try_join("Carol")
+        .await
+        .unwrap_or_else(|refused| panic!("Carol was refused a free slot: {refused}"));
+
+    carol.sync().await;
+    carol.assert_healthy();
+    server.stop().await;
+}
+
+/// Two logins sent together for the last free slot: exactly one gets in, the
+/// other is refused as full.
+#[tokio::test]
+async fn two_logins_for_the_last_slot_let_exactly_one_in() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(2))
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+
+    let (bob, carol) = tokio::join!(server.try_join("Bob"), server.try_join("Carol"));
+    let (winner, refused) = match (bob, carol) {
+        (Ok(winner), Err(refused)) | (Err(refused), Ok(winner)) => (winner, refused),
+        (Ok(_), Ok(_)) => panic!("both Bob and Carol joined a server with one free slot"),
+        (Err(bob), Err(carol)) => panic!("both were refused: Bob {bob}, Carol {carol}"),
+    };
+    assert_server_full(&refused);
+
+    alice.sync().await;
+    winner.sync().await;
+    alice.assert_healthy();
+    winner.assert_healthy();
+    server.stop().await;
+}
+
+/// The default `max_players` (100) refuses none of a few players logging in
+/// at once.
+#[tokio::test]
+async fn the_default_configuration_refuses_nobody() {
+    let server = TestServer::start().await;
+
+    let (alice, bob, carol, dave) = tokio::join!(
+        server.try_join("Alice"),
+        server.try_join("Bob"),
+        server.try_join("Carol"),
+        server.try_join("Dave"),
+    );
+    for bot in [alice, bob, carol, dave] {
+        let bot = bot.unwrap_or_else(|refused| panic!("refused by default: {refused}"));
+        bot.sync().await;
+        bot.assert_healthy();
+    }
+    server.stop().await;
+}
+
+/// Like vanilla, `max_players(0)` refuses everyone.
+#[tokio::test]
+async fn zero_max_players_refuses_everyone() {
+    let server = TestServer::builder()
+        .config(|config| config.max_players(0))
+        .start()
+        .await;
+    assert_refused_as_full(&server, "Alice").await;
     server.stop().await;
 }
 
@@ -515,6 +916,58 @@ async fn negative_distances_are_read_as_zero() {
     server.stop().await;
 }
 
+/// A negative `spawn_chunk_radius` is read as 0, which still pre-generates
+/// the spawn chunk: the player gets the chunk it stands in and leaves its
+/// loading screen.
+#[tokio::test]
+async fn a_negative_spawn_chunk_radius_still_pregenerates_the_spawn_chunk() {
+    let server = TestServer::builder()
+        .config(|config| config.spawn_chunk_radius(-1))
+        .start()
+        .await;
+    let at_startup = startup_chunks(&server).await;
+
+    let alice = server.join("Alice").await;
+    wait_until_ready(&server, &alice).await;
+    let own = ChunkPos::from(feet(&alice));
+    assert_eq!(
+        ground(&alice).y,
+        feet(&alice).y - 1,
+        "a floor under the player"
+    );
+    assert_eq!(
+        at_startup,
+        square(own, 0),
+        "only the spawn chunk was pre-generated"
+    );
+
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A negative radius set on the `ServerConfig` field itself, past the builder,
+/// pre-generates nothing: the join generates the chunk the player stands in.
+#[tokio::test]
+async fn a_negative_spawn_chunk_radius_set_on_the_config_field_lets_players_in() {
+    let server = TestServer::builder()
+        .edit_config(|config| config.spawn_chunk_radius = -1)
+        .start()
+        .await;
+
+    let alice = server.join("Alice").await;
+    wait_until_ready(&server, &alice).await;
+    assert_eq!(
+        ground(&alice).y,
+        feet(&alice).y - 1,
+        "a floor under the player"
+    );
+
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+}
+
 /// Thresholds above `i32::MAX` cannot be announced as they are; the server
 /// announces `i32::MAX`, which compresses no packet on either side.
 #[tokio::test]
@@ -531,4 +984,145 @@ async fn the_largest_compression_threshold_is_announced_as_i32_max() {
     alice.sync().await;
     alice.assert_healthy();
     server.stop().await;
+}
+
+/// Marks the pongs of the flood, so that none is taken for an answer to the
+/// server's own pings or for a harness barrier (the high bit).
+const FLOOD_TAG: u32 = 0x4000_0000;
+/// Pongs in the flood: enough that draining them from the channel takes
+/// several milliseconds even on a fast machine.
+const FLOOD_PONGS: u32 = 200_000;
+
+/// The flood's pongs handled by the game thread, by tick.
+#[derive(Resource, Default)]
+struct IngestedPongs {
+    this_tick: Vec<u32>,
+    /// One entry per tick that handled at least one, in order.
+    per_tick: Vec<Vec<u32>>,
+}
+
+fn count_flooded_pong(
+    event: On<PacketEvent<serverbound::Pong>>,
+    mut ingested: ResMut<IngestedPongs>,
+) {
+    let id = event.packet.id as u32;
+    if id & 0xc000_0000 == FLOOD_TAG {
+        ingested.this_tick.push(id & !FLOOD_TAG);
+    }
+}
+
+fn close_ingest_tick(mut ingested: ResMut<IngestedPongs>) {
+    if !ingested.this_tick.is_empty() {
+        let tick = std::mem::take(&mut ingested.this_tick);
+        ingested.per_tick.push(tick);
+    }
+}
+
+/// Holds the game thread while Alice sends [`FLOOD_PONGS`] pongs, until all
+/// of them wait in the incoming channel, then returns how many the ticks
+/// after that handled, tick by tick, and the throttling warnings logged.
+/// `max_packets_per_tick` is unlimited, so only the time budget can stop a
+/// tick from taking every queued packet.
+async fn ingest_flood(budget_ms: u64) -> (Vec<Vec<u32>>, Vec<String>) {
+    let server = TestServer::builder()
+        .config(move |config| {
+            config
+                .max_packets_per_tick(0)
+                .packet_ingest_budget_ms(budget_ms)
+        })
+        .plugin(|app| {
+            app.init_resource::<IngestedPongs>()
+                .add_observer(count_flooded_pong)
+                .add_systems(Last, close_ingest_tick);
+        })
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    alice.sync().await;
+
+    let (queued, ()) = tokio::join!(
+        server.with_world(|world| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                let waiting = world.resource::<NetworkChannels>().incoming.len();
+                if waiting >= FLOOD_PONGS as usize {
+                    return Ok(waiting);
+                }
+                if Instant::now() > deadline {
+                    return Err(waiting);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }),
+        async {
+            for id in 0..FLOOD_PONGS {
+                alice.send(ServerboundPong { id: FLOOD_TAG | id }).await;
+            }
+        },
+    );
+    let queued = queued.unwrap_or_else(|waiting| {
+        panic!("only {waiting} of the {FLOOD_PONGS} pongs reached the incoming channel")
+    });
+    assert!(queued >= FLOOD_PONGS as usize);
+
+    let per_tick = server
+        .wait_for("every pong of the flood handled", |world| {
+            let ingested = world.resource::<IngestedPongs>();
+            let handled: usize = ingested.per_tick.iter().map(Vec::len).sum();
+            (handled == FLOOD_PONGS as usize).then(|| ingested.per_tick.clone())
+        })
+        .await;
+    let ids: Vec<u32> = per_tick.iter().flatten().copied().collect();
+    assert!(
+        ids.iter().copied().eq(0..FLOOD_PONGS),
+        "every pong handled once, in the order sent"
+    );
+    let throttled = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.message.starts_with("Packet ingest throttled"))
+        .map(|record| record.message)
+        .collect();
+    alice.sync().await;
+    alice.assert_healthy();
+    server.stop().await;
+    (per_tick, throttled)
+}
+
+/// `packet_ingest_budget_ms` on a running server: with a 1 ms budget, a
+/// tick stops draining the incoming channel once the budget is spent, warns,
+/// and the next ticks take the rest, in order and without loss. Without a
+/// budget, the same flood is taken in one tick.
+#[tokio::test]
+async fn the_packet_ingest_budget_spreads_a_flood_over_several_ticks() {
+    let (unlimited, unlimited_warnings) = ingest_flood(0).await;
+    assert_eq!(
+        unlimited.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![FLOOD_PONGS as usize],
+        "without a budget, one tick takes the whole flood"
+    );
+    assert_eq!(unlimited_warnings, Vec::<String>::new());
+
+    let (budgeted, warnings) = ingest_flood(1).await;
+    let sizes: Vec<usize> = budgeted.iter().map(Vec::len).collect();
+    assert!(
+        sizes.len() >= 2,
+        "a 1 ms budget took the flood in {} tick(s): {sizes:?}",
+        sizes.len()
+    );
+    assert!(sizes[0] > 0, "the first tick drained some: {sizes:?}");
+    assert!(!warnings.is_empty(), "throttling is logged");
+    for warning in &warnings {
+        assert!(
+            warning.contains("packet_ingest_budget_ms=1")
+                && warning.contains("max_packets_per_tick=0"),
+            "{warning}"
+        );
+    }
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| !warning.contains("backlog=0")),
+        "a throttled tick leaves a backlog: {warnings:#?}"
+    );
 }

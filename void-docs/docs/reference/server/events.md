@@ -6,18 +6,19 @@ struct with `#[derive(Event)]`, fired with `world.trigger(..)` (or
 `On<T>` observer registered through `app.add_observer(..)`.
 
 ```rust
+use bevy_app::AppExit;
 use voidmc::{On, ServerConfig, VoidServer, events::PlayerJoinEvent};
 
 fn on_join(event: On<PlayerJoinEvent>) {
     tracing::info!(client_id = event.client_id, "Player joined");
 }
 
-fn main() {
+fn main() -> AppExit {
     VoidServer::new(ServerConfig::default())
         .add_plugin(|app| {
             app.add_observer(on_join);
         })
-        .run();
+        .run()
 }
 ```
 
@@ -137,7 +138,7 @@ them. `PlayerQuitEvent` fires however the player leaves:
 |---|---|
 | The client closes the connection, or it drops | When the network thread reports the closed connection, at the next ingest. |
 | Kick (`/kick`, `Players::kick`) | After the `Disconnect` is written and the server has closed the connection, even if the client ignores the packet. |
-| Keep-alive timeout, outbound queue overflow | Same as a kick. |
+| Keep-alive timeout (ready or not), outbound queue overflow | Same as a kick. |
 | Server shutdown (`/stop`, Ctrl-C, `AppExit`) | In the last tick, for every player still connected. |
 
 A client entity despawned by game code gets no quit event; kick it instead (see
@@ -147,8 +148,8 @@ A client entity despawned by game code gets no quit event; kick it instead (see
 
 | Event | Fields | When |
 |---|---|---|
-| `PlayerMoveEvent` | `entity`, `old_x/y/z`, `new_x/y/z` | One per position packet the server accepts (`SetPlayerPos`, or the position of `SetPlayerPosAndRot`), even when it repeats the current position (`old` = `new`; clients resend it periodically). Absolute block coordinates; `Position` already holds `new_*`. Not fired while the player rides (`Mount`), carries `ServerControlledPosition` or has a teleport the client has not confirmed yet (`TeleportState.pending_id`), whose position packets are ignored, nor for server-side moves (`Teleport`, `/tp`, writing `Position`). |
-| `PlayerRotateEvent` | `entity`, `yaw`, `pitch` | One per rotation packet (`SetPlayerRotation`, or the rotation of `SetPlayerPosAndRot`), also unchanged, mounted or server-controlled. Degrees exactly as sent: yaw is not wrapped into ±180. `Rotation` already updated. A `SetPlayerPosAndRot` fires a move and a rotate event. |
+| `PlayerMoveEvent` | `entity`, `old_x/y/z`, `new_x/y/z` | One per position packet the server accepts (`SetPlayerPos`, or the position of `SetPlayerPosAndRot`), even when it repeats the current position (`old` = `new`; clients resend it periodically). Absolute block coordinates; `Position` already holds `new_*`. Not fired while the player rides (`Mount`), carries `ServerControlledPosition` or has a teleport the client has not confirmed yet (`TeleportState.pending_id`), whose movement packets are ignored whole, nor for server-side moves (`Teleport`, `/tp`, writing `Position`). |
+| `PlayerRotateEvent` | `entity`, `yaw`, `pitch` | One per rotation packet (`SetPlayerRotation`, or the rotation of `SetPlayerPosAndRot`), also unchanged, mounted or server-controlled. Not fired while the player has a teleport the client has not confirmed yet (`TeleportState.pending_id`): like vanilla, its movement packets are ignored whole, rotation included. Degrees exactly as sent: yaw is not wrapped into ±180. `Rotation` already updated. A `SetPlayerPosAndRot` fires a move and a rotate event. |
 | `PlayerInputEvent` | `entity`, `forward`, `backward`, `left`, `right`, `jump`, `sneak`, `sprint` | Movement-key state changed; each field is whether the key is held. |
 | `PlayerSneakEvent` | `entity`, `sneaking` | The sneak key in Player Input changed (clients report sneaking there since 1.21.2), right after that packet's `PlayerInputEvent`. |
 | `PlayerSprintEvent` | `entity`, `sprinting` | Player Command start/stop sprinting. |
@@ -159,7 +160,7 @@ A client entity despawned by game code gets no quit event; kick it instead (see
 
 | Event | Fields | When |
 |---|---|---|
-| `ChatMessageEvent` | `entity`, `client_id`, `message` | A chat line not starting with `/`, after `<name> message` was broadcast: an observer sees it but cannot cancel or rewrite it. `message` is the text exactly as sent. |
+| `ChatMessageEvent` | `entity`, `client_id`, `message` | A chat line not starting with `/`, after `<name> message` was sent to every play-state client whose chat is shown: an observer sees it but cannot cancel or rewrite it. `message` is the text exactly as sent. |
 | `ChatCommandEvent` | `entity`, `client_id`, `command`, `args` | A command was enqueued (found or not), from a command packet or a chat line starting with `/` (which fires no `ChatMessageEvent`). Execution happens later in `VoidSystems::CommandDrain`. |
 
 ### Interaction
@@ -167,10 +168,10 @@ A client entity despawned by game code gets no quit event; kick it instead (see
 | Event | Fields | When |
 |---|---|---|
 | `PlayerSwingArmEvent` | `entity`, `hand` | Arm swing animation. |
-| `PlayerInteractEntityEvent` | `entity`, `target_id`, `attack`, `hand`, `target_pos`, `sneaking` | The client sent an Interact packet for an entity. Input only: nothing consumes it, and no attack, damage or knockback is applied. The decoder still expects the pre-26.1 Interact layout (26.1.2 clients send attacks as a separate Attack packet), so `attack`, `hand` and `target_pos` do not yet reflect what a 26.1.2 client clicked. |
-| `PlayerStartDiggingEvent` / `PlayerCancelDiggingEvent` / `PlayerFinishDiggingEvent` | `entity`, `position`, `face`, `sequence` | Block digging state machine, one per packet, whether or not a block is there. Finish (or, in creative, start) is what leads to a break. |
+| `PlayerInteractEntityEvent` | `entity`, `target_id`, `attack`, `hand`, `target_pos`, `sneaking` | The client attacked an entity (Attack packet) or right-clicked one (Interact packet). An attack has `attack: true`, no `hand`, no `target_pos` and `sneaking: false`, since the packet carries only the target. A right-click with either hand has `attack: false`, the `hand`, the hit position relative to the entity in `target_pos` (sent at low precision), and whether the sneak key was pressed. Input only: nothing consumes it, and no attack, damage or knockback is applied. |
+| `PlayerStartDiggingEvent` / `PlayerCancelDiggingEvent` / `PlayerFinishDiggingEvent` | `entity`, `position`, `face`, `sequence` | Block digging state machine, one per packet, whether or not a block is there. Finish (or, in creative, start) is what leads to a break. Not fired for a block out of the player's [reach](../gameplay/items.md#reach): the client is sent the real block and its sequence is acknowledged instead. |
 | `PlayerUseItemEvent` | `entity`, `hand`, `sequence` | Right click in the air, whatever the hand holds (an empty hand too). Fired when the packet arrives, before the use runs in `VoidSystems::ItemUseDrain`; the item is not in the payload, read it from `Inventory` (`held()` or `get(Inventory::OFFHAND)`). |
-| `PlayerUseItemOnBlockEvent` | `entity`, `hand`, `position`, `face`, `cursor_x/y/z`, `inside_block`, `sequence` | Right click on a block, fired like `PlayerUseItemEvent`. `position` is the clicked block, `face` the clicked face, `cursor_*` the hit point on that face (0 to 1). A placement that follows fires `BlockPlaceEvent`. |
+| `PlayerUseItemOnBlockEvent` | `entity`, `hand`, `position`, `face`, `cursor_x/y/z`, `inside_block`, `sequence` | Right click on a block, fired like `PlayerUseItemEvent`. `position` is the clicked block, `face` the clicked face, `cursor_*` the hit point on that face (0 to 1). A placement that follows fires `BlockPlaceEvent`. Not fired for a block out of the player's [reach](../gameplay/items.md#reach). |
 | `PlayerChangeSlotEvent` | `entity`, `slot` | Hotbar selection changed. |
 | `PlayerSwapHandsEvent` | `entity` | Swap main/off hand. |
 | `PlayerDropItemEvent` | `entity`, `drop_stack` | Drop key pressed (`drop_stack` = whole stack). |
@@ -192,6 +193,12 @@ A client entity despawned by game code gets no quit event; kick it instead (see
 | `BlockChangeEvent` | `dimension`, `position`, `old_state`, `new_state`, `source: Option<Entity>` | A block changed through a player break or placement (including `ItemUseContext::place_block`/`set_block`), after the chunk was updated and `BlockUpdate` broadcast: the world already holds `new_state`. Fired just before the matching break or place event. Edits that write chunk data directly (world edit, generators) do not fire it. |
 | `BlockBreakEvent` | `entity`, `dimension`, `position`, `broken_state` | A player broke a block; `broken_state` is the block it had, the world already holds air. Not fired for a dig on air or when an item's `before_break_block` keeps the block. |
 | `BlockPlaceEvent` | `entity`, `dimension`, `position`, `face`, `placed_state` | A block was placed for a player: `position` is where it went (the clicked block offset by `face`) and the world already holds `placed_state`. Also fired by `ItemUseContext::place_block` and `set_block` (with `face` `Top`). Not fired when nothing changes: an empty hand, an item that is not a block, an unloaded chunk or the same state. |
+
+### World storage
+
+| Event | Fields | When |
+|---|---|---|
+| `ChunkLoadFailedEvent` | `dimension`, `pos`, `kind: ChunkLoadErrorKind` (`Decode` or `Io`), `error`, `action: DamagedChunkAction` (`Quarantined(path)` or `SavesSkipped`) | A chunk loader found a stored chunk it could not load, and the chunk was generated instead. Triggered by `voidmc-world-io` at the end of the tick in which the chunk was loaded (startup or streaming). See [Damaged chunks](/reference/server/world-serialization#damaged-chunks). |
 
 ## Firing events from your code
 

@@ -4,10 +4,14 @@
 //! error or panic.
 //!
 //! The test runs the example with its default address (`VOID_LISTEN_ADDR`
-//! unset), so it needs port 25565 free. It fails at once with a clear message
-//! when the port is taken, for instance by an example server left running in
-//! another terminal.
+//! unset), so it needs port 25565 free. Runs of this test on one machine take
+//! turns: each holds an advisory lock on a file in the system temporary
+//! directory while its server runs, so two overlapping `cargo test` runs queue
+//! instead of colliding. The test then waits up to `PORT_WAIT_LIMIT` for the
+//! lock and the port, and fails with a clear message if the port is still
+//! taken, for instance by an example server left running in another terminal.
 
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -26,15 +30,23 @@ const LISTEN_PORT: u16 = 25565;
 /// keeps a hung server from hanging the test run.
 const WAIT_LIMIT: Duration = Duration::from_secs(120);
 
+/// Upper bound on waiting for another run of this test to release the port
+/// lock, then for the port to be free. Another run holds the lock for about a
+/// second; the bound is that of any other wait in the test, so a slow machine
+/// does not fail here, and a server left running fails the test in two
+/// minutes rather than hanging it.
+const PORT_WAIT_LIMIT: Duration = WAIT_LIMIT;
+
+const PORT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 #[test]
 fn example_server_starts_listens_and_keeps_running() {
     let listen_addr = format!("{LISTEN_HOST}:{LISTEN_PORT}");
-    if let Err(error) = TcpListener::bind(&listen_addr) {
-        panic!(
-            "{listen_addr} is not available ({error}); stop whatever listens there \
-             (another voidmc-example?) and run the test again"
-        );
-    }
+    let deadline = Instant::now() + PORT_WAIT_LIMIT;
+    // Declared before the server, so released after the server is stopped and
+    // the port is free again, also when the test fails.
+    let _port_lock = lock_listen_port(deadline);
+    wait_for_free_port(&listen_addr, deadline);
 
     let mut server = ExampleServer::spawn();
 
@@ -79,6 +91,49 @@ fn example_server_starts_listens_and_keeps_running() {
         server.fail(&format!(
             "the server reported a fatal error or panic: {line:?}"
         ));
+    }
+}
+
+/// Takes the machine-wide lock that runs of this test hold while they use
+/// `LISTEN_PORT`, waiting for another run to release it until `deadline`. The
+/// lock lasts until the returned file is dropped, or the process ends.
+fn lock_listen_port(deadline: Instant) -> File {
+    let path = std::env::temp_dir().join(format!("voidmc-example-port-{LISTEN_PORT}.lock"));
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|error| panic!("open the port lock {}: {error}", path.display()));
+    loop {
+        match file.try_lock() {
+            Ok(()) => return file,
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                thread::sleep(PORT_POLL_INTERVAL)
+            }
+            Err(TryLockError::WouldBlock) => panic!(
+                "another run of this test still holds the port lock {} after {PORT_WAIT_LIMIT:?}",
+                path.display()
+            ),
+            Err(TryLockError::Error(error)) => {
+                panic!("lock the port lock {}: {error}", path.display())
+            }
+        }
+    }
+}
+
+/// Waits until `listen_addr` can be bound, failing at `deadline`. Binding then
+/// closing at once leaves no connection behind to keep the port busy.
+fn wait_for_free_port(listen_addr: &str, deadline: Instant) {
+    loop {
+        match TcpListener::bind(listen_addr) {
+            Ok(_) => return,
+            Err(_) if Instant::now() < deadline => thread::sleep(PORT_POLL_INTERVAL),
+            Err(error) => panic!(
+                "{listen_addr} is not available ({error}); stop whatever listens there \
+                 (another voidmc-example?) and run the test again"
+            ),
+        }
     }
 }
 

@@ -28,6 +28,7 @@ Client presses Enter
   handle_command()
   ├── splits raw string → [command_name, args...]
   ├── enqueue_command() → pushes QueuedCommand to CommandQueue resource
+  │                       (the raw line is kept for text arguments)
   └── commands.trigger(ChatCommandEvent)  ← external observers hook here
        │
        ▼
@@ -35,6 +36,7 @@ Client presses Enter
        │  pops each QueuedCommand in FIFO order
        ▼
   dispatch_command()  in  void/src/commands/mod.rs
+  ├── logs "<sender> issued server command: /<name>" (info), the arguments (debug)
   ├── resolves name/alias in CommandRegistry
   ├── flags::extract_flags() — peels off --flags / -f tokens, values parsed with parse_in()
   ├── parse_positional()     — calls ArgParser::parse_in() per argument
@@ -182,7 +184,12 @@ CommandBuilder::new("stop")
     .build();
 ```
 
-The command tree is still sent to every player.
+A player is sent only the commands and subcommands whose requirements accept
+it, in its command tree and in `/help`, like on a vanilla server. The tree is
+built when the player joins and rebuilt when `Operator` is added to or removed
+from it (see [Permissions](#permissions)); a requirement that reads anything
+else applies at once to dispatch and completion, but the client's tree only
+follows at the next join or `Operator` change.
 
 ## CommandContext
 
@@ -222,7 +229,7 @@ the handler reads back with `ctx.get::<T>(name)`.
 |---|---|---|---|
 | `StringArg::single_word()` | `String` | `brigadier:string` (single word) | One word |
 | `StringArg::quotable()` | `String` | `brigadier:string` (quotable) | One word or a quoted phrase |
-| `StringArg::greedy()` / `GreedyStringArg` | `String` | `brigadier:string` (greedy) | The rest of the line |
+| `StringArg::greedy()` / `GreedyStringArg` | `String` | `brigadier:string` (greedy) | The rest of the line, as typed |
 | `BoolArg` | `bool` | `brigadier:bool` | `true/false/yes/no/1/0` |
 | `IntegerArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i32` | `brigadier:integer` + bounds | Bounded integer |
 | `LongArg::new(min, max)` / `::min(min)` / `::unbounded()` | `i64` | `brigadier:long` + bounds | Bounded long |
@@ -244,7 +251,17 @@ the handler reads back with `ctx.get::<T>(name)`.
 | `EnumArg::new([(name, value), ..])` | `T` | `brigadier:string` + `ask_server` | One of the declared names |
 | `ResourceLocationArg` | `String` | `minecraft:resource_location` | `namespace:path` |
 | `SummonableEntityArg` | `String` | `minecraft:resource_location` + `summonable_entities` | Entity type id |
-| `MessageArg` | `String` | `minecraft:message` | Chat message |
+| `MessageArg` | `String` | `minecraft:message` | Chat message, as typed |
+
+A text argument (`GreedyStringArg`, `StringArg::greedy()` or `MessageArg`)
+declared with `arg_variadic` or `arg_variadic_required` receives the rest of
+the line exactly as the player typed it, like a vanilla greedy string:
+`/tell Bob a   b` delivers `a   b`, and trailing spaces are kept. The
+whitespace that separates it from the command and the earlier arguments is
+not part of it, and those arguments are still separated by any run of
+whitespace. Other variadic parsers receive the remaining words joined by
+single spaces, and so does every text argument when `dispatch_command` is
+called directly with a list of arguments, since there is no typed line.
 
 The `voidmc-vanilla-commands` crate adds parsers for the scoreboard family
 (`TeamArg`, `ObjectiveArg`, `ScoreHolderArg`, `OperationArg`, `SlotArg`,
@@ -407,6 +424,54 @@ Pass command names in the `exclude` slice to skip specific defaults:
 register_default_commands(&mut registry, &["kick", "gamemode"]);
 ```
 
+### Permissions
+
+The defaults that act on the world, the server or other players require the
+`Operator` component on the sender: `/broadcast`, `/clear`, `/gamemode`
+(`/gm`), `/give`, `/kick`, `/say`, `/stop`, `/summon` and `/tp`. `/help`,
+`/list`, `/ping`, `/plugins` (`/pl`) and `/tell` (`/msg`) are open to every
+player. A player without `Operator` who runs an operator command gets
+`You do not have permission to use this command` in red, and nothing else
+happens.
+
+Nobody is an operator by default. An application grants it by inserting the
+component on the player's entity and revokes it by removing it, at any time:
+
+```rust
+use voidmc::components::{Operator, PlayerName};
+use voidmc::events::PlayerJoinEvent;
+
+fn op_admins(event: On<PlayerJoinEvent>, names: Query<&PlayerName>, mut commands: Commands) {
+    if names.get(event.entity).is_ok_and(|name| name.0 == "Alice") {
+        commands.entity(event.entity).insert(Operator);
+    }
+}
+```
+
+`Operator` is a marker without a level. Like a vanilla server, VoidMC tells
+each client its permission level with the entity event `24 + level` on the
+client's own player: 4 (`28`) for an operator, 0 (`24`) for anyone else; the
+vanilla client uses it to decide, among other things, whether to offer entity
+selectors such as `@a`. The level and then the player's command tree are sent
+when it joins and again whenever `Operator` is added to or removed from it, so
+its tab completion and `/help` follow at once. Inserting `Operator` on a
+player that already has it sends nothing.
+
+To let other players run a default command, or to restrict it differently,
+exclude it and register your own command under the same name, with your own
+`requires` or none:
+
+```rust
+register_default_commands(&mut registry, &["tp"]);
+registry.register(
+    CommandBuilder::new("tp")
+        .description("Teleport to coordinates")
+        .arg("position", Arc::new(Vec3Arg))
+        .handler(|ctx| { /* ... */ })
+        .build(),
+);
+```
+
 ### Available Default Commands
 
 The Description column is what `/help` shows.
@@ -423,7 +488,7 @@ The Description column is what `/help` shows.
 | `/tell` | `/msg` | Send a private message to a player | `<player:player> <message:text>...` (selectors: `@s`, `@p`, `@r`, name) |
 | `/list` | | List online players | (none) |
 | `/say` | | Send a message as yourself | `<message:text>...` |
-| `/summon` | | Summon an entity at a position | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]` |
+| `/summon` | | Summon an entity at a position | `<entity:resource_location> [position:vec3] [--wander] [--gravity] [--block-checks]`; rejects positions outside the `/tp` bounds (±30,000,000 horizontally, ±20,000,000 vertically) with "Invalid position for summon" |
 | `/give` | | Give yourself an item | `<item:item> [count:integer(1..64)]` |
 | `/clear` | | Clear your inventory | (none) |
 | `/stop` | | Gracefully stop the server | (none) |
@@ -432,7 +497,9 @@ The Description column is what `/help` shows.
 down cleanly. Plugins that clean up on shutdown — such as
 [world serialization](/reference/server/world-serialization), which flushes
 dirty chunks — react to the same signal. Ctrl-C (SIGINT), SIGTERM and SIGHUP
-stop the server the same way.
+stop the server the same way. `VoidServer::run` then returns `AppExit::Success`
+after `/stop` and `AppExit::from_code(130)` after a signal (see
+[Stopping and the exit code](/reference/server/configuration#stopping-and-the-exit-code)).
 
 `/kick` sends the reason in a `Disconnect` packet, then the server closes the
 connection itself, so a client that ignores the packet does not stay in the
@@ -441,23 +508,27 @@ game (see [Kicking a player](/reference/server/sending-packets#kicking-a-player)
 The player-management commands answer as follows. Every player counts as
 online once it is ready (it has loaded the world), the same set the tab list
 and the server-list player count show; a player still loading is not listed
-and cannot be named as a target. The default commands have no permission
-requirement: any player can run them. To restrict one, exclude it and register
-your own version with `requires`.
+and cannot be named as a target. `/list` and `/tell` are open to every
+player; `/broadcast`, `/say` and `/kick` require `Operator` (see
+[Permissions](#permissions)).
 
 | Command | Sender sees | Others see |
 |---|---|---|
 | `/list` | `There are 2 player(s) online: Alice, Bob` (`There are 0 player(s) online.` when empty) | nothing |
 | `/tell Bob hi` | `You whisper to Bob: hi` | Bob only: `Alice whispers to you: hi` (gray) |
 | `/broadcast hi` | `[Broadcast] hi` | every online player: `[Broadcast] hi` |
+| `/say hi` | `[Alice] hi` | every online player: `[Alice] hi` |
 | `/kick Bob [reason]` | `Kicked Bob (reason: ...)` | Bob is disconnected with the reason in red (default `Kicked by an operator`); the others see Bob leave the world and the tab list |
 
 Errors (unknown or missing player, missing text) go to the sender only, in
-red, followed by the usage line. `/tell` and `/broadcast` refuse a message
-containing a `§` formatting code or a control character (`Illegal characters
-in chat`), as a vanilla server does, so the line shows exactly as typed.
-Message words are joined by single spaces: runs of spaces and line breaks in
-the command become one space.
+red, followed by the usage line. `/tell`, `/broadcast` and `/say` refuse a
+message, and `/kick` a reason, containing a `§` formatting code or a control
+character (`Illegal characters in chat`), as a vanilla server does, so the
+line shows exactly as typed. A refused message reaches nobody and a refused
+`/kick` kicks nobody.
+The text is kept as typed, runs of spaces included (`/tell Bob a   b`
+delivers `a   b`); a tab or a line break in it is a control character, so the
+message is refused.
 
 `/summon` accepts only full namespaced entity IDs and validates them against
 the server's versioned `minecraft:entity_type` data. Coordinates are grouped:
@@ -469,7 +540,9 @@ The optional `--wander` flag attaches the demo random-walk behavior to the
 summoned entity. `--gravity` enables the simple server-side vertical physics,
 and `--block-checks` enables world block collision checks for that physics
 step. These flags are stored as ECS movement components and synchronized by the
-non-player entity lifecycle.
+non-player entity lifecycle. With `--gravity` alone the entity falls through
+blocks, and it is removed once it is more than 64 blocks below the bottom of
+the world (see [Entities](/reference/gameplay/entities#gravity-and-block-collision)).
 
 `/give` tops up matching stacks first, then fills empty slots (hotbar before
 the main inventory), never past the item's maximum stack size: 20 ender pearls
@@ -508,8 +581,9 @@ command, and the server accepts those ids.
 
 The server keeps applying the rules of the configured
 [`game_mode`](../server/configuration.md) to every player: block
-breaking and the creative-only inventory clicks (cloning a stack,
-middle-button drags) follow it, not `/gamemode`. On a Survival
+breaking, the reach of a click on a block, the item a placed block uses up,
+and the creative-only inventory clicks (cloning a stack, middle-button drags)
+follow it, not `/gamemode`. On a Survival
 server, a player shown Creative removes a block locally when it starts digging,
 but the server treats that as the start of a survival dig, so the block comes
 back. The mode is not stored either: a player who reconnects starts in the
@@ -550,10 +624,13 @@ and to nobody else.
   a command registered after the player joined is listed too. Each command
   appears once under its name; aliases are not listed, but they are in the
   client's command tree and `/help <alias>` shows their command. Commands whose
-  `requires` refuses the player are listed as well. There are no pages.
+  `requires` refuses the player are left out, such as the
+  [operator commands](#permissions) for a player without `Operator`. There
+  are no pages.
 - `/help <command>` (a name or an alias) shows `--- /name ---`, the
-  description and `  Usage: <usage>`. Any other word, a page number included,
-  gets `Unknown command: /<word>` in red.
+  description and `  Usage: <usage>`. Any other word, a page number or a
+  command the player may not run included, gets `Unknown command: /<word>` in
+  red, the word echoed like an unknown command name (see below).
 - `/ping` answers `Pong!`.
 
 Invalid input gets a reply and never disconnects the player:
@@ -566,8 +643,10 @@ Invalid input gets a reply and never disconnects the player:
 | A command whose `requires` refuses the player | `You do not have permission to use this command` in red |
 
 Whitespace around and between words is ignored: `/ help  ping ` runs
-`/help ping`. An unknown name is echoed as typed, at any length the packet
-allows; a vanilla client shows `§` codes in it as formatting.
+`/help ping`. An unknown name is echoed at any length the packet allows,
+without its `§` formatting codes (each `§` and the character after it, which
+a vanilla client reads as one code) and control characters: `/§cnope` gets
+`Unknown command: /nope`, in plain red.
 
 ### Example-only Commands
 
@@ -590,7 +669,7 @@ stay local to `void-example`.
 
 ## Tab-Completion
 
-The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to each client as it enters the play state, right after the `Login` packet. This provides:
+The server automatically builds a Minecraft protocol command tree from the `CommandRegistry` and sends it to each client as it enters the play state, right after the `Login` packet and the client's permission level. Each player's tree holds only the commands it may run (see [Requirements](#requirements)). This provides:
 
 - Command name completion (typing `/` shows all commands)
 - Client-side validation and completion for every vanilla parser in the table
@@ -611,7 +690,8 @@ The server automatically builds a Minecraft protocol command tree from the `Comm
 - Subcommand literals, completed locally by the client; `complete` walks the
   literals typed so far before picking the argument under the cursor
 
-The command tree is rebuilt from the registry each time a client joins.
+The command tree is rebuilt from the registry each time a client joins, and
+for one player whenever `Operator` is added to or removed from it.
 
 No default command has a `minecraft:ask_server` argument, so a vanilla client
 completes them without asking the server. When a client does send

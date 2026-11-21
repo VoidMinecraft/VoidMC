@@ -5,7 +5,7 @@
 //! # async fn demo() {
 //! use voidmc_e2e::TestServer;
 //!
-//! let server = TestServer::start().await;
+//! let server = TestServer::builder().operators().start().await;
 //! let alice = server.join("Alice").await;
 //! alice.command("tp 0 100 0").await;
 //! alice.sync().await;
@@ -14,6 +14,7 @@
 //! ```
 
 mod bot;
+pub mod clicks;
 pub mod load;
 mod logs;
 mod server;
@@ -22,7 +23,7 @@ mod view;
 use std::future::Future;
 use std::time::Duration;
 
-pub use bot::{Bot, BotOptions, JoinTranscript};
+pub use bot::{Bot, BotOptions, ConfiguringClient, JoinTranscript, LoginRefused, SilentPlayer};
 pub use logs::LogRecord;
 pub use server::{TestServer, TestServerBuilder};
 pub use view::{ClientView, SeenEntity};

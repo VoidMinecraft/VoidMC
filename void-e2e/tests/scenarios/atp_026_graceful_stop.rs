@@ -2,15 +2,18 @@
 //!
 //! A player breaks a block on a server whose periodic save never fires, then
 //! runs `/stop`. The server has to stop on its own, save the dirty chunk while
-//! shutting down and log no error; a second server over the same world
-//! directory has to serve the broken block as air. The signal paths (Ctrl-C,
-//! SIGTERM, SIGHUP) cannot be reached in-process:
+//! shutting down, log no error and return `AppExit::Success` from
+//! `VoidServer::run` (exit code 0 for a `main` that returns it); a second
+//! server over the same world directory has to serve the broken block as air.
+//! The signal paths (Ctrl-C, SIGTERM, SIGHUP) cannot be reached in-process:
 //! `void-world-io/tests/graceful_stop.rs` sends those signals to a server
-//! running in its own process.
+//! running in its own process, and `void-example/tests/diagnostics.rs` checks
+//! the exit code 130 they give the example server.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use bevy_app::AppExit;
 use voidmc_e2e::core::direction::Direction;
 use voidmc_e2e::protocol::packets::game::{
     ClientboundGamePacket,
@@ -61,7 +64,7 @@ fn persistent(world: &TempWorld) -> TestServerBuilder {
 async fn stop_command_saves_dirty_chunks_and_stops_the_server() {
     let world = TempWorld::new();
 
-    let server = persistent(&world).start().await;
+    let server = persistent(&world).operators().start().await;
     let alice = server.join("Alice").await;
     let broken = ground(&alice);
     alice
@@ -87,8 +90,9 @@ async fn stop_command_saves_dirty_chunks_and_stops_the_server() {
 
     alice.command("stop").await;
     // The harness does not ask the server to stop: `/stop` alone has to end
-    // the game loop, without a panic or a logged error.
-    server.wait_for_exit().await;
+    // the game loop, without a panic or a logged error, and report a success.
+    let exit = server.wait_for_exit().await;
+    assert_eq!(exit, AppExit::Success, "VoidServer::run returned {exit:?}");
     // Shutting down closes Alice's connection, so only her view is checked.
     assert_eq!(alice.anomalies(), Vec::<String>::new());
     alice.disconnect().await;

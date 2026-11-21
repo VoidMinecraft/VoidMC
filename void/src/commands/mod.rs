@@ -74,6 +74,13 @@ impl Command {
             .collect::<Vec<_>>()
             .join("|")
     }
+
+    /// Whether this command's own requirement, if any, accepts `executor`.
+    fn permits(&self, world: &World, executor: Entity) -> bool {
+        self.requirement
+            .as_ref()
+            .is_none_or(|requirement| requirement(world, executor))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +230,11 @@ impl CommandBuilder {
     }
 
     /// Who may run this command (and its subcommands): checked before any
-    /// argument is parsed or completed, like brigadier's `requires`.
+    /// argument is parsed or completed, like brigadier's `requires`. A player
+    /// it refuses does not find the command in its command tree nor in
+    /// `/help`; the tree is built at join and when `Operator` is added or
+    /// removed, so a requirement on anything else is not re-sent when that
+    /// changes.
     pub fn requires(
         mut self,
         requirement: impl Fn(&World, Entity) -> bool + Send + Sync + 'static,
@@ -633,12 +644,14 @@ fn literal_node(name: &str, is_executable: bool, children: Vec<i32>) -> CommandN
     }
 }
 
-/// Appends `command`'s literal, argument chain and subcommands; returns the
-/// literal node indices (name then aliases) for the parent to adopt.
+/// Appends `command`'s literal, argument chain and the subcommands `permits`
+/// accepts; returns the literal node indices (name then aliases) for the
+/// parent to adopt.
 fn append_command(
     nodes: &mut Vec<CommandNode>,
     command: &Command,
     inherited_flags: &[FlagDefinition],
+    permits: &dyn Fn(&Command) -> bool,
 ) -> Vec<i32> {
     let flags: Vec<FlagDefinition> = inherited_flags
         .iter()
@@ -681,8 +694,8 @@ fn append_command(
         tail = index;
     }
 
-    for subcommand in &command.subcommands {
-        let literals = append_command(nodes, subcommand, &flags);
+    for subcommand in command.subcommands.iter().filter(|sub| permits(sub)) {
+        let literals = append_command(nodes, subcommand, &flags, permits);
         nodes[tail as usize].children.extend(literals);
     }
 
@@ -914,7 +927,10 @@ impl CommandRegistry {
     /// dropped before invoking.
     fn resolve_handler(&self, name: &str, args: &[String]) -> Resolved {
         let Some(cmd) = self.resolve(name).and_then(|name| self.commands.get(name)) else {
-            return Resolved::NotFound(format!("Unknown command: /{}", name));
+            return Resolved::NotFound(format!(
+                "Unknown command: /{}",
+                defaults::strip_illegal_characters(name)
+            ));
         };
         let walk = Walk::new(cmd, args);
         let node = walk.node();
@@ -983,8 +999,29 @@ impl CommandRegistry {
             .map(|c| c.usage.clone().unwrap_or_else(|| auto_usage(&[c])))
     }
 
-    /// Build the clientbound Commands packet from the registry.
+    /// Build the clientbound Commands packet from the registry: every
+    /// command, whoever may run it. What a player is sent is
+    /// [`CommandRegistry::build_command_tree_for`].
     pub fn build_command_tree(&self) -> Commands {
+        self.command_tree(&|_| true)
+    }
+
+    /// The Commands packet for `executor`: only the commands and subcommands
+    /// whose [`CommandBuilder::requires`] accepts it, like the tree a vanilla
+    /// server sends each player.
+    pub fn build_command_tree_for(&self, world: &World, executor: Entity) -> Commands {
+        self.command_tree(&|command| command.permits(world, executor))
+    }
+
+    /// Whether `executor` may run the command named `name` (or an alias of
+    /// it): `false` for an unknown command.
+    pub fn can_use(&self, name: &str, world: &World, executor: Entity) -> bool {
+        self.resolve(name)
+            .and_then(|name| self.commands.get(name))
+            .is_some_and(|command| command.permits(world, executor))
+    }
+
+    fn command_tree(&self, permits: &dyn Fn(&Command) -> bool) -> Commands {
         let mut nodes: Vec<CommandNode> = vec![CommandNode {
             node_type: 0, // root
             is_executable: false,
@@ -996,8 +1033,8 @@ impl CommandRegistry {
         }];
 
         let mut root_children: Vec<i32> = Vec::new();
-        for cmd in self.commands.values() {
-            root_children.extend(append_command(&mut nodes, cmd, &[]));
+        for cmd in self.commands.values().filter(|cmd| permits(cmd)) {
+            root_children.extend(append_command(&mut nodes, cmd, &[], permits));
         }
         nodes[0].children = root_children;
 
@@ -1059,11 +1096,38 @@ fn auto_usage(path: &[&Command]) -> String {
 // Parsing pipeline
 // ---------------------------------------------------------------------------
 
-/// Parse positional tokens against argument definitions.
+/// Whether `parser` reads text: as a variadic argument, it takes the rest of
+/// the line as typed, like a vanilla greedy string or message.
+fn reads_text(parser: &dyn ArgParser) -> bool {
+    matches!(
+        parser.protocol_parser(),
+        Some(Parser::String(StringType::GreedyPhrase) | Parser::Message)
+    )
+}
+
+/// The end of `line` from the word that starts `tail`, as typed (runs of
+/// whitespace and trailing whitespace kept), when `tail` is the line's last
+/// whitespace-separated words.
+fn typed_tail<'a>(line: &'a str, tail: &[String]) -> Option<&'a str> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let words = &words[words.len().checked_sub(tail.len())?..];
+    if !words.iter().copied().eq(tail.iter().map(String::as_str)) {
+        return None;
+    }
+    // The words are subslices of `line`: the first one's offset is where
+    // the tail starts.
+    let start = words.first()?.as_ptr() as usize - line.as_ptr() as usize;
+    Some(&line[start..])
+}
+
+/// Parse positional tokens against argument definitions. With the `line`
+/// the tokens were split from, a variadic text argument takes its words as
+/// typed instead of joined by single spaces.
 fn parse_positional(
     tokens: &[String],
     definitions: &[(String, Arc<dyn ArgParser>, bool, bool)], // (name, parser, required, variadic)
     ctx: &ParseContext<'_>,
+    line: Option<&str>,
 ) -> Result<HashMap<String, Box<dyn Any + Send + Sync>>, Vec<ParseError>> {
     let mut parsed = HashMap::new();
     let mut errors = Vec::new();
@@ -1071,9 +1135,14 @@ fn parse_positional(
 
     for (name, parser, required, variadic) in definitions {
         if *variadic {
-            // Consume all remaining tokens, joined by spaces
+            // Consume all remaining tokens: text as typed, anything else
+            // joined by spaces.
             if token_idx < tokens.len() {
-                let remaining = tokens[token_idx..].join(" ");
+                let tail = &tokens[token_idx..];
+                let remaining = line
+                    .filter(|_| reads_text(parser.as_ref()))
+                    .and_then(|line| typed_tail(line, tail))
+                    .map_or_else(|| tail.join(" "), str::to_string);
                 match parser.parse_in(&remaining, ctx) {
                     Ok(val) => {
                         parsed.insert(name.clone(), val);
@@ -1153,6 +1222,37 @@ pub struct CommandQueue(pub VecDeque<QueuedCommand>);
 #[derive(Resource, Default)]
 pub struct CommandEnqueueSequence(pub u64);
 
+/// The line a player typed for each queued command, by its `sequence`: its
+/// text arguments are taken from it as typed. Entries are dropped once the
+/// queue is drained.
+#[derive(Resource, Default)]
+pub(crate) struct CommandLines(HashMap<u64, String>);
+
+/// Queues the command a player typed as `line` (without the `/`), split on
+/// whitespace into its name and arguments, which it returns.
+pub(crate) fn enqueue_command_line(
+    queue: &mut CommandQueue,
+    sequence: &mut CommandEnqueueSequence,
+    lines: &mut CommandLines,
+    client_id: u32,
+    entity: Entity,
+    line: &str,
+) -> (String, Vec<String>) {
+    let mut words = line.split_whitespace().map(String::from);
+    let command = words.next().unwrap_or_default();
+    let args: Vec<String> = words.collect();
+    lines.0.insert(sequence.0, line.to_string());
+    enqueue_command(
+        queue,
+        sequence,
+        client_id,
+        entity,
+        command.clone(),
+        args.clone(),
+    );
+    (command, args)
+}
+
 pub fn enqueue_command(
     queue: &mut CommandQueue,
     sequence: &mut CommandEnqueueSequence,
@@ -1183,6 +1283,9 @@ pub fn drain_command_queue(world: &mut World) {
         let Some(queued) = queued else {
             break;
         };
+        let line = world
+            .get_resource_mut::<CommandLines>()
+            .and_then(|mut lines| lines.0.remove(&queued.sequence));
 
         if !world.entities().contains(queued.entity) {
             tracing::debug!(
@@ -1193,16 +1296,21 @@ pub fn drain_command_queue(world: &mut World) {
             continue;
         }
 
-        dispatch_command(
+        dispatch(
             world,
             queued.client_id,
             queued.entity,
             &queued.command,
             queued.args,
+            line.as_deref(),
         );
 
         // Preserve command-to-command ordering for deferred side effects.
         world.flush();
+    }
+    // Every queued command has run: a line left over belongs to none.
+    if let Some(mut lines) = world.get_resource_mut::<CommandLines>() {
+        lines.0.clear();
     }
 }
 
@@ -1210,7 +1318,8 @@ pub fn drain_command_queue(world: &mut World) {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// Resolve and execute a command with the full parsing pipeline.
+/// Resolve and execute a command with the full parsing pipeline. A
+/// variadic text argument gets the remaining `args` joined by single spaces.
 pub fn dispatch_command(
     world: &mut World,
     client_id: u32,
@@ -1218,11 +1327,30 @@ pub fn dispatch_command(
     command_name: &str,
     args: Vec<String>,
 ) {
-    tracing::info!(
-        "[DISPATCH_COMMAND_CALLED] command='{}', args={:?}",
-        command_name,
-        args
-    );
+    dispatch(world, client_id, entity, command_name, args, None);
+}
+
+/// [`dispatch_command`], given the `line` the player typed when there is
+/// one: a variadic text argument then takes its words from it as typed.
+fn dispatch(
+    world: &mut World,
+    client_id: u32,
+    entity: Entity,
+    command_name: &str,
+    args: Vec<String>,
+    line: Option<&str>,
+) {
+    let sender = world
+        .get::<PlayerName>(entity)
+        .map_or_else(|| format!("{entity}"), |name| name.0.clone());
+    let name = command_name.escape_debug();
+    tracing::info!("{sender} issued server command: /{name}");
+    tracing::debug!("{sender} ran /{name} with arguments {args:?}");
+    // The line is used only while it still splits into these words.
+    let line = line.filter(|line| {
+        line.split_whitespace()
+            .eq(std::iter::once(command_name).chain(args.iter().map(String::as_str)))
+    });
     // Step 1: borrow registry immutably to clone handler + definitions
     let resolved = world
         .resource::<CommandRegistry>()
@@ -1282,7 +1410,7 @@ pub fn dispatch_command(
     }
     positional.extend(res.after_separator.iter().cloned());
 
-    match parse_positional(&positional, &res.arguments, &ctx) {
+    match parse_positional(&positional, &res.arguments, &ctx, line) {
         Ok(parsed_args) => {
             let Some(handler) = &res.handler else {
                 fail(
@@ -1624,7 +1752,7 @@ mod tests {
             .collect();
         let tokens: Vec<String> = ["1", "2", "3", "4"].into_iter().map(String::from).collect();
 
-        let errors = parse_positional(&tokens, &definitions, &ctx).unwrap_err();
+        let errors = parse_positional(&tokens, &definitions, &ctx, None).unwrap_err();
         assert!(matches!(
             errors.as_slice(),
             [ParseError::TooManyArguments {
@@ -2111,6 +2239,73 @@ mod tests {
     }
 
     #[test]
+    fn dispatching_a_list_of_arguments_joins_greedy_text_with_single_spaces() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let note = CommandBuilder::new("note")
+            .arg("topic", StringArg::single_word())
+            .arg_variadic_required("text", Arc::new(crate::GreedyStringArg))
+            .handler(move |ctx| {
+                let text = ctx.get::<String>("text").cloned().unwrap_or_default();
+                record.lock().unwrap().push(text);
+            })
+            .build();
+        let (mut world, player) = echo_world(note);
+        for args in [
+            vec!["idea", "a", "b", "c"],
+            vec!["idea", "a  b", "c"],
+            vec!["idea", "a", "", "b"],
+        ] {
+            let args = args.into_iter().map(String::from).collect();
+            dispatch_command(&mut world, 1, player, "note", args);
+        }
+        assert_eq!(*seen.lock().unwrap(), vec!["a b c", "a  b c", "a  b"]);
+    }
+
+    #[test]
+    fn a_typed_line_gives_text_arguments_their_spacing() {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let note = |name: &str, parser: Arc<dyn ArgParser>| {
+            let record = Arc::clone(&seen);
+            CommandBuilder::new(name)
+                .arg("topic", StringArg::single_word())
+                .arg_variadic_required("text", parser)
+                .handler(move |ctx| {
+                    let text = ctx.get::<String>("text").cloned().unwrap_or_default();
+                    record.lock().unwrap().push(text);
+                })
+                .build()
+        };
+        let (mut world, player) = echo_world(note("note", StringArg::greedy()));
+        world
+            .resource_mut::<CommandRegistry>()
+            .register(note("words", StringArg::single_word()));
+        world.init_resource::<CommandQueue>();
+        world.init_resource::<CommandEnqueueSequence>();
+        world.init_resource::<CommandLines>();
+        let enqueue = |world: &mut World, line: &str| {
+            world.resource_scope(|world, mut queue: Mut<CommandQueue>| {
+                world.resource_scope(|world, mut sequence: Mut<CommandEnqueueSequence>| {
+                    let mut lines = world.resource_mut::<CommandLines>();
+                    enqueue_command_line(&mut queue, &mut sequence, &mut lines, 1, player, line);
+                });
+            });
+        };
+
+        enqueue(&mut world, " note  idea  a \u{a0} b  ");
+        // Only text parsers take the line as typed.
+        enqueue(&mut world, "words idea a   b");
+        // A queued command rewritten since it was typed no longer matches
+        // its line: its words are joined.
+        enqueue(&mut world, "note idea a   b");
+        world.resource_mut::<CommandQueue>().0[2].args[1] = "c".into();
+        drain_command_queue(&mut world);
+
+        assert_eq!(*seen.lock().unwrap(), vec!["a \u{a0} b  ", "a b", "c b"]);
+        assert!(world.resource::<CommandLines>().0.is_empty());
+    }
+
+    #[test]
     fn a_leading_flag_still_reaches_a_greedy_only_command() {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = Arc::clone(&seen);
@@ -2165,6 +2360,53 @@ mod tests {
             registry.complete("/gate ", &world, player).unwrap().matches,
             vec!["open"]
         );
+    }
+
+    #[test]
+    fn a_player_tree_holds_only_the_commands_and_subcommands_it_may_run() {
+        let gate = CommandBuilder::new("gate")
+            .alias("g")
+            .subcommand(CommandBuilder::new("open").handler(|_| {}))
+            .subcommand(
+                CommandBuilder::new("admin")
+                    .requires(|_, _| false)
+                    .handler(|_| {}),
+            )
+            .build();
+        let (mut world, player) = echo_world(gate);
+        world.resource_mut::<CommandRegistry>().register(
+            CommandBuilder::new("secret")
+                .alias("s")
+                .requires(|_, _| false)
+                .handler(|_| {})
+                .build(),
+        );
+        let registry = world.resource::<CommandRegistry>();
+        let names = |tree: &Commands, parent: i32| -> Vec<String> {
+            let mut names: Vec<String> = tree.nodes[parent as usize]
+                .children
+                .iter()
+                .filter_map(|child| tree.nodes[*child as usize].name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let full = registry.build_command_tree();
+        assert!(names(&full, 0).contains(&"secret".to_string()));
+        assert_eq!(
+            names(&full, child_named(&full, 0, "gate")),
+            ["admin", "open"]
+        );
+
+        let own = registry.build_command_tree_for(&world, player);
+        assert!(!names(&own, 0).contains(&"secret".to_string()));
+        assert!(!names(&own, 0).contains(&"s".to_string()));
+        assert_eq!(names(&own, child_named(&own, 0, "gate")), ["open"]);
+        assert_eq!(names(&own, child_named(&own, 0, "g")), ["open"]);
+        assert!(registry.can_use("g", &world, player));
+        assert!(!registry.can_use("s", &world, player));
+        assert!(!registry.can_use("nope", &world, player));
     }
 
     fn with_flags(mut builder: CommandBuilder, letters: &str) -> CommandBuilder {

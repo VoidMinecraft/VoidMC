@@ -4,10 +4,14 @@
 //! `CommandRegistry` from a plugin, without touching framework code.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use bevy_app::App;
 use bevy_ecs::prelude::*;
-use voidmc::{Command, CommandBuilder, CommandRegistry, IntegerArg};
+use voidmc::{
+    ArgParser, Command, CommandBuilder, CommandRegistry, GreedyStringArg, IntegerArg, MessageArg,
+    StringArg,
+};
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 use voidmc_e2e::protocol::packets::game::c_commands::{
     BrigadierNodeStub, BrigadierParser, NodeType,
@@ -234,11 +238,17 @@ async fn wave_is_absent(server: &TestServer) -> BTreeSet<String> {
 async fn restarting_without_the_registration_removes_the_command() {
     let with_command = |builder: TestServerBuilder| builder.plugin(waves_app).command(wave_command);
 
-    let server = with_command(TestServer::builder()).start().await;
+    let server = with_command(TestServer::builder().operators())
+        .start()
+        .await;
     let registered = wave_is_registered(&server).await;
     server.stop().await;
 
-    let server = TestServer::builder().plugin(waves_app).start().await;
+    let server = TestServer::builder()
+        .operators()
+        .plugin(waves_app)
+        .start()
+        .await;
     let unregistered = wave_is_absent(&server).await;
     server.stop().await;
 
@@ -260,9 +270,79 @@ async fn restarting_without_the_registration_removes_the_command() {
 #[tokio::test]
 async fn command_registered_from_a_plugin_is_discovered_and_runs() {
     let server = TestServer::builder()
+        .operators()
         .plugin(waves_app_with_command)
         .start()
         .await;
     wave_is_registered(&server).await;
+    server.stop().await;
+}
+
+/// `/<name> <topic> [--loud|-l] <text>...`, whose handler replies with what
+/// it was given, quoted: the text argument uses `parser`.
+fn note_command(name: &str, parser: Arc<dyn ArgParser>) -> Command {
+    CommandBuilder::new(name)
+        .description("Pin a note to a topic")
+        .arg("topic", StringArg::single_word())
+        .flag("loud", Some('l'), "Shout the note")
+        .arg_variadic_required("text", parser)
+        .handler(|ctx| {
+            let topic = ctx.get::<String>("topic").expect("a required argument");
+            let text = ctx.get::<String>("text").expect("a required argument");
+            let loud = ctx.flag("loud");
+            ctx.reply(&format!("topic={topic:?} loud={loud} text={text:?}"));
+        })
+        .build()
+}
+
+/// A text argument of an application's command gets the rest of the line as
+/// the player typed it, like a vanilla greedy string, with every kind of
+/// text parser; the other arguments and the flags are read as before.
+#[tokio::test]
+async fn a_text_argument_gets_the_rest_of_the_line_as_typed() {
+    let server = TestServer::builder()
+        .command(|| note_command("note", Arc::new(GreedyStringArg)))
+        .command(|| note_command("memo", StringArg::greedy()))
+        .command(|| note_command("shout", Arc::new(MessageArg)))
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+
+    for name in ["note", "memo", "shout"] {
+        for (line, expected) in [
+            ("idea a   b", r#"topic="idea" loud=false text="a   b""#),
+            (
+                "   idea    a   b",
+                r#"topic="idea" loud=false text="a   b""#,
+            ),
+            ("idea a b  ", r#"topic="idea" loud=false text="a b  ""#),
+            ("idea a\tb", r#"topic="idea" loud=false text="a\tb""#),
+            // A flag before the text is still a flag ...
+            (
+                "idea --loud a   b",
+                r#"topic="idea" loud=true text="a   b""#,
+            ),
+            ("-l  idea  a  b", r#"topic="idea" loud=true text="a  b""#),
+            // ... one after its first word is text, as before ...
+            (
+                "idea a  --loud  b",
+                r#"topic="idea" loud=false text="a  --loud  b""#,
+            ),
+            // ... and `--` ends the flags: what follows is kept verbatim.
+            (
+                "idea --  --loud   b",
+                r#"topic="idea" loud=false text="--loud   b""#,
+            ),
+        ] {
+            let command = format!("{name} {line}");
+            let reply = reply_to(&alice, &command, "the note reply", |text| {
+                text.starts_with("topic=")
+            })
+            .await;
+            assert_eq!(reply, expected, "/{command:?}");
+        }
+    }
+
+    alice.assert_healthy();
     server.stop().await;
 }

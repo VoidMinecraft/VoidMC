@@ -51,6 +51,7 @@ fn broadcast_health(players: Players, mobs: Query<(&MinecraftEntityId, &Health, 
 | `ready()` → `Recipients` | Snapshot of ready players; chain `except`, `in_dimension`, `visible_from(Option<DimensionId>)`, `seeing_chunk`, `filter`, then `send`. |
 | `Recipients::send_except(entity, packet)` / `send_where(pred, packet)` | Same as above without consuming or allocating — for loops. |
 | `kick(entity, reason)` | Disconnects one client; see [Kicking a player](#kicking-a-player). |
+| `kick_with(entity, DisconnectReason)` | Same, with a translated or literal reason. |
 
 `Recipient` exposes `entity()`, `client_id()`, `dimension()`,
 `visible_from(Option<DimensionId>)` and `sees_chunk(dimension, chunk)` to predicates.
@@ -160,13 +161,27 @@ fn ban_hammer(event: On<PlayerReadyEvent>, names: Query<&PlayerName>, players: P
 }
 ```
 
-`Players::kick(entity, reason)` (and `WorldPlayers::kick`) sends a play-state
-`Disconnect` with `reason` in red (clients still in login or configuration are
-just disconnected), then closes the connection whether or not the client
-cooperates. Nothing is sent to the client afterwards and a second call does
-nothing. The disconnect is then handled like any other, at the next network
-ingest: `PlayerQuitEvent` for a player who joined, then despawn. The `/kick`
-command uses it, and the keep-alive timeout disconnects the same way.
+`Players::kick(entity, reason)` (and `WorldPlayers::kick`) sends the
+disconnect packet of the client's state with `reason` in red: the play-state
+`Disconnect`, the configuration-state `Disconnect`, or the login-state
+`LoginDisconnect` (a client still in the handshake or status state, which has
+none, is just disconnected). It then closes the connection whether or
+not the client cooperates. Nothing is sent to the client afterwards and a
+second call does nothing. The disconnect is then handled like any other, at the
+next network ingest: `PlayerQuitEvent` for a player who joined, then despawn.
+The `/kick` command uses it, and the keep-alive timeout disconnects the same
+way.
+
+`kick_with(entity, DisconnectReason)` does the same with any reason:
+`DisconnectReason::text(..)` is what `kick` sends, and
+`DisconnectReason::translatable(key)` names a key of the client's language
+file, which the client shows in its own language. The login plugin refuses a
+login past `max_players` with `kick_with(entity, DisconnectReason::server_full())`
+(vanilla's `multiplayer.disconnect.server_full`, "The server is full!"), and a
+connection that has not reached the play state within the
+[pre-play timeout](../protocol/networking.md#pre-play-timeout) is disconnected
+with `DisconnectReason::slow_login()` (`multiplayer.disconnect.slow_login`,
+"Took too long to log in").
 
 Do not despawn a client entity to get rid of a player: the framework then
 closes its connection and drops its later packets, but no `PlayerQuitEvent`
@@ -186,7 +201,7 @@ inside one schedule.
 | `MenuClickDrain` | `Update` | Fire `MenuClickEvent` and menu `on_click` handlers (see [Menus](../gameplay/menus.md)). |
 | `KeepAlive` | `Update` | Send `KeepAlive`. After `CommandDrain`. |
 | `TeleportBarrier` | `Update` | Advance in-flight `Teleport`s (ping fence, position sync, release). After `CommandDrain`. |
-| `EntitySimulation` | `Update` | Settle spawns, wander, physics. After `KeepAlive`. |
+| `EntitySimulation` | `Update` | Remove entities fallen out of the world, settle spawns, wander, physics. After `KeepAlive`. |
 | `ItemPickup` | `Update` | Pickup-delay ticking and item pickup. |
 | `EntityBroadcast` | `PostUpdate` | Spawn / movement / motion / metadata packets for non-player entities. |
 | `PlayerBroadcast` | `PostUpdate` | Other players' movement, head rotation and crouch. |

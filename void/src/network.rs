@@ -9,13 +9,15 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use flume::{Receiver, Sender};
 use tracing::instrument;
+use voidmc_codec::{Decode, DecodeError, Tagged};
 use voidmc_net::socket::Packet;
 use voidmc_protocol::serverbound;
 
 use crate::components::{Client, ClientId, ConnectionState};
 use crate::config::ServerConfigResource;
 use crate::events::PlayerQuitEvent;
-use crate::observability::TelemetryHandle;
+use crate::observability::{Telemetry, TelemetryHandle};
+use crate::players::{DisconnectReason, WorldPlayers};
 use crate::schedule::VoidSystems;
 
 pub struct IncomingPacket {
@@ -32,6 +34,22 @@ pub struct OutgoingPacket {
 /// burst: the biggest single-tick burst (a join at view distance 10) is ~450
 /// chunk packets, and a busy steady state is a few hundred packets per tick.
 pub const OUTBOUND_QUEUE_CAPACITY: usize = 16 * 1024;
+
+/// How long a connection may take, from being accepted, to reach the play
+/// state: handshake, status, login and configuration together. Past it, a
+/// client in the login or configuration state is disconnected with vanilla's
+/// "Took too long to log in" ([`DisconnectReason::slow_login`]); a connection
+/// in the handshake or status state, which has no disconnect packet, is just
+/// closed. Like vanilla, the default is 30 seconds. Once in the play state,
+/// a client is timed out by its keep-alives instead.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrePlayTimeout(pub Duration);
+
+impl Default for PrePlayTimeout {
+    fn default() -> Self {
+        Self(Duration::from_secs(30))
+    }
+}
 
 /// Sent by the network thread on accept, before the client's task starts, so it
 /// is always visible to the game thread before any packet from that client.
@@ -76,9 +94,15 @@ impl Plugin for NetworkPlugin {
         })
         .insert_resource(ClientToEntityMap(HashMap::new()))
         .insert_resource(ClientSenders::new(self.connected_rx.clone()))
+        .init_resource::<PrePlayTimeout>()
         .add_systems(
             PreUpdate,
-            ingest_network_packets.in_set(VoidSystems::NetworkIngest),
+            (
+                ingest_network_packets,
+                close_connections_past_pre_play_timeout,
+            )
+                .chain()
+                .in_set(VoidSystems::NetworkIngest),
         )
         .add_systems(Last, disconnect_clients_on_exit)
         .add_observer(close_despawned_client);
@@ -132,6 +156,9 @@ pub struct ClientSenders {
     connected: Receiver<ClientConnected>,
     pending: HashMap<u32, Sender<OutgoingPacket>>,
     active: HashMap<Entity, ClientSender>,
+    /// When each connection was announced, until [`PrePlayTimeout`] has
+    /// checked it.
+    announced: HashMap<u32, Instant>,
 }
 
 impl ClientSenders {
@@ -140,6 +167,7 @@ impl ClientSenders {
             connected,
             pending: HashMap::new(),
             active: HashMap::new(),
+            announced: HashMap::new(),
         }
     }
 
@@ -165,8 +193,25 @@ impl ClientSenders {
 
     pub fn sync(&mut self) {
         while let Ok(connected) = self.connected.try_recv() {
+            self.announced.insert(connected.client_id, Instant::now());
             self.pending.insert(connected.client_id, connected.outgoing);
         }
+    }
+
+    /// The connections announced at or before `cutoff`, in client id order;
+    /// each is returned once.
+    fn take_announced_before(&mut self, cutoff: Instant) -> Vec<u32> {
+        let mut expired: Vec<u32> = self
+            .announced
+            .iter()
+            .filter(|(_, announced)| **announced <= cutoff)
+            .map(|(client_id, _)| *client_id)
+            .collect();
+        expired.sort_unstable();
+        for client_id in &expired {
+            self.announced.remove(client_id);
+        }
+        expired
     }
 
     pub fn take_pending(&mut self, client_id: u32) -> Option<Sender<OutgoingPacket>> {
@@ -182,6 +227,7 @@ impl ClientSenders {
 
     pub fn detach(&mut self, client_id: u32, entity: Option<Entity>) {
         self.pending.remove(&client_id);
+        self.announced.remove(&client_id);
         if let Some(entity) = entity {
             self.active.remove(&entity);
         }
@@ -267,35 +313,19 @@ pub fn ingest_network_packets(world: &mut World) {
             continue;
         };
 
-        if let Err(e) = dispatch_packet(
+        if let Err(error) = dispatch_packet(
             world,
             incoming_packet.client_id,
             client_entity,
             incoming_packet.packet,
         ) {
-            let unrecognized = matches!(e, voidmc_codec::DecodeError::InvalidPacketId(_));
-            if let Some(telemetry) = &telemetry {
-                if unrecognized {
-                    telemetry.packet_unrecognized();
-                } else {
-                    telemetry.packet_failed();
-                }
-            }
-            if unrecognized {
-                // Unrecognized packet (e.g. one we don't handle yet): expected and
-                // non-fatal, so warn instead of error.
-                tracing::warn!(
-                    "Unrecognized packet from client {}: {}",
-                    incoming_packet.client_id,
-                    e
-                );
-            } else {
-                tracing::error!(
-                    "Failed to handle packet from client {}: {}",
-                    incoming_packet.client_id,
-                    e
-                );
-            }
+            reject_packet(
+                world,
+                telemetry.as_deref(),
+                incoming_packet.client_id,
+                client_entity,
+                error,
+            );
         }
     }
 
@@ -314,6 +344,148 @@ pub fn ingest_network_packets(world: &mut World) {
 
     for disc_client_id in disconnected {
         disconnect_client(world, disc_client_id);
+    }
+}
+
+/// Closes every connection still short of the play state [`PrePlayTimeout`]
+/// after it was announced, which the network thread does as it accepts it.
+fn close_connections_past_pre_play_timeout(world: &mut World) {
+    let timeout = world.resource::<PrePlayTimeout>().0;
+    let Some(cutoff) = Instant::now().checked_sub(timeout) else {
+        return;
+    };
+    let expired = world
+        .resource_mut::<ClientSenders>()
+        .take_announced_before(cutoff);
+    for client_id in expired {
+        let entity = world
+            .resource::<ClientToEntityMap>()
+            .0
+            .get(&client_id)
+            .copied();
+        let state = entity
+            .and_then(|entity| world.get::<ConnectionState>(entity))
+            .map(|state| state.0);
+        if state == Some(voidmc_protocol::State::Play) {
+            continue;
+        }
+        tracing::info!(
+            client_id,
+            ?state,
+            timeout_ms = timeout.as_millis() as u64,
+            "Client did not reach the play state in time; disconnecting"
+        );
+        match entity {
+            Some(entity) => {
+                WorldPlayers::new(world).kick_with(entity, DisconnectReason::slow_login());
+            }
+            // No packet of it handled yet (or only status requests, answered
+            // on the network thread): no state to tell it in, so the
+            // connection is just closed.
+            None => {
+                let _ = world.resource::<NetworkChannels>().kick.send(client_id);
+            }
+        }
+    }
+}
+
+/// Why a packet could not be dispatched.
+#[derive(Debug)]
+enum PacketError {
+    /// Its id is not one of the packets VoidMC decodes in the connection's
+    /// state.
+    Unrecognized(voidmc_codec::DecodeError),
+    /// Its id is known, its body did not decode; `packet` is `None` when not
+    /// even the id did.
+    Malformed {
+        packet: Option<(&'static str, i32)>,
+        error: voidmc_codec::DecodeError,
+    },
+}
+
+/// The leading packet id, the rest skipped.
+struct PacketId(i32);
+
+impl Decode for PacketId {
+    fn decode_with(decoder: &mut voidmc_codec::Decoder<'_>) -> Result<Self, DecodeError> {
+        let id = decoder.decode::<voidmc_codec::VarI32>()?.0;
+        decoder.take(decoder.remaining_len())?;
+        Ok(Self(id))
+    }
+}
+
+/// Decodes `packet` as one of `T`'s packets. On failure, tells an id `T`
+/// has no variant for from a known packet whose body is malformed: the
+/// decoder returns the same error for an unknown id and for an invalid enum
+/// value inside a known packet.
+fn decode_packet<T: Decode + Tagged>(packet: &Packet) -> Result<T, PacketError> {
+    packet.decode::<T>().map_err(|error| {
+        let Ok(PacketId(id)) = packet.decode::<PacketId>() else {
+            return PacketError::Malformed {
+                packet: None,
+                error,
+            };
+        };
+        match T::variant_name(id) {
+            Some(name) => PacketError::Malformed {
+                packet: Some((name, id)),
+                error,
+            },
+            None => PacketError::Unrecognized(error),
+        }
+    })
+}
+
+/// What happens to a packet that could not be dispatched, in every state.
+/// An unknown id is dropped: VoidMC does not decode every packet a vanilla
+/// client sends, and those are not the client's fault. A known packet that
+/// does not decode disconnects the client, like vanilla, with vanilla's
+/// "Internal Exception: ..." reason; no disconnect packet exists in the
+/// handshake state, so that connection is just closed.
+fn reject_packet(
+    world: &mut World,
+    telemetry: Option<&Telemetry>,
+    client_id: u32,
+    entity: Entity,
+    error: PacketError,
+) {
+    match error {
+        PacketError::Unrecognized(error) => {
+            if let Some(telemetry) = telemetry {
+                telemetry.packet_unrecognized();
+            }
+            // A packet VoidMC does not handle yet: expected, so a warning.
+            tracing::warn!("Unrecognized packet from client {}: {}", client_id, error);
+        }
+        PacketError::Malformed { packet, error } => {
+            if let Some(telemetry) = telemetry {
+                telemetry.packet_failed();
+            }
+            let state = world.get::<ConnectionState>(entity).map(|state| state.0);
+            let reason = match packet {
+                Some((name, id)) => {
+                    tracing::info!(
+                        client_id,
+                        ?state,
+                        packet = name,
+                        id,
+                        %error,
+                        "Client sent a malformed packet; disconnecting"
+                    );
+                    format!("Internal Exception: Failed to decode packet '{name}' (0x{id:02X})")
+                }
+                None => {
+                    tracing::info!(
+                        client_id,
+                        ?state,
+                        %error,
+                        "Client sent a packet without a valid id; disconnecting"
+                    );
+                    "Internal Exception: Failed to decode packet id".to_string()
+                }
+            };
+            WorldPlayers::new(world).kick_with(entity, DisconnectReason::text(reason));
+        }
     }
 }
 
@@ -436,14 +608,14 @@ fn dispatch_packet(
     client_id: u32,
     entity: Entity,
     packet: Packet,
-) -> Result<(), voidmc_codec::DecodeError> {
+) -> Result<(), PacketError> {
     let state = world
         .get::<ConnectionState>(entity)
         .expect("Client must have a ConnectionState component");
 
     match state.0 {
         voidmc_protocol::State::Handshake => {
-            let packet = packet.decode::<serverbound::HandshakePacket>()?;
+            let packet = decode_packet::<serverbound::HandshakePacket>(&packet)?;
             tracing::debug!("[Client {}][Handshake] Received {:?}", client_id, packet);
 
             match packet {
@@ -455,7 +627,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Status => {
-            let packet = packet.decode::<serverbound::StatusPacket>()?;
+            let packet = decode_packet::<serverbound::StatusPacket>(&packet)?;
             tracing::debug!("[Client {}][Status] Received {:?}", client_id, packet);
 
             match packet {
@@ -472,7 +644,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Login => {
-            let packet = packet.decode::<serverbound::LoginPacket>()?;
+            let packet = decode_packet::<serverbound::LoginPacket>(&packet)?;
             tracing::debug!("[Client {}][Login] Received {:?}", client_id, packet);
 
             match packet {
@@ -489,7 +661,7 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Configuration => {
-            let packet = packet.decode::<serverbound::ConfigurationPacket>()?;
+            let packet = decode_packet::<serverbound::ConfigurationPacket>(&packet)?;
             tracing::debug!(
                 "[Client {}][Configuration] Received {:?}",
                 client_id,
@@ -527,10 +699,15 @@ fn dispatch_packet(
             }
         }
         voidmc_protocol::State::Play => {
-            let packet = packet.decode::<serverbound::PlayPacket>()?;
+            let packet = decode_packet::<serverbound::PlayPacket>(&packet)?;
             tracing::debug!("[Client {}][Play] Received {:?}", client_id, packet);
 
             match packet {
+                serverbound::PlayPacket::Attack(packet) => world.trigger(PacketEvent {
+                    client_id,
+                    entity,
+                    packet,
+                }),
                 serverbound::PlayPacket::ChatAck(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
@@ -652,6 +829,13 @@ fn dispatch_packet(
                     entity,
                     packet,
                 }),
+                serverbound::PlayPacket::SetPlayerMovementFlags(packet) => {
+                    world.trigger(PacketEvent {
+                        client_id,
+                        entity,
+                        packet,
+                    })
+                }
                 serverbound::PlayPacket::SignedChatCommand(packet) => world.trigger(PacketEvent {
                     client_id,
                     entity,
@@ -905,13 +1089,70 @@ mod tests {
         let logs = captured(|| h.app.update());
 
         assert!(logs.contains(tracing::Level::WARN, "Unrecognized packet from client 1"));
-        assert_eq!(logs.errors().len(), 2);
+        assert!(logs.contains(
+            tracing::Level::INFO,
+            "Client sent a malformed packet; disconnecting"
+        ));
+        assert_eq!(logs.errors(), Vec::<String>::new());
+        assert_eq!(
+            h._kick_rx.try_iter().collect::<Vec<_>>(),
+            vec![2, 3],
+            "only the clients that sent a malformed packet are disconnected"
+        );
         let text = telemetry.render_metrics(Instant::now());
         assert!(
             text.contains("\nvoidmc_packets_unrecognized_total 1\n"),
             "{text}"
         );
         assert!(text.contains("\nvoidmc_packet_errors_total 2\n"), "{text}");
+    }
+
+    /// An invalid enum value inside a known packet is malformed, not
+    /// unrecognized, although the decoder reports both with the same error.
+    #[test]
+    fn an_invalid_enum_value_in_a_known_packet_is_malformed() {
+        let mut h = harness();
+        let telemetry = std::sync::Arc::new(crate::observability::Telemetry::new(
+            Duration::from_secs(1),
+            20,
+            100,
+        ));
+        h.app.insert_resource(TelemetryHandle(telemetry.clone()));
+        let rx = h.connect(1);
+        // A handshake whose next state, its last byte, is none of them.
+        let mut bytes = Vec::new();
+        serverbound::HandshakePacket::Handshake(serverbound::Handshake {
+            protocol_version: PROTOCOL_VERSION,
+            server_address: "localhost".to_string(),
+            server_port: 25565,
+            next_state: voidmc_protocol::State::Login,
+        })
+        .encode(&mut bytes);
+        *bytes.last_mut().unwrap() = 0x7f;
+        assert_eq!(
+            serverbound::HandshakePacket::decode(&mut bytes.as_slice()).unwrap_err(),
+            voidmc_codec::DecodeError::InvalidPacketId(None)
+        );
+        h.incoming_tx
+            .send(IncomingPacket {
+                client_id: 1,
+                packet: raw_packet(bytes),
+            })
+            .unwrap();
+        let logs = captured(|| h.app.update());
+
+        assert_eq!(logs.errors(), Vec::<String>::new());
+        assert!(!logs.contains(tracing::Level::WARN, "Unrecognized packet"));
+        // The handshake state has no disconnect packet: the connection is
+        // just closed.
+        assert_eq!(h._kick_rx.try_iter().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(rx.try_iter().count(), 0);
+        let text = telemetry.render_metrics(Instant::now());
+        assert!(text.contains("\nvoidmc_packet_errors_total 1\n"), "{text}");
+        assert!(
+            text.contains("\nvoidmc_packets_unrecognized_total 0\n"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1183,5 +1424,139 @@ mod tests {
             "the packet spawned no new client entity"
         );
         assert!(h.app.world().resource::<Quits>().0.is_empty());
+    }
+
+    /// Records, at the moment it is woken, whether the connection's sender
+    /// has already been dropped.
+    struct SenderDroppedWhenWoken {
+        connection: Receiver<OutgoingPacket>,
+        dropped: Mutex<Vec<bool>>,
+    }
+
+    impl std::task::Wake for SenderDroppedWhenWoken {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            let dropped = self.connection.is_disconnected();
+            self.dropped.lock().unwrap().push(dropped);
+        }
+    }
+
+    /// The network thread counts a despawned client's kick only if the kick
+    /// request reaches it before it learns that the connection ended, and
+    /// dropping the client's sender can end the connection at once. No
+    /// Disconnect is written to a despawned client, so the end of its
+    /// connection does not count as a kick by itself. The kick must
+    /// therefore be requested while the sender is still alive.
+    ///
+    /// A receiver waiting on the kick channel is woken synchronously, inside
+    /// the `send` of the observer, so the waker sees the sender as it is at
+    /// that moment, whatever the threads do.
+    #[test]
+    fn a_despawned_client_is_kicked_before_its_sender_is_dropped() {
+        use std::future::Future;
+
+        let mut h = harness();
+        let (entity, connection) = client_in(&mut h, 1, voidmc_protocol::State::Play, "gone");
+        let witness = Arc::new(SenderDroppedWhenWoken {
+            connection: connection.clone(),
+            dropped: Mutex::default(),
+        });
+        let waker = std::task::Waker::from(witness.clone());
+        let mut kick = std::pin::pin!(h._kick_rx.recv_async());
+        assert!(
+            kick.as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending(),
+            "no kick before the despawn"
+        );
+
+        h.app.world_mut().despawn(entity);
+
+        assert_eq!(
+            *witness.dropped.lock().unwrap(),
+            vec![false],
+            "the kick was requested once, before the sender was dropped"
+        );
+        assert!(connection.is_disconnected(), "the sender is dropped after");
+        match kick
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(&waker))
+        {
+            std::task::Poll::Ready(Ok(client_id)) => assert_eq!(client_id, 1),
+            other => panic!("expected the kick of client 1, got {other:?}"),
+        }
+        assert!(h._kick_rx.is_empty(), "one kick request only");
+    }
+
+    fn set_pre_play_timeout(h: &mut Harness, timeout: Duration) {
+        h.app.world_mut().resource_mut::<PrePlayTimeout>().0 = timeout;
+    }
+
+    #[test]
+    fn a_fresh_connection_is_left_alone_until_the_pre_play_timeout() {
+        let mut h = harness();
+        let _rx = h.connect(1);
+        let (_, _rx2) = client_in(&mut h, 2, voidmc_protocol::State::Login, "early");
+        h.app.update();
+
+        assert_eq!(
+            *h.app.world().resource::<PrePlayTimeout>(),
+            PrePlayTimeout(Duration::from_secs(30))
+        );
+        assert!(h._kick_rx.is_empty());
+    }
+
+    #[test]
+    fn past_the_pre_play_timeout_each_state_is_told_why_and_closed_once() {
+        let mut h = harness();
+        let silent = h.connect(1);
+        let (_, handshake) = client_in(&mut h, 2, voidmc_protocol::State::Handshake, "a");
+        let (_, login) = client_in(&mut h, 3, voidmc_protocol::State::Login, "b");
+        let (_, configuring) = client_in(&mut h, 4, voidmc_protocol::State::Configuration, "c");
+        let (_, playing) = client_in(&mut h, 5, voidmc_protocol::State::Play, "d");
+
+        set_pre_play_timeout(&mut h, Duration::ZERO);
+        h.app.update();
+        h.app.update();
+
+        assert_eq!(h._kick_rx.try_iter().collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert!(silent.is_empty());
+        assert!(handshake.is_empty());
+        let sent: Vec<_> = login.try_iter().map(|out| out.packet).collect();
+        let [
+            voidmc_protocol::clientbound::ClientboundPacket::Login(
+                voidmc_protocol::clientbound::LoginPacket::LoginDisconnect(disconnect),
+            ),
+        ] = sent.as_slice()
+        else {
+            panic!("expected one LoginDisconnect, got {sent:?}");
+        };
+        assert_eq!(
+            disconnect.reason.translate.as_deref(),
+            Some(DisconnectReason::SLOW_LOGIN)
+        );
+        let sent: Vec<_> = configuring.try_iter().map(|out| out.packet).collect();
+        let [
+            voidmc_protocol::clientbound::ClientboundPacket::Configuration(
+                voidmc_protocol::clientbound::ConfigurationPacket::ConfigurationDisconnect(
+                    disconnect,
+                ),
+            ),
+        ] = sent.as_slice()
+        else {
+            panic!("expected one ConfigurationDisconnect, got {sent:?}");
+        };
+        assert!(
+            format!("{:?}", disconnect.reason).contains(DisconnectReason::SLOW_LOGIN),
+            "{:?}",
+            disconnect.reason
+        );
+        assert!(
+            playing.is_empty(),
+            "a client in the play state is left alone"
+        );
     }
 }

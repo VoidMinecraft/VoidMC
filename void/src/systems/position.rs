@@ -21,7 +21,7 @@ pub fn broadcast_position(
         (
             Entity,
             &MinecraftEntityId,
-            &Position,
+            Ref<Position>,
             &PreviousPosition,
             Ref<Rotation>,
             Option<&Grounded>,
@@ -29,7 +29,7 @@ pub fn broadcast_position(
         ),
         (
             With<PlayerReady>,
-            Or<(Changed<Position>, Changed<Rotation>)>,
+            Or<(Changed<Position>, Changed<Rotation>, Changed<Grounded>)>,
         ),
     >,
     mut dismounted: RemovedComponents<Mount>,
@@ -90,6 +90,16 @@ pub fn broadcast_position(
             continue;
         }
 
+        if !pos.is_changed() && !rotation.is_changed() {
+            // Only the on-ground flag changed (a status-only packet): like
+            // vanilla, an on-ground change is told with a position sync.
+            ready.send_except(
+                mover,
+                sync_packet(mc_entity_id.0, &pos, &rotation, on_ground),
+            );
+            continue;
+        }
+
         let packet = if let (Some(delta_x), Some(delta_y), Some(delta_z)) = (
             relative_delta(pos.x, prev_pos.x),
             relative_delta(pos.y, prev_pos.y),
@@ -107,7 +117,7 @@ pub fn broadcast_position(
                 },
             )
         } else {
-            sync_packet(mc_entity_id.0, pos, &rotation, on_ground)
+            sync_packet(mc_entity_id.0, &pos, &rotation, on_ground)
         };
 
         ready.send_except(mover, packet);
@@ -478,5 +488,53 @@ mod tests {
         assert!(!jump(65.25, 0.0, false), "a jump leaves the ground");
         assert!(jump(64.0, 0.0, true), "and lands on it");
         assert!(!jump(65.0, 100.0, false), "absolute syncs carry it too");
+    }
+
+    #[test]
+    fn an_on_ground_change_alone_is_sent_as_a_position_sync() {
+        let (mut app, rx) = test_app();
+        let player = app
+            .world_mut()
+            .spawn((
+                ClientId(1),
+                MinecraftEntityId(7),
+                Position {
+                    x: 1.0,
+                    y: 64.0,
+                    z: 2.0,
+                },
+                PreviousPosition {
+                    x: 1.0,
+                    y: 64.0,
+                    z: 2.0,
+                },
+                Rotation::default(),
+                Grounded(false),
+                PlayerReady,
+            ))
+            .id();
+        app.world_mut().spawn((ClientId(2), PlayerReady));
+        app.update();
+        let _ = packets(&rx);
+
+        app.world_mut().get_mut::<Grounded>(player).unwrap().0 = true;
+        app.update();
+        let sent = packets(&rx);
+        let [clientbound::PlayPacket::EntityPositionSync(synced)] = sent.as_slice() else {
+            panic!("expected one position sync, got {sent:?}");
+        };
+        assert_eq!(
+            (
+                synced.entity_id,
+                synced.x,
+                synced.y,
+                synced.z,
+                synced.on_ground
+            ),
+            (7, 1.0, 64.0, 2.0, true)
+        );
+
+        app.update();
+        assert!(packets(&rx).is_empty(), "nothing changed, nothing is sent");
     }
 }

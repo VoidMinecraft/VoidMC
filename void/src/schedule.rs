@@ -5,7 +5,8 @@ use bevy_ecs::schedule::SystemSet;
 
 #[derive(SystemSet, Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub enum VoidSystems {
-    /// `PreUpdate`: packet decode + dispatch (`On<PacketEvent<T>>` fires here), disconnects.
+    /// `PreUpdate`: packet decode + dispatch (`On<PacketEvent<T>>` fires here), disconnects,
+    /// then the [`crate::network::PrePlayTimeout`] check.
     NetworkIngest,
 
     /// `Update`: contains `CommandSystems::DrainQueue`.
@@ -21,7 +22,8 @@ pub enum VoidSystems {
     Redstone,
     /// `Update`, after `CommandDrain`.
     KeepAlive,
-    /// `Update`, after `KeepAlive`: settle, wander, physics.
+    /// `Update`, after `KeepAlive`: out-of-world removal, settle, wander,
+    /// physics.
     EntitySimulation,
     /// `Update`.
     ItemPickup,
@@ -35,7 +37,8 @@ pub enum VoidSystems {
     /// `PostUpdate`, after `EntityMetadataSync`: viewer diff — `SpawnEntity` /
     /// `RemoveEntities` as players start or stop seeing an entity's chunk.
     EntityVisibility,
-    /// `PostUpdate`: other players' movement, head rotation and crouch.
+    /// `PostUpdate`: other players' movement, head rotation, crouch and
+    /// equipment.
     PlayerBroadcast,
     /// `PostUpdate`, before `ChunkStreaming`: Block Entity Data packets for changed block entities.
     BlockEntitySync,

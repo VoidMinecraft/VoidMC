@@ -1,6 +1,7 @@
 pub mod chunk;
 pub mod entities;
 pub mod keep_alive;
+pub mod out_of_world;
 pub mod physics;
 pub mod player;
 pub mod pose;
@@ -36,6 +37,7 @@ impl Plugin for GameSystemsPlugin {
                 (
                     keep_alive::send_keep_alive.in_set(VoidSystems::KeepAlive),
                     (
+                        out_of_world::despawn_out_of_world_entities,
                         settle::settle_recent_spawns,
                         wander::wander_system,
                         physics::apply_spawned_entity_physics,

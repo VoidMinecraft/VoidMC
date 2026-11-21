@@ -96,7 +96,9 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 |-------|------|-------|
 | Entity ID | [VarInt](./data-types) | Network ID of the entity being attacked. |
 
-**Semantics.** Compact convenience form of the more general Interact packet specifically for left-click attacks. Sent in addition to a `Swing Arm` packet.
+**Semantics.** Compact convenience form of the more general Interact packet specifically for left-click attacks. Sent in addition to a `Swing Arm` packet. There is no hand, location or sneak flag.
+
+> NOTE: Azalea 0.16.0 (`ServerboundAttack`, used by VoidMC's end-to-end suite) writes the entity ID as a 4-byte big-endian Int instead of a VarInt, a bug fixed upstream after that release ([azalea-rs/azalea#323](https://github.com/azalea-rs/azalea/pull/323)). VoidMC decodes both: a body that is one complete VarInt is read as one, otherwise a 4-byte body is read as an Int. A 4-byte VarInt has its first byte's continuation bit set, which as an Int would be a negative entity ID, so the two never collide.
 
 > NOTE: This packet is a recent split from the legacy combined Interact packet; the older form (with attack/use/interact-at variants) has been replaced by this packet plus [Interact](#0x1a---interact).
 
@@ -382,12 +384,12 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 |-------|------|-------|
 | Entity ID | [VarInt](./data-types) | Target entity. |
 | Hand | [VarInt](./data-types#varint) (enum) | `0`=Main Hand, `1`=Off Hand. |
-| Target | [Vec3](./data-types) of three Floats | Local hit position relative to the entity, used by interact-at hitboxes. |
+| Location | [LP Vec3](./data-types#lp-vec3) | Where the click hit, relative to the entity's position. Variable length: a single `0x00` byte for the zero vector, otherwise 6 bytes, optionally followed by a VarInt. |
 | Using Secondary Action | [Boolean](./data-types#boolean) | True if the player was sneaking when the interaction occurred. |
 
 **Semantics.** Right-click / interact-at action against an entity. Pure left-click attacks use the dedicated [Attack](#0x01---attack) packet.
 
-> NOTE: The single Java packet encodes interact-at semantics. The presence of three floats is unconditional; the previous "type" discriminator was removed when [Attack](#0x01---attack) was split out.
+> NOTE: The single Java packet encodes interact-at semantics. The location is unconditional and low precision; the previous "type" discriminator, and its three-Float target that only interact-at carried, were removed when [Attack](#0x01---attack) was split out.
 
 ## 0x1B - Jigsaw Generate
 
@@ -469,7 +471,7 @@ Field types referenced here (VarInt, VarLong, Identifier, BlockPos, Vec3, Slot, 
 |-------|------|-------|
 | Flags | [Unsigned Byte](./data-types#unsigned-byte) | Bit 0 = on ground, bit 1 = horizontal collision. |
 
-**Semantics.** Sent each tick when neither position nor rotation changed but the on-ground / horizontal-collision status must still be reported. Corresponds to the `Move Player Status Only` Java class.
+**Semantics.** Sent on a tick when neither position nor rotation changed (and no periodic position reminder is due) but the on-ground or horizontal-collision status did change since the last movement packet. Corresponds to the `Move Player Status Only` Java class (`minecraft:move_player_status_only`). Like the other movement packets, the vanilla server ignores it while a teleport is unconfirmed.
 
 ## 0x22 - Move Vehicle
 

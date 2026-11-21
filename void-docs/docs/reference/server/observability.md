@@ -84,6 +84,9 @@ The body is a small JSON object, served as `application/json`:
 Shutdown begins when the game loop receives `AppExit` (`/stop`, Ctrl-C or
 SIGTERM, or an application writing the message). From the end of that tick,
 `/health` answers `503` with `"status":"stopping"`, while the world is torn down.
+`stopping` is reported only once that tick's gauges are stored: a `/metrics`
+scrape made after `/health` answered `stopping` shows their final values, with
+`voidmc_players_online` at `0` since the players still online leave in that tick.
 The listener is closed before `VoidServer::run` returns; from then on the port
 refuses connections. A monitor should treat `503` and a refused connection alike:
 the server is not serving players.
@@ -121,9 +124,10 @@ no sample rather than a made-up one.
 | Metric | Type | Meaning |
 |---|---|---|
 | `voidmc_connection_errors_total{kind}` | counter | Game connections closed by an error. `kind="io"`: socket error, including a client that vanished with a reset; `kind="frame"`: invalid framing or compression; `kind="decode"`: a packet the network thread could not decode. A client closing its connection normally is not an error. |
-| `voidmc_clients_kicked_total` | counter | Live connections the server closed itself: `/kick` and `Players::kick`, keep-alive timeouts (30 s), outbound queues that overflowed, and client entities despawned by game code. Players still online at shutdown are not counted. |
-| `voidmc_packets_unrecognized_total` | counter | Packets dropped because their id is unknown in the connection's state (logged as `Unrecognized packet`). |
-| `voidmc_packet_errors_total` | counter | Packets with a known id the game thread failed to decode (logged as `Failed to handle packet`). |
+| `voidmc_clients_kicked_total` | counter | Live connections the server closed itself: `/kick` and `Players::kick`, logins refused because the server is full, keep-alive timeouts (30 s) of players in the play state whether ready or not, connections that did not reach the play state within the pre-play timeout (30 s), clients that sent a malformed packet, outbound queues that overflowed, and client entities despawned by game code. A kicked client that closes the connection itself on reading its disconnect packet still counts. Players still online at shutdown are not counted. |
+| `voidmc_packets_unrecognized_total` | counter | Packets dropped because their id is unknown in the connection's state (logged as `Unrecognized packet`); the client stays connected. |
+| `voidmc_packet_errors_total` | counter | Packets with a known id the game thread failed to decode; each disconnects its sender, which also counts as a kick (logged at INFO as `Client sent a malformed packet; disconnecting`). See [undecodable packets](../protocol/networking.md#undecodable-packets). |
+| `voidmc_chunk_load_errors_total{kind}` | counter | Stored chunks that could not be loaded and were generated instead, one per `ChunkLoadFailedEvent`. `kind="decode"`: the stored bytes were read but could not be decoded; `kind="io"`: they could not be read. Only a chunk loader such as `voidmc-world-io` produces them; see [Damaged chunks](/reference/server/world-serialization#damaged-chunks). |
 
 Player gauges are updated at the end of each tick, so while the game loop is
 stalled they keep their last value; `voidmc_seconds_since_last_tick` shows how

@@ -1,12 +1,16 @@
 use bevy_app::{App, Plugin};
-use bevy_ecs::{component::Component, observer::On, system::Commands, world::EntityWorldMut};
-use voidmc_codec::Decode;
+use bevy_ecs::{
+    component::Component,
+    observer::On,
+    system::Commands,
+    world::{EntityWorldMut, World},
+};
 use voidmc_protocol::{
     serverbound::{
-        CloseContainer, Interact, PlayerAction, PlayerCommand, PlayerInput, SetHeldItem, SwingArm,
-        UseItem, UseItemOn,
+        Attack, CloseContainer, Interact, PlayerAction, PlayerCommand, PlayerInput, SetHeldItem,
+        SwingArm, UseItem, UseItemOn,
     },
-    types::{Hand, PlayerActionStatus, PlayerCommandAction},
+    types::{PlayerActionStatus, PlayerCommandAction},
 };
 
 use crate::{
@@ -16,7 +20,10 @@ use crate::{
         PlayerSneakEvent, PlayerSprintEvent, PlayerStartDiggingEvent, PlayerSwapHandsEvent,
         PlayerSwingArmEvent, PlayerUseItemEvent, PlayerUseItemOnBlockEvent,
     },
+    item_behavior::refuse_click,
     network::PacketEvent,
+    placement,
+    world::offset_position,
 };
 
 pub struct InteractionPlugin;
@@ -32,6 +39,7 @@ impl Plugin for InteractionPlugin {
         app.add_observer(handle_use_item);
         app.add_observer(handle_use_item_on);
         app.add_observer(handle_interact);
+        app.add_observer(handle_attack);
     }
 }
 
@@ -105,29 +113,48 @@ fn handle_player_command(event: On<PacketEvent<PlayerCommand>>, mut commands: Co
 }
 
 fn handle_player_action(event: On<PacketEvent<PlayerAction>>, mut commands: Commands) {
-    match event.packet.status {
-        PlayerActionStatus::StartedDigging => {
-            commands.trigger(PlayerStartDiggingEvent {
-                entity: event.entity,
-                position: event.packet.position,
-                face: event.packet.face,
-                sequence: event.packet.sequence,
-            });
-        }
-        PlayerActionStatus::CancelledDigging => {
-            commands.trigger(PlayerCancelDiggingEvent {
-                entity: event.entity,
-                position: event.packet.position,
-                face: event.packet.face,
-                sequence: event.packet.sequence,
-            });
-        }
-        PlayerActionStatus::FinishedDigging => {
-            commands.trigger(PlayerFinishDiggingEvent {
-                entity: event.entity,
-                position: event.packet.position,
-                face: event.packet.face,
-                sequence: event.packet.sequence,
+    let entity = event.entity;
+    let PlayerAction {
+        status,
+        position,
+        face,
+        sequence,
+    } = event.packet;
+    match status {
+        PlayerActionStatus::StartedDigging
+        | PlayerActionStatus::CancelledDigging
+        | PlayerActionStatus::FinishedDigging => {
+            // Out of reach, the action is refused before any event, as
+            // vanilla does; a cancel changes nothing and is just dropped.
+            commands.queue(move |world: &mut World| {
+                if !placement::within_reach(world, entity, position) {
+                    if status != PlayerActionStatus::CancelledDigging {
+                        refuse_click(world, entity, sequence, &[position], None);
+                    }
+                    return;
+                }
+                match status {
+                    PlayerActionStatus::StartedDigging => world.trigger(PlayerStartDiggingEvent {
+                        entity,
+                        position,
+                        face,
+                        sequence,
+                    }),
+                    PlayerActionStatus::CancelledDigging => {
+                        world.trigger(PlayerCancelDiggingEvent {
+                            entity,
+                            position,
+                            face,
+                            sequence,
+                        })
+                    }
+                    _ => world.trigger(PlayerFinishDiggingEvent {
+                        entity,
+                        position,
+                        face,
+                        sequence,
+                    }),
+                }
             });
         }
         PlayerActionStatus::DropItemStack => {
@@ -160,67 +187,60 @@ fn handle_use_item(event: On<PacketEvent<UseItem>>, mut commands: Commands) {
 }
 
 fn handle_use_item_on(event: On<PacketEvent<UseItemOn>>, mut commands: Commands) {
-    commands.trigger(PlayerUseItemOnBlockEvent {
-        entity: event.entity,
-        hand: event.packet.hand,
-        position: event.packet.location,
-        face: event.packet.face,
-        cursor_x: event.packet.cursor_x,
-        cursor_y: event.packet.cursor_y,
-        cursor_z: event.packet.cursor_z,
-        inside_block: event.packet.inside_block,
-        sequence: event.packet.sequence,
-    })
+    let entity = event.entity;
+    let packet = &event.packet;
+    let use_event = PlayerUseItemOnBlockEvent {
+        entity,
+        hand: packet.hand,
+        position: packet.location,
+        face: packet.face,
+        cursor_x: packet.cursor_x,
+        cursor_y: packet.cursor_y,
+        cursor_z: packet.cursor_z,
+        inside_block: packet.inside_block,
+        sequence: packet.sequence,
+    };
+    // Out of reach, the click is refused before any event: the client gets
+    // back the clicked block and the one it would have filled.
+    commands.queue(move |world: &mut World| {
+        let PlayerUseItemOnBlockEvent {
+            position,
+            face,
+            hand,
+            sequence,
+            ..
+        } = use_event;
+        if placement::within_reach(world, entity, position) {
+            world.trigger(use_event);
+        } else {
+            let across = offset_position(position, face);
+            refuse_click(world, entity, sequence, &[position, across], Some(hand));
+        }
+    });
 }
 
 fn handle_interact(event: On<PacketEvent<Interact>>, mut commands: Commands) {
-    let mut data = event.packet._data.as_slice();
+    let packet = &event.packet;
+    let location = packet.location;
+    commands.trigger(PlayerInteractEntityEvent {
+        entity: event.entity,
+        target_id: packet.entity_id,
+        attack: false,
+        hand: Some(packet.hand),
+        target_pos: Some((location.x as f32, location.y as f32, location.z as f32)),
+        sneaking: packet.using_secondary_action,
+    });
+}
 
-    let (attack, hand, target_pos) = match event.packet.interact_type {
-        0 => {
-            // Interact: hand + sneaking
-            let hand = match Hand::decode(&mut data) {
-                Ok(h) => Some(h),
-                Err(_) => return,
-            };
-            (false, hand, None)
-        }
-        1 => {
-            // Attack: sneaking only
-            (true, None, None)
-        }
-        2 => {
-            // Interact at: target_x/y/z + hand + sneaking
-            let tx = match f32::decode(&mut data) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let ty = match f32::decode(&mut data) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let tz = match f32::decode(&mut data) {
-                Ok(v) => v,
-                Err(_) => return,
-            };
-            let hand = match Hand::decode(&mut data) {
-                Ok(h) => Some(h),
-                Err(_) => return,
-            };
-            (false, hand, Some((tx, ty, tz)))
-        }
-        _ => return,
-    };
-
-    let sneaking: bool = bool::decode(&mut data).unwrap_or_default();
-
+/// Since 26.1 an attack is its own packet, which carries only the target.
+fn handle_attack(event: On<PacketEvent<Attack>>, mut commands: Commands) {
     commands.trigger(PlayerInteractEntityEvent {
         entity: event.entity,
         target_id: event.packet.entity_id,
-        attack,
-        hand,
-        target_pos,
-        sneaking,
+        attack: true,
+        hand: None,
+        target_pos: None,
+        sneaking: false,
     });
 }
 

@@ -4,9 +4,11 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use bevy_app::{App, AppExit, First, Last};
+use bevy_ecs::lifecycle::Add;
 use bevy_ecs::prelude::*;
 use tokio::sync::{Mutex, OwnedMutexGuard, oneshot, watch};
-use voidmc::components::PlayerUuid;
+use tracing::Level;
+use voidmc::components::{Operator, PlayerUuid};
 use voidmc::network::PacketEvent;
 use voidmc::{
     Command, CommandRegistry, ListenAddress, ServerConfig, ServerConfigBuilder, VoidServer,
@@ -14,9 +16,10 @@ use voidmc::{
 };
 use voidmc_protocol::{clientbound, serverbound};
 
+use azalea_protocol::common::client_information::ClientInformation;
 use azalea_protocol::packets::status::c_status_response::ClientboundStatusResponse;
 
-use crate::bot::{Bot, BotOptions};
+use crate::bot::{Bot, BotOptions, ConfiguringClient, LoginRefused, SilentPlayer};
 use crate::logs::{ActiveCapture, LogCapture, LogRecord};
 use crate::timeout;
 
@@ -27,6 +30,7 @@ static ONE_SERVER_AT_A_TIME: LazyLock<Arc<Mutex<()>>> = LazyLock::new(Default::d
 type Job = Box<dyn FnOnce(&mut World) + Send>;
 type Plugin = Box<dyn FnOnce(&mut App) + Send>;
 type CommandFactory = Box<dyn FnOnce() -> Command + Send>;
+type ConfigEdit = Box<dyn FnOnce(&mut ServerConfig) + Send>;
 
 #[derive(Resource)]
 struct Control {
@@ -72,9 +76,11 @@ impl ServerHandle {
 /// Configures a [`TestServer`] before it boots.
 pub struct TestServerBuilder {
     config: ServerConfigBuilder,
+    config_edits: Vec<ConfigEdit>,
     plugins: Vec<Plugin>,
     commands: Vec<CommandFactory>,
     default_commands: bool,
+    log_level: Level,
 }
 
 impl TestServerBuilder {
@@ -87,14 +93,24 @@ impl TestServerBuilder {
                 .simulation_distance(4)
                 .spawn_chunk_radius(4)
                 .initial_chunk_radius(2),
+            config_edits: Vec::new(),
             plugins: Vec::new(),
             commands: Vec::new(),
             default_commands: true,
+            log_level: Level::WARN,
         }
     }
 
     pub fn config(mut self, f: impl FnOnce(ServerConfigBuilder) -> ServerConfigBuilder) -> Self {
         self.config = f(self.config);
+        self
+    }
+
+    /// Sets fields of the built [`ServerConfig`] directly, past the checks
+    /// of the builder methods, like an application filling in the public
+    /// fields itself.
+    pub fn edit_config(mut self, f: impl FnOnce(&mut ServerConfig) + Send + 'static) -> Self {
+        self.config_edits.push(Box::new(f));
         self
     }
 
@@ -117,6 +133,22 @@ impl TestServerBuilder {
         self
     }
 
+    /// Records the events logged down to `level` (by default, only warnings
+    /// and errors), for a test that checks what the server logs at info or
+    /// debug level: see [`TestServer::logs`].
+    pub fn capture_logs(mut self, level: Level) -> Self {
+        self.log_level = level;
+        self
+    }
+
+    /// Makes every player an [`Operator`] from the moment it logs in, so the
+    /// command tree and permission level it gets at join are an operator's.
+    pub fn operators(self) -> Self {
+        self.plugin(|app| {
+            app.add_observer(make_operator);
+        })
+    }
+
     /// Boots the server and returns once its first tick has started.
     pub async fn start(self) -> TestServer {
         assert_eq!(
@@ -133,19 +165,24 @@ impl TestServerBuilder {
         let (jobs_tx, jobs_rx) = flume::unbounded::<Job>();
         let (ticks_tx, ticks_rx) = watch::channel(0u64);
         let (ready_tx, ready_rx) = oneshot::channel();
-        let logs = LogCapture::default();
-        let active = logs.activate();
         let Self {
             config,
+            config_edits,
             plugins,
             commands,
             default_commands,
+            log_level,
         } = self;
+        let logs = LogCapture::new(log_level);
+        let active = logs.activate();
 
         let thread = std::thread::Builder::new()
             .name("void-e2e-server".into())
             .spawn(move || {
-                let config: ServerConfig = config.build();
+                let mut config: ServerConfig = config.build();
+                for edit in config_edits {
+                    edit(&mut config);
+                }
                 let mut server = VoidServer::new(config).add_plugin(move |app: &mut App| {
                     app.insert_resource(Control {
                         jobs: jobs_rx,
@@ -169,7 +206,7 @@ impl TestServerBuilder {
                 for command in commands {
                     server = server.add_command(command());
                 }
-                server.run();
+                server.run()
             })
             .expect("failed to spawn the server thread");
 
@@ -189,6 +226,10 @@ impl TestServerBuilder {
             _turn: turn,
         }
     }
+}
+
+fn make_operator(event: On<Add, PlayerUuid>, mut commands: Commands) {
+    commands.entity(event.entity).insert(Operator);
 }
 
 fn run_control(world: &mut World) {
@@ -235,7 +276,7 @@ fn answer_barriers(world: &mut World) {
 pub struct TestServer {
     handle: ServerHandle,
     address: SocketAddr,
-    thread: Option<JoinHandle<()>>,
+    thread: Option<JoinHandle<AppExit>>,
     logs: LogCapture,
     _active: ActiveCapture,
     _turn: OwnedMutexGuard<()>,
@@ -297,6 +338,31 @@ impl TestServer {
         Bot::join(self.address, name, options).await
     }
 
+    /// Like [`TestServer::join`], but the bot sends `information` as its
+    /// client settings during configuration (language, view distance, chat
+    /// visibility, ...).
+    pub async fn join_with_information(&self, name: &str, information: ClientInformation) -> Bot {
+        Bot::join_as(self.address, name, information).await
+    }
+
+    /// Like [`TestServer::join`], but a login the server refuses returns its
+    /// reason instead of failing the test.
+    pub async fn try_join(&self, name: &str) -> Result<Bot, LoginRefused> {
+        Bot::try_join(self.address, name, BotOptions::default()).await
+    }
+
+    /// Logs a client in and leaves it in the configuration state, holding
+    /// its connection open without ever playing.
+    pub async fn log_in(&self, name: &str) -> Result<ConfiguringClient, LoginRefused> {
+        ConfiguringClient::log_in(self.address, name).await
+    }
+
+    /// Plays a client into the play state, where it then stays silent: see
+    /// [`SilentPlayer`].
+    pub async fn join_silent(&self, name: &str) -> SilentPlayer {
+        SilentPlayer::join(self.address, name).await
+    }
+
     /// Asks for the server-list status like the multiplayer screen does.
     pub async fn status(&self) -> ClientboundStatusResponse {
         timeout("the status response", crate::bot::status(self.address)).await
@@ -314,6 +380,26 @@ impl TestServer {
         .await
     }
 
+    /// Grants [`Operator`] to the bot's player while it is connected.
+    pub async fn op(&self, bot: &Bot) {
+        let player = self.player_entity(bot.uuid()).await;
+        self.with_world(move |world| {
+            world.entity_mut(player).insert(Operator);
+        })
+        .await;
+    }
+
+    /// Removes [`Operator`] from the bot's player while it is connected.
+    pub async fn deop(&self, bot: &Bot) {
+        let player = self.player_entity(bot.uuid()).await;
+        self.with_world(move |world| {
+            world.entity_mut(player).remove::<Operator>();
+        })
+        .await;
+    }
+
+    /// The events logged so far while this server ran: warnings and errors,
+    /// or down to the level given to [`TestServerBuilder::capture_logs`].
     pub fn logs(&self) -> Vec<LogRecord> {
         self.logs.records()
     }
@@ -325,11 +411,40 @@ impl TestServer {
         self.assert_no_failures();
     }
 
+    /// Stops the server like [`TestServer::stop`], except that the failures
+    /// `expected` accepts are allowed; returns them, so that the test can
+    /// check that the server logged what it provoked.
+    pub async fn stop_expecting(mut self, expected: impl Fn(&LogRecord) -> bool) -> Vec<LogRecord> {
+        self.shutdown().await;
+        let (expected, unexpected): (Vec<LogRecord>, Vec<LogRecord>) = self
+            .logs
+            .records()
+            .into_iter()
+            .filter(LogRecord::is_failure)
+            .partition(|record| expected(record));
+        assert!(
+            unexpected.is_empty(),
+            "the server logged {} unexpected failure(s):\n{}",
+            unexpected.len(),
+            unexpected
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        expected
+    }
+
     /// Waits for the server to stop on its own, for example after a player
     /// ran `/stop`, without asking it to; then fails like [`TestServer::stop`].
-    pub async fn wait_for_exit(mut self) {
-        self.join_thread().await;
+    /// Returns what `VoidServer::run` returned.
+    pub async fn wait_for_exit(mut self) -> AppExit {
+        let exit = self
+            .join_thread()
+            .await
+            .expect("the server thread is joined only once");
         self.assert_no_failures();
+        exit
     }
 
     fn assert_no_failures(&self) {
@@ -359,19 +474,20 @@ impl TestServer {
         self.join_thread().await;
     }
 
-    async fn join_thread(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let joined = tokio::task::spawn_blocking(move || thread.join());
-            match tokio::time::timeout(Duration::from_secs(10), joined).await {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(panic))) => std::panic::resume_unwind(panic),
-                Ok(Err(error)) => panic!("failed to join the server thread: {error}"),
-                Err(_) => {
-                    // The join is still blocking the test runtime: stop the
-                    // server so the runtime can shut down after the panic.
-                    self.request_exit();
-                    panic!("the server did not stop within 10s");
-                }
+    /// Waits for the server thread and returns what `VoidServer::run`
+    /// returned, or `None` if the thread was already joined.
+    async fn join_thread(&mut self) -> Option<AppExit> {
+        let thread = self.thread.take()?;
+        let joined = tokio::task::spawn_blocking(move || thread.join());
+        match tokio::time::timeout(Duration::from_secs(10), joined).await {
+            Ok(Ok(Ok(exit))) => Some(exit),
+            Ok(Ok(Err(panic))) => std::panic::resume_unwind(panic),
+            Ok(Err(error)) => panic!("failed to join the server thread: {error}"),
+            Err(_) => {
+                // The join is still blocking the test runtime: stop the
+                // server so the runtime can shut down after the panic.
+                self.request_exit();
+                panic!("the server did not stop within 10s");
             }
         }
     }

@@ -35,12 +35,12 @@ let config = ServerConfigBuilder::new()
 |---|---|---|---|
 | `address` | `String` | `"127.0.0.1:25565"` | TCP bind address |
 | `tick_rate` | `u64` | `20` | Game ticks per second; must be at least `1` (`0` is read as `1`). Not announced to clients, which assume 20 |
-| `max_players` | `i32` | `100` | Player count advertised in the server list and the Login packet; not enforced (see [Limits](#limits)) |
+| `max_players` | `i32` | `100` | Player count advertised in the server list and the Login packet, and enforced at login (see [Limits](#limits)) |
 | `view_distance` | `i32` | `10` | Maximum server-side view distance (in chunks) |
 | `simulation_distance` | `i32` | `10` | Simulation distance sent to clients |
 | `game_mode` | `u8` | `1` (Creative) | Game mode (0=Survival, 1=Creative, 2=Adventure, 3=Spectator) every player joins in and whose rules the server applies; [`/gamemode`](../gameplay/commands.md#gamemode) only changes what a client shows |
 | `spawn_position` | `SpawnPosition` | `{ x: 0.0, z: 0.0, y: None }` | World spawn location |
-| `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn |
+| `spawn_chunk_radius` | `i32` | `10` | Radius of pre-generated chunks around spawn; `0` pre-generates the spawn chunk only. A negative radius pre-generates nothing, and the first player to join generates the chunk it stands in |
 | `initial_chunk_radius` | `i32` | `3` | Chunks sent to players during join (before streaming takes over), capped by the player's effective view distance |
 | `motd` | `String` | `"Welcome to Void Server!"` | Message of the day (shown in server list) |
 | `hardcore` | `bool` | `false` | Hardcore mode flag |
@@ -49,7 +49,7 @@ let config = ServerConfigBuilder::new()
 | `max_packets_per_tick` | `usize` | `1000` | Cap the number of packets drained from the incoming channel each tick (0 = unlimited) |
 | `packet_ingest_budget_ms` | `u64` | `4` | Time budget in milliseconds for packet ingest per tick (0 = unlimited) |
 | `max_chunk_generations_per_tick` | `usize` | `8` | Cap the number of new chunks generated per tick (0 = unlimited) |
-| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick exceeds this duration (ms); only while `metrics_debug` is on |
+| `slow_tick_ms` | `u64` | `200` | Log a warning when a tick works longer than this (ms, 0 = off): the time from the start of `First` to the end of `Last`, without the wait between ticks, reported as `tick_work_ms`; only while `metrics_debug` is on |
 | `frame_limits` | `FrameLimits` | See below | Bounds inbound/outbound packet sizes and nested decode resources |
 | `compression_threshold` | `Option<u32>` | `Some(256)` | Packets of at least this many bytes are zlib-compressed after login; `None` disables compression (vanilla's negative threshold) |
 | `observability` | `Option<ObservabilityConfig>` | `None` | Serves `/health` and Prometheus `/metrics` over HTTP; see [Health and Metrics Endpoints](./observability.md) |
@@ -64,13 +64,22 @@ untouched `ServerConfigBuilder::new()` both hold the defaults above.
 ## Limits
 
 The builder replaces values the server cannot run with and logs a warning: a
-`tick_rate` of `0` becomes `1`, and a negative `view_distance` or
-`simulation_distance` becomes `0`. Every other value is used as given.
+`tick_rate` of `0` becomes `1`, and a negative `view_distance`,
+`simulation_distance` or `spawn_chunk_radius` becomes `0`. Every other value
+is used as given.
 
-The configuration sets targets, not guarantees of capacity or performance:
+The configuration sets targets, not guarantees of performance:
 
-- `max_players` is only advertised. VoidMC does not refuse a login when that
-  many players are online; an application that needs a cap must enforce it.
+- `max_players` caps the connections past login. Every connection the server
+  has let through login holds a slot until it disconnects, whether it is still
+  in the configuration state, in play but not yet ready, or playing. Once
+  `max_players` slots are held, the next login is refused in the login state
+  with vanilla's "The server is full!" (`multiplayer.disconnect.server_full`),
+  and the connection is closed. Logins handled in the same tick are counted one
+  after another, so two of them cannot both take the last slot. Like vanilla,
+  there is no bypass for operators, and `0` (or a negative value) refuses every
+  login. The server list and the Login packet still show `max_players`, and the
+  server list's online count still counts ready players only.
 - `tick_rate` is the fastest rate the game loop runs at. A tick that takes
   longer than `1 / tick_rate` delays the next one, and missed ticks are not
   made up. Clients are not told the rate (VoidMC sends no Ticking State
@@ -94,13 +103,45 @@ fn announce(address: Res<ListenAddress>) {
 }
 ```
 
+## Stopping and the exit code
+
+`VoidServer::run` blocks until the game loop stops and returns the Bevy
+`AppExit` it stopped with:
+
+| Stopped by | `run` returns | Exit code of a `main` returning it |
+|---|---|---|
+| `/stop` | `AppExit::Success` | `0` |
+| Ctrl-C (SIGINT), SIGTERM or SIGHUP | `AppExit::from_code(130)` | `130` |
+| A system writing an `AppExit` | that `AppExit`; an error wins over `Success` when several are written | its code |
+
+`AppExit` implements `std::process::Termination`, so returning it from `main`
+makes it the process exit code, and a supervisor can tell a requested stop from
+an interrupted one:
+
+```rust
+use bevy_app::AppExit;
+use voidmc::{ServerConfigBuilder, VoidServer};
+
+fn main() -> AppExit {
+    VoidServer::new(ServerConfigBuilder::new().build()).run()
+}
+```
+
+A `main` that also returns errors can return `Result<AppExit, E>` and wrap what
+`run` returned in `Ok`, as the example server does.
+
 ## Packet limits
 
 `FrameLimits` rejects invalid packet lengths before allocation and carries the
 limits used while decoding strings, collections, remaining-byte fields, and NBT.
 The production defaults allow 2 MiB inbound frames and 8 MiB outbound frames.
+Strings may take up to 98,301 bytes: the protocol's 32767 characters at 3
+bytes each (see [codec](../protocol/codec.md)).
 Applications can replace the complete policy through
-`ServerConfigBuilder::frame_limits`.
+`ServerConfigBuilder::frame_limits`. A packet that breaks the framing closes the
+connection on the network thread; a known packet whose body breaks a decode
+limit disconnects its sender with a reason (see
+[networking](../protocol/networking.md#undecodable-packets)).
 
 With compression enabled, a compressed inbound frame is rejected when its
 declared uncompressed length is below the threshold, above
@@ -170,6 +211,14 @@ only shows when two of them act on the same thing in the same tick, for
 example an item used on the tick another item is picked up into the same
 inventory.
 
+`Update` is not the only schedule with unordered conflicting systems.
+Measured with Bevy's ambiguity detection on `develop` at `264ac4e`, with the
+default configuration, `Update` holds 25 pairs (three of them against Bevy's
+`exit_on_flag`; 35 with `RedstonePlugin`), `PostUpdate` 65 (54 among the
+`EntityMetadataSync` systems, 10 between `ChunkStreaming` and the other sync
+sets, one between `InventorySync` and `PlayerBroadcast`), and `Last` one:
+`disconnect_clients_on_exit` against Bevy's `tick_global_task_pools`.
+
 The compute task pool always has at least two threads, so two systems or
 regions can be in flight at once on a two-core machine. The running mode is
 available as the `ExecutionMode` resource. See
@@ -187,4 +236,4 @@ fn my_system(config: Res<ServerConfigResource>) {
 }
 ```
 
-Fields mirror `ServerConfig` except that `SpawnPosition` is flattened into `spawn_x`, `spawn_z`, and `spawn_y: Option<f64>`, and the world generator and registries are stored as separate resources (`WorldGen` and `RegistryDataStore`).
+Fields mirror `ServerConfig` except that `SpawnPosition` is flattened into `spawn_x`, `spawn_z`, and `spawn_y: Option<f64>`, and the world generator and registries are stored as separate resources (`WorldGen` and `RegistryDataStore`). Four more fields are not mirrored: the execution mode is the `ExecutionMode` resource, the address the [observability endpoints](./observability.md) are bound to is the `ObservabilityAddress` resource (present only when `observability` is set), and `frame_limits` and `compression_threshold` are handed to the network thread, with no resource in the world.

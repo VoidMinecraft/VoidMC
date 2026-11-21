@@ -6,7 +6,9 @@
 //! resource pattern used by [`WorldGen`] and keeps `void` free of any direct
 //! dependency on a persistence crate.
 
-use bevy_ecs::prelude::Resource;
+use std::path::PathBuf;
+
+use bevy_ecs::prelude::{Event, Resource};
 use tracing::instrument;
 
 use super::chunk_entity::ChunkData;
@@ -19,7 +21,55 @@ use super::generation::WorldGen;
 pub trait ChunkLoader: Send + Sync {
     /// Returns the persisted chunk at `(dimension, pos)`, or `None` when no
     /// saved chunk exists (in which case the generator is used).
+    ///
+    /// A loader that finds a stored chunk it cannot read also returns `None`,
+    /// so that the chunk is generated, and reports the failure with a
+    /// [`ChunkLoadFailedEvent`].
     fn load_chunk(&self, dimension: DimensionId, pos: ChunkPos) -> Option<ChunkData>;
+}
+
+/// Why a stored chunk could not be loaded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkLoadErrorKind {
+    /// The stored bytes were read but could not be decoded (corrupt data).
+    Decode,
+    /// The stored bytes could not be read (an I/O error).
+    Io,
+}
+
+impl ChunkLoadErrorKind {
+    /// The value of the `kind` label of `voidmc_chunk_load_errors_total`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Decode => "decode",
+            Self::Io => "io",
+        }
+    }
+}
+
+/// What the loader did to keep the stored bytes of a chunk it could not load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DamagedChunkAction {
+    /// The stored bytes were copied, as found, to this side file, which the
+    /// server never overwrites nor deletes. Later saves of the chunk proceed.
+    Quarantined(PathBuf),
+    /// The stored bytes could not be copied, so they are left where they are:
+    /// saves of the chunk are skipped until the server stops.
+    SavesSkipped,
+}
+
+/// Triggered when a [`ChunkLoader`] found a stored chunk it could not load.
+/// The chunk is generated instead; `action` says what became of the stored
+/// bytes. Each failure is also counted by `voidmc_chunk_load_errors_total`
+/// on the metrics endpoint.
+#[derive(Event, Clone, Debug)]
+pub struct ChunkLoadFailedEvent {
+    pub dimension: DimensionId,
+    pub pos: ChunkPos,
+    pub kind: ChunkLoadErrorKind,
+    /// The error, as the loader logged it.
+    pub error: String,
+    pub action: DamagedChunkAction,
 }
 
 /// Resource wrapping the active [`ChunkLoader`]. Optional: when absent, chunks

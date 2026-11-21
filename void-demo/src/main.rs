@@ -1,7 +1,10 @@
+use bevy_app::AppExit;
 use voidmc::{ServerConfigBuilder, SpawnPosition, VoidServer};
 use voidmc_demo::{SEED_VAR, Seed, arena, race::RacePlugin, terrain};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Returns the server's [`AppExit`] as the process exit code: 130 once Ctrl-C,
+/// SIGTERM or SIGHUP has stopped it.
+fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -35,10 +38,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .world_generator(arena.clone())
         .motd("Alpine Rush | Void | Minecart racing")
         .build();
-    VoidServer::new(config)
+    let exit = VoidServer::new(config)
         .add_plugin(move |app| {
             app.add_plugins(RacePlugin(arena));
         })
         .run();
-    Ok(())
+    Ok(exit)
 }

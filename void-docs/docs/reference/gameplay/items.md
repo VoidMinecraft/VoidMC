@@ -57,7 +57,11 @@ There is nothing to flag. Every setter (`set`, `set_cursor`, `give`, `clear`,
 per tick: one `SetContainerSlot` per changed slot, `SetCursorItem` for the
 cursor, `SetHeldSlot` for the selection, and a full `SetContainerContent` only
 when more than half the window changed or `clear` was called. Setting a slot to
-the value it already holds sends nothing. While a [menu](menus.md) is open,
+the value it already holds sends nothing, and neither does a change the
+client already shows: a slot or the cursor that a click in the player
+inventory left as the client predicted (see [Clicks](#clicks)), or the item a
+placed block uses up (see [The default placement](#the-default-placement)).
+While a [menu](menus.md) is open,
 main-inventory and hotbar changes go through the menu window instead; the rest
 is resent when the menu closes.
 
@@ -65,14 +69,18 @@ is resent when the menu closes.
 
 Container clicks on window 0 are applied server-side with vanilla's rules. A
 stack's max size is its item's, or its `max_stack_size` component if it has
-one.
+one. An armor slot (5–8) only takes an item whose `equippable` component
+names that slot (the helmets, carved pumpkin and mob heads on the head, and
+so on; the per-item data comes from Mojang's item components report, see
+`void-data`), and holds one item; every click below follows that rule. The
+off-hand takes any item.
 
 | Click | Effect |
 |---|---|
 | Left / right click | Picks up the whole stack / half of it (rounded up); places the whole cursor / one item; merges into the same item up to its max stack size, the rest staying on the cursor; swaps with a different item |
 | Click outside the window (slot `-999`) | Drops the cursor stack (left) or one item of it (right) as an `ItemDropEvent` |
-| Shift-click | Hotbar to main inventory and back; crafting grid, armor and off-hand slots to the main inventory then the hotbar; the crafting output to the hotbar from the right, then the main inventory from the bottom. Partial stacks fill first, then empty slots; what does not fit stays |
-| Number key 1–9 / F | Swaps the hovered slot with that hotbar slot / the off-hand |
+| Shift-click | An item equippable in an empty armor slot goes there, and one equippable in the off-hand (a shield) to an empty off-hand, unless it comes from the crafting grid or an armor slot. Otherwise: hotbar to main inventory and back; crafting grid, armor and off-hand slots to the main inventory then the hotbar; the crafting output to the hotbar from the right, then the main inventory from the bottom. Partial stacks fill first, then empty slots; what does not fit stays. As in vanilla the move repeats while it moves something, so a stack of pumpkins puts one on an empty head and the rest moves on to the hotbar or main inventory |
+| Number key 1–9 / F | Swaps the hovered slot with that hotbar slot / the off-hand. A stack too large for the hovered armor slot leaves one item there; what the slot held goes back into the inventory (hotbar first), dropped if it does not fit |
 | Drag (left / right) | Spreads the cursor evenly over the dragged slots (the remainder stays on the cursor) / places one per slot. A slot holding another item is skipped, a slot named twice counts once, a drag never covers more slots than the cursor has items, and a packet out of order, an empty cursor or any other click cancels the drag |
 | Double-click | Fills the cursor with the same item from the whole window except the crafting output, partial stacks before full ones, in slot order (from the end with button 1), if the clicked slot is empty |
 | Drop key Q / Ctrl+Q over a slot | Drops one item / the whole stack, only with an empty cursor |
@@ -84,11 +92,10 @@ can be placed into the crafting output (slot 0), which only gives its whole
 stack. Closing the inventory returns the cursor stack and the crafting grid
 to the inventory, dropping what does not fit.
 
-Not supported: the server has no equipment data for items, so armor and the
-off-hand slots accept any item, and shift-clicking armor or a shield moves it
-like any other item instead of equipping it. Nothing is crafted in the
-crafting grid. A vanilla client predicts these differently and is corrected
-by the resync below.
+Not supported: nothing is crafted in the crafting grid, and only an item's
+default `equippable` component is known (a stack's own component is not
+read). A vanilla client predicts crafting differently and is corrected by the
+resync below.
 
 The client sends what it expects each slot it changed and its cursor to hold
 (hashed). As in vanilla, the server compares that prediction with its own
@@ -100,9 +107,23 @@ carrying a stale state id is answered with a full `SetContainerContent`.
 
 `SetCreativeModeSlot` is only honoured when the server's `game_mode` is
 creative, for slots 1–45 and stacks within their max size; otherwise the
-slot's true contents are resent. On a creative server a negative slot throws
-the stack, if it is within its max size ([Dropped items](#dropped-items)); on
-any other server it does nothing.
+slot's true contents are resent. As in vanilla, it ignores the armor-slot
+rule: a creative player can put any item on its head. On a creative server a
+negative slot throws the stack, if it is within its max size ([Dropped
+items](#dropped-items)); on any other server it does nothing.
+
+### Equipment seen by other players
+
+Other players are shown what a player holds and wears with Set Equipment:
+the selected hotbar slot as the main hand, the off-hand and the four armor
+slots. As in vanilla, the `PlayerBroadcast` phase in `PostUpdate` sends a
+slot to every other ready player (the players its entity is spawned for) when
+it changes, whatever changed it (selecting another hotbar slot, `/give`,
+`/clear`, clicks, creative slot sets, drops, pickups or the `Inventory` API),
+and every non-empty slot to a player who joins. A player is never sent its own
+equipment, and empty equipment is never sent to a joining player. Swapping
+hands with the F key outside the inventory screen is not handled by the
+server.
 
 ### Held slot and cooldowns
 
@@ -198,6 +219,78 @@ impl ItemBehavior for DirtToBedrock {
 }
 // reg.register_for("minecraft:dirt", DirtToBedrock);
 ```
+
+`place_block` puts the given state across the clicked face whatever is there:
+it replaces any block, ignores the entities in the way and uses up nothing.
+None of the checks of the default placement below apply to it, except the
+reach check, which runs before any behaviour.
+
+## The default placement
+
+When the item's behaviour and the clicked block's interaction both pass, a
+block item places its block the way a vanilla server does.
+
+- **Where.** Into the clicked block when that block is replaceable, else across
+  the clicked face, and only if the block there is replaceable. Replaceable
+  blocks are the ones of vanilla's `#minecraft:replaceable` tag (air, water,
+  lava, short and tall grass, ferns, bushes, seagrass, fire, vines, glow
+  lichen, light, ...), plus snow of a single layer, sculk veins and resin
+  clumps; a block never replaces another block of its own item. A slab
+  completes a slab of the same kind into a double slab, clicked on its empty
+  half or from the neighbouring block. Adding to other blocks of the same item
+  (snow layers, vines, candles, sea pickles, ...) is not done: they count as
+  occupied.
+- **Entities.** A block whose collision box would intersect a player (the
+  placing one included) or another entity that blocks building (mobs, armor
+  stands, boats, minecarts, primed TNT, falling blocks, end crystals) is
+  refused. Items, experience orbs and projectiles do not stop it, nor do any
+  entities for a block without a collision box (a lever, a torch).
+- **Orientation.** The block's state follows the clicked face, the cursor on
+  it and the player's rotation, for these property families:
+
+  | Family | Blocks | Rule |
+  |---|---|---|
+  | `axis` | logs, wood, stems, other pillars, hay, chains, infested deepslate, creaking heart | the axis of the clicked face |
+  | `facing`, toward the player | furnace, smoker, blast furnace, carved pumpkin, jack o'lantern, glazed terracotta, loom, stonecutter, beehive, bee nest, chiseled bookshelf, lectern, end portal frame, ender chest, shelves, copper golem statues, dried ghast, repeater, comparator | opposite the player's horizontal facing |
+  | `facing`, with the player | campfires, decorated pot, calibrated sculk sensor, fence gates | the player's horizontal facing (anvils: turned clockwise) |
+  | `facing`, six ways | dispenser, dropper, piston, sticky piston, barrel; observer | back along the player's look, up and down included; the observer along it |
+  | `facing`, clicked face | shulker boxes, lightning rods, end rod, amethyst buds and clusters; hopper | away from the clicked block (an end rod against an end rod pointing at it points back); a hopper into it, or down |
+  | `facing`, on a wall | ladder, tripwire hook | against the wall clicked, else the first wall around in the player's look order |
+  | `face` and `facing` | lever, buttons, grindstone | on the floor, a wall or the ceiling: the clicked block, else the first sturdy neighbour in the player's look order; facing the player's way on a floor or ceiling, away from the wall on one |
+  | `half` | stairs, trapdoors | stairs face the player's way, upside down when placed under a block or on the upper half of a side; a trapdoor clicked on a side hinges there, in the half clicked, else faces the player, on top when placed under a block |
+  | slab `type` | slabs | bottom on a top face or the lower half of a side, top on a bottom face or the upper half, double when a second one is added |
+
+  Attached blocks (levers, buttons, ladders, tripwire hooks, amethyst) need a
+  full face to hang on, as in vanilla; one with none is refused. A full face
+  is read from the block's collision shape (leaves have none, mud and soul
+  sand count as full blocks).
+
+  Every other block, and every other property, keeps its default value:
+  waterlogging, shapes that depend on the neighbours (fences, walls, panes,
+  stair corners, redstone dust, double chests, a fence gate in a wall),
+  redstone power, two-block blocks (doors, beds, tall plants), signs,
+  banners and heads (`rotation`), bells, lanterns, the crafter and pointed
+  dripstone, and the wall variants of torches, signs, banners, heads and
+  coral fans.
+- **Items used.** On a server whose [`game_mode`](../server/configuration.md)
+  is not Creative, a placed block takes one item from the hand that was used,
+  the last one emptying the slot. The client predicts it, so the slot is not
+  sent back. A Creative server uses nothing.
+- **Refused placements.** The player is sent the real clicked block and the
+  block the placement would have filled, then the acknowledgement of its
+  click, which undoes what its client predicted; outside Creative its hand's
+  slot is sent again too. Nothing else changes and no `BlockPlaceEvent` fires.
+
+### Reach
+
+Every click on a block, to use an item on it as to break it, is first checked
+against the player's reach: the distance from its eyes (1.62 blocks above its
+feet, 1.27 crouching) to the nearest point of the block must be below its
+block interaction range (4.5, 5 in Creative) plus 1, as on a vanilla server.
+Out of reach, no event fires (`PlayerUseItemOnBlockEvent`, the digging
+events), no item behaviour or block interaction runs, and the player is sent
+the real blocks (the clicked one, and for a use the one across the clicked
+face) before the acknowledgement of its sequence.
 
 ## Blocks that react to a right-click
 

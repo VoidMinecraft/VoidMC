@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use bevy_app::AppExit;
-use bevy_ecs::prelude::{Entity, With};
-use rand::Rng;
+use bevy_ecs::prelude::{Entity, With, World};
 
 use crate::components::{
-    PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState, Wander,
+    Operator, PlayerDimension, PlayerName, PlayerReady, Position, Rotation, TeleportState,
 };
 use crate::entity::{EntityBuilder, EntityKind};
 use crate::messages::TextColor;
@@ -23,6 +22,10 @@ use crate::item::ItemId;
 use crate::item::ItemStack;
 
 /// Registers all default commands except those listed in `exclude`.
+///
+/// `broadcast`, `clear`, `gamemode`, `give`, `kick`, `say`, `stop`, `summon`
+/// and `tp` require the sender to have [`Operator`]; `help`, `list`, `ping`,
+/// `plugins` and `tell` are open to every player.
 pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str]) {
     if !exclude.contains(&"help") {
         registry.register(help_command());
@@ -71,10 +74,16 @@ pub fn register_default_commands(registry: &mut CommandRegistry, exclude: &[&str
 pub fn give_command() -> Command {
     CommandBuilder::new("give")
         .description("Give yourself an item")
+        .requires(is_operator)
         .arg("item", Arc::new(ItemArg))
         .arg_optional("count", IntegerArg::new(1, 64))
         .handler(handle_give)
         .build()
+}
+
+/// The requirement of the operator-only default commands.
+fn is_operator(world: &World, executor: Entity) -> bool {
+    world.get::<Operator>(executor).is_some()
 }
 
 fn handle_give(ctx: &mut CommandContext) {
@@ -109,6 +118,7 @@ fn handle_give(ctx: &mut CommandContext) {
 pub fn clear_command() -> Command {
     CommandBuilder::new("clear")
         .description("Clear your inventory")
+        .requires(is_operator)
         .handler(handle_clear)
         .build()
 }
@@ -134,6 +144,7 @@ pub fn help_command() -> Command {
 pub fn gamemode_command() -> Command {
     CommandBuilder::new("gamemode")
         .description("Change game mode")
+        .requires(is_operator)
         .alias("gm")
         .arg("mode", Arc::new(GameModeArg))
         .handler(handle_gamemode)
@@ -143,6 +154,7 @@ pub fn gamemode_command() -> Command {
 pub fn kick_command() -> Command {
     CommandBuilder::new("kick")
         .description("Kick a player")
+        .requires(is_operator)
         .arg("player", Arc::new(PlayerArg))
         .arg_variadic("reason", Arc::new(GreedyStringArg))
         .handler(handle_kick)
@@ -167,8 +179,12 @@ pub fn plugins_command() -> Command {
 fn handle_help(ctx: &mut CommandContext) {
     // Check if a specific command was requested
     if let Some(cmd_name) = ctx.get::<String>("command").cloned() {
+        let sender = ctx.entity;
         let resolved = ctx.with_world(|world| {
             let registry = world.resource::<CommandRegistry>();
+            if !registry.can_use(&cmd_name, world, sender) {
+                return None;
+            }
             registry.resolve(&cmd_name).map(|canonical_name| {
                 let canonical = canonical_name.to_string();
                 let desc = registry.description(&canonical).unwrap_or("").to_string();
@@ -180,7 +196,10 @@ fn handle_help(ctx: &mut CommandContext) {
         });
 
         let Some((canonical, desc, usage)) = resolved else {
-            ctx.reply_error(&format!("Unknown command: /{}", cmd_name));
+            ctx.reply_error(&format!(
+                "Unknown command: /{}",
+                strip_illegal_characters(&cmd_name)
+            ));
             return;
         };
 
@@ -193,12 +212,14 @@ fn handle_help(ctx: &mut CommandContext) {
         return;
     }
 
-    // List all commands
+    // List the commands the sender may run
+    let sender = ctx.entity;
     let mut entries: Vec<(String, String)> = ctx.with_world(|world| {
         let registry = world.resource::<CommandRegistry>();
         registry
             .command_names()
             .iter()
+            .filter(|name| registry.can_use(name, world, sender))
             .map(|name| {
                 let desc = registry.description(name).unwrap_or("").to_string();
                 (name.to_string(), desc)
@@ -255,6 +276,9 @@ fn handle_kick(ctx: &mut CommandContext) {
         .get::<String>("reason")
         .cloned()
         .unwrap_or_else(|| "Kicked by an operator".to_string());
+    if refuse_illegal_characters(ctx, &reason) {
+        return;
+    }
 
     // Sends the Disconnect and has the server close the connection, so a
     // client that ignores the packet does not stay in the game.
@@ -286,6 +310,7 @@ fn handle_plugins(ctx: &mut CommandContext) {
 pub fn tp_command() -> Command {
     CommandBuilder::new("tp")
         .description("Teleport to coordinates")
+        .requires(is_operator)
         .arg("position", Arc::new(Vec3Arg))
         .handler(handle_tp)
         .build()
@@ -294,6 +319,7 @@ pub fn tp_command() -> Command {
 pub fn broadcast_command() -> Command {
     CommandBuilder::new("broadcast")
         .description("Broadcast a message to all players")
+        .requires(is_operator)
         .arg_variadic_required("message", Arc::new(GreedyStringArg))
         .handler(handle_broadcast)
         .build()
@@ -343,13 +369,31 @@ fn handle_broadcast(ctx: &mut CommandContext) {
 /// characters are not chat text. These are the characters a vanilla client
 /// cannot type and a vanilla server refuses (`StringUtil.isAllowedChatCharacter`).
 fn refuse_illegal_characters(ctx: &CommandContext, message: &str) -> bool {
-    let illegal = message
-        .chars()
-        .any(|c| c == '\u{a7}' || c < ' ' || c == '\u{7f}');
+    let illegal = message.chars().any(is_illegal_character);
     if illegal {
         ctx.reply_error("Illegal characters in chat");
     }
     illegal
+}
+
+fn is_illegal_character(c: char) -> bool {
+    c == '\u{a7}' || c < ' ' || c == '\u{7f}'
+}
+
+/// `text` as it can be echoed back to the player who typed it: without the
+/// `§` formatting codes (the `§` and the character after it, which the client
+/// would read as one code) and without control characters.
+pub(super) fn strip_illegal_characters(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{a7}' {
+            chars.next();
+        } else if !is_illegal_character(c) {
+            stripped.push(c);
+        }
+    }
+    stripped
 }
 
 pub fn list_command() -> Command {
@@ -378,9 +422,10 @@ fn handle_list(ctx: &mut CommandContext) {
 }
 
 /// Vanilla `Level.isInSpawnableBounds`, which `/tp` checks before moving
-/// anyone: within the ±30,000,000 world border limit horizontally and
-/// ±20,000,000 vertically. Non-finite values are out of bounds.
-fn in_teleport_bounds([x, y, z]: [f64; 3]) -> bool {
+/// anyone and `/summon` before spawning: within the ±30,000,000 world border
+/// limit horizontally and ±20,000,000 vertically. Non-finite values are out
+/// of bounds.
+fn in_spawnable_bounds([x, y, z]: [f64; 3]) -> bool {
     const HORIZONTAL: f64 = 30_000_000.0;
     const VERTICAL: f64 = 20_000_000.0;
     let horizontal = |v: f64| (-HORIZONTAL..HORIZONTAL).contains(&v.floor());
@@ -390,7 +435,7 @@ fn in_teleport_bounds([x, y, z]: [f64; 3]) -> bool {
 fn handle_tp(ctx: &mut CommandContext) {
     let [x, y, z] = *ctx.get::<[f64; 3]>("position").unwrap();
     let entity = ctx.entity;
-    if !in_teleport_bounds([x, y, z]) {
+    if !in_spawnable_bounds([x, y, z]) {
         ctx.reply_error("Invalid position for teleport");
         return;
     }
@@ -444,6 +489,7 @@ fn handle_tp(ctx: &mut CommandContext) {
 pub fn say_command() -> Command {
     CommandBuilder::new("say")
         .description("Send a message as yourself")
+        .requires(is_operator)
         .arg_variadic_required("message", Arc::new(GreedyStringArg))
         .handler(handle_say)
         .build()
@@ -452,12 +498,16 @@ pub fn say_command() -> Command {
 fn handle_say(ctx: &mut CommandContext) {
     let name = ctx.player_name().unwrap_or_else(|| "Server".to_string());
     let message = ctx.get::<String>("message").unwrap().clone();
+    if refuse_illegal_characters(ctx, &message) {
+        return;
+    }
     ctx.broadcast(&format!("[{}] {}", name, message));
 }
 
 pub fn summon_command() -> Command {
     CommandBuilder::new("summon")
         .description("Summon an entity at a position")
+        .requires(is_operator)
         .arg("entity", Arc::new(SummonableEntityArg))
         .arg_optional("position", Arc::new(Vec3Arg))
         .flag("wander", Some('w'), "Attach the demo random-walk behavior")
@@ -499,6 +549,10 @@ fn handle_summon(ctx: &mut CommandContext) {
             (pos.x, pos.y, pos.z)
         }),
     };
+    if !in_spawnable_bounds([x, y, z]) {
+        ctx.reply_error("Invalid position for summon");
+        return;
+    }
 
     let dimension = ctx.with_world(|world| {
         world
@@ -507,24 +561,15 @@ fn handle_summon(ctx: &mut CommandContext) {
             .unwrap_or(DimensionId::Overworld)
     });
 
-    let wander = ctx.flag("wander");
     let builder = EntityBuilder::new(kind)
         .at(x, y, z)
         .in_dimension(dimension)
-        .wander(wander)
+        .wander(ctx.flag("wander"))
         .gravity(ctx.flag("gravity"))
         .block_collision(ctx.flag("block-checks"));
 
     ctx.with_world_mut(|world| {
-        let mut e = builder.spawn_in(world);
-        if wander {
-            let mut rng = rand::thread_rng();
-            e.insert(Wander {
-                ticks: rng.gen_range(40..140),
-                speed: 0.08,
-                yaw: rng.gen_range(0.0..360.0) as f32,
-            });
-        }
+        builder.spawn_in(world);
     });
 
     ctx.reply(&format!(
@@ -536,6 +581,7 @@ fn handle_summon(ctx: &mut CommandContext) {
 pub fn stop_command() -> Command {
     CommandBuilder::new("stop")
         .description("Gracefully stop the server")
+        .requires(is_operator)
         .handler(handle_stop)
         .build()
 }
@@ -560,13 +606,13 @@ pub struct PluginList(pub Vec<String>);
 
 #[cfg(test)]
 mod tests {
-    use bevy_ecs::prelude::*;
     use flume::Receiver;
 
     use super::*;
     use crate::commands::dispatch_command;
     use crate::components::{
         ClientId, EntityCollider, EntityType, MovementConfig, PreviousPosition, SpawnedEntity,
+        Wander,
     };
     use crate::network::{IncomingPacket, NetworkChannels, OutgoingPacket};
     use voidmc_protocol::clientbound::{ClientboundPacket, PlayPacket};
@@ -597,6 +643,7 @@ mod tests {
             .spawn((
                 ClientId(7),
                 PlayerReady,
+                Operator,
                 PlayerName("Alice".into()),
                 TeleportState {
                     next_id: 1,
@@ -917,5 +964,20 @@ mod tests {
 
         let exits = world.resource::<bevy_ecs::message::Messages<AppExit>>();
         assert_eq!(exits.len(), 1, "/stop should write exactly one AppExit");
+    }
+
+    #[test]
+    fn strip_illegal_characters_drops_formatting_codes_and_control_characters() {
+        for (text, stripped) in [
+            ("nope", "nope"),
+            ("\u{a7}knope", "nope"),
+            ("\u{a7}4\u{a7}lred\u{a7}r", "red"),
+            ("\u{a7}\u{a7}knope", "knope"),
+            ("trailing\u{a7}", "trailing"),
+            ("pi\0ng\u{7}\u{7f}\n", "ping"),
+            ("Gr\u{fc}\u{df}e \u{1f600}", "Gr\u{fc}\u{df}e \u{1f600}"),
+        ] {
+            assert_eq!(strip_illegal_characters(text), stripped, "{text:?}");
+        }
     }
 }

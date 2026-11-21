@@ -5,7 +5,10 @@
 use std::collections::HashSet;
 
 use azalea_entity::LookDirection;
-use voidmc::components::{Position, Rotation, TeleportState};
+use bevy_app::App;
+use bevy_ecs::prelude::*;
+use voidmc::components::{Grounded, Position, Rotation, TeleportState};
+use voidmc::events::{PlayerMoveEvent, PlayerRotateEvent};
 use voidmc_e2e::core::position::{ChunkPos, Vec3};
 use voidmc_e2e::protocol::common::movements::{MoveFlags, RelativeMovements};
 use voidmc_e2e::protocol::packets::game::{
@@ -13,6 +16,8 @@ use voidmc_e2e::protocol::packets::game::{
     s_accept_teleportation::ServerboundAcceptTeleportation,
     s_move_player_pos::ServerboundMovePlayerPos,
     s_move_player_pos_rot::ServerboundMovePlayerPosRot,
+    s_move_player_rot::ServerboundMovePlayerRot,
+    s_move_player_status_only::ServerboundMovePlayerStatusOnly,
 };
 use voidmc_e2e::{Bot, BotOptions, TestServer};
 
@@ -112,7 +117,7 @@ fn system_chat(bot: &Bot) -> Vec<String> {
 
 #[tokio::test]
 async fn tp_lands_on_the_exact_coordinates_keeps_the_look_and_the_same_entity() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     skip_join_teleport(&alice).await;
     let bob = server.join("Bob").await;
@@ -284,7 +289,7 @@ async fn tp_lands_on_the_exact_coordinates_keeps_the_look_and_the_same_entity() 
 
 #[tokio::test]
 async fn stale_movement_cannot_undo_an_unconfirmed_teleport() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     skip_join_teleport(&alice).await;
     let bob = server.join("Bob").await;
@@ -395,9 +400,243 @@ async fn stale_movement_cannot_undo_an_unconfirmed_teleport() {
     server.stop().await;
 }
 
+/// The movement events the server raised, in order, with their player.
+#[derive(Resource, Default)]
+struct MovementEvents(Vec<(Entity, &'static str)>);
+
+fn record_movement_events(app: &mut App) {
+    app.init_resource::<MovementEvents>()
+        .add_observer(
+            |event: On<PlayerMoveEvent>, mut log: ResMut<MovementEvents>| {
+                log.0.push((event.entity, "move"));
+            },
+        )
+        .add_observer(
+            |event: On<PlayerRotateEvent>, mut log: ResMut<MovementEvents>| {
+                log.0.push((event.entity, "rotate"));
+            },
+        );
+}
+
+/// Removes the recorded movement events and returns those of `bot`'s player.
+async fn take_movement_events(server: &TestServer, bot: &Bot) -> Vec<&'static str> {
+    let entity = server.player_entity(bot.uuid()).await;
+    server
+        .with_world(move |world| {
+            let mut log = world.resource_mut::<MovementEvents>();
+            let events = log
+                .0
+                .iter()
+                .filter(|(player, _)| *player == entity)
+                .map(|(_, kind)| *kind)
+                .collect();
+            log.0.clear();
+            events
+        })
+        .await
+}
+
+async fn server_on_ground(server: &TestServer, bot: &Bot) -> Option<bool> {
+    let entity = server.player_entity(bot.uuid()).await;
+    server
+        .with_world(move |world| world.get::<Grounded>(entity).map(|grounded| grounded.0))
+        .await
+}
+
+/// The on-ground state a movement packet shows for entity `id`.
+fn shown_on_ground(id: i32, packet: &ClientboundGamePacket) -> Option<bool> {
+    match packet {
+        ClientboundGamePacket::MoveEntityPos(p) if p.entity_id.0 == id => Some(p.on_ground),
+        ClientboundGamePacket::MoveEntityPosRot(p) if p.entity_id.0 == id => Some(p.on_ground),
+        ClientboundGamePacket::MoveEntityRot(p) if p.entity_id.0 == id => Some(p.on_ground),
+        ClientboundGamePacket::EntityPositionSync(p) if p.id.0 == id => Some(p.on_ground),
+        _ => None,
+    }
+}
+
+/// Every packet `viewer` holds about where `target` is, looks or stands.
+fn movement_shown(viewer: &Bot, target: &Bot) -> Vec<String> {
+    let id = target.entity_id();
+    viewer.queued(|packet| match packet {
+        ClientboundGamePacket::RotateHead(head) if head.entity_id.0 == id => {
+            Some(format!("{head:?}"))
+        }
+        ClientboundGamePacket::TeleportEntity(teleport) if teleport.id.0 == id => {
+            Some(format!("{teleport:?}"))
+        }
+        _ => shown_on_ground(id, packet).map(|_| format!("{packet:?}")),
+    })
+}
+
+/// What the server holds for `bot` that a movement packet can change.
+async fn movement_state(server: &TestServer, bot: &Bot) -> (ServerSide, Option<bool>) {
+    (
+        server_side(server, bot).await,
+        server_on_ground(server, bot).await,
+    )
+}
+
+/// Checks that the movement packet `bot` just sent changed nothing on the
+/// server and raised no movement event.
+async fn assert_ignored(
+    server: &TestServer,
+    bot: &Bot,
+    before: &(ServerSide, Option<bool>),
+    what: &str,
+) {
+    bot.sync().await;
+    assert_eq!(
+        &movement_state(server, bot).await,
+        before,
+        "{what} sent before the accept changed the player"
+    );
+    assert_eq!(
+        take_movement_events(server, bot).await,
+        Vec::<&str>::new(),
+        "{what} sent before the accept raised events"
+    );
+}
+
+#[tokio::test]
+async fn every_movement_packet_sent_before_the_accept_is_ignored_whole() {
+    let server = TestServer::builder()
+        .operators()
+        .plugin(record_movement_events)
+        .start()
+        .await;
+    let alice = server.join("Alice").await;
+    skip_join_teleport(&alice).await;
+    let bob = server.join("Bob").await;
+    let start = alice.position();
+    alice
+        .send(ServerboundMovePlayerPosRot {
+            pos: start,
+            look_direction: LookDirection::new(10.0, 5.0),
+            flags: FLAGS,
+        })
+        .await;
+    alice.hold_teleports(true);
+
+    let destination = Vec3::new(start.x + 40.0, start.y + 10.0, start.z);
+    let teleport = teleport(&alice, destination).await;
+    bob.wait_until("Alice at the destination", |view| {
+        view.entity_by_uuid(alice.uuid())
+            .is_some_and(|(_, entity)| entity.position.distance_to(destination) < 1e-3)
+    })
+    .await;
+    alice.sync().await;
+    bob.sync().await;
+    bob.clear();
+    take_movement_events(&server, &alice).await;
+    let before = movement_state(&server, &alice).await;
+    assert_eq!(
+        before,
+        (
+            ServerSide {
+                position: destination,
+                look: (10.0, 5.0),
+                pending: Some(teleport.id as i32),
+            },
+            Some(true),
+        )
+    );
+
+    // The client sends from where it was, looking elsewhere, in the air,
+    // until it processes the teleport: none of it may apply.
+    let elsewhere = LookDirection::new(90.0, -45.0);
+    let airborne = MoveFlags {
+        on_ground: false,
+        horizontal_collision: false,
+    };
+    alice
+        .send(ServerboundMovePlayerPos {
+            pos: start,
+            flags: airborne,
+        })
+        .await;
+    assert_ignored(&server, &alice, &before, "a position").await;
+    alice
+        .send(ServerboundMovePlayerPosRot {
+            pos: start,
+            look_direction: elsewhere,
+            flags: airborne,
+        })
+        .await;
+    assert_ignored(&server, &alice, &before, "a position and rotation").await;
+    alice
+        .send(ServerboundMovePlayerRot {
+            look_direction: elsewhere,
+            flags: airborne,
+        })
+        .await;
+    assert_ignored(&server, &alice, &before, "a rotation").await;
+    alice
+        .send(ServerboundMovePlayerStatusOnly { flags: airborne })
+        .await;
+    assert_ignored(&server, &alice, &before, "an on-ground state").await;
+
+    bob.sync().await;
+    let shown = movement_shown(&bob, &alice);
+    assert!(
+        shown.is_empty(),
+        "Bob was shown movement sent before the accept: {shown:#?}"
+    );
+
+    // Once the teleport is accepted, every part of a movement packet applies.
+    accept(&alice, teleport.id).await;
+    let step = Vec3::new(destination.x + 1.0, destination.y, destination.z);
+    alice
+        .send(ServerboundMovePlayerPosRot {
+            pos: step,
+            look_direction: elsewhere,
+            flags: airborne,
+        })
+        .await;
+    alice.sync().await;
+    assert_eq!(
+        movement_state(&server, &alice).await,
+        (
+            ServerSide {
+                position: step,
+                look: (90.0, -45.0),
+                pending: None,
+            },
+            Some(false),
+        )
+    );
+    assert_eq!(
+        take_movement_events(&server, &alice).await,
+        ["move", "rotate"]
+    );
+    let id = alice.entity_id();
+    bob.expect("Alice's step in the air", |packet| {
+        shown_on_ground(id, packet).filter(|on_ground| !on_ground)
+    })
+    .await;
+    bob.wait_until("Alice one step from the destination", |view| {
+        view.entity_by_uuid(alice.uuid())
+            .is_some_and(|(_, entity)| entity.position.distance_to(step) < 1e-3)
+    })
+    .await;
+
+    alice
+        .send(ServerboundMovePlayerStatusOnly { flags: FLAGS })
+        .await;
+    alice.sync().await;
+    assert_eq!(server_on_ground(&server, &alice).await, Some(true));
+    bob.expect("Alice landing", |packet| {
+        shown_on_ground(id, packet).filter(|on_ground| *on_ground)
+    })
+    .await;
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
 #[tokio::test]
 async fn teleporting_far_streams_the_destination_and_back() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server
         .join_with("Alice", BotOptions { view_distance: 2 })
         .await;
@@ -456,7 +695,7 @@ async fn teleporting_far_streams_the_destination_and_back() {
 
 #[tokio::test]
 async fn invalid_tp_input_is_rejected_without_moving_anyone() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     skip_join_teleport(&alice).await;
     let bob = server.join("Bob").await;

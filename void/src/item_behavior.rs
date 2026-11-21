@@ -28,6 +28,19 @@
 //! Blocks that react to a right-click themselves (a lever) implement
 //! [`BlockInteraction`] instead; it runs after the item's behaviour passed and
 //! before the default placement.
+//!
+//! The default placement follows vanilla: the block goes into the clicked
+//! block when that one is replaceable (air, water, short grass, ...), else
+//! across the clicked face if the block there is replaceable; it is refused
+//! when an entity that blocks building is in the way; it takes its
+//! orientation from the clicked face, the cursor and the player's rotation;
+//! and outside Creative it uses up one item. A refused placement resends the
+//! real blocks to the player. [`ItemUseContext::place_block`] does none of
+//! this: it puts the given state across the clicked face, whatever is there.
+//!
+//! Before any of this, a click on a block out of the player's reach (its
+//! block interaction range plus one, from its eyes) is refused without an
+//! event, for placing as for breaking.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -37,11 +50,17 @@ use bevy_ecs::prelude::*;
 use voidmc_protocol::clientbound;
 use voidmc_protocol::types::{BlockFace, BlockPosition, Hand};
 
-use crate::components::{PlayerDimension, Sneaking};
+use crate::components::{
+    ClientId, EntityCollider, EntityDimension, EntityType, LoadedChunks, PlayerDimension, Position,
+    Rotation, Sneaking, SpawnedEntity,
+};
+use crate::config::ServerConfigResource;
 use crate::inventory::Inventory;
 use crate::item::{ItemId, ItemStack};
 use crate::messages::TextColor;
+use crate::placement::{self, Click, Placement};
 use crate::players::WorldPlayers;
+use crate::plugins::abilities::PlayerAbilities;
 use crate::world::mutation::send_ack;
 use crate::world::{
     BlockMutation, ChunkData, ChunkIndex, ChunkPos, DimensionId, mutate_block, offset_position,
@@ -80,7 +99,9 @@ pub struct ItemUseContext<'a> {
 }
 
 impl ItemUseContext<'_> {
-    /// Places `state_id` adjacent to the clicked block face. No-op for use-in-air.
+    /// Places `state_id` adjacent to the clicked block face, whatever is
+    /// there: unlike the default placement, it replaces any block, ignores
+    /// the entities in the way and uses up nothing. No-op for use-in-air.
     pub fn place_block(&mut self, state_id: i32) -> bool {
         let Some(target) = self.block else {
             return false;
@@ -160,6 +181,232 @@ impl ItemUseContext<'_> {
     /// Mutable world access for advanced behaviours.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
         f(self.world)
+    }
+
+    /// The default placement of the held block item, `item_state` being its
+    /// block: vanilla's rules for the target, the entities in the way, the
+    /// orientation and the item used up (see the module documentation).
+    fn place_held_block(&mut self, target: BlockUseTarget, item_state: i32) {
+        let Some(item_block) = voidmc_data::block_type_of_state(BLOCK_DATA_VERSION, item_state)
+        else {
+            return;
+        };
+        let Some(dimension) = self.world.get::<PlayerDimension>(self.player).map(|d| d.0) else {
+            return;
+        };
+        let rotation = self
+            .world
+            .get::<Rotation>(self.player)
+            .copied()
+            .unwrap_or_default();
+        let click = Click {
+            clicked: target.position,
+            face: target.face,
+            cursor: target.cursor,
+            yaw: rotation.yaw,
+            pitch: rotation.pitch,
+        };
+        let world = &*self.world;
+        let outcome = placement::place(item_block, &click, |position| {
+            block_state(world, dimension, position)
+        });
+        let (filled, placed) = match outcome {
+            Placement::Place { position, state } => {
+                let placed = !entity_in_the_way(self.world, dimension, position, state)
+                    && mutate_block(
+                        self.world,
+                        self.player,
+                        dimension,
+                        position,
+                        state,
+                        target.face,
+                        BlockMutation::Place,
+                    )
+                    .is_some();
+                (position, placed)
+            }
+            Placement::Refused { target } => (target, false),
+        };
+        if placed {
+            if !placement::creative(self.world) {
+                self.use_up_one();
+            }
+        } else {
+            resync_blocks(self.world, self.player, &[target.position, filled]);
+            resend_hand(self.world, self.player, self.held_slot, &self.held);
+        }
+    }
+
+    /// Takes one item from the slot the item was used from, as its client
+    /// predicted when it placed the block: the slot is not sent back.
+    fn use_up_one(&mut self) {
+        let Some(index) = self.held_slot else {
+            return;
+        };
+        if let Some(mut inventory) = self.world.get_mut::<Inventory>(self.player) {
+            let mut stack = inventory.get(index).clone();
+            if stack.is_empty() || stack.item != self.held.item {
+                return;
+            }
+            stack.count -= 1;
+            let stack = if stack.count == 0 {
+                ItemStack::EMPTY
+            } else {
+                stack
+            };
+            inventory.set_predicted(index, stack);
+        }
+    }
+}
+
+/// Whether an entity that keeps blocks from being placed into it (a player,
+/// a mob, ...; not an item) intersects `state` placed at `position`.
+fn entity_in_the_way(
+    world: &mut World,
+    dimension: DimensionId,
+    position: BlockPosition,
+    state: i32,
+) -> bool {
+    let boxes = voidmc_data::v26_1_2::shapes::for_state(state);
+    if boxes.is_empty() {
+        return false;
+    }
+    let origin = [
+        f64::from(position.x),
+        f64::from(position.y),
+        f64::from(position.z),
+    ];
+    let intersects = |feet: &Position, half_width: f64, height: f64| {
+        let min = [feet.x - half_width, feet.y, feet.z - half_width];
+        let max = [feet.x + half_width, feet.y + height, feet.z + half_width];
+        boxes.iter().any(|b| {
+            let lo = [b.x0, b.y0, b.z0].map(f64::from);
+            let hi = [b.x1, b.y1, b.z1].map(f64::from);
+            (0..3).all(|axis| {
+                min[axis] < origin[axis] + hi[axis] && max[axis] > origin[axis] + lo[axis]
+            })
+        })
+    };
+
+    // Spectators never block, and a spectator server has only spectators.
+    let spectators = world
+        .get_resource::<ServerConfigResource>()
+        .is_some_and(|config| config.game_mode == SPECTATOR);
+    if !spectators {
+        let mut players = world.query::<(
+            &Position,
+            &PlayerDimension,
+            Option<&Sneaking>,
+            Option<&PlayerAbilities>,
+        )>();
+        for (feet, in_dimension, sneaking, abilities) in players.iter(world) {
+            let crouching = sneaking.is_some_and(|s| s.0)
+                && !abilities.is_some_and(|abilities| abilities.flying);
+            let height = if crouching {
+                PLAYER_CROUCHING_HEIGHT
+            } else {
+                PLAYER_HEIGHT
+            };
+            if in_dimension.0 == dimension && intersects(feet, PLAYER_HALF_WIDTH, height) {
+                return true;
+            }
+        }
+    }
+    let mut entities = world.query_filtered::<(
+        &Position,
+        &EntityDimension,
+        &EntityCollider,
+        &EntityType,
+    ), With<SpawnedEntity>>();
+    entities
+        .iter(world)
+        .any(|(feet, in_dimension, collider, kind)| {
+            in_dimension.0 == dimension
+                && crate::entity::EntityKind::from_id(kind.0)
+                    .is_some_and(placement::blocks_building)
+                && intersects(feet, collider.half_width, collider.height)
+        })
+}
+
+/// The configured game mode of a spectator server.
+const SPECTATOR: u8 = 3;
+
+/// A player's collision box: 0.6 wide, 1.8 tall, 1.5 crouching.
+const PLAYER_HALF_WIDTH: f64 = 0.3;
+const PLAYER_HEIGHT: f64 = 1.8;
+const PLAYER_CROUCHING_HEIGHT: f64 = 1.5;
+
+/// Sends `player` the real blocks at `positions` (each once), as a vanilla
+/// server does to undo a refused click the client predicted. Positions
+/// outside the world or the chunks the player holds are skipped.
+fn resync_blocks(world: &World, player: Entity, positions: &[BlockPosition]) {
+    let Some(dimension) = world.get::<PlayerDimension>(player).map(|d| d.0) else {
+        return;
+    };
+    let Some(loaded) = world.get::<LoadedChunks>(player) else {
+        return;
+    };
+    let players = WorldPlayers::new(world);
+    for (index, &position) in positions.iter().enumerate() {
+        let chunk = ChunkPos::new(position.x.div_euclid(16), position.z.div_euclid(16));
+        if positions[..index].contains(&position) || !loaded.0.contains(&chunk) {
+            continue;
+        }
+        if let Some(state) = block_state(world, dimension, position) {
+            players.send(
+                player,
+                clientbound::BlockUpdate {
+                    position,
+                    block_state_id: state,
+                },
+            );
+        }
+    }
+}
+
+/// Resends the slot a refused placement was made from, outside Creative:
+/// the client may have predicted using the item up.
+fn resend_hand(world: &mut World, player: Entity, slot: Option<usize>, held: &ItemStack) {
+    if held.is_empty() || placement::creative(world) {
+        return;
+    }
+    if let (Some(slot), Some(mut inventory)) = (slot, world.get_mut::<Inventory>(player)) {
+        inventory.mark_slot(slot);
+    }
+}
+
+/// Refuses a click on a block before anything handles it (out of reach):
+/// `player` is sent the real blocks at `positions` and, for a use with a
+/// `hand`, that hand's slot outside Creative, then its `sequence` is
+/// acknowledged, in order with its other queued actions.
+pub(crate) fn refuse_click(
+    world: &mut World,
+    player: Entity,
+    sequence: i32,
+    positions: &[BlockPosition],
+    hand: Option<Hand>,
+) {
+    let client_id = world.get::<ClientId>(player).map_or(0, |id| id.0);
+    let held = hand.and_then(|hand| held_in(world.get::<Inventory>(player), hand));
+    let queued = QueuedUse {
+        player,
+        client_id,
+        hand: hand.unwrap_or(Hand::MainHand),
+        sequence,
+        action: UseAction::Refused {
+            positions: positions.to_vec(),
+        },
+        held,
+    };
+    match world.get_resource_mut::<ItemUseQueue>() {
+        Some(mut queue) => queue.0.push_back(queued),
+        None => {
+            resync_blocks(world, player, positions);
+            if let Some((slot, held)) = &queued.held {
+                resend_hand(world, player, Some(*slot), held);
+            }
+            send_ack(world, player, sequence);
+        }
     }
 }
 
@@ -359,6 +606,8 @@ enum UseAction {
     },
     /// Started mining a block that is only removed once mining finishes.
     StartBreak { position: BlockPosition },
+    /// A click refused before anything handled it: resend these blocks.
+    Refused { positions: Vec<BlockPosition> },
 }
 
 /// A queued action awaiting processing in the exclusive drain system.
@@ -539,6 +788,10 @@ pub fn drain_item_use_queue(world: &mut World) {
             None => (None, ItemStack::EMPTY),
         };
         match queued.action {
+            UseAction::Refused { positions } => {
+                resync_blocks(world, queued.player, &positions);
+                resend_hand(world, queued.player, held_slot, &held);
+            }
             UseAction::StartBreak { position } => {
                 if let Some(dimension) = world.get::<PlayerDimension>(queued.player).map(|d| d.0) {
                     break_cancelled(
@@ -620,11 +873,11 @@ pub fn drain_item_use_queue(world: &mut World) {
                 // An empty hand places nothing (the air item maps to the air
                 // block, which would erase what is there).
                 if result == UseResult::Pass
-                    && block.is_some()
+                    && let Some(target) = block
                     && !held.is_empty()
                     && let Some(state) = held.item.default_block_state()
                 {
-                    ctx.place_block(state);
+                    ctx.place_held_block(target, state);
                 }
             }
         }

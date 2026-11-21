@@ -38,6 +38,37 @@ only as a query filter (`With<SpawnedEntity>`).
 Other builder methods: `velocity(Velocity)`, `collider(EntityCollider)`,
 `movement(MovementConfig)`, `wander(bool)`, `settle_ticks(u8)`.
 
+## Wandering
+
+`wander(true)` (`--wander` on `/summon`) gives the entity the demo random walk:
+`spawn`/`spawn_in` attach a `Wander` component with the `Wander::random()`
+defaults, a speed of `Wander::SPEED` (0.08 blocks per tick) and a random
+heading kept for a random `Wander::TICKS` (40 to 139) ticks before the next
+one is drawn. The entity faces where it walks; viewers are sent a rotation
+only when the heading changes. To choose the walk yourself, stage your own
+`Wander` with `.with(Wander { .. })`, which replaces the default one.
+`bundle()` does not include the `Wander` component.
+
+## Gravity and block collision
+
+`gravity(true)` and `block_collision(true)` (`--gravity` and `--block-checks`
+on `/summon`) turn on a small server-side physics step. Gravity adds 0.08
+blocks per tick to the fall speed, up to 3.92. Block collision makes blocks
+stop the entity's collision box (`EntityCollider`); a grounded entity steps
+up blocks no higher than the collider's `step_height`.
+
+During its first `settle_ticks` ticks (15 by default), a stationary entity
+with gravity is settled: it is put on the highest solid block top under any
+part of its collision box, at most 64 blocks below it. An entity already
+standing on that top (within 0.1 blocks) stays where it is.
+
+Without block collision, an entity with gravity falls through blocks. As in
+vanilla, a non-player entity more than 64 blocks below the bottom of the
+world (below y = -128) is removed: `EntityDespawnEvent` fires, its viewers
+get `RemoveEntities` and it leaves the simulation. The check runs before the
+tick's movement, so viewers are sent the position below that height, then
+the removal in the next tick. Players are never removed this way.
+
 ## Lifecycle and visibility
 
 - A player sees an entity while their `LoadedChunks` contain the entity's chunk

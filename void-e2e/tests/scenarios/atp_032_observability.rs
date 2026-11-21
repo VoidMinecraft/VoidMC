@@ -4,16 +4,31 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bevy_app::Update;
+use bevy_app::{First, Update};
 use bevy_ecs::prelude::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use voidmc::components::KeepAliveState;
-use voidmc::{ObservabilityAddress, ObservabilityConfig};
-use voidmc_e2e::protocol::packets::game::ServerboundPaddleBoat;
+use voidmc::components::{KeepAliveState, PlayerReady};
+use voidmc::network::PacketEvent;
+use voidmc::systems::KeepAliveTicker;
+use voidmc::{
+    ExecutionMode, ObservabilityAddress, ObservabilityConfig, WorldMessages, WorldPlayers,
+};
+use voidmc_e2e::protocol::common::client_information::{ChatVisibility, ClientInformation};
+use voidmc_e2e::protocol::packets::game::{ClientboundGamePacket, ServerboundPaddleBoat};
+use voidmc_e2e::protocol::packets::game::{
+    s_client_information::ServerboundClientInformation,
+    s_client_tick_end::ServerboundClientTickEnd, s_interact::InteractionHand,
+    s_player_abilities::ServerboundPlayerAbilities, s_swing::ServerboundSwing,
+};
 use voidmc_e2e::{TestServer, TestServerBuilder};
+use voidmc_protocol::serverbound;
+
+use crate::{DECODE_FAILURE, malformed_play_packets, var_int};
 
 /// Short, so that the stall scenario does not wait long, yet fifty ticks at
 /// 50 TPS, so that a busy CI machine does not look stalled.
@@ -579,11 +594,15 @@ async fn player_metrics_follow_clients_joining_and_leaving() {
 async fn kicks_despawns_and_shutdown_bring_the_players_gauge_back_to_zero() {
     let (release_tx, release_rx) = flume::bounded(1);
     let server = observed()
+        .operators()
         .plugin(move |app| {
             app.insert_resource(HoldShutdown(release_rx));
         })
         .start()
         .await;
+    // Declared after the server, so a failing assertion releases the
+    // shutdown before the server is dropped and waits for it.
+    let release = ReleaseShutdown(release_tx);
     let address = endpoint(&server).await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
@@ -624,16 +643,9 @@ async fn kicks_despawns_and_shutdown_bring_the_players_gauge_back_to_zero() {
             response.health() == "stopping"
         })
         .await;
-        // The exit tick switches to `stopping` just before it stores the
-        // gauges, so give that tick a moment to finish.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut stopping = scrape(address).await;
-        while stopping.gauge("voidmc_players_online") != 0.0 && std::time::Instant::now() < deadline
-        {
-            tokio::task::yield_now().await;
-            stopping = scrape(address).await;
-        }
-        release_tx.send(()).unwrap();
+        // `stopping` is reported after the exit tick stored its gauges.
+        let stopping = scrape(address).await;
+        drop(release);
         stopping
     });
     assert_eq!(
@@ -728,6 +740,186 @@ async fn error_counters_count_errors_that_clients_cause() {
     drop(server);
 }
 
+/// Since #178 a known packet whose body does not decode disconnects its
+/// sender: it counts as a packet error and as a kick. A packet whose id
+/// VoidMC does not know is still only dropped: it counts as unrecognized and
+/// its sender stays.
+#[tokio::test]
+async fn malformed_packets_count_as_errors_and_kicks_unknown_ones_as_unrecognized() {
+    let server = observed().start().await;
+    let address = endpoint(&server).await;
+    let alice = server.join("Alice").await;
+    let mallory = server.join("Mallory").await;
+    let before = scrape_until(&server, address, "two players online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 2.0
+    })
+    .await;
+    assert_eq!(before.counter("voidmc_packet_errors_total"), 0.0);
+    assert_eq!(before.counter("voidmc_packets_unrecognized_total"), 0.0);
+    assert_eq!(before.counter("voidmc_clients_kicked_total"), 0.0);
+
+    // A Use Item On whose face is not one of the six.
+    let (_, invalid_face) = malformed_play_packets().swap_remove(0);
+    mallory.send_raw(&invalid_face).await;
+    let reason = mallory.expect_disconnect().await;
+    assert!(reason.starts_with(DECODE_FAILURE), "{reason}");
+    let kicked = scrape_until(&server, address, "Mallory kicked and gone", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") == 1.0
+            && scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    assert_eq!(kicked.counter("voidmc_packet_errors_total"), 1.0);
+    assert_eq!(kicked.counter("voidmc_packets_unrecognized_total"), 0.0);
+
+    // Ids no serverbound play packet has, one of them past a byte.
+    alice.send_raw(&[0x7f, 1, 2, 3]).await;
+    let mut beyond_a_byte = var_int(300);
+    beyond_a_byte.push(0);
+    alice.send_raw(&beyond_a_byte).await;
+    let unrecognized = scrape_until(&server, address, "the unknown packets counted", |scrape| {
+        scrape.counter("voidmc_packets_unrecognized_total") == 2.0
+    })
+    .await;
+    assert_eq!(unrecognized.counter("voidmc_packet_errors_total"), 1.0);
+    assert_eq!(unrecognized.counter("voidmc_clients_kicked_total"), 1.0);
+    assert_eq!(unrecognized.gauge("voidmc_players_online"), 1.0);
+    assert_eq!(unrecognized.connection_errors("decode"), 0.0);
+    assert_counters_never_decrease(&before, &kicked);
+    assert_counters_never_decrease(&kicked, &unrecognized);
+    alice.sync().await;
+    alice.assert_healthy();
+
+    // A malformed packet is the client's fault, not a server error: the
+    // only failures logged are the two unknown packets, so the server is
+    // dropped, not `stop`ped.
+    let failures: Vec<String> = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.is_failure())
+        .map(|record| record.to_string())
+        .collect();
+    assert_eq!(failures.len(), 2, "{failures:#?}");
+    assert!(
+        failures
+            .iter()
+            .all(|failure| failure.contains("Unrecognized packet")),
+        "{failures:#?}"
+    );
+    drop(server);
+}
+
+/// Since a known packet that does not decode disconnects its sender (#178),
+/// a decoder mistake for a packet a vanilla client sends routinely would
+/// kick every player. These are the known packets no other scenario sends:
+/// each is encoded by Azalea with values a vanilla client sends, reaches its
+/// handler, and counts as no error.
+#[tokio::test]
+async fn routine_vanilla_packets_reach_their_handlers_without_errors() {
+    let handled = Arc::new(Mutex::new(Vec::<String>::new()));
+    let record = handled.clone();
+    let server = observed()
+        .plugin(move |app| {
+            let log = record.clone();
+            app.add_observer(move |event: On<PacketEvent<serverbound::PluginMessage>>| {
+                log.lock().unwrap().push(format!(
+                    "plugin message {} {:?}",
+                    event.packet.channel, event.packet.data
+                ));
+            });
+            let log = record.clone();
+            app.add_observer(move |_: On<PacketEvent<serverbound::TickEnd>>| {
+                log.lock().unwrap().push("tick end".to_string());
+            });
+            let log = record.clone();
+            app.add_observer(
+                move |event: On<PacketEvent<serverbound::ClientInformation>>| {
+                    log.lock().unwrap().push(format!(
+                        "client information {} {:?}",
+                        event.packet.locale, event.packet.chat_mode
+                    ));
+                },
+            );
+            let log = record.clone();
+            app.add_observer(
+                move |event: On<PacketEvent<serverbound::PlayerAbilities>>| {
+                    log.lock()
+                        .unwrap()
+                        .push(format!("abilities {:#04x}", event.packet.flags));
+                },
+            );
+            let log = record.clone();
+            app.add_observer(move |event: On<PacketEvent<serverbound::SwingArm>>| {
+                log.lock()
+                    .unwrap()
+                    .push(format!("swing {:?}", event.packet.hand));
+            });
+        })
+        .start()
+        .await;
+    let address = endpoint(&server).await;
+
+    // Every bot sends its Client Information, then the `minecraft:brand`
+    // plugin message, during configuration.
+    let alice = server.join("Alice").await;
+    let joined = std::mem::take(&mut *handled.lock().unwrap());
+    assert_eq!(
+        joined,
+        [
+            "client information en_us Enabled",
+            "plugin message minecraft:brand [7, 118, 97, 110, 105, 108, 108, 97]",
+        ],
+        "the brand is the string `vanilla`"
+    );
+    let before = scrape(address).await;
+
+    alice.send(ServerboundClientTickEnd).await;
+    for (locale, chat_visibility) in [
+        ("en_gb", ChatVisibility::Full),
+        ("fr_fr", ChatVisibility::System),
+        ("de_de", ChatVisibility::Hidden),
+    ] {
+        alice
+            .send(ServerboundClientInformation {
+                client_information: ClientInformation {
+                    language: locale.to_string(),
+                    chat_visibility,
+                    ..ClientInformation::default()
+                },
+            })
+            .await;
+    }
+    for is_flying in [true, false] {
+        alice.send(ServerboundPlayerAbilities { is_flying }).await;
+    }
+    for hand in [InteractionHand::MainHand, InteractionHand::OffHand] {
+        alice.send(ServerboundSwing { hand }).await;
+    }
+    alice.sync().await;
+
+    assert_eq!(
+        *handled.lock().unwrap(),
+        [
+            "tick end",
+            "client information en_gb Enabled",
+            "client information fr_fr CommandOnly",
+            "client information de_de Hidden",
+            "abilities 0x02",
+            "abilities 0x00",
+            "swing MainHand",
+            "swing OffHand",
+        ]
+    );
+    let after = scrape(address).await;
+    for scrape in [&before, &after] {
+        assert_eq!(scrape.counter("voidmc_packet_errors_total"), 0.0);
+        assert_eq!(scrape.counter("voidmc_packets_unrecognized_total"), 0.0);
+        assert_eq!(scrape.counter("voidmc_clients_kicked_total"), 0.0);
+    }
+    assert_eq!(after.gauge("voidmc_players_online"), 1.0);
+    alice.assert_healthy();
+    server.stop().await;
+}
+
 /// Requests sent through `Stalls` block the game thread until released.
 #[derive(Resource)]
 struct Stalls(flume::Receiver<flume::Receiver<()>>);
@@ -790,6 +982,15 @@ struct HoldShutdown(flume::Receiver<()>);
 impl Drop for HoldShutdown {
     fn drop(&mut self) {
         let _ = self.0.recv_timeout(WAIT);
+    }
+}
+
+/// Releases a [`HoldShutdown`] when dropped, also when the test panics.
+struct ReleaseShutdown(flume::Sender<()>);
+
+impl Drop for ReleaseShutdown {
+    fn drop(&mut self) {
+        let _ = self.0.try_send(());
     }
 }
 
@@ -878,6 +1079,263 @@ async fn bad_requests_are_rejected_without_blocking_the_server() {
     }
     drop(slow);
 
+    server.stop().await;
+}
+
+/// How long the tick the test asks for works, far above the idle ticks of a
+/// 50 TPS server.
+const SLOW_TICK: Duration = Duration::from_millis(300);
+/// The histogram bound the slow tick is counted above.
+const SLOW_BOUND: &str = "0.25";
+
+/// Ticks still to be slowed down, set by the test without waiting for a tick.
+#[derive(Resource, Clone, Default)]
+struct SlowTicks(Arc<AtomicU32>);
+
+/// Works [`SLOW_TICK`] in `First`, the first schedule a tick runs, when the
+/// test asked for a slow tick.
+fn work_slowly_when_asked(slow: Res<SlowTicks>) {
+    let asked = slow
+        .0
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            left.checked_sub(1)
+        });
+    if asked.is_ok() {
+        std::thread::sleep(SLOW_TICK);
+    }
+}
+
+/// Ticks that took longer than [`SLOW_BOUND`] seconds, from the histogram.
+fn ticks_above_slow_bound(scrape: &Scrape) -> f64 {
+    let count = scrape
+        .value("voidmc_tick_duration_seconds_count", &[])
+        .expect("a tick count");
+    let below = scrape
+        .value("voidmc_tick_duration_seconds_bucket", &[("le", SLOW_BOUND)])
+        .unwrap_or_else(|| panic!("no bucket for le={SLOW_BOUND}"));
+    count - below
+}
+
+/// Observability and `ExecutionMode::MultiThreaded` together: the systems
+/// run on the multi-threaded executor, and the endpoints still describe the
+/// server. The whole tick is measured, from the start of `First`: a tick
+/// slowed down by a system of `First` lands above the histogram bound that
+/// idle ticks stay under.
+#[tokio::test]
+async fn the_endpoints_describe_a_multi_threaded_server() {
+    let slow = SlowTicks::default();
+    let installed = slow.clone();
+    let server = observed()
+        .config(|config| config.execution_mode(ExecutionMode::MultiThreaded))
+        .plugin(move |app| {
+            app.insert_resource(installed)
+                .add_systems(First, work_slowly_when_asked);
+        })
+        .start()
+        .await;
+    assert_eq!(
+        server
+            .with_world(|world| *world.resource::<ExecutionMode>())
+            .await,
+        ExecutionMode::MultiThreaded
+    );
+    let address = endpoint(&server).await;
+    let health = health_until(address, "the server to be healthy", |response| {
+        response.status == 200
+    })
+    .await;
+    assert_eq!(health.health(), "ok");
+
+    let alice = server.join("Alice").await;
+    let joined = scrape_until(&server, address, "Alice online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    assert_eq!(joined.counter("voidmc_players_joined_total"), 1.0);
+    assert!(joined.counter("voidmc_ticks_total") >= 1.0);
+    assert!(joined.counter("voidmc_connections_accepted_total") >= 1.0);
+
+    let before = scrape(address).await;
+    slow.0.store(1, Ordering::SeqCst);
+    let after = scrape_until(&server, address, "the slow tick measured", |scrape| {
+        ticks_above_slow_bound(scrape) > ticks_above_slow_bound(&before)
+    })
+    .await;
+    let worked = after
+        .value("voidmc_tick_duration_seconds_sum", &[])
+        .unwrap()
+        - before
+            .value("voidmc_tick_duration_seconds_sum", &[])
+            .unwrap();
+    assert!(
+        worked >= SLOW_TICK.as_secs_f64(),
+        "the ticks in between worked {worked} s in all"
+    );
+    assert_counters_never_decrease(&before, &after);
+    let measured = scrape_until(&server, address, "a measured tick rate", |scrape| {
+        scrape.value("voidmc_ticks_per_second", &[]).is_some()
+    })
+    .await;
+    assert!(measured.gauge("voidmc_ticks_per_second") > 0.0);
+    health_until(address, "the server to be healthy again", |response| {
+        response.status == 200
+    })
+    .await;
+
+    alice.disconnect().await;
+    let left = scrape_until(&server, address, "Alice gone", |scrape| {
+        scrape.gauge("voidmc_players_online") == 0.0
+    })
+    .await;
+    assert_eq!(left.counter("voidmc_clients_kicked_total"), 0.0);
+    assert_eq!(left.counter("voidmc_packet_errors_total"), 0.0);
+    server.stop().await;
+}
+
+/// Chat lines this long make the flood outgrow the socket buffers fast.
+const FLOOD_LINE_BYTES: usize = 2048;
+/// Far more lines than the outbound queue holds
+/// (`OUTBOUND_QUEUE_CAPACITY`, 16 384) plus what the kernel buffers of a
+/// client that does not read take (a few megabytes).
+const FLOOD_LINES: usize = 40_000;
+
+/// A client that stops reading while the server keeps sending: its outbound
+/// queue fills up, the server disconnects it, and that counts as one kick.
+/// The end of its connection afterwards counts as nothing more, and a
+/// player that reads is not affected.
+#[tokio::test]
+async fn a_client_whose_outbound_queue_overflows_is_kicked_and_counted_once() {
+    // Uncompressed, so that every line takes its full size in the buffers.
+    let server = observed().compression_threshold(None).start().await;
+    let address = endpoint(&server).await;
+    let alice = server.join("Alice").await;
+    let mallory = server.join_silent("Mallory").await;
+    let mallory_entity = server.player_entity(mallory.uuid()).await;
+    let before = scrape(address).await;
+    assert_eq!(before.counter("voidmc_clients_kicked_total"), 0.0);
+
+    // Mallory never reads what follows.
+    server
+        .with_world(move |world| {
+            let line = "x".repeat(FLOOD_LINE_BYTES);
+            let packet = WorldMessages::new(world)
+                .message(mallory_entity, line)
+                .packet();
+            let players = WorldPlayers::new(world);
+            for _ in 0..FLOOD_LINES {
+                players.send(mallory_entity, packet.clone());
+            }
+        })
+        .await;
+    let kicked = scrape_until(&server, address, "Mallory kicked", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") >= 1.0
+    })
+    .await;
+    assert_eq!(kicked.counter("voidmc_clients_kicked_total"), 1.0);
+    server
+        .wait_for("Mallory's entity to be despawned", move |world| {
+            world.get_entity(mallory_entity).is_err().then_some(())
+        })
+        .await;
+    drop(mallory);
+
+    // Her connection has ended: one kick still, and Alice plays on.
+    alice.sync().await;
+    let after = scrape(address).await;
+    assert_eq!(after.counter("voidmc_clients_kicked_total"), 1.0);
+    assert_eq!(after.gauge("voidmc_players_online"), 1.0);
+    assert_eq!(after.counter("voidmc_packet_errors_total"), 0.0);
+    assert_counters_never_decrease(&before, &kicked);
+    assert_counters_never_decrease(&kicked, &after);
+    let overflows: Vec<String> = server
+        .logs()
+        .into_iter()
+        .filter(|record| record.message.starts_with("Outbound queue full"))
+        .map(|record| record.to_string())
+        .collect();
+    assert_eq!(overflows.len(), 1, "{overflows:#?}");
+    alice.assert_healthy();
+    server.stop().await;
+}
+
+/// A client that enters the play state and never reports loaded is an
+/// accepted connection, not a player: neither the players gauge nor the
+/// joined counter counts it, before or after it is timed out (which counts
+/// as a kick). The same client reporting loaded becomes a player.
+#[tokio::test]
+async fn a_client_that_never_reports_loaded_is_a_connection_and_never_a_player() {
+    let server = observed().start().await;
+    let address = endpoint(&server).await;
+    let mut lurker = server.join_silent("Lurker").await;
+    let lurker_entity = server.player_entity(lurker.uuid()).await;
+    let mut loader = server.join_silent("Loader").await;
+    let loader_entity = server.player_entity(loader.uuid()).await;
+
+    // Both in the play state, neither loaded: no player yet.
+    lurker
+        .expect("the Login packet", |packet| {
+            matches!(packet, ClientboundGamePacket::Login(_)).then_some(())
+        })
+        .await;
+    server.wait_ticks(20).await;
+    let silent = scrape(address).await;
+    assert_eq!(silent.counter("voidmc_connections_accepted_total"), 2.0);
+    assert_eq!(silent.gauge("voidmc_players_online"), 0.0);
+    assert_eq!(silent.counter("voidmc_players_joined_total"), 0.0);
+
+    // One reports loaded and becomes a player; the other does not.
+    loader.report_loaded().await;
+    server
+        .wait_for("Loader to be ready", move |world| {
+            world.get::<PlayerReady>(loader_entity).map(|_| ())
+        })
+        .await;
+    let loaded = scrape_until(&server, address, "Loader online", |scrape| {
+        scrape.gauge("voidmc_players_online") == 1.0
+    })
+    .await;
+    assert_eq!(loaded.counter("voidmc_players_joined_total"), 1.0);
+
+    // The lurker never answers its keep-alive. Backdating it past the 30 s
+    // timeout stands in for waiting that long.
+    server
+        .with_world(|world| {
+            let mut ticker = world.resource_mut::<KeepAliveTicker>();
+            ticker.interval_ticks = 3;
+            ticker.ticks_since_last = 0;
+        })
+        .await;
+    let id = lurker
+        .expect("a keep-alive", |packet| match packet {
+            ClientboundGamePacket::KeepAlive(keep_alive) => Some(keep_alive.id),
+            _ => None,
+        })
+        .await;
+    server
+        .with_world(move |world| {
+            let mut state = world.get_mut::<KeepAliveState>(lurker_entity).unwrap();
+            assert!(state.awaiting_response, "the keep-alive is pending");
+            assert_eq!(state.last_sent_id as u64, id);
+            state.last_sent_id -= 31_000;
+        })
+        .await;
+    assert_eq!(lurker.expect_disconnect().await, "Timed out");
+    server
+        .wait_for("the lurker's entity to be despawned", move |world| {
+            world.get_entity(lurker_entity).is_err().then_some(())
+        })
+        .await;
+    let gone = scrape_until(&server, address, "the time-out counted", |scrape| {
+        scrape.counter("voidmc_clients_kicked_total") == 1.0
+    })
+    .await;
+    assert_eq!(gone.counter("voidmc_connections_accepted_total"), 2.0);
+    assert_eq!(gone.counter("voidmc_players_joined_total"), 1.0);
+    assert_eq!(gone.gauge("voidmc_players_online"), 1.0);
+    assert_counters_never_decrease(&silent, &loaded);
+    assert_counters_never_decrease(&loaded, &gone);
+
+    drop(loader);
     server.stop().await;
 }
 

@@ -1,17 +1,22 @@
 //! VMC-ATP-013: `/give` and `/clear` update the server-authoritative player
 //! inventory, respect per-item stack limits, and keep the client's view of
-//! the player window (window 0) equal to the server's slot for slot.
+//! the player window (window 0) equal to the server's slot for slot. Another
+//! player is shown the given and cleared items in Alice's hands and armor.
 
 use bevy_ecs::entity::Entity;
 use voidmc::{Inventory, ItemStack as ServerStack};
+use voidmc_e2e::inventory::components::EquipmentSlot::{Feet, Head, Mainhand, Offhand};
 use voidmc_e2e::inventory::operations::ClickType;
 use voidmc_e2e::inventory::{ItemStack, ItemStackData};
 use voidmc_e2e::protocol::packets::game::ClientboundGamePacket;
 use voidmc_e2e::protocol::packets::game::s_container_click::{
     HashedStack, ServerboundContainerClick,
 };
+use voidmc_e2e::protocol::packets::game::s_set_carried_item::ServerboundSetCarriedItem;
 use voidmc_e2e::registry::builtin::{EntityKind, ItemKind};
 use voidmc_e2e::{Bot, TestServer};
+
+use crate::{shown_equipment, wait_for_equipment};
 
 const PLAYER_WINDOW: i32 = 0;
 const SLOTS: usize = Inventory::SIZE;
@@ -225,7 +230,7 @@ fn set_slots(
 /// server inventory and the client's view after each.
 #[tokio::test]
 async fn give_stone_and_pearls_then_clear() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let alice_entity = server.player_entity(alice.uuid()).await;
@@ -304,7 +309,7 @@ async fn give_stone_and_pearls_then_clear() {
 #[tokio::test]
 async fn give_respects_stack_limits_and_fill_order() {
     use ItemKind::{DiamondSword, Dirt, EnderPearl, Stone};
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let entity = server.player_entity(alice.uuid()).await;
     let mut held: Vec<(usize, ItemKind, u8)> = Vec::new();
@@ -387,7 +392,7 @@ async fn give_respects_stack_limits_and_fill_order() {
 #[tokio::test]
 async fn give_beyond_capacity_keeps_counts_exact() {
     use ItemKind::{Dirt, Stone};
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let entity = server.player_entity(alice.uuid()).await;
 
@@ -434,7 +439,7 @@ async fn give_beyond_capacity_keeps_counts_exact() {
 /// error and leave the inventory and the client's view as they were.
 #[tokio::test]
 async fn give_rejects_bad_input_without_touching_inventory() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let entity = server.player_entity(alice.uuid()).await;
 
@@ -495,7 +500,7 @@ async fn clear_empties_every_slot_and_the_cursor() {
         DiamondBoots, DiamondChestplate, DiamondHelmet, DiamondLeggings, DiamondSword, Dirt,
         EnderPearl, OakPlanks, Shield, Stone,
     };
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let bob = server.join("Bob").await;
     let alice_entity = server.player_entity(alice.uuid()).await;
@@ -560,10 +565,66 @@ async fn clear_empties_every_slot_and_the_cursor() {
     server.stop().await;
 }
 
+/// Bob is shown what `/give` puts into Alice's main hand, including a count
+/// that grows, and `/clear` empties both hands and her armor for him.
+#[tokio::test]
+async fn others_see_given_and_cleared_items_in_hand_and_armor() {
+    use ItemKind::{DiamondBoots, DiamondHelmet, DiamondSword, Shield, Stone};
+    let server = TestServer::builder().operators().start().await;
+    let alice = server.join("Alice").await;
+    let bob = server.join("Bob").await;
+    let alice_entity = server.player_entity(alice.uuid()).await;
+
+    run(&alice, "give minecraft:diamond_sword").await;
+    wait_for_equipment(&bob, &alice, &[(Mainhand, DiamondSword, 1)]).await;
+    // Stone lands in the second hotbar slot, which Alice then selects; more
+    // stone tops up the stack in her hand.
+    run(&alice, "give minecraft:stone 5").await;
+    alice.send(ServerboundSetCarriedItem { slot: 1 }).await;
+    wait_for_equipment(&bob, &alice, &[(Mainhand, Stone, 5)]).await;
+    run(&alice, "give minecraft:stone 3").await;
+    wait_for_equipment(&bob, &alice, &[(Mainhand, Stone, 8)]).await;
+
+    set_slots(
+        &server,
+        alice_entity,
+        vec![
+            (Inventory::ARMOR_HEAD, DiamondHelmet, 1),
+            (Inventory::ARMOR_FEET, DiamondBoots, 1),
+            (Inventory::OFFHAND, Shield, 1),
+        ],
+        None,
+    )
+    .await;
+    wait_for_equipment(
+        &bob,
+        &alice,
+        &[
+            (Mainhand, Stone, 8),
+            (Offhand, Shield, 1),
+            (Feet, DiamondBoots, 1),
+            (Head, DiamondHelmet, 1),
+        ],
+    )
+    .await;
+
+    run(&alice, "clear").await;
+    wait_for_equipment(&bob, &alice, &[]).await;
+    assert_eq!(
+        shown_equipment(&bob, &alice),
+        [None; 6],
+        "every slot Bob was shown is now empty"
+    );
+
+    alice.assert_healthy();
+    bob.assert_healthy();
+    server.stop().await;
+}
+
 /// After a reconnect the client's window again matches the server's.
 #[tokio::test]
 async fn rejoin_shows_the_server_inventory() {
-    let server = TestServer::start().await;
+    let server = TestServer::builder().operators().start().await;
     let alice = server.join("Alice").await;
     let old = server.player_entity(alice.uuid()).await;
     run(&alice, "give minecraft:stone 5").await;

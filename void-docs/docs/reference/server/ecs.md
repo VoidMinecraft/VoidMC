@@ -20,7 +20,7 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `PlayerName(String)` | Username | Player's Minecraft username (set during Login) |
 | `PlayerUuid(Uuid)` | UUID | Player's UUID (set during Login) |
 | `MinecraftEntityId(i32)` | Entity ID | Server-assigned Minecraft entity ID (visible to all clients) |
-| `Operator` | (marker) | Marks a player as an operator/admin |
+| `Operator` | (marker) | Marks a player as an operator: it may run the operator-only default commands, and its client is sent permission level 4 (0 without it) |
 
 ### Player State
 
@@ -31,15 +31,15 @@ Void uses [Bevy ECS](https://bevyengine.org/) to represent all server state as e
 | `Rotation { yaw, pitch }` | `f32` angles | Current look direction |
 | `PlayerReady` | (marker) | Added when the client sends `PlayerLoaded` — indicates the player is fully in-game. Requires `IndexedChunks` (inserted automatically), the chunk-viewer index mirror the visibility tracker unwinds when the player leaves |
 | `PlayerDimension(DimensionId)` | Dimension | Which dimension the player is currently in |
-| `ClientSettings { locale, view_distance }` | Settings | Client preferences received during configuration/play |
-| `Grounded(bool)` | On-ground flag | The on-ground flag of the client's last movement packet, relayed in the movement packets other players receive |
+| `ClientSettings { locale, view_distance, chat_mode }` | Settings | The client's last Client Information, sent during configuration and again whenever the player changes a setting while playing. `chat_mode` (`voidmc::ChatMode`) decides who is sent player chat: only `ChatMode::Enabled` |
+| `Grounded(bool)` | On-ground flag | The on-ground flag of the client's last movement packet, relayed in the movement packets other players receive; a change reported alone (`SetPlayerMovementFlags`) is relayed as a position sync, like vanilla |
 | `Sneaking(bool)` | Shift key | From the client's Player Input; other players see the player crouch (shared sneaking flag + crouching pose) while it sneaks without flying. The flag goes out in the complete shared flags byte, with the glowing and invisible bits of `Glowing`, `Invisible` and the glowing / invisibility effects, whichever of them changes; the player's own client is not sent its flags |
 
 ### Teleportation
 
 | Component | Fields | Description |
 |---|---|---|
-| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms; until then client positions are ignored |
+| `TeleportState { next_id, pending_id }` | `i32`, `Option<i32>` | Tracks teleport confirmations — `pending_id` is cleared when the client confirms; until then client movement packets are ignored whole (position, rotation and on-ground flag) |
 | `ServerControlledPosition` | Marker | Server owns the position; client movement packets update `Rotation` only |
 | `Teleport { x, y, z, .. }` | Destination + options | Teleport with loading barrier; removed once the client confirms, times out or it is cancelled (see [Players](../gameplay/players.md#teleportation)) |
 | `PlayerAbilities { flying, allow_flight, .. }` | Flags + speeds | Opt-in; changes are sent as Player Abilities packets |
@@ -88,7 +88,7 @@ to ready players by `systems::entities`.
 | `MovementConfig` | Feature flags | Enables wandering, gravity, and block collision checks |
 | `VerticalVelocity(f64)` | Vertical speed | Gravity state kept separately from protocol velocity |
 | `Grounded(bool)` | Contact state | Whether physics found support directly below the collision box |
-| `Wander` | Direction state | Optional demo random-walk behavior attached by `/summon --wander` |
+| `Wander` | Direction state | Optional demo random-walk behavior attached by `EntityBuilder::wander(true)` and `/summon --wander` |
 
 ### Chunk Entity Components
 
@@ -113,6 +113,7 @@ Chunks are also ECS entities with these components:
 | `ClientToEntityMap(HashMap<u32, Entity>)` | Maps network client IDs to ECS entities |
 | `CommandRegistry` | Registered commands (see [Commands](/reference/gameplay/commands)) |
 | `KeepAliveTicker` | Tick counter for keep-alive scheduling (default: 200 tick interval) |
+| `PrePlayTimeout(Duration)` | How long a connection may take to reach the play state before it is closed (default: 30 s); see [Pre-play timeout](/reference/protocol/networking#pre-play-timeout) |
 
 ## Entity Lifecycle
 
@@ -133,7 +134,7 @@ As the client progresses through protocol states, handlers insert additional com
 
 1. **Handshake**: `ProtocolVersion`, updated `ConnectionState`
 2. **Login**: `PlayerName`, `PlayerUuid`
-3. **Configuration**: `ClientSettings`
+3. **Configuration**: `ClientSettings` (replaced by each later Client Information, in configuration or play)
 4. **Finish Configuration** (transition to Play): `MinecraftEntityId`, `Position`, `PreviousPosition`, `Rotation`, `TeleportState`, `KeepAliveState`, `CurrentChunkPos`, `EffectiveViewDistance`, `LoadedChunks`, `PlayerDimension`
 5. **Play (PlayerLoaded)**: `PlayerReady` marker
 
@@ -163,7 +164,8 @@ components listed above.
    inserted on the returned `EntityCommands`. `EntityKind` is generated from
    `minecraft:entity_type` (`EntityKind::from_name`, `.id()`, `.name()`).
    `.settle_ticks(n)` bounds the ground-snap window of `settle_recent_spawns`
-   (default 15).
+   (default 15), which puts a stationary gravity spawn on the highest block
+   top under its collision box.
 2. `PostUpdate` (`VoidSystems::EntityVisibility`, after chunk streaming): the
    tracker resolves each entity's viewers from a chunk-indexed lookup of the
    ready players whose `LoadedChunks` contain the entity's chunk in its
@@ -186,7 +188,10 @@ components listed above.
 5. Remove with `commands.entity(e).despawn()` (or `world.despawn(e)`). An
    `On<Remove, SpawnedEntity>` observer sends `Remove Entities` to every
    current viewer, so a client can never keep a ghost. `EntityDespawnEvent`
-   remains as a trigger-style hook that does the same despawn.
+   remains as a trigger-style hook that does the same despawn. The framework
+   fires it for every non-player entity more than 64 blocks below the bottom
+   of the world (`despawn_out_of_world_entities`, at the start of
+   `VoidSystems::EntitySimulation`).
 
 Features that need extra packets per viewer observe
 `EntityShownEvent { entity, viewer }` instead of broadcasting on spawn; entity

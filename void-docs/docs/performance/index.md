@@ -16,7 +16,8 @@ Use this order during a review:
 | KPI | Target | Measurement source | Why it matters |
 | --- | ---: | --- | --- |
 | Tick rate | About 20 TPS | `MetricsPlugin` CSV output | Main game-loop health and player responsiveness |
-| Tick time | About 50 ms per tick, warnings above configured `slow_tick_ms` | `last_tick_ms` in TPS CSV and tracing logs | Detects overloaded ECS systems |
+| Tick interval | About 50 ms between ticks at 20 TPS | `last_tick_ms` in the TPS CSV and the `TPS sample` log | Shows the game loop keeps its pace; includes the wait between ticks |
+| Tick work time | Below the tick period; a warning above the configured `slow_tick_ms` | `tick_work_ms` in the slow-tick warning (with `metrics_debug`) and `voidmc_tick_duration_seconds` on `/metrics` (with observability), both from the start of `First` to the end of `Last` | Detects overloaded ECS systems |
 | Codec latency | Sub-microsecond for representative small packets; low microseconds for chunk packet payloads | Criterion benchmarks | Packet throughput on the network thread |
 | Channel handoff throughput | Millions of messages per second in micro-benchmarks | Criterion benchmark in `void/benches/channel_handoff.rs` | Validates network-to-ECS communication cost |
 | Chunk packet serialization | Low microseconds for representative superflat chunk packets | Criterion benchmark in `void-protocol/benches/packet_chunk.rs` | Covers one of the heaviest clientbound packet paths |

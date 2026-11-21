@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -6,12 +7,15 @@ use std::sync::{Arc, Mutex};
 use azalea_core::position::{BlockPos, Vec3};
 use azalea_core::registry_holder::RegistryHolder;
 use azalea_entity::LookDirection;
+use azalea_inventory::ItemStack;
+use azalea_inventory::operations::ClickType;
 use azalea_protocol::common::client_information::ClientInformation;
 use azalea_protocol::common::movements::MoveFlags;
 use azalea_protocol::common::tags::TagMap;
 use azalea_protocol::connect::{Connection, ReadConnection, WriteConnection};
 use azalea_protocol::packets::config::{
-    ClientboundConfigPacket, s_client_information,
+    ClientboundConfigPacket, ServerboundConfigPacket, s_client_information,
+    s_custom_payload::ServerboundCustomPayload,
     s_finish_configuration::ServerboundFinishConfiguration,
     s_keep_alive::ServerboundKeepAlive as ConfigKeepAlive,
     s_select_known_packs::ServerboundSelectKnownPacks,
@@ -22,7 +26,7 @@ use azalea_protocol::packets::game::{
     s_chat_command::ServerboundChatCommand, s_keep_alive::ServerboundKeepAlive,
     s_move_player_pos::ServerboundMovePlayerPos,
     s_move_player_pos_rot::ServerboundMovePlayerPosRot, s_player_loaded::ServerboundPlayerLoaded,
-    s_pong::ServerboundPong,
+    s_pong::ServerboundPong, s_set_creative_mode_slot::ServerboundSetCreativeModeSlot,
 };
 use azalea_protocol::packets::handshake::s_intention::ServerboundIntention;
 use azalea_protocol::packets::login::{
@@ -34,15 +38,20 @@ use azalea_protocol::packets::status::{
     s_status_request::ServerboundStatusRequest,
 };
 use azalea_protocol::packets::{ClientIntention, PROTOCOL_VERSION, Packet, ProtocolPacket};
+use azalea_registry::identifier::Identifier;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+use crate::clicks::Click;
 use crate::server::BARRIER_BIT;
 use crate::timeout;
 use crate::view::ClientView;
 
 static NEXT_BARRIER: AtomicU32 = AtomicU32::new(1);
+
+/// The brand every bot announces during configuration, like a vanilla client.
+const VANILLA_BRAND: &str = "vanilla";
 
 /// How a bot presents itself while joining.
 #[derive(Clone, Debug)]
@@ -53,6 +62,185 @@ pub struct BotOptions {
 impl Default for BotOptions {
     fn default() -> Self {
         Self { view_distance: 8 }
+    }
+}
+
+/// The server refused a login: what its Login Disconnect said. The server
+/// closed the connection after it.
+#[derive(Clone, Debug)]
+pub struct LoginRefused {
+    /// The reason as the vanilla client shows it, in English.
+    pub reason: String,
+    /// The reason's text component in its JSON form, for example
+    /// `{"translate": "multiplayer.disconnect.server_full"}`.
+    pub component: serde_json::Value,
+}
+
+impl fmt::Display for LoginRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.reason, self.component)
+    }
+}
+
+/// A client that logged in, then stays in the configuration state without
+/// answering anything: it holds its connection open but never plays.
+pub struct ConfiguringClient {
+    name: String,
+    connection: Connection<ClientboundConfigPacket, ServerboundConfigPacket>,
+}
+
+impl ConfiguringClient {
+    pub(crate) async fn log_in(address: SocketAddr, name: &str) -> Result<Self, LoginRefused> {
+        let uuid = azalea_crypto::offline::generate_uuid(name);
+        let (connection, _) =
+            timeout(&format!("{name} to log in"), log_in(address, name, uuid)).await?;
+        Ok(Self {
+            name: name.to_string(),
+            connection,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Closes the connection like a client quitting during configuration.
+    pub async fn disconnect(mut self) {
+        let _ = self.connection.writer.shutdown().await;
+    }
+
+    /// Sends `packet`, its id then its body, as given: for packets a real
+    /// client would not write.
+    pub async fn send_raw(&mut self, packet: &[u8]) {
+        self.connection
+            .writer
+            .raw
+            .write(packet)
+            .await
+            .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
+    }
+
+    /// Reads what the server sends, still without answering, until its
+    /// configuration Disconnect; returns what it said once the server has
+    /// closed the connection after it.
+    pub async fn expect_disconnect(mut self) -> LoginRefused {
+        let name = self.name.clone();
+        timeout(&format!("{name} to be disconnected"), async move {
+            loop {
+                match self.connection.read().await {
+                    Ok(ClientboundConfigPacket::Disconnect(packet)) => {
+                        let refused = LoginRefused {
+                            reason: packet.reason.to_string(),
+                            component: serde_json::to_value(&packet.reason)
+                                .expect("a text component serializes to JSON"),
+                        };
+                        return match self.connection.read().await {
+                            Err(_) => refused,
+                            Ok(other) => panic!(
+                                "{name} got {other:?} after its Disconnect ({refused}) instead of the connection closing"
+                            ),
+                        };
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        panic!("{name}'s connection ended without a Disconnect: {error}")
+                    }
+                }
+            }
+        })
+        .await
+    }
+}
+
+/// A client that entered the play state, then never answers the server: no
+/// keep-alive, ping or teleport reply, and no `PlayerLoaded` unless told to
+/// report it. Its packets are read only while a test waits for one.
+pub struct SilentPlayer {
+    name: String,
+    uuid: Uuid,
+    connection: Connection<ClientboundGamePacket, ServerboundGamePacket>,
+}
+
+impl SilentPlayer {
+    pub(crate) async fn join(address: SocketAddr, name: &str) -> Self {
+        let uuid = azalea_crypto::offline::generate_uuid(name);
+        let (connection, _, _) = timeout(
+            &format!("{name} to log in"),
+            login(address, name, uuid, ClientInformation::default()),
+        )
+        .await
+        .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"));
+        Self {
+            name: name.to_string(),
+            uuid,
+            connection,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+
+    /// Tells the server the world is loaded, which makes the player ready.
+    pub async fn report_loaded(&mut self) {
+        self.connection
+            .write(ServerboundPlayerLoaded {})
+            .await
+            .unwrap_or_else(|error| panic!("{} could not report loaded: {error}", self.name));
+    }
+
+    /// Reads packets, dropping those `f` does not match, until `f` returns
+    /// `Some`.
+    pub async fn expect<T>(
+        &mut self,
+        what: &str,
+        mut f: impl FnMut(&ClientboundGamePacket) -> Option<T>,
+    ) -> T {
+        let name = self.name.clone();
+        let connection = &mut self.connection;
+        timeout(&format!("{name} to receive {what}"), async move {
+            loop {
+                match connection.read().await {
+                    Ok(packet) => {
+                        if let Some(value) = f(&packet) {
+                            return value;
+                        }
+                    }
+                    Err(error) => panic!("{name} lost its connection waiting for {what}: {error}"),
+                }
+            }
+        })
+        .await
+    }
+
+    /// Reads packets until the server's Disconnect; returns its reason as the
+    /// vanilla client shows it, once the server has closed the connection
+    /// after it.
+    pub async fn expect_disconnect(mut self) -> String {
+        let reason = self
+            .expect("a Disconnect", |packet| match packet {
+                ClientboundGamePacket::Disconnect(disconnect) => {
+                    Some(disconnect.reason.to_string())
+                }
+                _ => None,
+            })
+            .await;
+        let name = self.name.clone();
+        match timeout(
+            &format!("{name}'s connection to close"),
+            self.connection.read(),
+        )
+        .await
+        {
+            Err(_) => reason,
+            Ok(other) => panic!(
+                "{name} got {other:?} after its Disconnect ({reason}) instead of the connection closing"
+            ),
+        }
     }
 }
 
@@ -74,6 +262,8 @@ struct Inbox {
     packets: VecDeque<ClientboundGamePacket>,
     received: BTreeMap<&'static str, usize>,
     loaded: bool,
+    /// The server placed the player: a position sync arrived.
+    placed: bool,
     hold_teleports: bool,
     view: ClientView,
     failure: Option<String>,
@@ -93,6 +283,9 @@ type Writer = Arc<tokio::sync::Mutex<WriteConnection<ServerboundGamePacket>>>;
 /// with strict length checks: a packet the vanilla client could not read
 /// fails the test. A background task answers keep-alives, pings and
 /// teleports like the vanilla client, and keeps a [`ClientView`] up to date.
+/// Like the vanilla client leaving its loading screen, it reports
+/// `PlayerLoaded` once the server has placed it and it holds the chunk it
+/// stands in.
 pub struct Bot {
     name: String,
     uuid: Uuid,
@@ -105,12 +298,46 @@ pub struct Bot {
 
 impl Bot {
     pub(crate) async fn join(address: SocketAddr, name: &str, options: BotOptions) -> Self {
+        Self::try_join(address, name, options)
+            .await
+            .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"))
+    }
+
+    pub(crate) async fn try_join(
+        address: SocketAddr,
+        name: &str,
+        options: BotOptions,
+    ) -> Result<Self, LoginRefused> {
+        let information = ClientInformation {
+            view_distance: options.view_distance,
+            ..Default::default()
+        };
+        Self::try_join_as(address, name, information).await
+    }
+
+    /// Joins with `information` as the client settings sent during
+    /// configuration.
+    pub(crate) async fn join_as(
+        address: SocketAddr,
+        name: &str,
+        information: ClientInformation,
+    ) -> Self {
+        Self::try_join_as(address, name, information)
+            .await
+            .unwrap_or_else(|refused| panic!("{name} was refused at login: {refused}"))
+    }
+
+    async fn try_join_as(
+        address: SocketAddr,
+        name: &str,
+        information: ClientInformation,
+    ) -> Result<Self, LoginRefused> {
         let uuid = azalea_crypto::offline::generate_uuid(name);
         let (connection, transcript, registries) = timeout(
             &format!("{name} to log in"),
-            login(address, name, uuid, &options),
+            login(address, name, uuid, information),
         )
-        .await;
+        .await?;
         let (read, write) = connection.into_split();
         let shared = Arc::new(Shared {
             inbox: Mutex::new(Inbox {
@@ -136,7 +363,7 @@ impl Bot {
         .await;
         let entity_id = bot.lock().view.entity_id;
         bot.entity_id = entity_id.expect("spawned bots have an id");
-        bot
+        Ok(bot)
     }
 
     pub fn name(&self) -> &str {
@@ -160,6 +387,18 @@ impl Bot {
             .lock()
             .await
             .write(packet.into_variant())
+            .await
+            .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
+    }
+
+    /// Sends `packet`, its id then its body, as given: for packets a real
+    /// client would not write, or that Azalea refuses to encode.
+    pub async fn send_raw(&self, packet: &[u8]) {
+        self.writer
+            .lock()
+            .await
+            .raw
+            .write(packet)
             .await
             .unwrap_or_else(|error| panic!("{} could not send a packet: {error}", self.name));
     }
@@ -191,6 +430,54 @@ impl Bot {
                 on_ground: true,
                 horizontal_collision: false,
             },
+        })
+        .await;
+    }
+
+    /// Clicks in the player inventory like a vanilla client: predicts the
+    /// result with vanilla's rules ([`crate::clicks`]) from what its view
+    /// shows, shows the prediction in the view at once, and sends the click
+    /// with the predicted slots and cursor and the last state id received.
+    /// The server corrects a wrong prediction; once [`Bot::sync`] returns,
+    /// the view shows what the player would see. Returns the click as sent.
+    pub async fn click(&self, slot: i16, button: u8, mode: ClickType) -> Click {
+        self.click_with(slot, button, mode, |_| {}).await
+    }
+
+    /// Like [`Bot::click`], but `forge` may change the click (its state id,
+    /// its predicted slots or cursor) before it is shown and sent, like a
+    /// client whose prediction is wrong; the view shows the forged
+    /// prediction.
+    pub async fn click_with(
+        &self,
+        slot: i16,
+        button: u8,
+        mode: ClickType,
+        forge: impl FnOnce(&mut Click),
+    ) -> Click {
+        let click = {
+            let mut inbox = self.lock();
+            let mut click = inbox.view.predict_click(slot, button, mode);
+            forge(&mut click);
+            inbox.view.show_prediction(&click);
+            click
+        };
+        self.shared.changed.notify_waiters();
+        self.send(click.packet()).await;
+        click
+    }
+
+    /// Sets a slot from the creative inventory like a vanilla client: shows
+    /// `item` in that slot of the view at once and sends Set Creative Mode
+    /// Slot. Slot `u16::MAX` (-1) throws `item` and shows nothing.
+    pub async fn set_creative_slot(&self, slot: u16, item: ItemStack) {
+        if let Some(shown) = self.lock().view.inventory.get_mut(usize::from(slot)) {
+            *shown = item.clone();
+        }
+        self.shared.changed.notify_waiters();
+        self.send(ServerboundSetCreativeModeSlot {
+            slot_num: slot,
+            item_stack: item,
         })
         .await;
     }
@@ -326,6 +613,31 @@ impl Bot {
         );
     }
 
+    /// Waits for the server's Disconnect; returns its reason as the vanilla
+    /// client shows it, once the server has closed the connection after it.
+    pub async fn expect_disconnect(self) -> String {
+        let reason = self
+            .expect("a Disconnect", |packet| match packet {
+                ClientboundGamePacket::Disconnect(disconnect) => {
+                    Some(disconnect.reason.to_string())
+                }
+                _ => None,
+            })
+            .await;
+        let shared = self.shared.clone();
+        timeout(&format!("{}'s connection to close", self.name), async {
+            loop {
+                let changed = shared.changed.notified();
+                if shared.inbox.lock().unwrap().closed {
+                    return;
+                }
+                changed.await;
+            }
+        })
+        .await;
+        reason
+    }
+
     /// Closes the connection like a client quitting the game.
     pub async fn disconnect(self) {
         self.reader.abort();
@@ -368,17 +680,20 @@ pub(crate) async fn status(address: SocketAddr) -> ClientboundStatusResponse {
     }
 }
 
-async fn login(
+/// Logs in up to the configuration state, or returns the server's refusal
+/// once the server has closed the connection after it.
+async fn log_in(
     address: SocketAddr,
     name: &str,
     uuid: Uuid,
-    options: &BotOptions,
-) -> (
-    Connection<ClientboundGamePacket, ServerboundGamePacket>,
-    JoinTranscript,
-    RegistryHolder,
-) {
-    let mut transcript = JoinTranscript::default();
+) -> Result<
+    (
+        Connection<ClientboundConfigPacket, ServerboundConfigPacket>,
+        Option<i32>,
+    ),
+    LoginRefused,
+> {
+    let mut compression_threshold = None;
     let mut connection = Connection::new(&address)
         .await
         .unwrap_or_else(|error| panic!("{name} could not connect to {address}: {error}"));
@@ -404,7 +719,7 @@ async fn login(
     loop {
         match connection.read().await {
             Ok(ClientboundLoginPacket::LoginCompression(packet)) => {
-                transcript.compression_threshold = Some(packet.compression_threshold);
+                compression_threshold = Some(packet.compression_threshold);
                 connection.set_compression_threshold(packet.compression_threshold);
             }
             Ok(ClientboundLoginPacket::LoginFinished(packet)) => {
@@ -420,23 +735,60 @@ async fn login(
                     .write(ServerboundLoginAcknowledged {})
                     .await
                     .expect("login acknowledged");
-                break;
+                return Ok((connection.config(), compression_threshold));
+            }
+            Ok(ClientboundLoginPacket::LoginDisconnect(packet)) => {
+                let refused = LoginRefused {
+                    reason: packet.reason.to_string(),
+                    component: serde_json::to_value(&packet.reason)
+                        .expect("a text component serializes to JSON"),
+                };
+                match connection.read().await {
+                    Err(_) => return Err(refused),
+                    Ok(other) => panic!(
+                        "{name} got {other:?} after being refused ({refused}) instead of the connection closing"
+                    ),
+                }
             }
             Ok(other) => panic!("{name} got an unexpected login packet: {other:?}"),
             Err(error) => panic!("{name} failed to read a login packet: {error}"),
         }
     }
+}
 
-    let mut connection = connection.config();
+async fn login(
+    address: SocketAddr,
+    name: &str,
+    uuid: Uuid,
+    information: ClientInformation,
+) -> Result<
+    (
+        Connection<ClientboundGamePacket, ServerboundGamePacket>,
+        JoinTranscript,
+        RegistryHolder,
+    ),
+    LoginRefused,
+> {
+    let (mut connection, compression_threshold) = log_in(address, name, uuid).await?;
+    let mut transcript = JoinTranscript {
+        compression_threshold,
+        ..Default::default()
+    };
     connection
-        .write(s_client_information::ServerboundClientInformation {
-            information: ClientInformation {
-                view_distance: options.view_distance,
-                ..Default::default()
-            },
-        })
+        .write(s_client_information::ServerboundClientInformation { information })
         .await
         .expect("client information");
+    // Like the vanilla client, which names itself right after: the brand is
+    // a protocol string, its length then its bytes.
+    let mut brand = vec![VANILLA_BRAND.len() as u8];
+    brand.extend(VANILLA_BRAND.as_bytes());
+    connection
+        .write(ServerboundCustomPayload {
+            identifier: Identifier::new("minecraft:brand"),
+            data: brand.into(),
+        })
+        .await
+        .expect("brand");
 
     let mut registries = RegistryHolder::default();
     loop {
@@ -485,7 +837,7 @@ async fn login(
     }
 
     transcript.registry_data = registries.clone();
-    (connection.game(), transcript, registries)
+    Ok((connection.game(), transcript, registries))
 }
 
 async fn read_loop(
@@ -538,6 +890,18 @@ async fn read_loop(
 }
 
 fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<ServerboundGamePacket> {
+    let mut replies = answers(packet, inbox);
+    if matches!(packet, ClientboundGamePacket::PlayerPosition(_)) {
+        inbox.placed = true;
+    }
+    if !inbox.loaded && inbox.placed && inbox.view.stands_in_a_held_chunk() {
+        inbox.loaded = true;
+        replies.push(ServerboundPlayerLoaded {}.into_variant());
+    }
+    replies
+}
+
+fn answers(packet: &ClientboundGamePacket, inbox: &Inbox) -> Vec<ServerboundGamePacket> {
     match packet {
         ClientboundGamePacket::KeepAlive(keep_alive) => {
             vec![ServerboundKeepAlive { id: keep_alive.id }.into_variant()]
@@ -546,7 +910,7 @@ fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<Serverbound
             vec![ServerboundPong { id: ping.id }.into_variant()]
         }
         ClientboundGamePacket::PlayerPosition(teleport) if !inbox.hold_teleports => {
-            let mut replies = vec![
+            vec![
                 ServerboundAcceptTeleportation { id: teleport.id }.into_variant(),
                 ServerboundMovePlayerPosRot {
                     pos: inbox.view.position,
@@ -560,12 +924,7 @@ fn replies(packet: &ClientboundGamePacket, inbox: &mut Inbox) -> Vec<Serverbound
                     },
                 }
                 .into_variant(),
-            ];
-            if !inbox.loaded {
-                inbox.loaded = true;
-                replies.push(ServerboundPlayerLoaded {}.into_variant());
-            }
-            replies
+            ]
         }
         _ => Vec::new(),
     }

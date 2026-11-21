@@ -65,7 +65,7 @@ fn is_default_generator(generator: &dyn WorldGenerator) -> bool {
 
 fn registry_ids(registries: &RegistryDataStore) -> Vec<(String, Vec<String>)> {
     registries
-        .registries
+        .registries()
         .iter()
         .map(|registry| {
             let entries = registry.entries.iter().map(|e| e.entry_id.clone());
@@ -261,7 +261,9 @@ fn customised() -> ServerConfig {
             ..DefaultWorldGenerator::default()
         })
         .configure_registries(|registries| {
-            registries.remove_entry("minecraft:painting_variant", "minecraft:alban");
+            registries
+                .remove_entry("minecraft:painting_variant", "minecraft:alban")
+                .expect("no client has the registries yet");
         })
         .execution_mode(ExecutionMode::MultiThreaded)
         .build()
