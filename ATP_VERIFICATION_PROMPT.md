@@ -17,7 +17,7 @@ You are verifying a Minecraft server against its acceptance test plan (ATP), by 
 ## Rules
 - Don't fix bugs, don't change code to make a test pass, and don't commit or push anything.
 - If something fails, check whether it's a known issue (`gh issue list`, if available) and cite it.
-- Keep three things apart: "the feature doesn't work", "the step is unclear" and "my environment couldn't do this" (e.g. no staging endpoint or load hardware for VMC-ATP-031). Never mark an objective as passed without having seen it work.
+- Keep three things apart: "the feature doesn't work", "the step is unclear" and "my environment couldn't do this" (e.g. a tool or client you could not install). Never mark an objective as passed without having seen it work.
 
 ## Report
 Write `atp-verification-report.md` outside the repository, with your screenshots in a folder next to it.
