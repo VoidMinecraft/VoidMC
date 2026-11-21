@@ -192,8 +192,7 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 The terms below have one meaning in the whole plan. In the workbook they are on the Info & Access sheet.
 
-- <a id="def-commit-under-test"></a>**commit under test**: The commit checked out for the test run. Record its full hash (git rev-parse HEAD) in the test report.
-- <a id="def-server"></a>**server**: The example server voidmc-example. Start it at the repository root with the command that the objective gives.
+- <a id="def-server"></a>**server**: The example server voidmc-example, on the latest commit of the default branch (main). Start it at the repository root with the command that the objective gives. Every player is an operator on it, so the operator-only commands /broadcast, /clear, /gamemode, /give, /kick, /say, /stop, /summon and /tp work.
 - <a id="def-server-log"></a>**server log**: The newest file logs/void-*.log in the directory the server was started from (the repository root). Each server start creates a new file.
 - <a id="def-tester-terminal"></a>**tester terminal**: A second terminal, open at the repository root, for the tools.
 - <a id="def-client"></a>**client**: Minecraft Java Edition 26.1.2, started from Prism Launcher.
@@ -203,7 +202,6 @@ The terms below have one meaning in the whole plan. In the workbook they are on 
 - <a id="def-join"></a>**join**: In the client, select Multiplayer > Direct Connection, type the address, then click Join Server.
 - <a id="def-chat"></a>**chat**: The chat box, opened with T. Type a command with its leading /, then press Enter.
 - <a id="def-f3-screen"></a>**F3 screen**: The debug overlay, shown and hidden with F3. The plan reads its XYZ, Chunk, Facing, Targeted Block and biome lines. To show the biome line, press F3+F6, set biome to In Overlay, then click Done.
-- <a id="def-operator-access"></a>**operator access**: Start the server with VOID_EXAMPLE_OPERATORS=1. Every player is then an operator. Operators are needed for /broadcast, /clear, /gamemode, /give, /kick, /say, /stop, /summon and /tp.
 - <a id="def-fresh-world"></a>**fresh world**: No world/ directory at the repository root. If one exists, rename it, for example to world.before-atp.
 - <a id="def-tools"></a>**tools**: The files under tools/atp/ in the repository (see tools/atp/README.md). The scripts need Python 3.10 or later and the standard library only.
 
@@ -218,8 +216,7 @@ The terms below have one meaning in the whole plan. In the workbook they are on 
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [commit under test](#def-commit-under-test), [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join).
-- The [commit under test](#def-commit-under-test) is checked out. Record its full hash (git rev-parse HEAD) in the test report.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join).
 - Rust toolchain 1.91.1 or later (rustc --version).
 - TCP port 25565 is free (ss -ltn shows no listener on 25565).
 - The terms used in this plan ([server log](#def-server-log), [join](#def-join), [Player A](#def-player-a) and others) are defined in Info & Access > Definitions.
@@ -407,10 +404,10 @@ Note: the example negotiates compression at threshold 256. These results do not 
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [F3 screen](#def-f3-screen), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [F3 screen](#def-f3-screen).
 - VMC-ATP-005 has passed acceptance.
 - The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist. Both players are in Creative mode, the server default.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 - Player A and Player B stand at X 0, Z 0 and X -2, Z 0. Both face the block at X 0, Y 63, Z 3.
 - The top block at X 0, Z 3 is at Y 63 in the default terrain.
 
@@ -483,10 +480,10 @@ Use the [F3](#def-f3-screen) "Targeted Block" line to find each block position.
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat).
 - VMC-ATP-003 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -515,11 +512,11 @@ Use the [F3](#def-f3-screen) "Targeted Block" line to find each block position.
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [fresh world](#def-fresh-world).
 - VMC-ATP-003 and VMC-ATP-006 have passed acceptance.
 - The [Player A](#def-player-a) account exists.
 - A [fresh world](#def-fresh-world).
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -530,7 +527,7 @@ Use the [F3](#def-f3-screen) "Targeted Block" line to find each block position.
 5. Wait 15 seconds.
 6. In [chat](#def-chat), run /stop.
 7. Wait until the server process ends.
-8. At the repository root, run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+8. At the repository root, run cargo run -p voidmc-example.
 9. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
 10. Join 127.0.0.1:25565 with Player A.
 11. Point at X 0, Y 64, Z 3. Read the F3 Targeted Block line.
@@ -553,10 +550,10 @@ Use the [F3](#def-f3-screen) "Targeted Block" line to find each block position.
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat).
 - VMC-ATP-003 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -592,10 +589,10 @@ Note: the server sends the mode to the client. It does not claim server-side enf
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen).
 - VMC-ATP-003 has passed acceptance.
 - The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -627,10 +624,10 @@ Note: the server sends the mode to the client. It does not claim server-side enf
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [Player C](#def-player-c), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [Player C](#def-player-c), [join](#def-join), [chat](#def-chat).
 - VMC-ATP-005 has passed acceptance.
 - The [Player A](#def-player-a), [Player B](#def-player-b) and [Player C](#def-player-c) accounts exist, each with its own [client](#def-client) instance.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -664,10 +661,10 @@ Note: the server sends the mode to the client. It does not claim server-side enf
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [Player A](#def-player-a), [join](#def-join), [chat](#def-chat).
 - VMC-ATP-003 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -699,7 +696,7 @@ Note: the server sends the mode to the client. It does not claim server-side enf
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access), [tools](#def-tools).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [tools](#def-tools).
 - VMC-ATP-003 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
 - Python 3.10 or later. The tools use only the standard library.
@@ -712,7 +709,7 @@ Slots 36 to 44 are the hotbar, from left. Slot 45 is the offhand.
 After each of steps 6 to 19, read the last "ATP inventory" line in the server log.
 Part 1: vanilla [client](#def-client)
 1. At the repository root, run git apply tools/atp/patches/inventory-trace.patch.
-2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+2. Run cargo run -p voidmc-example.
 3. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
 4. In [chat](#def-chat), run /gamemode 0.
 5. In chat, run /clear.
@@ -768,7 +765,7 @@ Part 2: invalid and stale actions
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world), [tools](#def-tools).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [F3 screen](#def-f3-screen), [fresh world](#def-fresh-world), [tools](#def-tools).
 - VMC-ATP-005 has passed acceptance.
 - The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
 - A [fresh world](#def-fresh-world).
@@ -778,7 +775,7 @@ Part 2: invalid and stale actions
 **Steps:**
 
 1. At the repository root, run git apply tools/atp/patches/physics-arena.patch.
-2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+2. Run cargo run -p voidmc-example.
 3. Wait until the [server log](#def-server-log) contains "ATP arena ready".
 4. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a), then with [Player B](#def-player-b).
 5. With both players, run /gamemode 0.
@@ -811,10 +808,10 @@ Part 2: invalid and stale actions
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join).
 - VMC-ATP-003 has passed acceptance.
 - The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -844,10 +841,10 @@ Part 2: invalid and stale actions
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join).
 - VMC-ATP-016 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -877,7 +874,7 @@ Note: Wander is the documented demo random walk. It has no gravity or block coll
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [operator access](#def-operator-access), [fresh world](#def-fresh-world), [tools](#def-tools).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [fresh world](#def-fresh-world), [tools](#def-tools).
 - VMC-ATP-016 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
 - A [fresh world](#def-fresh-world).
@@ -888,7 +885,7 @@ Note: Wander is the documented demo random walk. It has no gravity or block coll
 The arena has a stone floor at Y 110 from X 17 to 30 and Z 17 to 30.
 Glass walls 3 blocks high stand on its edges. A stone rise 1 block high runs along Z 25.
 1. At the repository root, run git apply tools/atp/patches/physics-arena.patch.
-2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+2. Run cargo run -p voidmc-example.
 3. Wait until the [server log](#def-server-log) contains "ATP arena ready".
 4. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
 5. Run /tp 18.5 111 18.5. Look up.
@@ -966,11 +963,11 @@ Definitions: the loaded set is the chunks the server sent and did not unload. It
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen), [fresh world](#def-fresh-world).
 - The [Player A](#def-player-a) account exists.
 - A [fresh world](#def-fresh-world).
 - The example uses the voidmc-world-io persistence plugin (RegionChunkStore) with the world directory world/.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
@@ -978,7 +975,7 @@ Definitions: the loaded set is the chunks the server sent and did not unload. It
 2. Place glowstone on top of the block at X 0, Y 63, Z 3 (stored chunk 0, 0).
 3. Wait 15 seconds, then run /stop.
 4. List the files in world/region/ and its subdirectories.
-5. At the repository root, run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+5. At the repository root, run cargo run -p voidmc-example.
 6. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
 7. Join 127.0.0.1:25565 with Player A.
 8. Point at X 0, Y 64, Z 3. Read the [F3](#def-f3-screen) Targeted Block line.
@@ -1181,7 +1178,7 @@ Note: max_players is advertised in the status only. It is not enforced (void-doc
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world), [tools](#def-tools).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [fresh world](#def-fresh-world), [tools](#def-tools).
 - VMC-ATP-001 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
 - A [fresh world](#def-fresh-world).
@@ -1191,7 +1188,7 @@ Note: max_players is advertised in the status only. It is not enforced (void-doc
 
 1. At the repository root, run git apply tools/atp/patches/shutdown-flush-only.patch.
 2. Run cargo build -p voidmc-example.
-3. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 ./target/debug/voidmc-example; echo "exit=$?".
+3. Run ./target/debug/voidmc-example; echo "exit=$?".
 4. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
 5. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
 6. Place glowstone on top of the block at X 0, Y 63, Z 3.
@@ -1425,10 +1422,10 @@ Note: repeaters, comparators, pistons and complex circuits are out of scope.
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [chat](#def-chat).
 - VMC-ATP-003 has passed acceptance.
 - The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
-- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example. /summon is offered only to operators.
+- The server is started with cargo run -p voidmc-example. /summon is offered only to operators, and every player is one.
 
 **Steps:**
 
@@ -1498,16 +1495,15 @@ Note: the client completes these suggestions from the command tree that the serv
 
 **Prerequisites:**
 
-- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [tools](#def-tools).
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [tools](#def-tools).
 - VMC-ATP-023 has passed acceptance.
 - The [Player A](#def-player-a) account exists.
-- [Operator access](#def-operator-access), for /give. The steps start the server with it.
 - The working tree has no changes.
 
 **Steps:**
 
 1. At the repository root, run git apply tools/atp/patches/event-observers.patch.
-2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+2. Run cargo run -p voidmc-example.
 3. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a). Stand at X 0, Z 0.
 4. Walk 3 blocks towards positive Z.
 5. Turn until the [F3](#def-f3-screen) Facing line shows a yaw of about 90. Record the yaw and pitch.
