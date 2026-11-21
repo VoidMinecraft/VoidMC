@@ -4,16 +4,25 @@ use voidmc::events::PlayerReadyEvent;
 use voidmc::{Inventory, On, Query};
 use voidmc_worldedit::WorldEditConfig;
 
-/// Operators get the wand on join unless they already carry one. Setting `VOID_EXAMPLE_OPERATORS=1` makes
-/// every player an operator, for local testing only: otherwise nobody is one, so nobody may run the
-/// operator-only default commands either.
+/// The environment variable that decides whether every player is an operator.
+const OPERATORS_ENV: &str = "VOID_EXAMPLE_OPERATORS";
+
+/// Whether every player is made an operator, from the value of [`OPERATORS_ENV`]. The example is a local
+/// test server, so this is the default; `VOID_EXAMPLE_OPERATORS=0` turns it off, and nobody is then an
+/// operator.
+fn everyone_is_operator(value: Option<&str>) -> bool {
+    value != Some("0")
+}
+
+/// Every player is an operator unless `VOID_EXAMPLE_OPERATORS=0` is set, so they may run the operator-only
+/// default commands. Operators get the wand on join unless they already carry one.
 pub(super) fn grant_wand(
     event: On<PlayerReadyEvent>,
     config: Res<WorldEditConfig>,
     mut commands: Commands,
     mut players: Query<(&mut Inventory, Has<Operator>)>,
 ) {
-    let everyone = std::env::var("VOID_EXAMPLE_OPERATORS").is_ok_and(|v| v == "1");
+    let everyone = everyone_is_operator(std::env::var(OPERATORS_ENV).ok().as_deref());
     if everyone {
         commands.entity(event.entity).insert(Operator);
     }
@@ -28,5 +37,18 @@ pub(super) fn grant_wand(
             .any(|stack| stack.item == wand.item)
     {
         inventory.give(wand);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::everyone_is_operator;
+
+    #[test]
+    fn every_player_is_an_operator_unless_turned_off() {
+        assert!(everyone_is_operator(None));
+        assert!(everyone_is_operator(Some("1")));
+        assert!(everyone_is_operator(Some("")));
+        assert!(!everyone_is_operator(Some("0")));
     }
 }
