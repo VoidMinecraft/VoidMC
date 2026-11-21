@@ -1,7 +1,7 @@
-//! VMC-ATP-037: an application adds its own biome, with client-visible
+//! VMC-ATP-036: an application adds its own biome, with client-visible
 //! effects, to a marked test area using public API only.
 //!
-//! The scenario fixture registers `atp037:crimson_sky` (red sky and fog,
+//! The scenario fixture registers `atp036:crimson_sky` (red sky and fog,
 //! dark water, purple grass, no precipitation) through
 //! `ServerConfigBuilder::configure_registries`, optionally after filler
 //! biomes that bring the registry to 128 entries, so that appending the
@@ -41,7 +41,7 @@ use voidmc_protocol::clientbound::chunk::{Chunk, ChunkBuilder, blocks};
 
 use crate::feet;
 
-const CUSTOM: &str = "atp037:crimson_sky";
+const CUSTOM: &str = "atp036:crimson_sky";
 const DEFAULT: &str = "minecraft:plains";
 const BIOME_REGISTRY: &str = "minecraft:worldgen/biome";
 /// Filler biomes that bring the registry to 128 entries before the custom
@@ -196,7 +196,7 @@ async fn start(fillers: usize) -> TestServer {
             let mut custom = None;
             let config = config.configure_registries(|registries| {
                 for i in 0..fillers {
-                    BiomeBuilder::new(format!("atp037:filler_{i}"))
+                    BiomeBuilder::new(format!("atp036:filler_{i}"))
                         .register(registries)
                         .expect("a filler biome");
                 }
@@ -355,7 +355,7 @@ fn assert_registry_carries_the_custom_biome(bot: &Bot, reference: &Bot, fillers:
         .iter()
         .enumerate()
     {
-        assert_eq!(*got, format!("atp037:filler_{offset}"));
+        assert_eq!(*got, format!("atp036:filler_{offset}"));
     }
     let custom = registry.len() - 1;
     let (custom_name, custom_data) = &registry[custom];
@@ -808,14 +808,14 @@ async fn invalid_custom_biomes_are_refused_without_reaching_clients() {
                         BiomeBuilder::new("crimson_sky").register(registries),
                         Err(BiomeError::UnqualifiedName("crimson_sky".into()))
                     );
-                    for name in ["atp037:Crimson Sky", "ATP037:sky", "atp037:", "atp037:a:b"] {
+                    for name in ["atp036:Crimson Sky", "ATP036:sky", "atp036:", "atp036:a:b"] {
                         assert_eq!(
                             BiomeBuilder::new(name).register(registries),
                             Err(BiomeError::InvalidName(name.into()))
                         );
                     }
                     assert_eq!(
-                        BiomeBuilder::new("atp037:raid")
+                        BiomeBuilder::new("atp036:raid")
                             .attribute(
                                 "minecraft:gameplay/can_start_raid",
                                 Attribute::Value(Tag::Byte(1)),
@@ -836,14 +836,14 @@ async fn invalid_custom_biomes_are_refused_without_reaching_clients() {
     let late = server
         .with_world(|world| {
             let mut registries = world.resource_mut::<RegistryDataStore>();
-            let result = BiomeBuilder::new("atp037:late").register(&mut registries);
+            let result = BiomeBuilder::new("atp036:late").register(&mut registries);
             (result, registries.biome_count())
         })
         .await;
     assert_eq!(
         late,
         (
-            Err(BiomeError::RegistriesAlreadySent("atp037:late".into())),
+            Err(BiomeError::RegistriesAlreadySent("atp036:late".into())),
             biome_names(&alice).len()
         )
     );

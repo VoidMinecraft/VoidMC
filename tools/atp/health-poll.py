@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Polls the VoidMC /health endpoint and prints every change of state (VMC-ATP-032).
+"""Polls the VoidMC /health endpoint and prints every change of state (VMC-ATP-031).
 
 The `stopping` state can last only milliseconds before the port closes, so a person
 with curl cannot see it. This tool polls every 5 ms and prints one line per change:

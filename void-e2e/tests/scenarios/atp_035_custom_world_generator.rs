@@ -1,4 +1,4 @@
-//! VMC-ATP-036: an application replaces the default terrain generator with a
+//! VMC-ATP-035: an application replaces the default terrain generator with a
 //! recognizable custom one.
 //!
 //! The generator below lives entirely in this crate and uses only the public

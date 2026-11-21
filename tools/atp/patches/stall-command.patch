@@ -1,4 +1,4 @@
-ATP fixture for VMC-ATP-032. Test instrumentation, not part of the product.
+ATP fixture for VMC-ATP-031. Test instrumentation, not part of the product.
 
 Adds /atpstall, which blocks the game thread for 6 seconds. The default stall threshold
 is 2 seconds at 20 TPS, so /health reports "stalled" during the stall and "ok" after it.

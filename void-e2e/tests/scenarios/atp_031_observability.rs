@@ -1,4 +1,4 @@
-//! VMC-ATP-032: the opt-in `/health` and `/metrics` endpoints, queried over
+//! VMC-ATP-031: the opt-in `/health` and `/metrics` endpoints, queried over
 //! real HTTP while real clients play.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -586,7 +586,7 @@ async fn player_metrics_follow_clients_joining_and_leaving() {
     server.stop().await;
 }
 
-/// Since VMC-ATP-034 (#151) `/kick` and despawning a client entity close the
+/// Since VMC-ATP-033 (#151) `/kick` and despawning a client entity close the
 /// connection on the server side, and players still online at shutdown leave
 /// in the last tick: each way out brings the players gauge back down, the
 /// first two count as kicks, and shutting down does not.

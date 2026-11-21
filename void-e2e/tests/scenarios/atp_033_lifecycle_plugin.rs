@@ -1,4 +1,4 @@
-//! VMC-ATP-034: an application plugin, installed through the plugin hook and
+//! VMC-ATP-033: an application plugin, installed through the plugin hook and
 //! written against the public API only, observes `PlayerJoinEvent`,
 //! `PlayerReadyEvent` and `PlayerQuitEvent`, identifies the player on each and
 //! reacts to them without destabilizing the server.
@@ -565,7 +565,7 @@ async fn within<T>(who: &str, what: &str, future: impl Future<Output = T>) -> T 
 /// before the player is ready, that the ready event waits for PlayerLoaded,
 /// and that the quit event follows the disconnect with the identity intact.
 #[tokio::test]
-async fn atp_034_events_fire_in_login_order_with_the_player_identity() {
+async fn atp_033_events_fire_in_login_order_with_the_player_identity() {
     let journal = Journal::default();
     let server = start(&journal).await;
     let uuid = offline_uuid("Alice");
@@ -688,7 +688,7 @@ async fn atp_034_events_fire_in_login_order_with_the_player_identity() {
     assert!(online(&server).await.is_empty());
 
     // The recorded journal (`-- --nocapture` shows it).
-    println!("VMC-ATP-034 journal:");
+    println!("VMC-ATP-033 journal:");
     for seen in journal.all() {
         println!(
             "  tick {:>3} {:<19} {:?} client {} name {:?} uuid {:?} state {:?} ready {}",
@@ -711,7 +711,7 @@ async fn atp_034_events_fire_in_login_order_with_the_player_identity() {
 /// PlayerLoaded never becomes ready, and its disconnect fires the quit event
 /// that pairs with its join, without a ready event.
 #[tokio::test]
-async fn atp_034_leaving_before_ready_pairs_join_with_quit_and_never_readies() {
+async fn atp_033_leaving_before_ready_pairs_join_with_quit_and_never_readies() {
     let journal = Journal::default();
     let server = start(&journal).await;
 
@@ -791,7 +791,7 @@ async fn entity_ready(server: &TestServer, entity: Entity) -> bool {
 /// entity. The plugin's reactions reach the right players and leave everyone
 /// else healthy.
 #[tokio::test]
-async fn atp_034_interleaved_players_each_get_one_join_ready_quit() {
+async fn atp_033_interleaved_players_each_get_one_join_ready_quit() {
     let journal = Journal::default();
     let server = start(&journal).await;
 
@@ -932,7 +932,7 @@ fn disconnect_reason(packet: &ClientboundGamePacket) -> Option<String> {
 /// harness bot ignores the Disconnect packet like a misbehaving client), timed
 /// out on keep-alive, or still online when the server shuts down.
 #[tokio::test]
-async fn atp_034_quit_fires_once_for_kick_timeout_and_shutdown() {
+async fn atp_033_quit_fires_once_for_kick_timeout_and_shutdown() {
     let journal = Journal::default();
     let server = start(&journal).await;
     let alice = server.join("Alice").await;
@@ -1018,7 +1018,7 @@ async fn atp_034_quit_fires_once_for_kick_timeout_and_shutdown() {
 /// to. The server does not panic or log an error, and the other player stays
 /// healthy.
 #[tokio::test]
-async fn atp_034_an_observer_that_kicks_or_despawns_the_player_does_not_break_the_server() {
+async fn atp_033_an_observer_that_kicks_or_despawns_the_player_does_not_break_the_server() {
     let journal = Journal::default();
     let server = TestServer::builder()
         .plugin(lifecycle_plugin(journal.clone()))

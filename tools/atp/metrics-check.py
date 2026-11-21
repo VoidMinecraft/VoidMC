@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scrapes VoidMC /metrics and checks it against the documented families (VMC-ATP-032).
+"""Scrapes VoidMC /metrics and checks it against the documented families (VMC-ATP-031).
 
 The documented families are listed in void-docs/docs/reference/server/observability.md
 ("/metrics"). The tool checks the Prometheus text format: every family has # HELP and
