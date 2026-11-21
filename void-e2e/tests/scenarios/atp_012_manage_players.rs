@@ -814,9 +814,13 @@ async fn atp_012_tell_text_stays_out_of_the_info_log() {
         .into_iter()
         .filter(|record| record.target.starts_with("voidmc"))
         .collect();
+    // The whole secret token, not just its digits: a record's fields include
+    // ephemeral ports such as 127.0.0.1:47116.
     let leaked: Vec<String> = records
         .iter()
-        .filter(|record| record.level <= tracing::Level::INFO && record.message.contains("4711"))
+        .filter(|record| {
+            record.level <= tracing::Level::INFO && record.message.contains("4711-hush")
+        })
         .map(ToString::to_string)
         .collect();
     assert!(
