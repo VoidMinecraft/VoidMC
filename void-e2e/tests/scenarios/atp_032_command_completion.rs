@@ -1,4 +1,4 @@
-//! VMC-ATP-033: the server advertises its command tree and answers
+//! VMC-ATP-032: the server advertises its command tree and answers
 //! tab-completion requests with controlled suggestions.
 //!
 //! A vanilla client completes literals and most arguments by itself from the

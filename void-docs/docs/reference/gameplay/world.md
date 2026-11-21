@@ -196,6 +196,6 @@ let config = ServerConfigBuilder::new()
 `voidmc_data`, can be placed with `ChunkBuilder::set_block`. A section holding
 more than 256 distinct states is sent with global ids, like vanilla.
 
-The end-to-end scenario `void-e2e/tests/scenarios/atp_036_custom_world_generator.rs`
+The end-to-end scenario `void-e2e/tests/scenarios/atp_035_custom_world_generator.rs`
 runs this example and a generator with a recognizable pattern, checked block for
 block on the client.

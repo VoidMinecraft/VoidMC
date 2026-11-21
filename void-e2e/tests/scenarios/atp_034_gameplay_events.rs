@@ -1,4 +1,4 @@
-//! VMC-ATP-035: an application plugin observes movement, chat, block and item
+//! VMC-ATP-034: an application plugin observes movement, chat, block and item
 //! events through Bevy observers while real clients play.
 //!
 //! The plugin below uses public API only. It records every semantic event it

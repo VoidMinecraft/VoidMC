@@ -116,7 +116,7 @@ VoidServer::new(config).add_plugin(|app| {
 });
 ```
 
-The end-to-end scenario `void-e2e/tests/scenarios/atp_035_gameplay_events.rs`
+The end-to-end scenario `void-e2e/tests/scenarios/atp_034_gameplay_events.rs`
 records the movement, input, chat, block and item events this way while two
 clients play, and checks that each action produced exactly its events.
 

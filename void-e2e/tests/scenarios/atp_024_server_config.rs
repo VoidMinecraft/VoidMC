@@ -10,7 +10,7 @@
 //! where no budget takes it in one. `execution_mode` and `observability` are not set
 //! here: `atp_028_parallel_regions` runs a server built with
 //! `execution_mode(ExecutionMode::MultiThreaded)` and checks its systems and
-//! regions run concurrently, and `atp_032_observability` queries the
+//! regions run concurrently, and `atp_031_observability` queries the
 //! endpoints a server built with `observability(..)` serves.
 //!
 //! The registries `configure_registries` edits are frozen once a client has
