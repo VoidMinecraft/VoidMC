@@ -22,7 +22,6 @@ Use this order during a review:
 | Channel handoff throughput | Millions of messages per second in micro-benchmarks | Criterion benchmark in `void/benches/channel_handoff.rs` | Validates network-to-ECS communication cost |
 | Chunk packet serialization | Low microseconds for representative superflat chunk packets | Criterion benchmark in `void-protocol/benches/packet_chunk.rs` | Covers one of the heaviest clientbound packet paths |
 | TCP connection acceptance | 100% success in local stress POC at documented client counts | `pocs/performance` TCP connect tool | Validates listener responsiveness under bursts |
-| Functional and load run | PASS against the thresholds of a named workload | `voidmc-load` in `void-e2e/`, see [Load Testing](./load-testing.md) | Full-protocol clients join, move, chat and run commands |
 | Memory footprint | Track with `/usr/bin/time -v` during release runs | Manual profiling command | Prevents hidden growth as systems are added |
 
 ## Runtime Controls
