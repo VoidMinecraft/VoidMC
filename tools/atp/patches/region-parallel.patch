@@ -1,0 +1,226 @@
+ATP fixture for VMC-ATP-028. Test instrumentation, not part of the product.
+
+Environment variables read by the patched example:
+  ATP_EXECUTION=multi   ExecutionMode::MultiThreaded (unset: SingleThreaded)
+  ATP_WORLD_DIR=<dir>   world directory (unset: world)
+  ATP_TRACE_OUT=<path>  prefix of the output files (unset: atp-028)
+It spawns 60 pigs in region (0,0) and 60 in region (-1,-1) from a fixed seed (gravity and
+block collision on, every second pig walking) and records 120 ticks:
+  <prefix>.trace        every pig's position, velocity and grounded flag per tick
+  <prefix>.ticks        tick number and duration
+  <prefix>.invocations  each per-region physics call: region, entities, thread, enter/exit ns
+The server log gets "ATP trace complete, 120 ticks" when the files are written.
+This patch also changes void/src/systems/physics.rs (temporary instrumentation).
+Analyse the output with tools/atp/region-trace-analyze.py.
+
+Apply at the repository root:   git apply tools/atp/patches/<this file>
+Remove it after the test:       git apply -R tools/atp/patches/<this file>
+
+diff --git i/void-example/src/main.rs w/void-example/src/main.rs
+index 07b50c4..6daa8f4 100644
+--- i/void-example/src/main.rs
++++ w/void-example/src/main.rs
+@@ -4,6 +4,7 @@ use std::io::BufWriter;
+ use std::path::{Path, PathBuf};
+ 
+ use bevy_app::{AppExit, Update};
++use bevy_ecs::schedule::IntoScheduleConfigs;
+ use tracing_appender::non_blocking::WorkerGuard;
+ use tracing_flame::{FlameLayer, FlushGuard};
+ use tracing_subscriber::prelude::*;
+@@ -95,10 +96,17 @@ fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
+     let _log_guards = setup_logging(&metrics_env)?;
+ 
+     let exit = VoidServer::new(server_config(&metrics_env, env_var))
++        .add_plugin(|app| {
++            // ATP: 120 pigs in two regions, traced for 120 ticks.
++            app.init_resource::<AtpTrace>();
++            app.add_systems(Update, atp_spawn_pigs.before(voidmc::VoidSystems::EntitySimulation));
++            app.add_systems(bevy_app::First, atp_tick_start);
++            app.add_systems(bevy_app::Last, atp_capture);
++        })
+         .add_plugin(|app| {
+             // Persist modified chunks to ./world and reload them on restart.
+             app.add_plugins(WorldPersistencePlugin::new(
+-                PersistenceConfig::new("world").save_interval_ticks(200),
++                PersistenceConfig::new(std::env::var("ATP_WORLD_DIR").unwrap_or_else(|_| "world".to_string())).save_interval_ticks(200),
+             ));
+         })
+         .add_plugin(|app| {
+@@ -195,6 +203,11 @@ fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
+ /// address variables, as [`MetricsEnv::from_lookup`] does the diagnostics.
+ fn server_config(metrics_env: &MetricsEnv, var: impl Fn(&str) -> Option<String>) -> ServerConfig {
+     let mut config_builder = ServerConfigBuilder::new()
++        .execution_mode(if std::env::var("ATP_EXECUTION").as_deref() == Ok("multi") {
++            voidmc::ExecutionMode::MultiThreaded
++        } else {
++            voidmc::ExecutionMode::SingleThreaded
++        })
+         .spawn_chunk_radius(4)
+         .initial_chunk_radius(4)
+         .motd("Welcome to Void Server!")
+@@ -421,6 +434,101 @@ fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>)
+     );
+ }
+ 
++const ATP_PIGS_PER_REGION: u32 = 60;
++const ATP_TICKS: u64 = 120;
++
++#[derive(bevy_ecs::prelude::Component)]
++struct AtpPig(u32);
++
++#[derive(bevy_ecs::prelude::Resource, Default)]
++struct AtpTrace {
++    tick_start: Option<std::time::Instant>,
++    rows: Vec<String>,
++    ticks: Vec<String>,
++}
++
++/// Spawns 60 pigs in region (0,0) and 60 in region (-1,-1) from a fixed seed, once the
++/// 81 spawn chunks exist. Every second pig walks; all have gravity and block collision.
++fn atp_spawn_pigs(
++    mut commands: bevy_ecs::prelude::Commands,
++    chunks: Query<&voidmc::ChunkPosition>,
++    mut done: bevy_ecs::prelude::Local<bool>,
++) {
++    if *done || chunks.iter().count() < 81 {
++        return;
++    }
++    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
++    let mut next = move || {
++        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
++        ((seed >> 33) as f64) / ((1u64 << 31) as f64)
++    };
++    for region in 0..2u32 {
++        let sign = if region == 0 { 1.0 } else { -1.0 };
++        for i in 0..ATP_PIGS_PER_REGION {
++            let x = sign * (8.0 + next() * 52.0);
++            let z = sign * (8.0 + next() * 52.0);
++            let y = 70.0 + next() * 50.0;
++            let (vx, vz) = if i % 2 == 0 { ((next() - 0.5) * 0.3, (next() - 0.5) * 0.3) } else { (0.0, 0.0) };
++            let pig = voidmc::entity::EntityBuilder::new(voidmc::entity::EntityKind::Pig)
++                .at(x, y, z)
++                .velocity(voidmc::components::Velocity { x: vx, y: 0.0, z: vz })
++                .gravity(true)
++                .block_collision(true)
++                .wander(false)
++                .settle_ticks(0);
++            commands.spawn((pig.bundle(), AtpPig(region * ATP_PIGS_PER_REGION + i)));
++        }
++    }
++    *done = true;
++    voidmc::systems::physics::atp_regions::TICK.store(1, std::sync::atomic::Ordering::SeqCst);
++    tracing::info!("ATP spawned {} pigs", 2 * ATP_PIGS_PER_REGION);
++}
++
++fn atp_tick_start(mut trace: bevy_ecs::prelude::ResMut<AtpTrace>) {
++    trace.tick_start = Some(std::time::Instant::now());
++}
++
++/// Records every pig's state per tick and writes ATP_TRACE_OUT.{trace,ticks,invocations}.
++fn atp_capture(world: &mut bevy_ecs::prelude::World) {
++    use std::sync::atomic::Ordering::SeqCst;
++    use voidmc::systems::physics::atp_regions as regions;
++    let tick = regions::TICK.load(SeqCst);
++    if tick == 0 || tick > ATP_TICKS {
++        return;
++    }
++    let mut rows = Vec::new();
++    let mut pigs = world.query::<(
++        &AtpPig,
++        &voidmc::components::Position,
++        &voidmc::components::Velocity,
++        &voidmc::components::VerticalVelocity,
++        &voidmc::components::Grounded,
++    )>();
++    for (pig, p, v, vv, g) in pigs.iter(world) {
++        rows.push((pig.0, format!(
++            "tick={tick} id={} pos=({:?},{:?},{:?}) vel=({:?},{:?},{:?}) vvel={:?} grounded={}",
++            pig.0, p.x, p.y, p.z, v.x, v.y, v.z, vv.0, g.0
++        )));
++    }
++    rows.sort();
++    let mut trace = world.resource_mut::<AtpTrace>();
++    let duration = trace.tick_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
++    trace.rows.extend(rows.into_iter().map(|(_, row)| row));
++    trace.ticks.push(format!("tick={tick} duration_us={duration}"));
++    regions::TICK.store(tick + 1, SeqCst);
++    if tick == ATP_TICKS {
++        let out = std::env::var("ATP_TRACE_OUT").unwrap_or_else(|_| "atp-028".to_string());
++        let trace = world.resource::<AtpTrace>();
++        let written = std::fs::write(format!("{out}.trace"), trace.rows.join("\n") + "\n")
++            .and_then(|_| std::fs::write(format!("{out}.ticks"), trace.ticks.join("\n") + "\n"))
++            .and_then(|_| std::fs::write(format!("{out}.invocations"), regions::LOG.lock().unwrap().join("\n") + "\n"));
++        match written {
++            Ok(()) => tracing::info!(out = %out, peak = regions::PEAK.load(SeqCst), "ATP trace complete, {} ticks", ATP_TICKS),
++            Err(error) => tracing::warn!(out = %out, %error, "ATP trace could not be written"),
++        }
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git i/void/src/systems/physics.rs w/void/src/systems/physics.rs
+index 02a80df..eca5285 100644
+--- i/void/src/systems/physics.rs
++++ w/void/src/systems/physics.rs
+@@ -51,7 +51,9 @@ pub fn apply_spawned_entity_physics(
+         mode,
+         entities,
+         |(position, _, dimension, ..)| RegionPos::of_block(dimension.0, position.x, position.z),
+-        |_, entities| {
++        |region_pos, entities| {
++            let atp_count = entities.len();
++            let atp_enter = atp_regions::enter();
+             for (position, movement, dimension, velocity, vertical_velocity, grounded, collider) in
+                 entities
+             {
+@@ -67,10 +69,47 @@ pub fn apply_spawned_entity_physics(
+                     *collider,
+                 );
+             }
++            atp_regions::exit(region_pos, atp_count, atp_enter);
+         },
+     );
+ }
+ 
++/// TEMPORARY ATP-028 instrumentation (not part of the product): records every call of
++/// the per-region physics closure with its thread and enter/exit times.
++#[allow(dead_code, missing_docs)]
++pub mod atp_regions {
++    use crate::world::RegionPos;
++    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
++    use std::sync::{Mutex, OnceLock};
++    use std::time::Instant;
++
++    pub static TICK: AtomicU64 = AtomicU64::new(0);
++    pub static PEAK: AtomicUsize = AtomicUsize::new(0);
++    pub static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
++    static ACTIVE: AtomicUsize = AtomicUsize::new(0);
++    static START: OnceLock<Instant> = OnceLock::new();
++
++    pub fn enter() -> u128 {
++        let active = ACTIVE.fetch_add(1, SeqCst) + 1;
++        PEAK.fetch_max(active, SeqCst);
++        START.get_or_init(Instant::now).elapsed().as_nanos()
++    }
++
++    pub fn exit(region: RegionPos, entities: usize, enter_ns: u128) {
++        let exit_ns = START.get_or_init(Instant::now).elapsed().as_nanos();
++        ACTIVE.fetch_sub(1, SeqCst);
++        let tick = TICK.load(SeqCst);
++        if tick > 0 {
++            LOG.lock().unwrap().push(format!(
++                "tick={tick} region=({},{}) entities={entities} thread={:?} enter_ns={enter_ns} exit_ns={exit_ns}",
++                region.x,
++                region.z,
++                std::thread::current().id()
++            ));
++        }
++    }
++}
++
+ fn step_entity(
+     chunk_index: &ChunkIndex,
+     chunks: &Query<(&ChunkPosition, &ChunkData)>,

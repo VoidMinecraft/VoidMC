@@ -1,0 +1,71 @@
+ATP fixture for VMC-ATP-027, VMC-ATP-036. Test instrumentation, not part of the product.
+
+Supplies a custom WorldGenerator through ServerConfigBuilder::world_generator:
+  - surface (top block) at Y=79, so players stand at Y=80; stone below;
+  - top block gold where world X mod 8 is 0-3, grass where it is 4-7 (stripes along Z);
+  - logs "ATP generator chunk chunk=<x>,<z>" for every chunk it generates.
+Adds the voidmc-protocol dependency the trait's return type needs.
+Use it with an empty world directory: stored chunks are loaded instead of generated.
+
+Apply at the repository root:   git apply tools/atp/patches/<this file>
+Remove it after the test:       git apply -R tools/atp/patches/<this file>
+
+diff --git i/void-example/Cargo.toml w/void-example/Cargo.toml
+index 3e53264..4639518 100644
+--- i/void-example/Cargo.toml
++++ w/void-example/Cargo.toml
+@@ -11,6 +11,7 @@ authors.workspace = true
+ keywords.workspace = true
+ 
+ [dependencies]
++voidmc-protocol = { version = "0.3.0", path = "../void-protocol" }
+ voidmc = { version = "0.2.0", path = "../void" }
+ voidmc-data = { version = "0.1.2", path = "../void-data" }
+ voidmc-world-io = { version = "0.1.0", path = "../void-world-io" }
+diff --git i/void-example/src/main.rs w/void-example/src/main.rs
+index 07b50c4..f7ee050 100644
+--- i/void-example/src/main.rs
++++ w/void-example/src/main.rs
+@@ -195,6 +195,7 @@ fn main() -> Result<AppExit, Box<dyn std::error::Error>> {
+ /// address variables, as [`MetricsEnv::from_lookup`] does the diagnostics.
+ fn server_config(metrics_env: &MetricsEnv, var: impl Fn(&str) -> Option<String>) -> ServerConfig {
+     let mut config_builder = ServerConfigBuilder::new()
++        .world_generator(AtpStripes)
+         .spawn_chunk_radius(4)
+         .initial_chunk_radius(4)
+         .motd("Welcome to Void Server!")
+@@ -421,6 +422,34 @@ fn on_player_dig(event: On<PlayerStartDiggingEvent>, query: Query<&PlayerName>)
+     );
+ }
+ 
++/// ATP: flat terrain with its surface at Y=80 and stripes along X: four columns of
++/// gold blocks, then four of grass, repeating (gold where world X mod 8 is 0-3).
++struct AtpStripes;
++
++impl voidmc::WorldGenerator for AtpStripes {
++    fn generate_chunk(&self, pos: &voidmc::ChunkPos) -> voidmc_protocol::clientbound::chunk::Chunk {
++        use voidmc_protocol::clientbound::chunk::{ChunkBuilder, blocks};
++        let mut builder = ChunkBuilder::new(pos.x, pos.z).with_heightmap(|_, _| 80, blocks::STONE);
++        for x in 0..16u8 {
++            for z in 0..16u8 {
++                let world_x = pos.x * 16 + i32::from(x);
++                let top = if world_x.rem_euclid(8) < 4 {
++                    voidmc_data::v26_1_2::blocks::GOLD_BLOCK
++                } else {
++                    blocks::GRASS_BLOCK
++                };
++                builder.set_block(x, 79, z, top);
++            }
++        }
++        tracing::info!(chunk = %format!("{},{}", pos.x, pos.z), "ATP generator chunk");
++        builder.build()
++    }
++
++    fn surface_height_at(&self, _x: i32, _z: i32) -> i32 {
++        80
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
