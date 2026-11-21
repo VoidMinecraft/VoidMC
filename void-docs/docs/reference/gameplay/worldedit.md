@@ -58,9 +58,10 @@ WorldEditPlugin::default()
 | `brush_preview` | `true` | Show where the held brush would land. |
 
 The example server (`cargo run -p voidmc-example`) gives operators the wand
-when they join, unless they already carry one; set `VOID_EXAMPLE_OPERATORS=1` to make every player an
-operator while testing locally. Nobody is an operator otherwise, so without it
-no player gets the wand or may run the operator-only default commands (see
+when they join, unless they already carry one. Every player is an operator on
+it, since it is a local test server; set `VOID_EXAMPLE_OPERATORS=0` to make
+nobody an operator, so that no player gets the wand or may run the
+operator-only default commands (see
 [Permissions](/reference/gameplay/commands#permissions)).
 
 ## Commands

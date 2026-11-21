@@ -3,7 +3,7 @@
 
 A vanilla client cannot send these clicks, so this offline protocol client builds
 ServerboundContainerClick (0x12) packets by hand. It needs:
-  * the server started with VOID_EXAMPLE_OPERATORS=1 (the tool runs /clear and /give);
+  * players are operators, the example default (the tool runs /clear and /give);
   * tools/atp/patches/inventory-trace.patch applied, so that the server log has an
     "ATP inventory" line with the server's own slots after every change.
 
@@ -158,7 +158,7 @@ def main() -> int:
             if stack[1] == count:
                 found[label] = (slot, stack[0])
     if len(found) < 3:
-        print(f"could not find the test items in the client view: {c.slots} (is VOID_EXAMPLE_OPERATORS=1 set?)")
+        print(f"could not find the test items in the client view: {c.slots} (is VOID_EXAMPLE_OPERATORS=0 set?)")
         return 1
     S, stone = found["stone"]
     D, dirt = found["dirt"]
