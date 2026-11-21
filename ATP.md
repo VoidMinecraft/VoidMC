@@ -34,25 +34,25 @@ Target: Minecraft Java Edition 26.1.2 / protocol 775. Local server: `127.0.0.1:2
 | VMC-ATP-016 | Spawn a supported entity | Secondary function | 003 | Done | Implemented | [#141](https://github.com/VoidMinecraft/VoidMC/pull/141) | Yes (15 of 37, 14:27 UTC) | Tests only. Two e2e scenarios: a summoned pig is decoded as a pig by Azalea, at the right position, with fresh distinct id/UUID, stable for 40 ticks, seen once by a second player, a late joiner and a player leaving and re-entering range; 17 invalid forms (malformed id, unknown type, player/fishing_bobber, bad coordinates, unknown flag) each give a red error and spawn nothing. Assumption: bare `pig` is rejected as the docs say (vanilla accepts it). Out of scope, not fixed: far out-of-bounds coordinates (e.g. x=1e9) are accepted where vanilla rejects them. |
 | VMC-ATP-017 | Apply wandering behavior to an entity | Secondary function | 016 | Done | Implemented | [#143](https://github.com/VoidMinecraft/VoidMC/pull/143) | Yes (17 of 37, 14:46 UTC) | Tests only, CI green. Two e2e scenarios record the server every tick and replay every packet a client received: 0.08 blocks/tick, yaw faces the step, heading redrawn every 40..139 ticks, client position never drifts from the server; a flagless pig, side by side, gets none of it; 33 wanderers incl. one in unloaded chunks and a watcher leaving and returning cause no error. Assumption: "documented Wander behavior" = the values `/summon` uses (docs only say "demo random-walk"). Out of scope, NOT fixed: the public `EntityBuilder::wander(true)` only sets a flag no system reads, so an entity built that way never wanders (`/summon` works because it inserts the `Wander` component itself); wanderers resend rotation every tick. |
 | VMC-ATP-018 | Apply gravity and block collisions | Critical feature | 016 | Done | Partial | [#144](https://github.com/VoidMinecraft/VoidMC/pull/144) | Yes (18 of 37, 14:59 UTC) | Fix + tests, CI green. Landing, grounded state, stable rest, one-block step-up, wall collisions and opt-in flags worked. Bug fixed: an entity falling faster than ~1.9 blocks/tick (a pig after a ~24-block drop) passed straight through a one-block-thick floor, because gravity only checked the box at the end of the tick's fall. Four e2e scenarios (pen in the air built by the test, pigs summoned with the real command, whole collision box checked every tick, second client decodes on-ground flags) + exhaustive unit tests. What the tests steer: in the deterministic scenarios the pig's Wander yaw is set and its timer frozen; the random scenario steers nothing. Will conflict mechanically with #138 in physics.rs. Out of scope, not fixed: spawn settling only looks at the centre column and can snap one block into the ground (masked by step-up); an entity with `--gravity` but no `--block-checks` falls forever and is never removed. |
-| VMC-ATP-019 | Stream chunks around a moving player | Critical feature | 003 | Done | Partial | [#139](https://github.com/VoidMinecraft/VoidMC/pull/139) | Yes (28 of 37, 17:00 UTC) | Fix + tests. Capping as min(client, server), forgetting behind the player and centre-before-chunks already worked. Fixed: (1) the join sent the whole `initial_chunk_radius` square even when the effective view distance was smaller, then forgot the extra ring; (2) nearest-first broke when the generation cap held back a nearer ungenerated chunk while farther cached chunks were sent. Seven e2e scenarios + one unit test. Judgment calls: nearest-first = squared Euclidean distance from the player's chunk (as documented); cached chunks now wait behind nearer ungenerated ones, which lowers throughput under the generation cap (vanilla sends whatever is ready). Based on main; will conflict trivially with #135/#136 on one line of the join loop. Combined behavior of #135 + #136 + #139 has not been tested together. |
+| VMC-ATP-019 | Stream chunks around a moving player | Critical feature | 003 | In progress | Partial | [#139](https://github.com/VoidMinecraft/VoidMC/pull/139) | Yes (28 of 37, 17:00 UTC) | Fix + tests. Capping as min(client, server), forgetting behind the player and centre-before-chunks already worked. Fixed: (1) the join sent the whole `initial_chunk_radius` square even when the effective view distance was smaller, then forgot the extra ring; (2) nearest-first broke when the generation cap held back a nearer ungenerated chunk while farther cached chunks were sent. Seven e2e scenarios + one unit test. Judgment calls: nearest-first = squared Euclidean distance from the player's chunk (as documented); cached chunks now wait behind nearer ungenerated ones, which lowers throughput under the generation cap (vanilla sends whatever is ready). Based on main; will conflict trivially with #135/#136 on one line of the join loop. Combined behavior of #135 + #136 + #139 has not been tested together. |
 | VMC-ATP-020 | Load chunks through the world loader hook | Critical feature | - | Done | Implemented | [#127](https://github.com/VoidMinecraft/VoidMC/pull/127) | Yes (8 of 37, 13:32 UTC) | Tests only. Two e2e scenarios: test ChunkLoader consulted before generator (spawn area and streaming), and WorldPersistencePlugin/RegionChunkStore round-trip across a restart. Assumption: "documented generator fallback" = active generator output; only block states compared. Adds voidmc-world-io as an e2e dev-dependency (trivial conflict risk in void-e2e/Cargo.toml and Cargo.lock). |
 | VMC-ATP-021 | Register a custom command | Secondary function | - | Done | Implemented | [#133](https://github.com/VoidMinecraft/VoidMC/pull/133) | Yes (13 of 37, 14:11 UTC) | Tests only, plus a one-line docs fix (missing `StringArg` import in the CommandBuilder example). Two e2e scenarios: a command registered with `add_command` is in the tree and `/help` and runs, then the same app restarted without it gives "Unknown command"; same checks for a command registered from a plugin. Out of scope, not fixed: commands.md says the tree is sent "during the configuration phase", it is sent on entering Play. |
 | VMC-ATP-022 | Register a custom item behavior | Secondary function | - | Done | Partial | [#160](https://github.com/VoidMinecraft/VoidMC/pull/160) | Yes (7 of 37, 13:23 UTC) | Fix + tests, CI green. **Based on #137 (merge #137 first):** without #137's per-hand snapshot one vanilla click runs the stick behavior twice. The ItemBehavior API is public and documented and worked for a single packet, but with a real vanilla click (three packets: use-on main hand, use-in-air, use-on off hand) the example wand did nothing useful: the empty off hand ran the default placement for the air item and placed air over the wand's glowstone (that guard now lives in #137). Bug fixed here: the break hooks used the item held when the queue drained, so a same-tick hotbar change ran another item's behavior. Eight e2e scenarios (full vanilla click, context contents, Pass vs Handled, consume, break hooks, unrelated items unchanged, replace-on-second-registration, unknown item → warning, bursts) + two unit tests. `enqueue_break`/`enqueue_start_break` gain an inventory parameter. Notes: one vanilla click on a block runs both `on_use_on_block` and `on_use` (as vanilla; documented, not suppressed); a panicking behavior takes down the game thread (untested, undocumented). Out of scope, not fixed: `place_block` and the default placement overwrite a solid neighbour (vanilla only replaces replaceable blocks). |
-| VMC-ATP-023 | Extend the server through the Bevy plugin hook | Secondary function | - | In progress | Implemented | [#128](https://github.com/VoidMinecraft/VoidMC/pull/128) | Yes (9 of 37, 13:39 UTC) | Tests only; ATP status "In progress" was stale. One e2e scenario: plugin closure inserts resources, a Startup and an Update system, an observer and a /probe command; client sees the command in the join tree and the observer replies. "No Java/Spigot loader implied" checked by reading the docs, not by a test. |
+| VMC-ATP-023 | Extend the server through the Bevy plugin hook | Secondary function | - | Done | Implemented | [#128](https://github.com/VoidMinecraft/VoidMC/pull/128) | Yes (9 of 37, 13:39 UTC) | Tests only; ATP status "In progress" was stale. One e2e scenario: plugin closure inserts resources, a Startup and an Update system, an observer and a /probe command; client sees the command in the join tree and the observer replies. "No Java/Spigot loader implied" checked by reading the docs, not by a test. |
 | VMC-ATP-024 | Configure the server through ServerConfigBuilder | Secondary function | - | Done | Partial | [#161](https://github.com/VoidMinecraft/VoidMC/pull/161) | Yes (36 of 37, 20:05 UTC) | Fix + tests, CI green. Every builder option already reached something observable and documented defaults matched the code. Fixed: a negative `view_distance` was sent to the client unchanged and left the player standing in the void (negative view/simulation distances are now replaced by 0 with a warning). Docs corrected: `max_players` is advertised only, NOT enforced (a test shows two players online with `max_players(1)`); clients are not told the tick rate; new "Limits" section stating configuration guarantees neither capacity nor performance. Seven e2e scenarios (every option set to a non-default value and observed by a client; tick rate 200 vs 10 TPS; defaults restored in the same process) + an integration test that parses the configuration reference table and compares it with the code. Judgment calls: `max_players` documented as advisory rather than adding a login refusal; an unbindable/unparsable address still panics before the first tick (documented). AFTER MERGE of #138 or #145: `void/tests/server_config.rs` will not compile until the new config field is added to its list (intended guard); rerun CI. |
 | VMC-ATP-025 | Capture TPS and profiling diagnostics | Secondary function | - | Done | Partial | [#162](https://github.com/VoidMinecraft/VoidMC/pull/162) | Yes (35 of 37, 19:49 UTC) | Fix + tests, CI green. The TPS CSV and the flame trace were written correctly. Fixed: (1) an unusable flame output path aborted startup with an error instead of a warning; now a warning naming the path and reason, and the server runs on; (2) `VOID_METRICS_MODE=flame` alone also wrote an undocumented TPS CSV; TPS sampling now depends on `VOID_METRICS_DEBUG` only; (3) the TPS write-failure warning named neither path nor reason; (4) docs out of step (default paths, sampling interval, replace-not-append). Tests launch the real example binary as a child process on an ephemeral port through a new `VOID_LISTEN_ADDR` variable (default unchanged, 127.0.0.1:25565), stop it with SIGINT and check the CSV and folded trace are complete; plus unit tests and three in-process e2e scenarios. Notes: an existing CSV is replaced; the window in progress at shutdown is not written. Out of scope: on main SIGTERM loses the last trace buffer (#132 fixes graceful SIGTERM). Conflicts expected in `void-example/src/main.rs` with #130, #145, #147. |
 | VMC-ATP-026 | Stop the server gracefully | Critical feature | 001 | Done | Partial | [#132](https://github.com/VoidMinecraft/VoidMC/pull/132) | Yes (12 of 37, 14:04 UTC) | Fix + tests. `/stop` and SIGINT worked; SIGTERM, documented as graceful, killed the process without flushing dirty chunks (the `ctrlc` crate only handles SIGINT without its `termination` feature). Fix enables that feature in `void/Cargo.toml`; SIGHUP becomes graceful too and is documented. Tests: process-level SIGINT/SIGTERM/SIGHUP tests in `void-world-io/tests/graceful_stop.rs` (own server process, ephemeral port, not the example binary) and an e2e `/stop` scenario. Harness gains `TestServer::wait_for_exit()`; same e2e dev-dependency line as #127 (trivial conflict). Not changed: `VoidServer::run` drops the AppExit value, so the process always exits 0. |
-| VMC-ATP-027 | Generate optimized worlds | Critical feature | 026 | In progress | Partial | [#135](https://github.com/VoidMinecraft/VoidMC/pull/135) | Yes (1 of 37, 12:11 UTC) | Fix + tests. Assumption: no separate "optimized" generator or switch exists, so "optimized path" = the default pipeline (spawn-area pre-generation, chunk cache, per-tick generation budget); reference path = no pre-generation and no budget. No speed-up measured or claimed. Bug fixed: when the spawn area is smaller than `initial_chunk_radius` and the view distance equals it, joining left holes around spawn until the player moved. Terrain fixture defined in the e2e scenario (column rule, heights, spawn (0,64,0), seams); optimized and reference paths proven identical. Out of scope, not fixed: public `generate_spawn_area`/`generate_chunk`/`surface_height_at` free functions ignore the configured generator. |
-| VMC-ATP-028 | Process regions and systems in parallel | Critical feature | 027 | In progress | Missing | [#138](https://github.com/VoidMinecraft/VoidMC/pull/138) | Yes (33 of 37, 19:06 UTC) | Implementation + tests. On main nothing ran in parallel: `bevy_ecs` was built without `multi_threaded`, so all schedules were single-threaded (the e2e workspace got the multi-threaded executor by accident through Azalea's feature unification). Added `ExecutionMode { SingleThreaded (default), MultiThreaded }` via `ServerConfigBuilder::execution_mode`, and `for_each_region` (region = 32x32 chunks of one dimension) used by entity physics and spawn settling. Tests prove concurrency with a rendezvous (not timing), byte-for-byte equality with the single-thread baseline, and exactly-once updates. Judgment calls: default stays single-threaded; only existing per-entity work is region-parallel; wander is not (uses thread RNG). KNOWN LIMIT, not fixed: Bevy reports 26 unordered conflicting system pairs in `Update`, so under MultiThreaded their order within a tick can differ from the baseline; documented in configuration.md, needs a decision on a total order. |
-| VMC-ATP-029 | Simulate biomes and weather | Secondary function | 027 | In progress | Implemented | [#146](https://github.com/VoidMinecraft/VoidMC/pull/146) | Yes (19 of 37, 15:09 UTC) | Tests + docs only, CI green; ATP status "In progress" was stale. Two e2e scenarios on a fixture (a snowy_plains area in a plains world, clear → thunder over a 100-tick ramp, with a mid-ramp reversal): registry carries the biomes' client-visible properties, every biome cell the client holds matches, a traveller sees the area biome and area-scoped weather on entering and clear on leaving, and each client's weather equals the server's at every tick incl. a mid-ramp joiner. Assumptions: "configured biome" = a built-in biome placed by the generator; "configured transition" = the level ramp plus a change mid-ramp; area weather = an explicit audience kept by an application system (weather has no position). Docs gain explicit "not simulated" sections. Small shared harness change: `JoinTranscript.registry_data`. |
-| VMC-ATP-030 | Trigger note blocks with basic redstone | Secondary function | 027 | In progress | Missing | [#147](https://github.com/VoidMinecraft/VoidMC/pull/147) | Yes (5 of 37, 13:05 UTC) | Implementation + tests, CI green. **Based on #134 (merge #134 first):** it needs that PR's `Sneaking(bool)` component for the sneak rule on lever/button clicks. Nothing existed on main. Added an opt-in `RedstonePlugin` (not in DefaultPlugins because it changes what a right-click on a lever/button does; the example enables it and adds `/circuit` to build the test circuit): levers and all buttons (20/30-tick release), flat redstone dust with power 15 decreasing by 1, note block plays once per rising edge (Sound + new Block Event packet 0x07), silent when covered, states stored so rejoiners see them. New public `BlockInteraction` trait/registry and `world::set_block_state`. Six e2e scenarios + 16 unit tests. Not supported (documented): dust up/down a block, power through solid blocks, torches, repeaters, comparators, pistons, tuning by right-click. Deviation from vanilla: registered item behaviors run before the block interaction, to keep the WorldEdit wand and navigation remote working. Out of scope, not fixed: hand placement ignores orientation/shape (a hand-placed lever is always a north wall lever, dust a dot). |
+| VMC-ATP-027 | Generate optimized worlds | Critical feature | 026 | Done | Partial | [#135](https://github.com/VoidMinecraft/VoidMC/pull/135) | Yes (1 of 37, 12:11 UTC) | Fix + tests. Assumption: no separate "optimized" generator or switch exists, so "optimized path" = the default pipeline (spawn-area pre-generation, chunk cache, per-tick generation budget); reference path = no pre-generation and no budget. No speed-up measured or claimed. Bug fixed: when the spawn area is smaller than `initial_chunk_radius` and the view distance equals it, joining left holes around spawn until the player moved. Terrain fixture defined in the e2e scenario (column rule, heights, spawn (0,64,0), seams); optimized and reference paths proven identical. Out of scope, not fixed: public `generate_spawn_area`/`generate_chunk`/`surface_height_at` free functions ignore the configured generator. |
+| VMC-ATP-028 | Process regions and systems in parallel | Critical feature | 027 | Done | Missing | [#138](https://github.com/VoidMinecraft/VoidMC/pull/138) | Yes (33 of 37, 19:06 UTC) | Implementation + tests. On main nothing ran in parallel: `bevy_ecs` was built without `multi_threaded`, so all schedules were single-threaded (the e2e workspace got the multi-threaded executor by accident through Azalea's feature unification). Added `ExecutionMode { SingleThreaded (default), MultiThreaded }` via `ServerConfigBuilder::execution_mode`, and `for_each_region` (region = 32x32 chunks of one dimension) used by entity physics and spawn settling. Tests prove concurrency with a rendezvous (not timing), byte-for-byte equality with the single-thread baseline, and exactly-once updates. Judgment calls: default stays single-threaded; only existing per-entity work is region-parallel; wander is not (uses thread RNG). KNOWN LIMIT, not fixed: Bevy reports 26 unordered conflicting system pairs in `Update`, so under MultiThreaded their order within a tick can differ from the baseline; documented in configuration.md, needs a decision on a total order. |
+| VMC-ATP-029 | Simulate biomes and weather | Secondary function | 027 | Done | Implemented | [#146](https://github.com/VoidMinecraft/VoidMC/pull/146) | Yes (19 of 37, 15:09 UTC) | Tests + docs only, CI green; ATP status "In progress" was stale. Two e2e scenarios on a fixture (a snowy_plains area in a plains world, clear → thunder over a 100-tick ramp, with a mid-ramp reversal): registry carries the biomes' client-visible properties, every biome cell the client holds matches, a traveller sees the area biome and area-scoped weather on entering and clear on leaving, and each client's weather equals the server's at every tick incl. a mid-ramp joiner. Assumptions: "configured biome" = a built-in biome placed by the generator; "configured transition" = the level ramp plus a change mid-ramp; area weather = an explicit audience kept by an application system (weather has no position). Docs gain explicit "not simulated" sections. Small shared harness change: `JoinTranscript.registry_data`. |
+| VMC-ATP-030 | Trigger note blocks with basic redstone | Secondary function | 027 | Done | Missing | [#147](https://github.com/VoidMinecraft/VoidMC/pull/147) | Yes (5 of 37, 13:05 UTC) | Implementation + tests, CI green. **Based on #134 (merge #134 first):** it needs that PR's `Sneaking(bool)` component for the sneak rule on lever/button clicks. Nothing existed on main. Added an opt-in `RedstonePlugin` (not in DefaultPlugins because it changes what a right-click on a lever/button does; the example enables it and adds `/circuit` to build the test circuit): levers and all buttons (20/30-tick release), flat redstone dust with power 15 decreasing by 1, note block plays once per rising edge (Sound + new Block Event packet 0x07), silent when covered, states stored so rejoiners see them. New public `BlockInteraction` trait/registry and `world::set_block_state`. Six e2e scenarios + 16 unit tests. Not supported (documented): dust up/down a block, power through solid blocks, torches, repeaters, comparators, pistons, tuning by right-click. Deviation from vanilla: registered item behaviors run before the block interaction, to keep the WorldEdit wand and navigation remote working. Out of scope, not fixed: hand placement ignores orientation/shape (a hand-placed lever is always a north wall lever, dust a dot). |
 | VMC-ATP-031 | Run functional and load tests | Critical feature | 027 | In progress | Missing | [#142](https://github.com/VoidMinecraft/VoidMC/pull/142) | Yes (16 of 37, 14:36 UTC) | Implementation + tests. On main only a TCP-connect stress POC existed (no login). Added a load runner in `void-e2e` (`voidmc-load` binary) reusing the full-protocol e2e bot: 7 smoke checks, then a load phase; versioned workloads `smoke@1` (4 clients, CI-sized) and `standard@1` (20 clients, 30 s, opt-in) with thresholds; in-process target by default or an operator-supplied endpoint (refuses to run without one, no default address); JSON + Markdown report with workload, run conditions, measurements, per-threshold verdicts, decision and a scope statement; exit code 0/1/2. Eight e2e scenarios incl. real induced failures. Judgment calls: latency = chat/command round trips as seen by clients; tick rate from world-time updates (the in-process run spawns a world clock; not applicable for an endpoint that sends none); thresholds chosen by the subagent, not from the ATP. Removed an unbacked "thousands of concurrent connections" claim from getting-started.md. Out of scope, not fixed: nothing refuses a login when the server is full (`max_players` is only advertised). |
-| VMC-ATP-032 | Expose health and Prometheus metrics | Secondary function | 027 | In progress | Missing | [#145](https://github.com/VoidMinecraft/VoidMC/pull/145) | Yes (34 of 37, 19:30 UTC) | Implementation + tests, CI green. Nothing existed on main. Added to the core crate, off by default: `ServerConfigBuilder::observability(ObservabilityConfig::localhost(port))`; example reads `VOID_OBSERVABILITY_ADDR`. `GET /health`: `starting`/`stalled`/`stopping` → 503, `ok` → 200; after stop the port refuses connections. `GET /metrics`: Prometheus text 0.0.4 with tick (count, duration histogram, target and measured TPS), player (online, max, joined, connections) and error (connection errors by kind, kicks, unrecognized packets, packet errors) metrics. HTTP runs on its own thread, no new dependencies. Seven e2e scenarios with a strict parser. Judgment calls: the "agreed" metric set and the health semantics are the subagent's proposal; lives in core rather than an opt-in crate because the counters and tick boundaries are internal. Out of scope, not fixed: `/kick` sends Disconnect but never closes the connection server-side. Conflicts expected with #132/#138 in app.rs and config.rs. |
+| VMC-ATP-032 | Expose health and Prometheus metrics | Secondary function | 027 | Done | Missing | [#145](https://github.com/VoidMinecraft/VoidMC/pull/145) | Yes (34 of 37, 19:30 UTC) | Implementation + tests, CI green. Nothing existed on main. Added to the core crate, off by default: `ServerConfigBuilder::observability(ObservabilityConfig::localhost(port))`; example reads `VOID_OBSERVABILITY_ADDR`. `GET /health`: `starting`/`stalled`/`stopping` → 503, `ok` → 200; after stop the port refuses connections. `GET /metrics`: Prometheus text 0.0.4 with tick (count, duration histogram, target and measured TPS), player (online, max, joined, connections) and error (connection errors by kind, kicks, unrecognized packets, packet errors) metrics. HTTP runs on its own thread, no new dependencies. Seven e2e scenarios with a strict parser. Judgment calls: the "agreed" metric set and the health semantics are the subagent's proposal; lives in core rather than an opt-in crate because the counters and tick boundaries are internal. Out of scope, not fixed: `/kick` sends Disconnect but never closes the connection server-side. Conflicts expected with #132/#138 in app.rs and config.rs. |
 | VMC-ATP-033 | Advertise commands and complete command suggestions | Secondary function | 003 | Done | Implemented | [#163](https://github.com/VoidMinecraft/VoidMC/pull/163) | Yes (27 of 37, 16:44 UTC) | Tests + docs only, CI green. Five e2e scenarios: the tree a client receives is well formed and complete (14 default commands + 3 aliases, right parsers, ranges, executable flags, `/summon` flags); command-name completion works from the tree; server-side completion for `ask_server` arguments returns only valid matches with UTF-16 ranges and follows players joining and leaving; hostile and flooding requests (32,500-character lines, control characters, 500 requests in a burst) get the documented reply or none, with no error and no kick; a not-yet-ready player is answered. Who completes what: a vanilla client completes names, flags, `/tell`/`/kick` players and `/summon` entities by itself; the server only answers for custom `ask_server` arguments (no default command has one). Docs fixed: the tree is sent on entering Play, not "during configuration". Judgment calls: no reply to an unknown or bare command name counts as controlled; suggestions are not sorted (documented). Out of scope, not fixed: the server never sends the op-level status to clients, so a real client may not offer selectors like `@s`; a request with more than 32 KiB of multibyte text is logged at ERROR. |
-| VMC-ATP-034 | Add custom player behavior through a Bevy plugin | Secondary function | 023 | In progress | Partial | [#151](https://github.com/VoidMinecraft/VoidMC/pull/151) | Yes (29 of 37, 17:27 UTC) | Fix + tests, CI green. The normal Join → Ready → Quit path worked with public API only. Five defects fixed: (1) a repeated PlayerLoaded fired PlayerReadyEvent twice; (2) a player who joined and left before PlayerLoaded got a join and never a quit; (3) no quit event at server shutdown; (4) `/kick` never closed the connection, so a client ignoring Disconnect stayed in the game; (5) an observer despawning a player entity panicked the server on that client's next packet. New public `Players::kick(entity, reason)`; kicks now flush the reason then close (2 s bound). Five e2e scenarios with a recording plugin + six unit tests. BEHAVIOUR CHANGES to review: PlayerQuitEvent now pairs with PlayerJoinEvent (fires for joined-but-never-ready players; check `Has<PlayerReady>` for the old meaning; the demo's quit observer was adapted); quit now fires for every player at shutdown; despawning a client entity closes its connection but fires no quit (documented as unsupported, use `Players::kick`). Out of scope, not fixed: keep-alive timeout only covers ready players. Conflicts expected with #145 (network.rs, server.rs). |
-| VMC-ATP-035 | Observe gameplay events through a Bevy plugin | Secondary function | 023 | In progress | Partial | [#150](https://github.com/VoidMinecraft/VoidMC/pull/150) | Yes (22 of 37, 15:42 UTC) | Fix + tests, CI green. Move, rotate, chat, block place/break and item-use events were correct. Fixed: `PlayerCommandAction` used pre-1.21.2 numbering, so a real client's sprint fired `PlayerSneakEvent{false}` and sprint events never fired; now protocol-775 numbering, sneak events come from Player Input and sprint events from Player Command (`StartSneaking`/`StopSneaking` variants removed from voidmc-protocol: breaking, unused in the repo). Four e2e scenarios with a recording plugin for 22 event types that assert on the whole event log, with two players. events.md now states firing rules and that events are client input, not gameplay (no combat/damage). Assumption: a packet repeating the current position still fires a move event (existing behaviour, now documented). Out of scope, NOT fixed: `Interact` is decoded with the pre-26.1 layout and the separate `Attack` packet is not decoded, so real attacks produce no event and an off-hand entity click reads as an attack (sources disagree on the wire layout); placement does not check the target is replaceable. |
-| VMC-ATP-036 | Provide a custom world generator | Secondary function | 023 | In progress | Partial | [#148](https://github.com/VoidMinecraft/VoidMC/pull/148) | Yes (20 of 37, 15:20 UTC) | Fix + tests, CI green. The configured generator was already used everywhere (spawn area, streaming, spawn height, loader fallback). Bug fixed: a section with more than 256 distinct block states was encoded with a palette list at 9+ bits, which a client cannot decode (Azalea panicked); such sections are now sent as raw global ids. Three e2e scenarios with a recording custom generator (world-coordinate pattern, column-varying surface, non-origin spawn (37.5, -21.5) → surface of column (37, -22); explicit spawn height wins; the documented example runs). `generate_spawn_area` (always default generator, unused by the server) is deprecated; `generate_chunk`/`surface_height_at` documented as default-only. Docs example fixed. Out of scope, not fixed: `ChunkSection::set_block_state` (block edits) still caps its palette at 8 bits, so a 257th distinct state in a section silently becomes another block. May conflict with #149 in void-protocol chunk.rs. |
-| VMC-ATP-037 | Add a custom biome | Secondary function | 023 | In progress | Partial | [#149](https://github.com/VoidMinecraft/VoidMC/pull/149) | Yes (21 of 37, 15:31 UTC) | Fix + tests, CI green. A custom biome could already be registered, placed (generator or `set_biome`) and synced with public API only. Fixed: (1) registering after clients had the registries was only a debug assertion, so in release builds it silently desynchronized clients; now `BiomeError::RegistriesAlreadySent`; (2) malformed identifiers reached the registry packet; now `BiomeError::InvalidName`; (3) a generator-placed custom biome with id ≥ 128 in a section with more than 8 biomes was masked to biome 0. Example `/biome` gains a radius so the effect is visible (no automated test for the example change). Three e2e scenarios incl. a registry that crosses the 7→8-bit palette boundary, decoded `ChunksBiomes`, leave/re-enter, rejoin and late joiner. Assumption: required biome fields inferred from vanilla data (no 26.1.2 jar). Harness: adds `registry_data` (same lines as #146) and `tags` to JoinTranscript. Out of scope, not fixed: `RegistryDataStore::add_entry`/`remove_entry` and the public `registries` field can still change registries after login. |
+| VMC-ATP-034 | Add custom player behavior through a Bevy plugin | Secondary function | 023 | Done | Partial | [#151](https://github.com/VoidMinecraft/VoidMC/pull/151) | Yes (29 of 37, 17:27 UTC) | Fix + tests, CI green. The normal Join → Ready → Quit path worked with public API only. Five defects fixed: (1) a repeated PlayerLoaded fired PlayerReadyEvent twice; (2) a player who joined and left before PlayerLoaded got a join and never a quit; (3) no quit event at server shutdown; (4) `/kick` never closed the connection, so a client ignoring Disconnect stayed in the game; (5) an observer despawning a player entity panicked the server on that client's next packet. New public `Players::kick(entity, reason)`; kicks now flush the reason then close (2 s bound). Five e2e scenarios with a recording plugin + six unit tests. BEHAVIOUR CHANGES to review: PlayerQuitEvent now pairs with PlayerJoinEvent (fires for joined-but-never-ready players; check `Has<PlayerReady>` for the old meaning; the demo's quit observer was adapted); quit now fires for every player at shutdown; despawning a client entity closes its connection but fires no quit (documented as unsupported, use `Players::kick`). Out of scope, not fixed: keep-alive timeout only covers ready players. Conflicts expected with #145 (network.rs, server.rs). |
+| VMC-ATP-035 | Observe gameplay events through a Bevy plugin | Secondary function | 023 | Done | Partial | [#150](https://github.com/VoidMinecraft/VoidMC/pull/150) | Yes (22 of 37, 15:42 UTC) | Fix + tests, CI green. Move, rotate, chat, block place/break and item-use events were correct. Fixed: `PlayerCommandAction` used pre-1.21.2 numbering, so a real client's sprint fired `PlayerSneakEvent{false}` and sprint events never fired; now protocol-775 numbering, sneak events come from Player Input and sprint events from Player Command (`StartSneaking`/`StopSneaking` variants removed from voidmc-protocol: breaking, unused in the repo). Four e2e scenarios with a recording plugin for 22 event types that assert on the whole event log, with two players. events.md now states firing rules and that events are client input, not gameplay (no combat/damage). Assumption: a packet repeating the current position still fires a move event (existing behaviour, now documented). Out of scope, NOT fixed: `Interact` is decoded with the pre-26.1 layout and the separate `Attack` packet is not decoded, so real attacks produce no event and an off-hand entity click reads as an attack (sources disagree on the wire layout); placement does not check the target is replaceable. |
+| VMC-ATP-036 | Provide a custom world generator | Secondary function | 023 | Done | Partial | [#148](https://github.com/VoidMinecraft/VoidMC/pull/148) | Yes (20 of 37, 15:20 UTC) | Fix + tests, CI green. The configured generator was already used everywhere (spawn area, streaming, spawn height, loader fallback). Bug fixed: a section with more than 256 distinct block states was encoded with a palette list at 9+ bits, which a client cannot decode (Azalea panicked); such sections are now sent as raw global ids. Three e2e scenarios with a recording custom generator (world-coordinate pattern, column-varying surface, non-origin spawn (37.5, -21.5) → surface of column (37, -22); explicit spawn height wins; the documented example runs). `generate_spawn_area` (always default generator, unused by the server) is deprecated; `generate_chunk`/`surface_height_at` documented as default-only. Docs example fixed. Out of scope, not fixed: `ChunkSection::set_block_state` (block edits) still caps its palette at 8 bits, so a 257th distinct state in a section silently becomes another block. May conflict with #149 in void-protocol chunk.rs. |
+| VMC-ATP-037 | Add a custom biome | Secondary function | 023 | Done | Partial | [#149](https://github.com/VoidMinecraft/VoidMC/pull/149) | Yes (21 of 37, 15:31 UTC) | Fix + tests, CI green. A custom biome could already be registered, placed (generator or `set_biome`) and synced with public API only. Fixed: (1) registering after clients had the registries was only a debug assertion, so in release builds it silently desynchronized clients; now `BiomeError::RegistriesAlreadySent`; (2) malformed identifiers reached the registry packet; now `BiomeError::InvalidName`; (3) a generator-placed custom biome with id ≥ 128 in a section with more than 8 biomes was masked to biome 0. Example `/biome` gains a radius so the effect is visible (no automated test for the example change). Three e2e scenarios incl. a registry that crosses the 7→8-bit palette boundary, decoded `ChunksBiomes`, leave/re-enter, rejoin and late joiner. Assumption: required biome fields inferred from vanilla data (no 26.1.2 jar). Harness: adds `registry_data` (same lines as #146) and `tags` to JoinTranscript. Out of scope, not fixed: `RegistryDataStore::add_entry`/`remove_entry` and the public `registries` field can still change registries after login. |
 
 ## Run notes (verification run of 2026-11-19)
 
@@ -187,6 +187,25 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 | 37 | #159 | 014 | 21:46 | subagent merged `main` again, after the decision | **The owner chose option 1:** keep #159's no-echo behaviour and change #158's two assertions. Conflicts: the module list and `handle_creative_slot` (against #158). In `atp_015`, the two `expect_slot` calls after the Q and Ctrl+Q throw clicks now read the server's inventory (4 emeralds, then empty); nothing else in #158's scenario changed (coordinator checked: 2 lines removed, a helper and 2 assertions added; 7 other `expect_slot` calls untouched). The handler: a negative slot drops only on a Creative server and only within the item's maximum stack; otherwise #159's rule. Those two points go beyond both PRs, were put to the owner with the decision and went in as prepared; both are pinned by `atp_014`'s extended creative-slot scenario (each condition removed in turn made it fail). No other merged path relied on the echo. `atp_014` and `atp_015` passed 5 extra runs. Workspace tests (1428), e2e (168). Left, already in #159: the "Syncing" paragraph of `items.md` lists the click handlers among setters whose changes are sent. |
 | – | #195 | (flaky-test fix, server code) | 21:58 | `gh pr update-branch` | Not an ATP PR; merged under the user's go-ahead for the flaky-test fixes. Kick requested before the sender is dropped; queued kicks handled before an ended connection is forgotten. See Result. |
 
+## Definitions
+
+The terms below have one meaning in the whole plan. In the workbook they are on the Info & Access sheet.
+
+- <a id="def-commit-under-test"></a>**commit under test**: The commit checked out for the test run. Record its full hash (git rev-parse HEAD) in the test report.
+- <a id="def-server"></a>**server**: The example server voidmc-example. Start it at the repository root with the command that the objective gives.
+- <a id="def-server-log"></a>**server log**: The newest file logs/void-*.log in the directory the server was started from (the repository root). Each server start creates a new file.
+- <a id="def-tester-terminal"></a>**tester terminal**: A second terminal, open at the repository root, for the tools.
+- <a id="def-client"></a>**client**: Minecraft Java Edition 26.1.2, started from Prism Launcher.
+- <a id="def-player-a"></a>**Player A**: The Prism Launcher offline account ATPPlayerA. To create it, select Accounts > Manage Accounts > Add Offline and type ATPPlayerA. To start a client with it, run prismlauncher --launch <instance name> --profile ATPPlayerA.
+- <a id="def-player-b"></a>**Player B**: The offline account ATPPlayerB, created like Player A. It gets a UUID different from Player A. It needs its own client instance: right-click the first instance and select Copy.
+- <a id="def-player-c"></a>**Player C**: The offline account ATPPlayerC, created like Player A, with a third client instance.
+- <a id="def-join"></a>**join**: In the client, select Multiplayer > Direct Connection, type the address, then click Join Server.
+- <a id="def-chat"></a>**chat**: The chat box, opened with T. Type a command with its leading /, then press Enter.
+- <a id="def-f3-screen"></a>**F3 screen**: The debug overlay, shown and hidden with F3. The plan reads its XYZ, Chunk, Facing, Targeted Block and biome lines. To show the biome line, press F3+F6, set biome to In Overlay, then click Done.
+- <a id="def-operator-access"></a>**operator access**: Start the server with VOID_EXAMPLE_OPERATORS=1. Every player is then an operator. Operators are needed for /broadcast, /clear, /gamemode, /give, /kick, /say, /stop, /summon and /tp.
+- <a id="def-fresh-world"></a>**fresh world**: No world/ directory at the repository root. If one exists, rename it, for example to world.before-atp.
+- <a id="def-tools"></a>**tools**: The files under tools/atp/ in the repository (see tools/atp/README.md). The scripts need Python 3.10 or later and the standard library only.
+
 ## Details
 
 ### VMC-ATP-001: Start the example server
@@ -198,19 +217,28 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- Repository at commit 795d8c3b9cc9acbd422a14b2fae977ef705f5fb8
-- a Rust toolchain compatible with Rust 1.91.1
-- TCP port 25565 is available
-- write access to a temporary runtime directory.
+- Defined terms used here ([Definitions](#definitions)): [commit under test](#def-commit-under-test), [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join).
+- The [commit under test](#def-commit-under-test) is checked out. Record its full hash (git rev-parse HEAD) in the test report.
+- Rust toolchain 1.91.1 or later (rustc --version).
+- TCP port 25565 is free (ss -ltn shows no listener on 25565).
+- The terms used in this plan ([server log](#def-server-log), [join](#def-join), [Player A](#def-player-a) and others) are defined in Info & Access > Definitions.
 
 **Steps:**
 
 1. Open a terminal at the repository root.
 2. Run cargo run -p voidmc-example.
-3. Wait for startup to complete.
-4. Observe the startup logs and listening address.
+3. Wait until the terminal shows no new lines for 10 seconds.
+4. Open the [server log](#def-server-log).
+5. Wait 60 seconds.
+6. Read the server log again.
 
-**Expected results:** The command completes the build phase without an error; the server remains running; the logs contain Server listening, listen_addr: 127.0.0.1:25565 and Generated 81 spawn area chunks; no fatal error or panic is reported.
+**Expected results:**
+
+1. Step 2: the build ends without a line that starts with "error".
+2. Step 4: the [server log](#def-server-log) contains a line with "Server listening" and "127.0.0.1:25565".
+3. Step 4: the server log contains "Generated 81 spawn area chunks".
+4. Step 6: the server process is still running.
+5. The server log contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-002: Display the server status
 
@@ -221,44 +249,76 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-001 has passed acceptance
-- a Minecraft Java Edition 26.1.2 status client or equivalent protocol probe
-- access to 127.0.0.1:25565.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [tools](#def-tools).
+- VMC-ATP-001 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- Python 3.10 or later (python3 --version).
 
 **Steps:**
 
-1. Add or query the server at 127.0.0.1:25565.
-2. Refresh the server status.
-3. Inspect the advertised version, protocol, MOTD, and player capacity.
+1. At the repository root, run cargo run -p voidmc-example.
+2. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+3. In the [client](#def-client), select Multiplayer > Add Server.
+4. Type 127.0.0.1:25565 as the server address, then click Done.
+5. Read the server entry in the server list.
+6. In the [tester terminal](#def-tester-terminal), run python3 tools/atp/status-ping.py --server 127.0.0.1:25565.
+7. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+8. In the tester terminal, run python3 tools/atp/status-ping.py --server 127.0.0.1:25565 again.
 
-**Expected results:** The server answers without timing out; it advertises Minecraft 26.1.2, protocol 775, MOTD Welcome to Void Server!, maximum 100 players, and the current online-player count.
+**Expected results:**
+
+1. Step 5: the entry shows the MOTD "Welcome to Void Server!" and "0/100". It shows no "Incompatible version" text.
+2. Step 6: the tool prints "version name: 26.1.2", "protocol: 775" and "motd: Welcome to Void Server!".
+3. Step 6: the tool prints "max players: 100", "online players: 0" and "ping echo: yes".
+4. Step 8: the tool prints "online players: 1".
+5. Steps 6 and 8: each command ends in less than 5 seconds.
 
 ### VMC-ATP-003: Complete the implemented login and configuration handshake
 
 **Category:** Critical feature  
 **ATP status:** Done
 
-**Objective:** Confirm that a compatible client completes the implemented Handshake, Login, Configuration, and Play transitions and becomes ready without claiming online authentication, encryption, or compression.
+**Objective:** Confirm that a compatible client completes the implemented Handshake, Login, Configuration, and Play transitions and becomes ready, without online authentication or encryption. Compression is optional.
 
 **Prerequisites:**
 
-- VMC-ATP-001 has passed acceptance
-- one Minecraft Java Edition 26.1.2 client with a usable player session
-- access to 127.0.0.1:25565
-- packet-debug logging or an equivalent packet trace is available.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen).
+- VMC-ATP-001 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- TCP port 25565 is free.
+- No other [client](#def-client) is connected to the server.
 
 **Steps:**
 
-1. Start the example server with packet-debug logging enabled.
-2. Connect a Minecraft Java Edition 26.1.2 client to 127.0.0.1:25565.
-3. Capture Handshake, LoginStart, LoginSuccess, and LoginAcknowledged.
-4. Capture KnownPacks, ClientInformation, RegistryData, UpdateTags, FinishConfiguration, and FinishConfigurationAcknowledged.
-5. Capture Play Login, Commands, initial chunk packets, and SynchronizePlayerPosition.
-6. Wait for PlayerLoaded and the ready play state.
+1. At the repository root, run VOID_PACKET_DEBUG=1 cargo run -p voidmc-example.
+2. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+3. Start the [client](#def-client) with [Player A](#def-player-a).
+4. [Join](#def-join) 127.0.0.1:25565.
+5. Wait 10 seconds after the world appears.
+6. Hold Tab and read the player list.
+7. Open [chat](#def-chat) and type / (one slash). Do not press Enter.
+8. Read the command suggestions above the chat box, then press Esc.
+9. Press [F3](#def-f3-screen) and read the XYZ line.
+10. Open the server log.
+11. Find the line that contains "Received LoginStart" and "ATPPlayerA".
+12. Record the client number in that line, for example [Client 1].
+13. Read the lines with that client number that contain "Received".
 
-**Expected results:** The client transitions from Handshake to Login, Configuration, and Play; LoginSuccess contains the supplied profile with empty properties; registry data and tags are delivered; the client receives the Play login, command tree, initial chunks, and position synchronization; PlayerLoaded leads to the ready state; no online authentication, encryption, or compression is claimed or required.
+**Expected results:**
 
-**ATP feedback:** Implemented in the current code. Keep the acceptance test pending until a reproducible end-to-end packet trace is retained.
+1. Step 4: the [client](#def-client) joins without an authentication, encryption or "Failed to log in" error. An offline account can only [join](#def-join) a server that requires neither.
+2. Step 5: the client shows terrain around the player and no disconnect screen. The client cannot show the world without the registry data and tags.
+3. Step 6: the player list shows ATPPlayerA.
+4. Step 8: the suggestions contain help and ping. This shows that the client received the command tree.
+5. Step 9: the XYZ line shows 0.0, 64.0 and 0.0, rounded to one decimal.
+6. Step 13: these Received lines occur in this order: Handshake, LoginStart, LoginAcknowledged, ClientInformation, KnownPacks, FinishConfigurationAcknowledged, PlayerLoaded. Other lines can occur between them.
+7. Step 13: the Handshake line contains "protocol_version: 775" and "next_state: Login".
+8. Step 13: a "Received ChunkBatchReceived" line and a "Received ConfirmTeleportation" line with "teleport_id: 0" come before PlayerLoaded.
+9. After the PlayerLoaded line, the [server log](#def-server-log) contains a line with "Player connected" and "ATPPlayerA".
+10. The server log contains no line with "ERROR" or "panicked".
+Note: the example negotiates compression at threshold 256. These results do not depend on compression.
+
+**ATP feedback:** Verified on 2026-11-20 at 0220a6b: Pass. The packet trace is kept in the verification evidence (uncompressed-frame-summary.txt) and as an e2e scenario (PR #131).
 
 ### VMC-ATP-004: Load the initial world
 
@@ -269,17 +329,35 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the player is connected at the spawn location.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- The server is started with cargo run -p voidmc-example. Players [join](#def-join) in Creative mode, the server default.
 
 **Steps:**
 
-1. Wait until the terrain around the player is visible.
-2. Turn through 360 degrees and inspect nearby terrain.
-3. Move at least 32 blocks from spawn.
-4. Return to the initial area.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. Wait until terrain is visible around the player.
+3. Press [F3](#def-f3-screen). Take a screenshot with F2.
+4. Move the mouse to turn 360 degrees in 4 steps of 90 degrees. Read the F3 Facing line at each step.
+5. Turn until the F3 Facing line shows "south (Towards positive Z)".
+6. Double-press Space to fly.
+7. Fly forward until the F3 XYZ line shows Z of 128 or more. Take a screenshot each time Z passes a multiple of 32.
+8. Turn until the F3 Facing line shows "north (Towards negative Z)".
+9. Fly forward until Z is 0 or less.
+10. Fly to X 0, Z 0 and land. Take a screenshot facing the same way as in step 3.
+11. Compare the screenshots of steps 3 and 10.
+12. Disconnect, then read the [server log](#def-server-log).
 
-**Expected results:** Nearby chunks render without leaving the player permanently in an empty world; additional terrain appears as the player moves; movement remains responsive; returning to the initial area does not disconnect the client or corrupt the visible world.
+**Expected results:**
+
+1. Step 2: terrain is visible in less than 10 seconds.
+2. Step 4: terrain is visible in all four directions. No area of empty sky remains after you stop for 5 seconds.
+3. Step 7: new terrain appears ahead of the player in each screenshot.
+4. Steps 7 and 9: the player moves when you press the keys and stops when you release them. The player does not jump back to an earlier position.
+5. Step 11: the terrain around spawn is the same in both screenshots. There are no holes or missing chunks.
+6. Step 12: the [server log](#def-server-log) has no line with "Disconnect" or "WARN" for ATPPlayerA before step 12.
+7. The server log contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-005: Synchronize two players
 
@@ -290,18 +368,34 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance for two distinct Minecraft Java Edition 26.1.2 client sessions
-- both players are connected in the same area.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [F3 screen](#def-f3-screen).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist, each with its own [client](#def-client) instance.
+- The server is started with cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Connect Player A and Player B to the same server.
-2. Position both players within visible range.
-3. Move, rotate, jump, and crouch with Player A.
-4. Repeat with Player B.
-5. Disconnect one player.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. Join 127.0.0.1:25565 with [Player B](#def-player-b).
+3. In the [server log](#def-server-log), find the two lines with "Player connected". Record both player_uuid values.
+4. With Player A, walk 4 blocks towards positive X. Use the [F3](#def-f3-screen) XYZ line to check X is 4.
+5. Turn both players to face each other.
+6. With Player A, walk 3 blocks to the side, then back.
+7. With Player A, jump 3 times.
+8. With Player A, hold Shift for 3 seconds.
+9. With Player A, turn 90 degrees right, then 180 degrees, then back. Then look fully up and fully down.
+10. Repeat steps 6 to 9 with Player B.
+11. Disconnect Player B.
 
-**Expected results:** Each player sees the other appear; movement and orientation updates are visible to the opposite client without a persistent duplicate or frozen entity; the disconnected player disappears from the remaining client's world.
+**Expected results:**
+
+1. Step 3: the two player_uuid values are different.
+2. Step 5: each [client](#def-client) shows exactly one model of the other player, with the name above it.
+3. Steps 6 to 8 and 10: the other client shows the walk, the jumps and the crouch at the same time, within 1 second.
+4. Step 9 and 10: the other client shows the body turn to the side and to the back, and the head look up and down.
+5. Steps 5 to 10: no client shows a second model or a model that stops moving while the player moves.
+6. Step 11: the model of [Player B](#def-player-b) disappears from [Player A](#def-player-a)'s client in less than 5 seconds.
+7. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-006: Modify shared blocks
 
@@ -312,18 +406,44 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-005 has passed acceptance
-- both players are in Creative mode near the same target blocks.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [F3 screen](#def-f3-screen), [operator access](#def-operator-access).
+- VMC-ATP-005 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist. Both players are in Creative mode, the server default.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
+- Player A and Player B stand at X 0, Z 0 and X -2, Z 0. Both face the block at X 0, Y 63, Z 3.
+- The top block at X 0, Z 3 is at Y 63 in the default terrain.
 
 **Steps:**
 
-1. Break a visible block with Player A.
-2. Confirm the result from both players.
-3. Place a block with Player B in the cleared position.
-4. Confirm the result from both players.
-5. Repeat with a block outside the immediate view and return to it.
+Use the [F3](#def-f3-screen) "Targeted Block" line to find each block position.
+1. With [Player A](#def-player-a), break the block at X 0, Y 63, Z 3.
+2. Look at the position from both [clients](#def-client).
+3. With [Player B](#def-player-b), select glowstone in the hotbar (slot 5).
+4. With Player B, place the glowstone at X 0, Y 63, Z 3.
+5. Look at the position from both clients.
+6. With Player B, run /tp 0 80 400.
+7. With Player A, place a glass block on top of the block at X 0, Y 63, Z 3.
+8. With Player B, run /tp -2 64 0.
+9. Look at X 0, Y 64, Z 3 from both clients.
+10. With Player A, run /tp 0 80 400.
+11. With Player B, break the glass block at X 0, Y 64, Z 3.
+12. With Player A, run /tp 0 64 0.
+13. Look at X 0, Y 64, Z 3 from both clients.
+14. With Player A, right-click into the sky with an empty hand.
+15. With Player A, try to place stone in the block where Player A stands.
+16. With Player A, click 25 times fast on the glowstone, alternating left and right click.
+17. With Player A, run /tp 0 318 0, double-press Space to fly, then try to place stone above the player.
 
-**Expected results:** A broken block disappears for both players; a placed block appears at the same position for both players; the shared world converges to one state; no invalid interaction crashes the server.
+**Expected results:**
+
+1. Step 2: both [clients](#def-client) show the block at X 0, Y 63, Z 3 is gone.
+2. Step 5: both clients show glowstone at X 0, Y 63, Z 3.
+3. Step 9: both clients show glass at X 0, Y 64, Z 3.
+4. Step 13: both clients show air at X 0, Y 64, Z 3.
+5. Steps 14 to 17: both clients stay connected. After each step, both clients show the same blocks around the target.
+6. Step 15: no block appears in the player's own position.
+7. Step 17: no block appears above Y 319.
+8. The [server log](#def-server-log) contains no line with "ERROR", "WARN" or "panicked".
 
 ### VMC-ATP-007: Exchange chat messages
 
@@ -334,17 +454,24 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-005 has passed acceptance
-- both players can use the in-game chat interface.
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [chat](#def-chat).
+- VMC-ATP-005 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist. Both players are connected to the server.
 
 **Steps:**
 
-1. Send a unique chat message from Player A.
-2. Confirm receipt on Player A and Player B.
-3. Send a different message from Player B.
-4. Confirm receipt on both clients.
+1. With [Player A](#def-player-a), open [chat](#def-chat), type ATP alpha 4711, then press Enter.
+2. Read the chat on both [clients](#def-client).
+3. With [Player B](#def-player-b), open chat, type ATP beta 0815, then press Enter.
+4. Read the chat on both clients.
+5. Wait 10 seconds.
 
-**Expected results:** Each submitted message is displayed to both connected players once; sender identity and message content remain recognizable; chat use does not disconnect either player or stop the server.
+**Expected results:**
+
+1. Step 2: both [clients](#def-client) show the line "<ATPPlayerA> ATP alpha 4711" exactly once.
+2. Step 4: both clients show the line "<ATPPlayerB> ATP beta 0815" exactly once.
+3. Step 4: on both clients the alpha line comes before the beta line.
+4. Step 5: both clients are still connected and the server is running.
 
 ### VMC-ATP-008: Discover available commands
 
@@ -355,17 +482,28 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the connected player can open chat and enter commands.
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Run /help.
-2. Run /ping.
-3. Run /plugins.
-4. Enter an unknown command.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. In [chat](#def-chat), run /help.
+3. Read the chat. Scroll up with the mouse wheel if the list is longer than the chat box.
+4. In chat, run /ping.
+5. In chat, run /plugins.
+6. In chat, run /atpunknown.
+7. Wait 10 seconds.
 
-**Expected results:** /help lists available commands; /ping returns a response; /plugins reports the loaded plugin list or an explicit empty-list response; the unknown command produces a controlled error or help response rather than a crash.
+**Expected results:**
+
+1. Step 3: the reply starts with "--- Available Commands ---". It contains "/help", "/ping", "/plugins", "/gamemode", "/give", "/tp" and "/hello - Greet the player".
+2. Step 4: the reply is "Pong!".
+3. Step 5: the reply is "No plugins loaded.". This is the explicit empty-list response.
+4. Step 6: the reply is "Unknown command: /atpunknown" in red.
+5. Step 7: the [client](#def-client) is still connected and the server is running.
 
 ### VMC-ATP-009: Preserve a world change after restart
 
@@ -376,19 +514,34 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 and VMC-ATP-006 have passed acceptance
-- a dedicated writable test runtime directory
-- permission to stop and restart the local server
-- the coordinates of a distinctive test block are recorded.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world).
+- VMC-ATP-003 and VMC-ATP-006 have passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- A [fresh world](#def-fresh-world).
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Place a distinctive block at a recorded coordinate.
-2. Stop the server cleanly.
-3. Restart the same build with the same world directory.
-4. Reconnect and return to the recorded coordinate.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. Select glowstone in the hotbar (slot 5).
+3. Place the glowstone on top of the block at X 0, Y 63, Z 3. Use the [F3](#def-f3-screen) Targeted Block line.
+4. Point at the glowstone. Check that the F3 Targeted Block line shows 0, 64, 3 and minecraft:glowstone.
+5. Wait 15 seconds.
+6. In [chat](#def-chat), run /stop.
+7. Wait until the server process ends.
+8. At the repository root, run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+9. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+10. Join 127.0.0.1:25565 with Player A.
+11. Point at X 0, Y 64, Z 3. Read the F3 Targeted Block line.
 
-**Expected results:** The server stops and restarts without corrupting the world directory; the player can reconnect; the distinctive block remains at the recorded coordinate after restart.
+**Expected results:**
+
+1. Step 5: the [server log](#def-server-log) contains a "World saved" line after step 3.
+2. Step 6: the [chat](#def-chat) shows "Stopping the server...". The server log contains "world persistence: flushed on shutdown".
+3. Step 7: the process ends in less than 10 seconds.
+4. Step 9: the server log of the restart contains no line with "ERROR", "corrupt" or "panicked".
+5. Step 10: [Player A](#def-player-a) joins without an error.
+6. Step 11: the [F3](#def-f3-screen) Targeted Block line shows 0, 64, 3 and minecraft:glowstone.
 
 ### VMC-ATP-010: Change a player's displayed game mode
 
@@ -399,18 +552,35 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the player can enter commands
-- the client is connected in the Play state.
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Run /gamemode 0.
-2. Observe the client game mode and the command confirmation.
-3. Run /gamemode 1.
-4. Try an out-of-range mode value.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. In [chat](#def-chat), run /gamemode 0.
+3. Read the chat and look at the screen.
+4. In chat, run /gamemode 1.
+5. Read the chat and look at the screen.
+6. In chat, run /gamemode 2.
+7. Read the chat and look at the screen.
+8. In chat, run /gamemode 3.
+9. Read the chat and look at the screen.
+10. In chat, run /gamemode 4.
+11. Read the chat.
+12. In chat, run /gamemode 1.
 
-**Expected results:** Valid modes 0–3 produce the corresponding client game-mode event and confirmation; an out-of-range value is rejected by command parsing; the connection remains stable.
+**Expected results:**
+
+1. Step 3: the reply is "Game mode set to survival (0)". The hotbar shows hearts and a hunger bar.
+2. Step 5: the reply is "Game mode set to creative (1)". The hearts and hunger bar are gone.
+3. Step 7: the reply is "Game mode set to adventure (2)". The hearts and hunger bar are shown.
+4. Step 9: the reply is "Game mode set to spectator (3)". The hotbar is gone and the player can fly through blocks.
+5. Step 11: the reply is a red error and the game mode does not change.
+6. Steps 2 to 12: the [client](#def-client) stays connected.
+Note: the server sends the mode to the client. It does not claim server-side enforcement of the mode's rules.
 
 ### VMC-ATP-011: Teleport a player
 
@@ -421,18 +591,31 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the player can enter commands
-- a safe destination coordinate is known.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Record the current position.
-2. Run /tp with a safe destination.
-3. Observe the player position and orientation.
-4. Move after the teleport.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a), then with [Player B](#def-player-b).
+2. With Player B, run /tp 12.5 70 8.5. Turn Player B to face south.
+3. With Player A, press [F3](#def-f3-screen). Record the XYZ line and the Facing line.
+4. With Player A, run /tp 12.5 71 12.5.
+5. With Player A, read the F3 XYZ line and Facing line.
+6. With Player B, look at the place where Player A stood before step 4, then at X 12.5, Z 12.5.
+7. With Player A, walk forward for 3 seconds.
+8. With Player A, read the F3 XYZ line.
+9. With Player A, run /tp 100 80 100, then /tp 0 64 0.
 
-**Expected results:** The player arrives at the requested coordinates; the client acknowledges the server position; subsequent movement remains responsive and no duplicate player entity is created.
+**Expected results:**
+
+1. Step 4: the [chat](#def-chat) shows "Teleported to 12.5, 71.0, 12.5".
+2. Step 5: the XYZ line shows 12.5, 71.0 and 12.5, rounded to one decimal. The yaw and pitch on the Facing line are the same as in step 3.
+3. Step 6: [Player B](#def-player-b) sees one model of [Player A](#def-player-a) at X 12.5, Z 12.5 and none at the old position.
+4. Steps 7 and 8: Player A moves away from 12.5, 12.5 and does not jump back to it.
+5. Step 9: each teleport moves Player A to the given position and terrain appears there.
+6. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-012: Manage connected players
 
@@ -443,18 +626,33 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-005 has passed acceptance
-- both players can use commands
-- the local test setup permits the list, messaging, broadcast, and kick commands.
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [Player C](#def-player-c), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- VMC-ATP-005 has passed acceptance.
+- The [Player A](#def-player-a), [Player B](#def-player-b) and [Player C](#def-player-c) accounts exist, each with its own [client](#def-client) instance.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Run /list and verify both players are listed.
-2. Send /tell from Player A to Player B.
-3. Run /broadcast and verify both clients receive it.
-4. Run /kick for Player B.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a), [Player B](#def-player-b) and [Player C](#def-player-c).
+2. With Player A, run /list.
+3. With Player A, run /tell ATPPlayerB private-gamma-27845.
+4. Read the [chat](#def-chat) on all three [clients](#def-client).
+5. With Player A, run /broadcast ATP broadcast 31337.
+6. Read the chat on all three clients.
+7. Move Player A next to Player B.
+8. With Player A, run /kick ATPPlayerB ATP-test.
+9. Look at Player B's screen and at Player A's view of Player B.
 
-**Expected results:** The online list reflects connected players; private and broadcast messages reach only their intended recipients; the kicked client disconnects and the remaining client observes the player removal.
+**Expected results:**
+
+1. Step 2: the reply is "There are 3 player(s) online:" followed by the three names.
+2. Step 4: [Player A](#def-player-a) shows "You whisper to ATPPlayerB: private-gamma-27845".
+3. Step 4: [Player B](#def-player-b) shows "ATPPlayerA whispers to you: private-gamma-27845".
+4. Step 4: [Player C](#def-player-c) shows no line with private-gamma-27845.
+5. Step 6: all three [clients](#def-client) show "[Broadcast] ATP broadcast 31337" exactly once.
+6. Step 8: Player A shows "Kicked ATPPlayerB (reason: ATP-test)".
+7. Step 9: Player B shows a disconnect screen with "ATP-test". The model of Player B disappears from Player A's view.
+8. Steps 8 and 9: Player A and Player C stay connected.
 
 ### VMC-ATP-013: Give and clear inventory items
 
@@ -465,19 +663,31 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the player can enter commands
-- a writable player inventory is available.
+- Defined terms used here ([Definitions](#definitions)): [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Run /give minecraft:stone 20.
-2. Inspect the inventory.
-3. Run /give minecraft:ender_pearl 20.
-4. Run /clear.
-5. Inspect the inventory again.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. In [chat](#def-chat), run /gamemode 0, so that E opens the inventory with all slots.
+3. In chat, run /clear.
+4. In chat, run /give minecraft:stone 20.
+5. In chat, run /give minecraft:ender_pearl 20.
+6. Press E. Read the item counts in every slot.
+7. Press Esc.
+8. In chat, run /clear.
+9. Press E. Read every slot.
 
-**Expected results:** The requested item counts appear in valid stacks; per-item stack limits are respected; /clear removes the inventory contents and the client receives the updated slots.
+**Expected results:**
+
+1. Step 3: the reply is "Inventory cleared".
+2. Step 4: the reply is "Gave 20 x minecraft:stone".
+3. Step 5: the reply is "Gave 20 x minecraft:ender_pearl".
+4. Step 6: one slot holds 20 stone. Two slots hold ender pearls: 16 and 4. No slot holds more than 16 ender pearls.
+5. Step 8: the reply is "Inventory cleared".
+6. Step 9: every inventory slot, hotbar slot and the offhand slot is empty.
 
 ### VMC-ATP-014: Manipulate inventory slots
 
@@ -488,19 +698,65 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the player has at least two item stacks
-- the inventory screen is available.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access), [tools](#def-tools).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- Python 3.10 or later. The tools use only the standard library.
+- The working tree has no changes (git status shows "nothing to commit").
 
 **Steps:**
 
-1. Pick up and place a stack with left and right clicks.
-2. Shift-click an item.
-3. Swap a hotbar item with a number key or the offhand.
-4. Drag across multiple slots.
-5. Double-click to collect matching items.
+Slot numbers in the [server log](#def-server-log): 9 to 35 are the main inventory, by row from top-left.
+Slots 36 to 44 are the hotbar, from left. Slot 45 is the offhand.
+After each of steps 6 to 19, read the last "ATP inventory" line in the server log.
+Part 1: vanilla [client](#def-client)
+1. At the repository root, run git apply tools/atp/patches/inventory-trace.patch.
+2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+3. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+4. In [chat](#def-chat), run /gamemode 0.
+5. In chat, run /clear.
+6. In chat, run /give minecraft:stone 20.
+7. In chat, run /give minecraft:dirt 16.
+8. Press E to open the inventory.
+9. Hold Shift and left-click the stone in hotbar slot 1.
+10. Move the pointer over the stone and press 2.
+11. Left-click the stone to pick it up.
+12. Hold the left button and drag across two empty main-inventory slots. Release the button.
+13. Double-click one of the two stone stacks.
+14. Left-click an empty main-inventory slot.
+15. Right-click the stone stack from step 14.
+16. Right-click an empty main-inventory slot.
+17. Left-click a different empty main-inventory slot.
+18. Press Esc to close the inventory.
+19. Press E to open the inventory again.
+Part 2: invalid and stale actions
+20. Press Esc, then select Disconnect.
+21. In the [tester terminal](#def-tester-terminal), run python3 tools/atp/inventory-clicks.py --server 127.0.0.1:25565 --server-log <server log path>.
+22. Wait until the tool prints "done".
+23. Join 127.0.0.1:25565 again with Player A.
+24. Stop the server with Ctrl+C.
+25. Run git apply -R tools/atp/patches/inventory-trace.patch to remove the patch.
 
-**Expected results:** Each operation produces the expected stack counts and slot contents; the client and server converge after every action; invalid or stale actions do not duplicate items or crash the server.
+**Expected results:**
+
+1. Step 7: hotbar slot 1 holds 20 stone. Hotbar slot 2 holds 16 dirt.
+2. Step 9: the 20 stone move to the top-left main-inventory slot (slot 9). Hotbar slot 1 is empty.
+3. Step 10: the 20 stone are in hotbar slot 2 (slot 37). The 16 dirt are in slot 9.
+4. Step 11: the pointer holds 20 stone. Slot 37 is empty.
+5. Step 12: each of the two slots holds 10 stone. The pointer is empty.
+6. Step 13: the pointer holds 20 stone. Both slots are empty.
+7. Step 14: the slot holds 20 stone. The pointer is empty.
+8. Step 15: the pointer holds 10 stone. The slot keeps 10 stone.
+9. Step 16: the slot receives 1 stone. The pointer holds 9 stone.
+10. Step 17: the slot receives 9 stone. The pointer is empty. The three stacks hold 10, 1 and 9 stone.
+11. Step 19: the inventory shows the same slots and counts as before step 18.
+12. Steps 6 to 19: after each step, the slots and counts in the last [server log](#def-server-log) line are the same as on the screen. The cursor_count value is the stack on the pointer.
+13. Step 22: for each case except "03c throw", the tool prints total(before) equal to total(after). For "03c throw" the total goes down: a throw drops items, so it does not duplicate them.
+14. Step 22: for every case the tool prints conn_alive_and_server_responds=True and case=PASS.
+15. Step 22: for cases 09a to 09d the tool prints "offender disconnected=True" and "server accepts a new login=True". The server log contains "Client sent a malformed packet".
+16. Step 22: the tool prints "failed cases: 0".
+17. Step 23: [Player A](#def-player-a) joins without an error.
+18. The server log contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-015: Drop and collect an item
 
@@ -511,18 +767,39 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-005 has passed acceptance
-- Player A has a disposable item
-- both players are within a few blocks of a safe floor.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world), [tools](#def-tools).
+- VMC-ATP-005 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
+- A [fresh world](#def-fresh-world).
+- A stopwatch.
+- The working tree has no changes.
 
 **Steps:**
 
-1. Drop one item from Player A's inventory.
-2. Observe the item entity and wait through the pickup delay.
-3. Move Player B onto the item.
-4. Inspect Player B's inventory.
+1. At the repository root, run git apply tools/atp/patches/physics-arena.patch.
+2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+3. Wait until the [server log](#def-server-log) contains "ATP arena ready".
+4. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a), then with [Player B](#def-player-b).
+5. With both players, run /gamemode 0.
+6. With Player B, run /clear.
+7. With Player A, run /clear, then /give minecraft:dirt 16.
+8. With Player A, run /tp 20.5 111 20.5. Turn until the [F3](#def-f3-screen) Facing line shows "east (Towards positive X)" and the pitch is 0.
+9. With Player B, run /tp 22.5 111 20.5. Turn Player B to face Player A.
+10. With Player A, select the dirt and press Q once. Start the stopwatch at the same time.
+11. Watch the item and Player B's hotbar.
+12. When the item disappears, stop the stopwatch.
+13. With Player B, press E and read every slot.
+14. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/physics-arena.patch.
+15. Rename the world/ directory, for example to world.after-atp-015.
 
-**Expected results:** The item entity is spawned and visible to both players; it falls without clipping through the floor; it cannot be collected before the delay; after collection the entity disappears and the stack is added once to Player B.
+**Expected results:**
+
+1. Step 10: [Player A](#def-player-a)'s dirt count goes from 16 to 15.
+2. Step 11: both [clients](#def-client) show the dirt item flying forward and landing on the stone floor at Y 111. It does not sink into the floor.
+3. Step 11: [Player B](#def-player-b)'s hotbar stays empty for at least 2 seconds after the drop.
+4. Step 12: the stopwatch shows between 2 and 3 seconds. The item disappears from both clients at the same time.
+5. Step 13: Player B holds exactly 1 dirt.
+6. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-016: Spawn a supported entity
 
@@ -533,17 +810,29 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the player can enter commands
-- a supported entity identifier such as minecraft:pig is known.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [operator access](#def-operator-access).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Run /summon minecraft:pig at the current position.
-2. Inspect the entity in the client.
-3. Try a non-summonable or malformed identifier.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a), then with [Player B](#def-player-b).
+2. With Player A, stand at X 0, Z 0 and face south.
+3. With Player A, run /summon minecraft:pig -1 64 4.
+4. Watch the pig from both [clients](#def-client) for 60 seconds.
+5. With Player B, disconnect, then join again. Look at X -1, Z 4.
+6. With Player A, run /summon minecraft:banana.
+7. With Player A, run /list.
 
-**Expected results:** A valid entity appears with a stable identity and position; invalid or non-summonable identifiers are rejected with a controlled command error; the server remains healthy.
+**Expected results:**
+
+1. Step 3: the reply is "Summoned minecraft:pig at -1.0, 64.0, 4.0".
+2. Step 4: both [clients](#def-client) show exactly one pig at X -1, Z 4. It stays on the same block for 60 seconds.
+3. Step 5: after the rejoin, [Player B](#def-player-b) sees exactly one pig at X -1, Z 4.
+4. Step 6: the reply is "Unknown entity type: minecraft:banana" in red. No entity appears.
+5. Step 7: the server answers with the player list, so it is running.
+6. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-017: Apply wandering behavior to an entity
 
@@ -554,16 +843,29 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-016 has passed acceptance
-- a safe, open test area is available.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [operator access](#def-operator-access).
+- VMC-ATP-016 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Run /summon minecraft:pig --wander.
-2. Observe the entity for several seconds.
-3. Compare its position and movement packets with a pig summoned without --wander.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. Stand at X 0, Z 0 and face south. Double-press Space to fly, and fly up to Y 70.
+3. Run /summon minecraft:pig -1 64 4 --wander.
+4. Run /summon minecraft:pig -4 64 4.
+5. Take a screenshot with F2.
+6. Watch both pigs for 60 seconds.
+7. Take a screenshot with F2.
 
-**Expected results:** The entity receives the documented Wander behavior and changes position over time; a summoned entity without the flag does not gain that behavior; no server error is emitted.
+**Expected results:**
+
+1. Steps 3 and 4: each command replies "Summoned minecraft:pig at" with its position.
+2. Step 6: the pig with --wander walks and changes direction at least once. After 60 seconds it is at least 3 blocks from X -1, Z 4, or out of sight.
+3. Step 6: the pig without the flag stays at X -4, Z 4 and does not walk.
+4. Step 7: compared with step 5, only the --wander pig has moved.
+5. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
+Note: Wander is the documented demo random walk. It has no gravity or block collision unless those flags are given.
 
 ### VMC-ATP-018: Apply gravity and block collisions
 
@@ -574,42 +876,86 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-016 has passed acceptance
-- a test area has a flat floor, a one-block rise, and a vertical wall at least two blocks high.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [operator access](#def-operator-access), [fresh world](#def-fresh-world), [tools](#def-tools).
+- VMC-ATP-016 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- A [fresh world](#def-fresh-world).
+- The working tree has no changes.
 
 **Steps:**
 
-1. Build a test area with a flat floor, a one-block rise, and a vertical wall at least two blocks high.
-2. Run /summon minecraft:pig --wander --gravity --block-checks above the floor.
-3. Observe the fall and resting position.
-4. Let the entity move toward the one-block rise and the vertical wall.
-5. Observe the entity over several ticks.
+The arena has a stone floor at Y 110 from X 17 to 30 and Z 17 to 30.
+Glass walls 3 blocks high stand on its edges. A stone rise 1 block high runs along Z 25.
+1. At the repository root, run git apply tools/atp/patches/physics-arena.patch.
+2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+3. Wait until the [server log](#def-server-log) contains "ATP arena ready".
+4. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+5. Run /tp 18.5 111 18.5. Look up.
+6. Run /summon minecraft:pig 23.5 180 21.5 --wander --gravity --block-checks.
+7. Watch the pig fall and land.
+8. Watch the pig for 120 seconds.
+9. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/physics-arena.patch.
+10. Rename the world/ directory, for example to world.after-atp-018.
 
-**Expected results:** The entity falls to the block top and reports a grounded state; it may step onto and traverse a one-block rise; it does not clip through the vertical wall; physics remains stable over several ticks.
+**Expected results:**
+
+1. Step 7: the pig falls for more than 1 second and lands on the stone floor.
+2. Step 7: after landing, the pig's feet are on top of the floor. It does not sink into the floor or hover above it.
+3. Step 8: when the pig reaches the rise at Z 25, it steps up onto the rise and walks on top of it.
+4. Step 8: the pig never passes through a glass wall and never leaves the arena.
+5. Step 8: the pig does not shake, jump without a reason or disappear.
+6. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 **ATP feedback:** Acceptance criteria aligned with the implemented one-block step-up behavior.
 
 ### VMC-ATP-019: Stream chunks around a moving player
 
 **Category:** Critical feature  
-**ATP status:** Done
+**ATP status:** In progress
 
 **Objective:** Confirm that chunk loading and unloading follow the player's effective view distance while the player crosses chunk boundaries.
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- the world has at least 32 blocks of safe movement
-- client and server view distances are known.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen), [tools](#def-tools).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- Python 3.10 or later.
+- The server view distance is the default, 10 chunks. The example does not change it.
+- In the [client](#def-client), Options > Video Settings > Render Distance is 12 chunks. The effective view distance is then min(12, 10) = 10.
 
 **Steps:**
 
-1. Record the initial chunk center.
-2. Move across at least two chunk boundaries.
-3. Observe new terrain and chunk-center updates.
-4. Return toward the origin and inspect previously loaded terrain.
+1. At the repository root, run cargo run -p voidmc-example.
+2. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+3. In the [tester terminal](#def-tester-terminal), run python3 tools/atp/capture-proxy.py --listen 127.0.0.1:25566 --upstream 127.0.0.1:25565 --out atp-019.
+4. [Join](#def-join) 127.0.0.1:25566 with [Player A](#def-player-a). Port 25566 makes the capture proxy record the session.
+5. Press [F3](#def-f3-screen). Read the Chunk line.
+6. Double-press Space to fly.
+7. Turn until the F3 Facing line shows "south (Towards positive Z)".
+8. Fly forward until the F3 XYZ line shows Z of 128 or more. Watch the terrain ahead.
+9. Turn until the F3 Facing line shows "north (Towards negative Z)".
+10. Fly forward until the F3 XYZ line shows Z of 0 or less. Watch the terrain ahead.
+11. Press Esc, then select Disconnect.
+12. In the tester terminal, press Ctrl+C to stop the capture proxy.
+13. Find the "closed" line with the most bytes. Record its conn-N number. Other lines are server-list pings.
+14. Run python3 tools/atp/chunk-order.py --radius 10 atp-019/conn-N-server-to-[client](#def-client).bin, with N from step 13.
 
-**Expected results:** Chunks enter and leave the player's loaded set according to the capped view distance; new chunks arrive nearest-first; returning to an already loaded area does not create duplicate or corrupted chunks.
+**Expected results:**
+
+Definitions: the loaded set is the chunks the server sent and did not unload. It must be the square of chunks with max(|dx|, |dz|) ≤ 10 around the player's chunk: 441 chunks. The order uses the squared distance dx² + dz² from the player's chunk when the chunk is sent.
+1. Step 5: the Chunk line shows chunk 0 0 (the first and last of the three numbers after "in").
+2. Steps 8 and 10: terrain appears ahead of the player. No hole remains when you stop for 5 seconds.
+3. Step 14: the tool prints "effective view distance: 10".
+4. Step 14: the tool prints "loaded set after join equals square of radius 10 (441 chunks): yes".
+5. Step 14: the tool prints "loaded set at end equals square of radius 10: yes".
+6. Step 14: the tool prints "chunks sent outside the view square of the current centre: 0".
+7. Step 14: the tool prints "intervals ending with a chunk outside the view square: 0".
+8. Step 14: the tool prints "chunks sent while loaded: 0" and "re-sent chunks with different content: 0".
+9. Step 14: the tool prints "order inversions: 0". This includes the chunks sent at the [join](#def-join).
+10. Step 14: the tool prints "result: PASS".
+11. The [client](#def-client) stays connected until step 11. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
+Known result at 0220a6b: results 9 and 10 fail with one inversion, chunk (4, 4) d2=32 sent before chunk (-5, 0) d2=25 (verification report §019, GitHub issue #236).
 
 ### VMC-ATP-020: Load chunks through the world loader hook
 
@@ -620,19 +966,32 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- A test ChunkLoader or the voidmc-world-io persistence plugin
-- a temporary world directory
-- one known stored chunk
-- one known missing chunk.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world).
+- The [Player A](#def-player-a) account exists.
+- A [fresh world](#def-fresh-world).
+- The example uses the voidmc-world-io persistence plugin (RegionChunkStore) with the world directory world/.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example.
 
 **Steps:**
 
-1. Start the server with the loader or persistence plugin installed.
-2. Request the stored chunk.
-3. Request the missing chunk.
-4. Compare the returned data with the stored value and generated fallback.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. Place glowstone on top of the block at X 0, Y 63, Z 3 (stored chunk 0, 0).
+3. Wait 15 seconds, then run /stop.
+4. List the files in world/region/ and its subdirectories.
+5. At the repository root, run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+6. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+7. Join 127.0.0.1:25565 with Player A.
+8. Point at X 0, Y 64, Z 3. Read the [F3](#def-f3-screen) Targeted Block line.
+9. Run /tp 800 100 800 (chunk 50, 50, never visited, so not stored).
+10. Wait 10 seconds and look at the terrain.
 
-**Expected results:** A loader-provided chunk is used before generation; a missing chunk follows the documented generator fallback; the built-in RegionChunkStore round-trip is preserved. No arbitrary external database backend is claimed by this scenario.
+**Expected results:**
+
+1. Step 4: there is at least one region file named r.0.0.vrm.
+2. Step 8: the [F3](#def-f3-screen) Targeted Block line shows 0, 64, 3 and minecraft:glowstone. The generator does not create glowstone, so the chunk came from the store.
+3. Step 10: terrain appears around the player in less than 10 seconds. This chunk was not stored, so the generator made it.
+4. Steps 6 and 10: the [server log](#def-server-log) contains no line with "ERROR", "corrupt", "Failed to load" or "panicked".
+Note: no external database backend is claimed. The loader hook itself (a custom ChunkLoader) is covered by the e2e scenario atp_020_world_loader.
 
 ### VMC-ATP-021: Register a custom command
 
@@ -643,19 +1002,35 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- Repository source
-- a small application or plugin crate
-- access to CommandRegistry
-- the example server builds.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [tools](#def-tools).
+- The [Player A](#def-player-a) account exists.
+- The example registers /hello with CommandBuilder::new("hello") in void-example/src/main.rs.
+- The working tree has no changes.
 
 **Steps:**
 
-1. Register a command with CommandBuilder.
-2. Start the example server.
-3. Execute the command in chat.
-4. Restart without the registration and repeat the command.
+1. At the repository root, run cargo run -p voidmc-example.
+2. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+3. In [chat](#def-chat), run /help. Look for the /hello line.
+4. In chat, run /hello.
+5. Stop the server with Ctrl+C.
+6. Run git apply tools/atp/patches/remove-hello-command.patch.
+7. Run cargo run -p voidmc-example.
+8. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+9. Join 127.0.0.1:25565 with Player A.
+10. In chat, run /help. Look for the /hello line.
+11. In chat, run /hello.
+12. In chat, run /ping.
+13. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/remove-hello-command.patch.
 
-**Expected results:** The registered command appears in discovery and executes its handler; removing the registration removes the command; core server startup and unrelated commands remain functional.
+**Expected results:**
+
+1. Step 3: the list contains "/hello - Greet the player".
+2. Step 4: the reply is "Hello from void-example!".
+3. Step 7: the build and startup end without an error.
+4. Step 10: the list does not contain /hello.
+5. Step 11: the reply is "Unknown command: /hello" in red.
+6. Step 12: the reply is "Pong!".
 
 ### VMC-ATP-022: Register a custom item behavior
 
@@ -666,41 +1041,64 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- A behavior implementing the documented ItemBehavior trait
-- the example WandBehavior or an equivalent test behavior
-- a connected Creative-mode player.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen).
+- The [Player A](#def-player-a) account exists.
+- The example registers WandBehavior for minecraft:stick (void-example/src/main.rs).
+- The starter kit puts stone in hotbar slot 1 and a stick in hotbar slot 6.
+- The server is started with cargo run -p voidmc-example. Players [join](#def-join) in Creative mode.
 
 **Steps:**
 
-1. Register the behavior for minecraft:stick.
-2. Hold the item and use it on a valid block.
-3. Use a normal block item on another block.
-4. Inspect the resulting world and chat response.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+2. Select hotbar slot 6 (stick).
+3. Point at the top of the block at X 0, Y 63, Z 3. Use the [F3](#def-f3-screen) Targeted Block line.
+4. Right-click.
+5. Read the [chat](#def-chat). Point at X 0, Y 64, Z 3 and read the F3 Targeted Block line.
+6. Select hotbar slot 1 (stone).
+7. Point at the top of the block at X -2, Y 63, Z 3.
+8. Right-click.
+9. Point at X -2, Y 64, Z 3 and read the F3 Targeted Block line.
 
-**Expected results:** The registered behavior handles the targeted interaction and applies its documented world change; unrelated item placement keeps the default behavior; the server remains stable.
+**Expected results:**
+
+1. Step 5: the [chat](#def-chat) shows "zap! placed glowstone". [F3](#def-f3-screen) shows minecraft:glowstone at 0, 64, 3.
+2. Step 5: hotbar slot 6 still holds the stick.
+3. Step 8: no chat message appears.
+4. Step 9: F3 shows minecraft:stone at -2, 64, 3.
+5. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-023: Extend the server through the Bevy plugin hook
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that an application can install a Bevy plugin closure that registers observers, systems, or shared ECS resources without modifying framework core code.
 
 **Prerequisites:**
 
-- Repository source
-- a plugin closure or Rust application extension
-- a test event or resource
-- permission to rebuild the example application.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [tools](#def-tools).
+- The [Player A](#def-player-a) account exists.
+- The working tree has no changes.
 
 **Steps:**
 
-1. Add a plugin that inserts a resource and registers an observer or system.
-2. Build and start the example server.
-3. Trigger the event or command that uses the resource.
-4. Inspect the resulting output or state.
+1. At the repository root, run git apply tools/atp/patches/event-observers.patch.
+2. Run git diff --stat. Read the list of changed files.
+3. Run cargo run -p voidmc-example.
+4. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+5. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+6. In [chat](#def-chat), run /atpprobe.
+7. Read the server log.
+8. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/event-observers.patch.
 
-**Expected results:** The plugin is applied before gameplay; its observer or system runs in the Bevy schedule; the shared resource is available to the registered consumer; no external Java/Spigot plugin loader is implied.
+**Expected results:**
+
+1. Step 2: only void-example/src/main.rs is changed. No framework file and no Java or Spigot loader is involved.
+2. Step 7: "ATP plugin applied" comes before "ATP event startup" and before the first "Accepted new connection" line.
+3. Step 7: the "ATP event startup" line contains "ATP plugin resource". A Startup system read the resource.
+4. Step 7: the "ATP event join" line contains "ATPPlayerA" and "ATP plugin resource". The observer ran and read the resource.
+5. Step 6: the reply is "ATP resource: ATP plugin resource".
+6. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-024: Configure the server through ServerConfigBuilder
 
@@ -711,19 +1109,33 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- Repository source
-- a small application or temporary configuration change
-- an available local TCP port
-- a status client or protocol probe.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [tools](#def-tools).
+- The [Player A](#def-player-a) account exists. In the [client](#def-client), Render Distance is 12 chunks.
+- Python 3.10 or later.
+- The working tree has no changes.
 
 **Steps:**
 
-1. Set documented builder options including the MOTD, max_players, tick rate, and spawn/chunk settings.
-2. Build and start the server.
-3. Query status and inspect startup behavior.
-4. Restore the baseline configuration.
+The patch sets spawn_chunk_radius 1, initial_chunk_radius 1, view_distance 3, tick_rate 10, motd "ATP configuration check" and max_players 7.
+1. At the repository root, run git apply tools/atp/patches/config-values.patch.
+2. Run VOID_METRICS_DEBUG=1 VOID_TPS_OUTPUT=logs/atp-024-tps.csv cargo run -p voidmc-example.
+3. Wait 15 seconds. Read the [server log](#def-server-log).
+4. In the [tester terminal](#def-tester-terminal), run python3 tools/atp/status-ping.py --server 127.0.0.1:25565.
+5. In the tester terminal, run python3 tools/atp/capture-proxy.py --out atp-024.
+6. [Join](#def-join) 127.0.0.1:25566 with [Player A](#def-player-a). Walk 40 blocks in one direction.
+7. Disconnect. Stop the proxy with Ctrl+C.
+8. Find the "closed" line with the most bytes. Run python3 tools/atp/chunk-order.py --radius 3 atp-024/conn-N-server-to-[client](#def-client).bin with its N.
+9. Stop the server with Ctrl+C. Open logs/atp-024-tps.csv.
+10. Run git apply -R tools/atp/patches/config-values.patch.
 
-**Expected results:** The server starts with the supplied configuration; status and startup observations reflect the configured values where exposed; no performance or capacity guarantee is inferred from configuration alone.
+**Expected results:**
+
+1. Step 3: the [server log](#def-server-log) contains "Generated 9 spawn area chunks".
+2. Step 4: the tool prints "motd: ATP configuration check" and "max players: 7".
+3. Step 8: the tool prints "effective view distance: 3" and "loaded set at end equals square of radius 3: yes".
+4. Step 9: after the first row, the tps column of logs/atp-024-tps.csv shows values between 9.5 and 10.5.
+5. Step 10: git status shows no changes.
+Note: max_players is advertised in the status only. It is not enforced (void-docs/docs/reference/server/configuration.md). No performance or capacity guarantee follows from these values.
 
 ### VMC-ATP-025: Capture TPS and profiling diagnostics
 
@@ -734,20 +1146,31 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- Repository source
-- a writable logs directory
-- VOID_METRICS_DEBUG=1
-- optional VOID_TPS_OUTPUT
-- optional VOID_METRICS_MODE=flame with VOID_FLAME_OUTPUT.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log).
+- The working tree has no changes.
+- The directory /proc/voidmc/ does not exist and cannot be created. It is used as an unavailable path.
 
 **Steps:**
 
-1. Start the server with TPS output enabled.
-2. Let it run for at least 20 ticks.
-3. Stop it cleanly.
-4. When flame mode is enabled, inspect the folded trace file.
+1. At the repository root, run VOID_METRICS_DEBUG=1 VOID_TPS_OUTPUT=logs/atp-025-tps.csv VOID_METRICS_MODE=flame VOID_FLAME_OUTPUT=logs/atp-025.folded cargo run -p voidmc-example.
+2. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+3. Wait 10 seconds.
+4. Press Ctrl+C. Wait until the process ends.
+5. Read the first 3 lines of logs/atp-025-tps.csv.
+6. Run wc -c logs/atp-025.folded.
+7. Run VOID_METRICS_DEBUG=1 VOID_TPS_OUTPUT=/proc/voidmc/tps.csv VOID_METRICS_MODE=flame VOID_FLAME_OUTPUT=/proc/voidmc/trace.folded cargo run -p voidmc-example.
+8. Wait 15 seconds. Read the server log.
+9. Press Ctrl+C.
 
-**Expected results:** Enabled TPS output contains the documented header and timestamped samples; enabled flame mode produces a non-empty folded trace; an unavailable optional output path is reported by a warning without an invented success claim.
+**Expected results:**
+
+1. Step 4: the [server log](#def-server-log) contains "world persistence: flushed on shutdown" and the process ends in less than 10 seconds.
+2. Step 5: the first line is "timestamp_ms,tps,window_ms,last_tick_ms,total_ticks".
+3. Step 5: there are at least 2 more lines. Each starts with a Unix time in milliseconds.
+4. Step 6: the size of logs/atp-025.folded is more than 0 bytes.
+5. Step 8: the server log contains a WARN line "Cannot write the flame trace; flame profiling is off" with the path /proc/voidmc/trace.folded.
+6. Step 8: the server log contains a WARN line "Failed to create TPS output directory; TPS samples are only logged" with the path /proc/voidmc/tps.csv.
+7. Step 8: the server keeps running. The server log contains no line that says the trace or the CSV was written.
 
 ### VMC-ATP-026: Stop the server gracefully
 
@@ -758,105 +1181,197 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-001 has passed acceptance
-- persistence is enabled for the test world
-- permission to stop the local server.
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [fresh world](#def-fresh-world), [tools](#def-tools).
+- VMC-ATP-001 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- A [fresh world](#def-fresh-world).
+- The working tree has no changes.
 
 **Steps:**
 
-1. Make one tracked world change.
-2. Issue /stop or send the documented termination signal.
-3. Wait for the process to exit.
-4. Restart the same world and inspect the change.
+1. At the repository root, run git apply tools/atp/patches/shutdown-flush-only.patch.
+2. Run cargo build -p voidmc-example.
+3. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 ./target/debug/voidmc-example; echo "exit=$?".
+4. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+5. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+6. Place glowstone on top of the block at X 0, Y 63, Z 3.
+7. In the [tester terminal](#def-tester-terminal), run pkill -TERM -x voidmc-example.
+8. Read the terminal of step 3.
+9. Repeat step 3. Join with Player A and point at X 0, Y 64, Z 3.
+10. Place glass on top of the block at X -1, Y 63, Z 3.
+11. In [chat](#def-chat), run /stop. Read the terminal of step 3.
+12. Repeat step 3. Join and point at X -1, Y 64, Z 3.
+13. Place stone on top of the block at X -2, Y 63, Z 3. In the server terminal, press Ctrl+C.
+14. Repeat step 3. Join and point at X -2, Y 64, Z 3.
+15. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/shutdown-flush-only.patch.
 
-**Expected results:** The process exits cleanly; shutdown persistence flushes dirty chunks; the world change is available after restart; no panic or partial shutdown is reported.
+**Expected results:**
+
+1. Steps 7, 11 and 13: the [server log](#def-server-log) contains "world persistence: flushed on shutdown" with "saved=1" (the count can be higher).
+2. Steps 7 and 13: the terminal prints "exit=130".
+3. Step 11: the terminal prints "exit=0".
+4. Steps 9, 12 and 14: the [F3](#def-f3-screen) Targeted Block line shows minecraft:glowstone, minecraft:glass and minecraft:stone at the given positions.
+5. Steps 7, 11 and 13: the process ends in less than 10 seconds. The server log contains no line with "ERROR" or "panicked".
+6. Steps 6, 10 and 13: the server log contains no "World saved" line between the change and the stop. Only the shutdown flush saved the change.
 
 ### VMC-ATP-027: Generate optimized worlds
 
 **Category:** Critical feature  
-**ATP status:** In progress
+**ATP status:** Done
 
-**Objective:** Confirm that optimized world generation produces the expected terrain and spawn area.
+**Objective:** Confirm that the default world-generation pipeline (spawn-area pre-generation, chunk cache and per-tick generation budget) produces the expected terrain and spawn area for a defined generator fixture.
 
 **Prerequisites:**
 
-- VMC-ATP-026 has passed acceptance
-- the optimized world-generation path is enabled
-- a writable test-world directory
-- a defined terrain fixture
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen), [fresh world](#def-fresh-world), [tools](#def-tools).
+- VMC-ATP-026 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- A [fresh world](#def-fresh-world).
+- The working tree has no changes.
+- The fixture is tools/atp/patches/striped-generator.patch. Its surface is at Y 80.
+- Its top blocks are gold where world X mod 8 is 0 to 3, and grass where it is 4 to 7.
 
 **Steps:**
 
-1. Start the server with optimized world generation enabled.
-2. Generate the defined test world.
-3. Connect a Minecraft client and inspect the spawn area.
-4. Move across one chunk boundary and compare the terrain with the fixture.
+1. At the repository root, run git apply tools/atp/patches/striped-generator.patch.
+2. Run cargo run -p voidmc-example.
+3. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+4. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+5. Press [F3](#def-f3-screen). Read the XYZ line.
+6. Look down. Point at the top blocks at X 0, 3, 4 and 7, Z 0. Read the F3 Targeted Block line for each.
+7. Turn until the F3 Facing line shows "east (Towards positive X)".
+8. Walk forward until the F3 XYZ line shows X of 40 or more. Watch the ground.
+9. Point at the top blocks at X 16, 19, 20 and 23, Z 0. Read the F3 Targeted Block line for each.
+10. Walk back to X 0.
+11. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/striped-generator.patch.
+12. Rename the world/ directory, for example to world.after-atp-027.
 
-**Expected results:** World generation completes without errors; terrain and spawn behavior match the defined fixture; generated chunks remain consistent as the player moves.
+**Expected results:**
+
+1. Step 3: the [server log](#def-server-log) contains "Generated 81 spawn area chunks" and no line with "ERROR" or "panicked".
+2. Step 5: the XYZ line shows Y 80.0. The player stands on the surface.
+3. Step 6: X 0 and 3 are minecraft:gold_block. X 4 and 7 are minecraft:grass_block. All are at Y 79.
+4. Step 8: the stripes continue without a gap, a step or a missing column at X 16, the chunk boundary.
+5. Step 9: X 16 and 19 are minecraft:gold_block. X 20 and 23 are minecraft:grass_block. All are at Y 79.
+6. Step 10: the ground on the way back is the same as on the way out.
 
 ### VMC-ATP-028: Process regions and systems in parallel
 
 **Category:** Critical feature  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that independent regions and systems are processed concurrently without corrupting the world state.
 
 **Prerequisites:**
 
-- VMC-ATP-027 has passed acceptance
-- multithreaded execution is available
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tools](#def-tools).
+- VMC-ATP-027 has passed acceptance.
+- Python 3.10 or later.
+- A computer with at least 2 CPU cores (nproc prints 2 or more).
+- The working tree has no changes.
+- Scope: the region-partitioned entity physics step. The unordered system pairs listed in void-docs/docs/reference/server/configuration.md are out of scope.
 
 **Steps:**
 
-1. Start the server with multithreaded processing enabled.
-2. Load two independent regions and trigger their scheduled systems.
-3. Repeat the scenario while recording tick completion and world state.
-4. Compare the result with the single-thread baseline.
+The patch spawns 60 pigs in region (0,0) and 60 in region (-1,-1) from a fixed seed. It records 120 ticks.
+1. At the repository root, run git apply tools/atp/patches/region-parallel.patch.
+2. Run cargo build -p voidmc-example.
+3. Run ATP_WORLD_DIR=$(mktemp -d) ATP_TRACE_OUT=atp-028-serial ./target/debug/voidmc-example.
+4. Wait until the [server log](#def-server-log) contains "ATP trace complete, 120 ticks", then press Ctrl+C.
+5. Run ATP_EXECUTION=multi ATP_WORLD_DIR=$(mktemp -d) ATP_TRACE_OUT=atp-028-multi ./target/debug/voidmc-example.
+6. Wait until the server log contains "ATP trace complete, 120 ticks", then press Ctrl+C.
+7. Run python3 tools/atp/region-trace-analyze.py --serial atp-028-serial --multi atp-028-multi.
+8. Run git apply -R tools/atp/patches/region-parallel.patch.
 
-**Expected results:** Independent regions and systems run concurrently; the resulting world state matches the baseline; no race, duplicate update, crash, or deadlock is observed.
+**Expected results:**
+
+1. Step 3: the [server log](#def-server-log) contains "Game tick execution mode" with "SingleThreaded".
+2. Step 5: the server log contains "Game tick execution mode" with "MultiThreaded".
+3. Step 7: both runs show ticks=120, contiguous=yes, wrong_entity_count=0 and region_twice=0.
+4. Step 7: the serial run shows ticks_with_several_threads=0 and ticks_with_overlap=0.
+5. Step 7: the multi run shows ticks_with_overlap of 60 or more. Two regions ran at the same time on these ticks.
+6. Step 7: the tool prints "trace rows: 14400", "traces identical: yes" and "result: PASS".
+7. Steps 4 and 6: the server log contains no line with "ERROR" or "panicked", and each run ends within 60 seconds.
 
 ### VMC-ATP-029: Simulate biomes and weather
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that configured biome and weather states are applied to a test area and synchronized to the client.
 
 **Prerequisites:**
 
-- VMC-ATP-027 has passed acceptance
-- a reproducible biome and weather scenario is configured
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [F3 screen](#def-f3-screen).
+- VMC-ATP-027 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
+- The server is started with cargo run -p voidmc-example.
+- On both [clients](#def-client), the [F3](#def-f3-screen) screen shows the biome line. To enable it, press F3+F6, set "biome" to "In Overlay", then click Done.
 
 **Steps:**
 
-1. Start the server with the biome and weather scenario enabled.
-2. Connect a Minecraft client.
-3. Travel to the configured test area.
-4. Observe the biome and weather state before and after the configured transition.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a). Stand at X 0, Z 0.
+2. With Player A, run /biome void_example:crimson_sky 4.
+3. Read the [F3](#def-f3-screen) biome line, then walk to X 30, Z 0 and read it again.
+4. With Player A, stand at X 30, Z 0 and run /weather thunder 40.
+5. Wait 5 seconds. Look at the sky and the ground.
+6. Walk to X 0, Z 0. Look at the sky and the ground.
+7. Run /weather clear 40. Wait 5 seconds.
+8. Run /weather thunder 600. Wait 15 seconds.
+9. Join with [Player B](#def-player-b). Move Player B to X 30, Z 0 next to Player A.
+10. Compare the rain on both [clients](#def-client) for 20 seconds.
+11. With Player A, run /weather clear 40. Watch both clients for 5 seconds.
 
-**Expected results:** The client displays the configured biome and weather state; the server and client remain synchronized during the transition; no unsupported world simulation is inferred.
+**Expected results:**
+
+1. Step 2: the reply starts with "Set 729 cell(s) to void_example:crimson_sky".
+2. Step 3: at X 0 the biome line shows void_example:crimson_sky and the sky is red. At X 30 it shows minecraft:plains.
+3. Step 4: the reply starts with "Weather set to Thunder".
+4. Step 5: at X 30 rain falls and the sky is dark.
+5. Step 6: at X 0 no rain falls (the biome has no precipitation), and the sky is darker than before step 4.
+6. Step 7: the rain stops and the sky is clear again.
+7. Step 10: both [clients](#def-client) show rain at the same time, with the same density.
+8. Step 11: the rain stops on both clients within 5 seconds.
+Note: a weather cycle, lightning, snow and biome-driven behaviour are not claimed (void-docs).
 
 ### VMC-ATP-030: Trigger note blocks with basic redstone
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that basic redstone behavior activates note blocks.
 
 **Prerequisites:**
 
-- VMC-ATP-027 has passed acceptance
-- a test world contains a lever or button, redstone dust, and a note block
+- Defined terms used here ([Definitions](#definitions)): [client](#def-client), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat).
+- VMC-ATP-027 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- The server is started with cargo run -p voidmc-example. The example enables RedstonePlugin.
+- The [client](#def-client) sound is on (Options > Music & Sounds > Blocks is more than 0%).
 
 **Steps:**
 
-1. Start the server with the basic redstone scenario enabled.
-2. Connect a Minecraft client and inspect the prepared circuit.
-3. Activate the lever or button.
-4. Deactivate and reactivate the circuit.
-5. Repeat the check after the client rejoins the test world.
+The circuit is a lever, 3 redstone dust and a note block in a line towards positive X.
+It starts 2 blocks east of the player.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a). Stand at X 0, Z 0.
+2. In [chat](#def-chat), run /circuit.
+3. Look at the circuit east of the player.
+4. Right-click the lever.
+5. Right-click the lever again.
+6. Right-click the lever a third time.
+7. Disconnect, then join again with Player A.
+8. Look at the circuit.
+9. Right-click the lever, then right-click it again.
 
-**Expected results:** A basic redstone signal reaches the note block and triggers it reliably; lever or button state is synchronized to the client after each toggle; repeaters, comparators, pistons, and complex circuits are outside this ATP's scope.
+**Expected results:**
+
+1. Step 2: the reply starts with "Circuit built at" and the lever, dust and note block appear.
+2. Step 4: the lever turns down, the dust turns bright red, and the note block shows a note particle and plays a harp note.
+3. Step 5: the lever turns up and the dust turns dark.
+4. Step 6: the dust turns bright red again and the note block shows a note particle and plays a note.
+5. Step 8: the lever is down and the dust is bright red, as before step 7.
+6. Step 9: the first click turns the dust dark. The second click turns it red, with a note particle and sound.
+Note: repeaters, comparators, pistons and complex circuits are out of scope.
 
 ### VMC-ATP-031: Run functional and load tests
 
@@ -867,44 +1382,77 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-027 has passed acceptance
-- a full-protocol load client
-- a repeatable workload
-- pass/fail thresholds
-- a private staging endpoint
+- Defined terms used here ([Definitions](#definitions)): [commit under test](#def-commit-under-test), [client](#def-client), [join](#def-join).
+- VMC-ATP-027 has passed acceptance.
+- A private staging server with the [commit under test](#def-commit-under-test), reachable from the test computer. Endpoint: <to be supplied>.
+- The staging server runs the example with its default configuration.
+- The load tool voidmc-load from void-e2e/ (full-protocol [clients](#def-client)), on the void-e2e nightly toolchain.
+- Workload standard@1: 20 clients, ramp-up 5 s, steady window 30 s, action interval 1 s.
+- Thresholds of standard@1:
+  - connection success 100 %;
+  - tick rate at least 18 TPS;
+  - latency p95 at most 250 ms;
+  - 0 protocol errors, 0 unexpected disconnects, 0 timeouts, 0 other errors and 0 failed smoke checks.
 
 **Steps:**
 
-1. Start the server at the private staging endpoint.
-2. Run the functional smoke checks for the defined workload.
-3. Run the full-protocol load client.
-4. Record connection success, tick rate, latency, errors, and resource measurements.
-5. Compare the results with the defined thresholds.
+1. Start the server on the staging host.
+2. On the test computer, open a terminal in void-e2e/.
+3. Run cargo run --release --bin voidmc-load -- --target endpoint --endpoint <staging host:port> --workload standard --report reports/atp-031.json.
+4. Wait until the tool ends. Record its exit status.
+5. Open reports/atp-031.md, the summary next to the JSON report.
 
-**Expected results:** The report identifies the workload, run conditions, measurements, and pass/fail decision; no capacity claim is made beyond the defined scenario and thresholds.
+**Expected results:**
+
+1. Step 3: the 7 smoke checks (status_ping, [join](#def-join), chunks_loaded, chat_echo, command_reply, chunk_boundary_crossing, healthy) pass.
+2. Step 5: the report names the workload standard@1, the endpoint, the host and the run conditions.
+3. Step 5: the report gives connection success, tick rate, latency p50/p95/max and error counts. It lists the measurements that are unavailable against an endpoint.
+4. Step 5: the decision is PASS, and no threshold is listed as failed.
+5. Step 4: the exit status is 0.
+6. The report says it makes no capacity claim beyond this workload and host.
 
 ### VMC-ATP-032: Expose health and Prometheus metrics
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that the server exposes a health endpoint and Prometheus-compatible metrics for a running server.
 
 **Prerequisites:**
 
-- VMC-ATP-027 has passed acceptance
-- observability endpoints are enabled
-- an HTTP client
-- a private test port
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [tester terminal](#def-tester-terminal), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [tools](#def-tools).
+- VMC-ATP-027 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- curl and Python 3.10 or later.
+- TCP port 9464 is free.
+- The agreed metrics are the 14 families in void-docs/docs/reference/server/observability.md, section /metrics.
+- The working tree has no changes.
 
 **Steps:**
 
-1. Start the server with observability enabled.
-2. Query the health endpoint.
-3. Scrape the metrics endpoint.
-4. Stop the server and query the documented unhealthy state.
+1. At the repository root, run git apply tools/atp/patches/stall-command.patch.
+2. Run cargo build -p voidmc-example.
+3. In the [tester terminal](#def-tester-terminal), run python3 tools/atp/health-poll.py --address 127.0.0.1:9464 --seconds 300.
+4. Run VOID_OBSERVABILITY_ADDR=9464 ./target/debug/voidmc-example.
+5. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+6. In a third terminal, run curl -i http://127.0.0.1:9464/health.
+7. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+8. Run python3 tools/atp/metrics-check.py --address 127.0.0.1:9464.
+9. In [chat](#def-chat), run /atpstall. Wait 10 seconds.
+10. In the server terminal, press Ctrl+C. Wait 5 seconds.
+11. Run curl -i http://127.0.0.1:9464/health.
+12. Stop health-poll.py with Ctrl+C. Run git apply -R tools/atp/patches/stall-command.patch.
 
-**Expected results:** The health endpoint reports the documented healthy and unhealthy states; the metrics endpoint returns the agreed tick, player, and error metrics in Prometheus-compatible format.
+**Expected results:**
+
+1. Step 6: the status is "HTTP/1.1 200" and the body contains "status":"ok".
+2. Step 8: the tool prints "missing families: none", "undocumented families: none", "format errors: 0" and "result: PASS".
+3. Step 8: the tool prints "voidmc_players_online: 1" and "voidmc_players_max: 100".
+4. Step 9: health-poll.py prints "HTTP 503 stalled" and then "HTTP 200 ok".
+5. Step 12: before step 9, health-poll.py printed "refused", "HTTP 503 starting" and "HTTP 200 ok", in this order.
+6. Step 12: after step 10, health-poll.py printed "refused".
+7. Step 12: a "HTTP 503 stopping" line just before "refused" is accepted but not required. The state can last less than 5 ms.
+8. Step 11: curl prints "Connection refused" (exit status 7).
 
 ### VMC-ATP-033: Advertise commands and complete command suggestions
 
@@ -915,107 +1463,178 @@ Goal: merge PRs #127–#163 into `main` one at a time (merge commits, branch del
 
 **Prerequisites:**
 
-- VMC-ATP-003 has passed acceptance
-- a registered command
-- test player and entity names
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [Player B](#def-player-b), [join](#def-join), [chat](#def-chat), [operator access](#def-operator-access).
+- VMC-ATP-003 has passed acceptance.
+- The [Player A](#def-player-a) and [Player B](#def-player-b) accounts exist.
+- [Operator access](#def-operator-access): start the server with VOID_EXAMPLE_OPERATORS=1 cargo run -p voidmc-example. /summon is offered only to operators.
 
 **Steps:**
 
-1. Open chat and enter the prefix of a registered command.
-2. Request suggestions at the command root and after a typed argument.
-3. Check suggestions for a player name and a summonable entity name.
-4. Test an unknown or incomplete prefix.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a), then with [Player B](#def-player-b).
+2. With Player A, open [chat](#def-chat) and type /he. Do not press Enter. Read the suggestions.
+3. Clear the chat line. Type /tell ATP and read the suggestions.
+4. Clear the chat line. Type /summon minecraft:pi and read the suggestions.
+5. Clear the chat line. Type /zzzz and press Tab.
+6. Clear the chat line. Type /gamemode and a space. Read the suggestions.
+7. Press Esc. Wait 10 seconds.
 
-**Expected results:** The client receives the advertised command tree; suggestions contain only valid matches; player and summonable-entity suggestions appear where applicable; unknown prefixes do not crash or disconnect the server.
+**Expected results:**
+
+1. Step 2: the suggestions are hello and help, and nothing else.
+2. Step 3: the suggestions contain ATPPlayerA and ATPPlayerB.
+3. Step 4: the suggestions contain minecraft:pig. Every suggestion starts with "minecraft:pi".
+4. Step 5: no suggestion appears.
+5. Step 6: the suggestions contain the four game modes: survival, creative, adventure and spectator.
+6. Step 7: both [clients](#def-client) are still connected. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
+Note: the client completes these suggestions from the command tree that the server sent at [join](#def-join).
 
 ### VMC-ATP-034: Add custom player behavior through a Bevy plugin
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that an application can attach a Bevy observer to player lifecycle events and react to them without modifying framework core code.
 
 **Prerequisites:**
 
-- VMC-ATP-023 has passed acceptance
-- a small application or plugin crate
-- an observer that records event order and player identity
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [client](#def-client), [Player A](#def-player-a), [join](#def-join), [tools](#def-tools).
+- VMC-ATP-023 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- The working tree has no changes.
 
 **Steps:**
 
-1. Add the plugin to the test application and register observers for PlayerJoinEvent, PlayerReadyEvent, and PlayerQuitEvent.
-2. Start the test application and connect one client.
-3. Wait for initial chunks and PlayerLoaded.
-4. Disconnect the client.
-5. Inspect the recorded events and the plugin's reaction.
+1. At the repository root, run git apply tools/atp/patches/event-observers.patch.
+2. Run VOID_PACKET_DEBUG=1 cargo run -p voidmc-example.
+3. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+4. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a).
+5. Wait 10 seconds after the world appears.
+6. Press Esc, then select Disconnect.
+7. Wait 5 seconds. Read the server log.
+8. Join 127.0.0.1:25565 with Player A again, to check that the server still accepts players.
+9. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/event-observers.patch.
 
-**Expected results:** PlayerJoinEvent fires after Configuration and before PlayerReady; PlayerReadyEvent fires after PlayerLoaded; PlayerQuitEvent fires when the ready player disconnects; the plugin identifies the correct player and reacts without destabilizing the server.
+**Expected results:**
+
+1. Step 7: the lines for ATPPlayerA and its [client](#def-client) number occur in this order:
+   - "Received FinishConfigurationAcknowledged"
+   - "ATP event join"
+   - "Received PlayerLoaded"
+   - "ATP event ready"
+   - "ATP event quit"
+2. Step 7: the [join](#def-join), ready and quit lines contain "player=ATPPlayerA" and the same client_id as the [Client N] number.
+3. Step 7: each of the join, ready and quit lines occurs once for this session.
+4. Step 8: [Player A](#def-player-a) joins without an error.
+5. The [server log](#def-server-log) contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-035: Observe gameplay events through a Bevy plugin
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that an application can observe implemented movement, chat, block, and item interaction events through Bevy observers.
 
 **Prerequisites:**
 
-- VMC-ATP-023 has passed acceptance
-- a small application or plugin crate
-- an observer that records event payloads
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [chat](#def-chat), [F3 screen](#def-f3-screen), [operator access](#def-operator-access), [tools](#def-tools).
+- VMC-ATP-023 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- [Operator access](#def-operator-access), for /give. The steps start the server with it.
+- The working tree has no changes.
 
 **Steps:**
 
-1. Register observers for representative PlayerMoveEvent, ChatMessageEvent, BlockPlaceEvent, BlockBreakEvent, and PlayerUseItemEvent events.
-2. Move and rotate the player.
-3. Send a chat message.
-4. Place and break a block.
-5. Use an item and inspect the recorded payloads.
+1. At the repository root, run git apply tools/atp/patches/event-observers.patch.
+2. Run [VOID_EXAMPLE_OPERATORS](#def-operator-access)=1 cargo run -p voidmc-example.
+3. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a). Stand at X 0, Z 0.
+4. Walk 3 blocks towards positive Z.
+5. Turn until the [F3](#def-f3-screen) Facing line shows a yaw of about 90. Record the yaw and pitch.
+6. In [chat](#def-chat), type ATP observer 2718 and press Enter.
+7. Break the block at X 0, Y 63, Z 3.
+8. Select stone (hotbar slot 1) and place it at X 0, Y 63, Z 3.
+9. Run /give minecraft:ender_pearl 1. Select it and right-click into the air.
+10. Read the [server log](#def-server-log).
+11. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/event-observers.patch.
 
-**Expected results:** Each action produces the corresponding semantic event; payloads identify the correct player or entity and action data; event observation does not claim unsupported gameplay such as combat or damage.
+**Expected results:**
+
+1. Step 4: the [server log](#def-server-log) contains "ATP event move" lines with "player=ATPPlayerA". The new Z values increase towards 3.
+2. Step 5: an "ATP event rotate" line has a yaw within 1 degree of the [F3](#def-f3-screen) yaw and the same pitch.
+3. Step 6: an "ATP event chat" line contains "player=ATPPlayerA" and "text=ATP observer 2718".
+4. Step 7: an "ATP event break" line contains "position=0,63,3".
+5. Step 8: an "ATP event place" line contains "position=0,63,3" and "state=1" (stone).
+6. Step 9: an "ATP event use-item" line contains "hand=MainHand".
+7. No event line names a player other than ATPPlayerA. No combat or damage event is claimed.
 
 ### VMC-ATP-036: Provide a custom world generator
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that an application can replace the default terrain generator with a recognizable custom generator.
 
 **Prerequisites:**
 
-- VMC-ATP-023 has passed acceptance
-- a custom WorldGenerator implementation
-- a writable test-world directory
+- Defined terms used here ([Definitions](#definitions)): [server log](#def-server-log), [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen), [fresh world](#def-fresh-world), [tools](#def-tools).
+- VMC-ATP-023 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- A [fresh world](#def-fresh-world).
+- The working tree has no changes.
 
 **Steps:**
 
-1. Implement a custom WorldGenerator with a known block pattern and surface height.
-2. Supply it through ServerConfigBuilder.world_generator.
-3. Start the test application and connect a client.
-4. Inspect the spawn height and generated terrain.
-5. Cross a chunk boundary and inspect another generated chunk.
+1. At the repository root, run git apply tools/atp/patches/striped-generator.patch.
+2. Read the patch: it implements WorldGenerator and passes it to ServerConfigBuilder::world_generator.
+3. Run cargo run -p voidmc-example.
+4. Wait until the [server log](#def-server-log) contains "Generated 81 spawn area chunks".
+5. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a). Read the [F3](#def-f3-screen) XYZ line.
+6. Point at the top blocks at X 0 and X 4, Z 0. Read the F3 Targeted Block line.
+7. Walk towards positive X until X is 24 or more.
+8. Point at the top blocks at X 16 and X 20, Z 0.
+9. Read the server log.
+10. Stop the server with Ctrl+C, then run git apply -R tools/atp/patches/striped-generator.patch.
+11. Rename the world/ directory, for example to world.after-atp-036.
 
-**Expected results:** Generated chunks use the supplied generator; the spawn position uses its surface height when no explicit spawn height is configured; the recognizable pattern remains consistent across streamed chunks.
+**Expected results:**
+
+1. Step 5: the XYZ line shows Y 80.0. No spawn height is set in ServerConfigBuilder, so the spawn uses the generator's surface height.
+2. Step 6: X 0 is minecraft:gold_block and X 4 is minecraft:grass_block, both at Y 79.
+3. Step 8: X 16 is minecraft:gold_block and X 20 is minecraft:grass_block, both at Y 79.
+4. Step 9: the [server log](#def-server-log) contains "ATP generator chunk" lines for chunk=0,0 and chunk=1,0.
+5. The server log contains no line with "ERROR" or "panicked".
 
 ### VMC-ATP-037: Add a custom biome
 
 **Category:** Secondary function  
-**ATP status:** In progress
+**ATP status:** Done
 
 **Objective:** Confirm that an application can add a custom biome with a clearly visible effect in a defined test area.
 
 **Prerequisites:**
 
-- VMC-ATP-023 has passed acceptance
-- a custom biome definition with a client-visible effect
-- a test application with the extension enabled
+- Defined terms used here ([Definitions](#definitions)): [Player A](#def-player-a), [join](#def-join), [F3 screen](#def-f3-screen).
+- VMC-ATP-023 has passed acceptance.
+- The [Player A](#def-player-a) account exists.
+- The example registers void_example:crimson_sky (red sky, red grass) in void-example/src/biome.rs.
+- The server is started with cargo run -p voidmc-example.
+- The [F3](#def-f3-screen) screen shows the biome line. To enable it, press F3+F6, set "biome" to "In Overlay", then click Done.
 
 **Steps:**
 
-1. Add the custom biome to the test application's world configuration.
-2. Start the application and connect a client.
-3. Travel to the marked test area.
-4. Inspect the biome identifier and its visible effect.
-5. Leave and re-enter the area to verify the result is stable.
+The test area is the 9 x 9 x 9 biome cells around X 0, Y 64, Z 0. The biome is placed at runtime with /biome.
+1. [Join](#def-join) 127.0.0.1:25565 with [Player A](#def-player-a). Stand at X 0, Z 0.
+2. Run /biome void_example:crimson_sky 4.
+3. Run /biome.
+4. Read the [F3](#def-f3-screen) biome line. Look at the sky and the grass.
+5. Run /tp 100 80 100. Read the F3 biome line.
+6. Run /tp 0 64 0. Read the F3 biome line.
+7. Disconnect, then join again. Read the F3 biome line.
 
-**Expected results:** The marked area uses the custom biome; the client exposes its identifier and visible effect; the result remains stable after leaving and re-entering the area.
+**Expected results:**
+
+1. Step 2: the reply starts with "Set 729 cell(s) to void_example:crimson_sky".
+2. Step 3: the reply is "You are in void_example:crimson_sky" with its id.
+3. Step 4: the biome line shows void_example:crimson_sky. The sky and the grass are red.
+4. Step 5: the biome line shows minecraft:plains. The sky and the grass have their normal colours.
+5. Step 6: the biome line shows void_example:crimson_sky again, with the red sky and grass.
+6. Step 7: the biome line still shows void_example:crimson_sky.
