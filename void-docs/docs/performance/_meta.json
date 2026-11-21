@@ -16,11 +16,6 @@
   },
   {
     "type": "file",
-    "name": "load-testing",
-    "label": "Load Testing"
-  },
-  {
-    "type": "file",
     "name": "optimization-log",
     "label": "Optimization Log"
   },

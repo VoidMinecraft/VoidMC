@@ -497,14 +497,6 @@ with a `Ping` carrying the same id at the end of the tick.
 - **No sleeps.** Wait for an observable condition, or `sync()` before a
   negative assertion.
 
-### Functional and Load Runs
-
-The crate also ships `voidmc-load`, which runs a named workload's smoke checks
-and full-protocol load clients against an in-process server or an
-operator-supplied endpoint, and writes a report with a PASS or FAIL decision.
-The `smoke@1` workload runs as part of this suite. See
-[Load Testing](/performance/load-testing).
-
 ### What the Scenarios Cover
 
 Each regression below was injected into the server, one at a time, and made at
