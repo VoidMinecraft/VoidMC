@@ -1894,7 +1894,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voidmc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
@@ -1918,7 +1918,7 @@ dependencies = [
 
 [[package]]
 name = "voidmc-codec"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "proptest",
@@ -1930,7 +1930,7 @@ dependencies = [
 
 [[package]]
 name = "voidmc-codec-macros"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1939,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "voidmc-data"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "ussr-nbt",
@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "voidmc-net"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "tokio",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "voidmc-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bitflags",
  "criterion",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "voidmc-world-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy_app",
  "bevy_ecs",
